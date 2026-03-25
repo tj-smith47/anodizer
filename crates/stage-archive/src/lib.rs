@@ -260,11 +260,18 @@ impl Stage for ArchiveStage {
                     let archive_filename = format!("{archive_stem}.{format}");
                     let archive_path = dist.join(&archive_filename);
 
-                    // Collect files to include
-                    let mut paths: Vec<PathBuf> = selected_bins
-                        .iter()
-                        .map(|b| b.path.clone())
-                        .collect();
+                    // Collect binary files — missing binaries are errors
+                    let mut paths: Vec<PathBuf> = Vec::new();
+                    for b in &selected_bins {
+                        if !b.path.exists() && !ctx.options.dry_run {
+                            anyhow::bail!(
+                                "binary artifact missing: {} (expected at {})",
+                                b.metadata.get("binary").unwrap_or(&b.crate_name),
+                                b.path.display()
+                            );
+                        }
+                        paths.push(b.path.clone());
+                    }
 
                     // Extra files (LICENSE, README, etc.)
                     if let Some(extra_files) = &archive_cfg.files {
