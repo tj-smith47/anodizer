@@ -4,6 +4,16 @@
 
 **This file is the backlog for future sessions.** Each section is an initiative. The next session should start with a fresh parity gap analysis (Initiative 1) and use its findings to update this plan.
 
+### What MUST happen after release (depends on crates.io publish)
+
+These initiatives cannot start until anodize is published and installable:
+
+- **Initiative 2** (Full GitHub Action) — the action downloads and installs the published binary
+- **Initiative 7** (cfgd migration) — cfgd's workflow needs to `cargo install anodize` or use the action
+- **Initiative 6** (Community PRs) — can't submit PRs to other repos until the tool is installable
+
+Everything else (gap analysis, docs site, test coverage, Rust-specific features, Release 2 features, auto-tagging) can be worked on before or in parallel with release.
+
 ---
 
 ## Initiative 1: Fresh GoReleaser Parity Gap Analysis
@@ -115,7 +125,42 @@ Target repos to evaluate (examples):
 
 ---
 
-## Initiative 7: Release 2 Features (Already Planned)
+## Initiative 7: cfgd Migration — First Real-World Adoption
+
+**Depends on:** Anodize Release 1 published to crates.io.
+
+Convert cfgd's 633-line release workflow to an `.anodize.yaml` config. This serves as:
+- The first real-world test of anodize on a production Rust project
+- A showcase for the README ("See anodize in action on [cfgd](https://github.com/tj-smith47/cfgd)")
+- A source of feature gaps we missed
+
+**cfgd's release workflow does things anodize doesn't yet cover:**
+- **Helm chart** packaging and OCI registry push (`helm package` + `helm push`)
+- **Krew manifest** generation for kubectl plugin distribution
+- **Crossplane function** xpkg build and push
+- **OLM bundle** for Operator Lifecycle Manager
+- **Cargo.toml version sync** from git tag — cfgd uses `sed` to update `version = "..."` in Cargo.toml before `cargo publish` because the workspace version doesn't track the git tag. This is a common Rust release pattern that anodize should handle natively (either a `version_from: tag` config option or a pre-publish hook that syncs automatically).
+- **Multiple Dockerfiles** per crate — cfgd has `Dockerfile.operator.release`, `Dockerfile.agent.release`, `Dockerfile.csi.release`. Anodize supports this via multiple `docker` entries per crate.
+
+**Tasks:**
+1. Write `.anodize.yaml` for cfgd (exercises multi-crate, multi-docker, homebrew, krew, crates.io with ordering)
+2. Identify which cfgd features need new anodize capabilities (Helm, Krew, Crossplane, OLM → likely `after` hooks or new stages)
+3. Evaluate whether Cargo.toml version sync should be a first-class feature
+4. Replace the 633-line workflow with `uses: tj-smith47/anodize@v1` + minimal config
+5. Add cfgd as a showcase link in anodize's README
+6. Submit PR to cfgd repo
+
+---
+
+## Initiative 8: Built-in Auto-Tagging
+
+**Improvement over GoReleaser** — GoReleaser requires the tag to exist before running. cfgd uses a separate `AutoTag` GitHub Action (`anothrNick/github-tag-action@1.71.0`) to handle this. Anodize should offer auto-tagging as a built-in feature, modeled after that action's behavior. This eliminates the need for a separate workflow step and is something no other release tool does natively.
+
+Semantics to be brainstormed in a dedicated session.
+
+---
+
+## Initiative 9: Release 2 Features (Already Planned)
 
 From the spec — these are GoReleaser Pro features, free in anodize:
 
@@ -133,7 +178,7 @@ Plus from the gap analysis (Initiative 1), there may be additional features to a
 
 ---
 
-## Initiative 8: Ongoing Maintenance
+## Initiative 10: Ongoing Maintenance
 
 - Address `serde_yaml` deprecation (migrate to `serde_yml` or alternative when stable)
 - Keep `octocrab`, `reqwest`, `clap` dependencies updated
