@@ -1,0 +1,26 @@
+[package]
+name = "anodize"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "anodize"
+path = "src/main.rs"
+
+[dependencies]
+anodize-core.workspace = true
+anodize-stage-build.workspace = true
+anodize-stage-archive.workspace = true
+anodize-stage-nfpm.workspace = true
+anodize-stage-checksum.workspace = true
+anodize-stage-changelog.workspace = true
+anodize-stage-release.workspace = true
+anodize-stage-publish.workspace = true
+anodize-stage-docker.workspace = true
+anodize-stage-sign.workspace = true
+anodize-stage-announce.workspace = true
+anyhow.workspace = true
+clap.workspace = true

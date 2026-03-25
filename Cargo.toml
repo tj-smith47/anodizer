@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/stage-build",
+    "crates/stage-archive",
+    "crates/stage-nfpm",
+    "crates/stage-checksum",
+    "crates/stage-changelog",
+    "crates/stage-release",
+    "crates/stage-publish",
+    "crates/stage-docker",
+    "crates/stage-sign",
+    "crates/stage-announce",
+    "crates/cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/tj-james47/anodize"
+authors = ["TJ Smith"]
+
+[workspace.dependencies]
+anodize-core = { path = "crates/core" }
+anodize-stage-build = { path = "crates/stage-build" }
+anodize-stage-archive = { path = "crates/stage-archive" }
+anodize-stage-nfpm = { path = "crates/stage-nfpm" }
+anodize-stage-checksum = { path = "crates/stage-checksum" }
+anodize-stage-changelog = { path = "crates/stage-changelog" }
+anodize-stage-release = { path = "crates/stage-release" }
+anodize-stage-publish = { path = "crates/stage-publish" }
+anodize-stage-docker = { path = "crates/stage-docker" }
+anodize-stage-sign = { path = "crates/stage-sign" }
+anodize-stage-announce = { path = "crates/stage-announce" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+toml = "0.8"
