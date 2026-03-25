@@ -9,3 +9,4 @@ authors.workspace = true
 [dependencies]
 anodize-core.workspace = true
 anyhow.workspace = true
+regex.workspace = true

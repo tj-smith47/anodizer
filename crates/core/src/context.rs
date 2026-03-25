@@ -20,6 +20,7 @@ pub struct Context {
     pub options: ContextOptions,
     template_vars: TemplateVars,
     pub git_info: Option<GitInfo>,
+    pub changelog: Option<String>,
 }
 
 impl Context {
@@ -32,6 +33,7 @@ impl Context {
             options,
             template_vars: vars,
             git_info: None,
+            changelog: None,
         }
     }
 
