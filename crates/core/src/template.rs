@@ -17,6 +17,58 @@ static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\{\{(\s*)\.(\w+)").unwrap()
 });
 
+/// Base Tera instance with custom filters pre-registered.
+/// Cloned per render() call (cheap — no templates to clone).
+static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
+    let mut tera = tera::Tera::default();
+
+    // GoReleaser-compat aliases
+    tera.register_filter(
+        "tolower",
+        |value: &Value, _: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("tolower", "value", String, value);
+            Ok(Value::String(s.to_lowercase()))
+        },
+    );
+    tera.register_filter(
+        "toupper",
+        |value: &Value, _: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("toupper", "value", String, value);
+            Ok(Value::String(s.to_uppercase()))
+        },
+    );
+
+    // trimprefix(prefix="...") — strip prefix from a string
+    tera.register_filter(
+        "trimprefix",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("trimprefix", "value", String, value);
+            let prefix = args
+                .get("prefix")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimprefix requires a `prefix` argument"))?;
+            let result = s.strip_prefix(prefix).unwrap_or(&s);
+            Ok(Value::String(result.to_string()))
+        },
+    );
+
+    // trimsuffix(suffix="...") — strip suffix from a string
+    tera.register_filter(
+        "trimsuffix",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("trimsuffix", "value", String, value);
+            let suffix = args
+                .get("suffix")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimsuffix requires a `suffix` argument"))?;
+            let result = s.strip_suffix(suffix).unwrap_or(&s);
+            Ok(Value::String(result.to_string()))
+        },
+    );
+
+    tera
+});
+
 pub struct TemplateVars {
     vars: HashMap<String, String>,
     env: HashMap<String, String>,
@@ -89,51 +141,8 @@ pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
     let preprocessed = preprocess(template);
     let ctx = build_tera_context(vars);
 
-    let mut tera = tera::Tera::default();
-
-    // GoReleaser-compat aliases
-    tera.register_filter(
-        "tolower",
-        |value: &Value, _: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("tolower", "value", String, value);
-            Ok(Value::String(s.to_lowercase()))
-        },
-    );
-    tera.register_filter(
-        "toupper",
-        |value: &Value, _: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("toupper", "value", String, value);
-            Ok(Value::String(s.to_uppercase()))
-        },
-    );
-
-    // trimprefix(prefix="...") — strip prefix from a string
-    tera.register_filter(
-        "trimprefix",
-        |value: &Value, args: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("trimprefix", "value", String, value);
-            let prefix = args
-                .get("prefix")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimprefix requires a `prefix` argument"))?;
-            let result = s.strip_prefix(prefix).unwrap_or(&s);
-            Ok(Value::String(result.to_string()))
-        },
-    );
-
-    // trimsuffix(suffix="...") — strip suffix from a string
-    tera.register_filter(
-        "trimsuffix",
-        |value: &Value, args: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("trimsuffix", "value", String, value);
-            let suffix = args
-                .get("suffix")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimsuffix requires a `suffix` argument"))?;
-            let result = s.strip_suffix(suffix).unwrap_or(&s);
-            Ok(Value::String(result.to_string()))
-        },
-    );
+    // Clone the base instance (cheap — filters carry over, no templates to clone)
+    let mut tera = BASE_TERA.clone();
 
     tera.add_raw_template("__inline__", &preprocessed)
         .with_context(|| format!("failed to parse template: {}", template))?;
@@ -329,5 +338,26 @@ mod tests {
         let result =
             render("{% if Env.GITHUB_TOKEN %}has token{% endif %}", &vars).unwrap();
         assert_eq!(result, "has token");
+    }
+
+    #[test]
+    fn test_trimprefix_missing_arg_error() {
+        let vars = test_vars();
+        let result = render("{{ Tag | trimprefix }}", &vars);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_trimsuffix_missing_arg_error() {
+        let vars = test_vars();
+        let result = render("{{ Tag | trimsuffix }}", &vars);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_filter_chaining() {
+        let vars = test_vars();
+        let result = render("{{ Tag | trimprefix(prefix=\"v\") | upper }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
     }
 }
