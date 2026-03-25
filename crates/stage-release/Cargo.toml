@@ -9,3 +9,5 @@ authors.workspace = true
 [dependencies]
 anodize-core.workspace = true
 anyhow.workspace = true
+octocrab.workspace = true
+tokio.workspace = true
