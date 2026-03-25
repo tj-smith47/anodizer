@@ -16,7 +16,7 @@ pub fn find_config() -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    bail!("no anodize config file found (tried: {})", candidates.join(", "))
+    bail!("no anodize config file found (tried: {}). Run `anodize init` to generate one.", candidates.join(", "))
 }
 
 /// Load config from a file, auto-detecting format by extension

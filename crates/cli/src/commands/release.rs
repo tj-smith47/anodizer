@@ -28,6 +28,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     let ctx_opts = ContextOptions {
         snapshot: opts.snapshot,
         dry_run: opts.dry_run,
+        verbose: opts.verbose,
+        debug: opts.debug,
         skip_stages: opts.skip,
         selected_crates: opts.crate_names,
         token: opts.token,

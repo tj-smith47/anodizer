@@ -7,6 +7,8 @@ use crate::template::TemplateVars;
 pub struct ContextOptions {
     pub snapshot: bool,
     pub dry_run: bool,
+    pub verbose: bool,
+    pub debug: bool,
     pub skip_stages: Vec<String>,
     pub selected_crates: Vec<String>,
     pub token: Option<String>,
