@@ -54,41 +54,70 @@ pub fn generate_formula(
             f.push_str(&format!("  sha256 \"{}\"\n", sha256));
         }
         entries => {
-            for (platform, url, sha256) in entries {
-                let os_block = if platform.contains("darwin") || platform.contains("macos") {
-                    "on_macos"
+            // Group entries by OS block so that multiple arches for the same
+            // OS (e.g. darwin-amd64 and darwin-arm64) end up inside a single
+            // `on_macos do` block with nested `on_arm`/`on_intel` sub-blocks.
+
+            // Collect unknown-platform entries first so they are emitted as
+            // comments before the OS blocks.
+            let mut unknown: Vec<(&str, &str, &str)> = Vec::new();
+            let mut macos_entries: Vec<(&str, &str, &str)> = Vec::new();
+            let mut linux_entries: Vec<(&str, &str, &str)> = Vec::new();
+
+            for entry @ (platform, _url, _sha256) in entries {
+                if platform.contains("darwin") || platform.contains("macos") {
+                    macos_entries.push(*entry);
                 } else if platform.contains("linux") {
-                    "on_linux"
+                    linux_entries.push(*entry);
                 } else {
-                    // Unknown platform — emit a commented entry.
-                    f.push_str(&format!(
-                        "  # platform: {}\n  url \"{}\"\n  sha256 \"{}\"\n",
-                        platform, url, sha256
-                    ));
-                    continue;
-                };
-
-                let arch_block = if platform.contains("arm64") || platform.contains("aarch64") {
-                    Some("on_arm")
-                } else if platform.contains("amd64") || platform.contains("x86_64") {
-                    Some("on_intel")
-                } else {
-                    None
-                };
-
-                if let Some(arch) = arch_block {
-                    f.push_str(&format!("  {} do\n", os_block));
-                    f.push_str(&format!("    {} do\n", arch));
-                    f.push_str(&format!("      url \"{}\"\n", url));
-                    f.push_str(&format!("      sha256 \"{}\"\n", sha256));
-                    f.push_str("    end\n");
-                    f.push_str("  end\n");
-                } else {
-                    f.push_str(&format!("  {} do\n", os_block));
-                    f.push_str(&format!("    url \"{}\"\n", url));
-                    f.push_str(&format!("    sha256 \"{}\"\n", sha256));
-                    f.push_str("  end\n");
+                    unknown.push(*entry);
                 }
+            }
+
+            for (platform, url, sha256) in &unknown {
+                f.push_str(&format!(
+                    "  # platform: {}\n  url \"{}\"\n  sha256 \"{}\"\n",
+                    platform, url, sha256
+                ));
+            }
+
+            for (os_block, os_entries) in [("on_macos", &macos_entries), ("on_linux", &linux_entries)] {
+                if os_entries.is_empty() {
+                    continue;
+                }
+
+                // Determine whether any entry has an explicit arch tag.
+                let any_arch = os_entries.iter().any(|(platform, _, _)| {
+                    platform.contains("arm64")
+                        || platform.contains("aarch64")
+                        || platform.contains("amd64")
+                        || platform.contains("x86_64")
+                });
+
+                f.push_str(&format!("  {} do\n", os_block));
+
+                if any_arch {
+                    for (platform, url, sha256) in os_entries {
+                        let arch_block =
+                            if platform.contains("arm64") || platform.contains("aarch64") {
+                                "on_arm"
+                            } else {
+                                "on_intel"
+                            };
+                        f.push_str(&format!("    {} do\n", arch_block));
+                        f.push_str(&format!("      url \"{}\"\n", url));
+                        f.push_str(&format!("      sha256 \"{}\"\n", sha256));
+                        f.push_str("    end\n");
+                    }
+                } else {
+                    // Single entry without explicit arch.
+                    for (_platform, url, sha256) in os_entries {
+                        f.push_str(&format!("    url \"{}\"\n", url));
+                        f.push_str(&format!("    sha256 \"{}\"\n", sha256));
+                    }
+                }
+
+                f.push_str("  end\n");
             }
         }
     }
@@ -202,6 +231,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
 
     // Determine the token for git auth.
     let token = ctx.options.token.clone()
+        .or_else(|| std::env::var("HOMEBREW_TAP_TOKEN").ok())
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
     let clone_url = if let Some(ref tok) = token {
@@ -339,5 +369,34 @@ mod tests {
             "system \"#{bin}/cfgd-core\", \"--version\"",
         );
         assert!(formula.contains("class CfgdCore < Formula"));
+    }
+
+    #[test]
+    fn test_generate_formula_multi_arch_grouped() {
+        // darwin-amd64 and darwin-arm64 must produce a single on_macos block
+        // containing on_intel and on_arm sub-blocks.
+        let formula = generate_formula(
+            "mytool",
+            "3.0.0",
+            &[
+                ("darwin-amd64", "https://example.com/mytool-darwin-amd64.tar.gz", "aaaa"),
+                ("darwin-arm64", "https://example.com/mytool-darwin-arm64.tar.gz", "bbbb"),
+                ("linux-amd64", "https://example.com/mytool-linux-amd64.tar.gz", "cccc"),
+            ],
+            "My tool",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\", \"--version\"",
+        );
+        // There must be exactly one on_macos block wrapping both arches.
+        let macos_count = formula.matches("on_macos do").count();
+        assert_eq!(macos_count, 1, "expected exactly one on_macos do block");
+        assert!(formula.contains("on_arm do"));
+        assert!(formula.contains("on_intel do"));
+        assert!(formula.contains("aaaa"));
+        assert!(formula.contains("bbbb"));
+        assert!(formula.contains("cccc"));
+        // on_linux should still appear once.
+        assert_eq!(formula.matches("on_linux do").count(), 1);
     }
 }

@@ -371,6 +371,7 @@ pub struct HomebrewConfig {
 pub struct ScoopConfig {
     pub bucket: Option<BucketConfig>,
     pub description: Option<String>,
+    pub license: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

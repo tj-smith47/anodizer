@@ -89,7 +89,7 @@ pub fn publish_command(crate_name: &str) -> Vec<String> {
 
 /// Poll the crates.io sparse index until `crate_name` at `version` appears or
 /// the deadline (seconds) is exceeded.  Uses exponential back-off starting at
-/// 2 s, capped at 30 s.
+/// 5 s, capped at 60 s.
 ///
 /// Returns `Ok(())` when the version is confirmed, `Err` on timeout.
 fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> Result<()> {
@@ -117,8 +117,8 @@ fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> R
         .build()
         .context("publish: build HTTP client for index polling")?;
 
-    let mut backoff = Duration::from_secs(2);
-    let cap = Duration::from_secs(30);
+    let mut backoff = Duration::from_secs(5);
+    let cap = Duration::from_secs(60);
 
     loop {
         match client.get(&url).send() {
@@ -167,12 +167,14 @@ fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> R
 // publish_to_crates_io
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_crates_io(ctx: &mut Context) -> Result<()> {
-    // Collect (name, depends_on) for all crates with crates.io publishing enabled.
+pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()> {
+    // Collect (name, depends_on) for all crates with crates.io publishing enabled,
+    // filtered to `selected` when non-empty.
     let publishable: Vec<(String, Vec<String>)> = ctx
         .config
         .crates
         .iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| {
             c.publish
                 .as_ref()

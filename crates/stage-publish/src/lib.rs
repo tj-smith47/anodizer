@@ -21,7 +21,7 @@ impl Stage for PublishStage {
         let selected = ctx.options.selected_crates.clone();
 
         // 1. crates.io — publish all crates with `publish.crates` enabled.
-        publish_to_crates_io(ctx)?;
+        publish_to_crates_io(ctx, &selected)?;
 
         // 2. Homebrew — one call per crate that has a homebrew config.
         let homebrew_crates: Vec<String> = ctx
@@ -158,6 +158,7 @@ mod tests {
                         name: "scoop-bucket".to_string(),
                     }),
                     description: Some("My tool".to_string()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             }),
@@ -190,6 +191,7 @@ mod tests {
                         name: "scoop-bucket".to_string(),
                     }),
                     description: None,
+                    ..Default::default()
                 }),
             }),
             ..Default::default()

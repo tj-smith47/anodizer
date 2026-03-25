@@ -13,12 +13,13 @@ pub fn generate_manifest(
     url: &str,
     hash: &str,
     description: &str,
+    license: &str,
 ) -> String {
     let manifest = serde_json::json!({
         "version": version,
         "description": description,
         "homepage": format!("https://github.com/{}", name),
-        "license": "MIT",
+        "license": license,
         "architecture": {
             "64bit": {
                 "url": url,
@@ -89,6 +90,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
         .clone()
         .unwrap_or_else(|| crate_name.to_string());
 
+    let license = scoop_cfg
+        .license
+        .clone()
+        .unwrap_or_else(|| "MIT".to_string());
+
     // Find the windows-amd64 Archive artifact.
     let windows_artifact = ctx
         .artifacts
@@ -134,13 +140,14 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
         )
     };
 
-    let manifest = generate_manifest(crate_name, &version, &url, &hash, &description);
+    let manifest = generate_manifest(crate_name, &version, &url, &hash, &description, &license);
 
     // Clone bucket repo, write manifest, commit, push.
     let token = ctx
         .options
         .token
         .clone()
+        .or_else(|| std::env::var("HOMEBREW_TAP_TOKEN").ok())
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
     let clone_url = if let Some(ref tok) = token {
@@ -244,10 +251,12 @@ mod tests {
             "https://example.com/cfgd-1.0.0-windows-amd64.zip",
             "sha256xyz",
             "Declarative config management",
+            "MIT",
         );
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["version"], "1.0.0");
         assert_eq!(json["architecture"]["64bit"]["hash"], "sha256xyz");
+        assert_eq!(json["license"], "MIT");
     }
 
     #[test]
@@ -258,10 +267,12 @@ mod tests {
             "https://example.com/my-tool-2.1.0-windows-amd64.zip",
             "deadbeef",
             "A helpful tool",
+            "Apache-2.0",
         );
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["description"], "A helpful tool");
         assert_eq!(json["version"], "2.1.0");
+        assert_eq!(json["license"], "Apache-2.0");
         assert_eq!(json["architecture"]["64bit"]["url"], "https://example.com/my-tool-2.1.0-windows-amd64.zip");
     }
 
@@ -284,6 +295,7 @@ mod tests {
                         name: "scoop-bucket".to_string(),
                     }),
                     description: Some("Declarative config management".to_string()),
+                    ..Default::default()
                 }),
                 ..Default::default()
             }),
