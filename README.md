@@ -69,11 +69,11 @@ defaults:
 crates:
   - name: myapp
     path: "."
-    tag_template: "v{{ .Version }}"
+    tag_template: "v{{ Version }}"
     builds:
       - binary: myapp
     archives:
-      - name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
         files: [LICENSE, README.md]
     release:
       github:

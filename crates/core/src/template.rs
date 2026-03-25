@@ -1,12 +1,19 @@
-// Template rendering — Go-style {{ .Field }} engine.
+// Template rendering — supports both Go-style {{ .Field }} and Tera-style {{ Field }}.
+// Auto-detects: if the template contains `{{ .` it uses Go-style, otherwise Tera.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use anyhow::Result;
 use regex::Regex;
 
-static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
+// Go-style: {{ .Field }}, {{ .Env.VAR }}
+static GO_TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\{\{\s*\.(\w+(?:\.\w+)*)\s*\}\}").unwrap()
+});
+
+// Tera-style: {{ Field }}, {{ Env.VAR }} (no leading dot)
+static TERA_TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{\{\s*(\w+(?:\.\w+)*)\s*\}\}").unwrap()
 });
 
 pub struct TemplateVars {
@@ -38,8 +45,17 @@ impl Default for TemplateVars {
     }
 }
 
+/// Auto-detect template style and render.
+/// Default is Tera-style (`{{ Field }}`). If the template contains a leading
+/// dot (`{{ .Field }}`), Go-style is used for GoReleaser migration compatibility.
 pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
-    let re = &*TEMPLATE_RE;
+    let is_go_style = template.contains("{{ .") || template.contains("{{.");
+    let re = if is_go_style { &*GO_TEMPLATE_RE } else { &*TERA_TEMPLATE_RE };
+    render_with_regex(template, vars, re)
+}
+
+/// Render using a specific regex pattern.
+fn render_with_regex(template: &str, vars: &TemplateVars, re: &Regex) -> Result<String> {
     let mut result = template.to_string();
     let matches: Vec<(String, String)> = re
         .captures_iter(template)
@@ -119,5 +135,35 @@ mod tests {
         let vars = test_vars();
         let result = render("prefix-{{ .Tag }}-suffix.tar.gz", &vars).unwrap();
         assert_eq!(result, "prefix-v1.2.3-suffix.tar.gz");
+    }
+
+    // Tera-style tests (no leading dot)
+
+    #[test]
+    fn test_tera_simple_substitution() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName }}-{{ Version }}", &vars).unwrap();
+        assert_eq!(result, "cfgd-1.2.3");
+    }
+
+    #[test]
+    fn test_tera_env_access() {
+        let vars = test_vars();
+        let result = render("{{ Env.GITHUB_TOKEN }}", &vars).unwrap();
+        assert_eq!(result, "tok123");
+    }
+
+    #[test]
+    fn test_tera_archive_name() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}", &vars).unwrap();
+        assert_eq!(result, "cfgd-1.2.3-linux-amd64");
+    }
+
+    #[test]
+    fn test_tera_missing_var() {
+        let vars = test_vars();
+        let result = render("{{ Missing }}", &vars);
+        assert!(result.is_err());
     }
 }

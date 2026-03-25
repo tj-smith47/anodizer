@@ -38,13 +38,13 @@ after:
 crates:
   - name: cfgd-core
     path: crates/cfgd-core
-    tag_template: "cfgd-core-v{{ .Version }}"
+    tag_template: "cfgd-core-v{{ Version }}"
     publish:
       crates: true
 
   - name: cfgd
     path: crates/cfgd
-    tag_template: "v{{ .Version }}"
+    tag_template: "v{{ Version }}"
     depends_on:
       - cfgd-core
     builds:
@@ -63,16 +63,16 @@ crates:
           - x86_64-apple-darwin
           - aarch64-apple-darwin
     archives:
-      - name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
         files:
           - LICENSE
           - README.md
-      - name_template: "kubectl-{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+      - name_template: "kubectl-{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
         binaries: [kubectl-cfgd]
         files:
           - LICENSE
     checksum:
-      name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
+      name_template: "{{ ProjectName }}-{{ Version }}-checksums.txt"
       algorithm: sha256
     release:
       github:
@@ -80,7 +80,7 @@ crates:
         name: cfgd
       draft: false
       prerelease: auto
-      name_template: "{{ .Tag }}"
+      name_template: "{{ Tag }}"
     publish:
       crates: true
       # Object form with options:
@@ -106,7 +106,7 @@ crates:
 
   - name: cfgd-operator
     path: crates/cfgd-operator
-    tag_template: "cfgd-operator-v{{ .Version }}"
+    tag_template: "cfgd-operator-v{{ Version }}"
     builds:
       - binary: cfgd-operator
         targets:
@@ -117,8 +117,8 @@ crates:
       crates: false
     docker:
       - image_templates:
-          - "ghcr.io/tj-smith47/cfgd-operator:{{ .Version }}"
-          - "ghcr.io/tj-smith47/cfgd-operator:{{ .Tag }}"
+          - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}"
+          - "ghcr.io/tj-smith47/cfgd-operator:{{ Tag }}"
         dockerfile: Dockerfile.operator.release
         platforms:
           - linux/amd64
@@ -147,39 +147,39 @@ sign:
   args:
     - "--batch"
     - "--local-user"
-    - "{{ .Env.GPG_FINGERPRINT }}"
+    - "{{ Env.GPG_FINGERPRINT }}"
     - "--output"
-    - "{{ .Signature }}"
+    - "{{ Signature }}"
     - "--detach-sig"
-    - "{{ .Artifact }}"
+    - "{{ Artifact }}"
 
 docker_signs:
   - artifacts: all
     cmd: cosign
     args:
       - "sign"
-      - "{{ .Artifact }}"
+      - "{{ Artifact }}"
       - "--yes"
 
 snapshot:
-  name_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
+  name_template: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}"
 
 announce:
   discord:
     enabled: false
-    webhook_url: "{{ .Env.DISCORD_WEBHOOK_URL }}"
-    message_template: "{{ .ProjectName }} {{ .Tag }} released! {{ .ReleaseURL }}"
+    webhook_url: "{{ Env.DISCORD_WEBHOOK_URL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
   slack:
     enabled: false
-    webhook_url: "{{ .Env.SLACK_WEBHOOK_URL }}"
-    message_template: "{{ .ProjectName }} {{ .Tag }} released! {{ .ReleaseURL }}"
+    webhook_url: "{{ Env.SLACK_WEBHOOK_URL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
   webhook:
     enabled: false
-    endpoint_url: "{{ .Env.WEBHOOK_URL }}"
+    endpoint_url: "{{ Env.WEBHOOK_URL }}"
     headers:
-      Authorization: "Bearer {{ .Env.WEBHOOK_TOKEN }}"
+      Authorization: "Bearer {{ Env.WEBHOOK_TOKEN }}"
     content_type: application/json
-    message_template: '{"project":"{{ .ProjectName }}","tag":"{{ .Tag }}","url":"{{ .ReleaseURL }}"}'
+    message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
 ```
 
 ## Field Reference
@@ -217,7 +217,7 @@ announce:
 |-------|------|---------|-------------|
 | `name` | string | **required** | Crate name (matches Cargo.toml) |
 | `path` | string | **required** | Path to crate directory |
-| `tag_template` | string | **required** | Git tag template (must contain `{{ .Version }}`) |
+| `tag_template` | string | **required** | Git tag template (must contain `{{ Version }}`) |
 | `depends_on` | string[] | — | Crates that must be published first |
 | `cross` | string | — | Per-crate cross-compilation strategy override |
 | `builds` | array | — | Build configurations |
@@ -248,7 +248,7 @@ announce:
 | `github.name` | string | **required** | GitHub repo name |
 | `draft` | bool | `false` | Create as draft release |
 | `prerelease` | `auto` or bool | `false` | `auto` detects from tag (-rc, -beta, -alpha) |
-| `name_template` | string | `{{ .Tag }}` | Release name template |
+| `name_template` | string | `{{ Tag }}` | Release name template |
 
 ### `crates[].publish`
 
@@ -282,31 +282,33 @@ announce:
 
 ### Template Variables
 
-| Variable | Description |
-|----------|-------------|
-| `{{ .ProjectName }}` | Project name from config |
-| `{{ .Version }}` | Semantic version (without `v` prefix) |
-| `{{ .Tag }}` | Full git tag |
-| `{{ .ShortCommit }}` | Short commit hash |
-| `{{ .FullCommit }}` | Full commit hash |
-| `{{ .Os }}` | Mapped OS (linux, darwin, windows) |
-| `{{ .Arch }}` | Mapped arch (amd64, arm64) |
-| `{{ .Major }}` | Major version component |
-| `{{ .Minor }}` | Minor version component |
-| `{{ .Patch }}` | Patch version component |
-| `{{ .Prerelease }}` | Prerelease suffix |
-| `{{ .Date }}` | Current date |
-| `{{ .Timestamp }}` | Unix timestamp |
-| `{{ .IsSnapshot }}` | Whether snapshot mode |
-| `{{ .IsDraft }}` | Whether release is a draft |
-| `{{ .ReleaseURL }}` | URL of created GitHub release |
-| `{{ .Env.VAR }}` | Environment variable |
-| `{{ .Signature }}` | Signature output path (sign stage) |
-| `{{ .Artifact }}` | Artifact input path (sign stage) |
+Anodize uses Tera-style templates by default (`{{ Field }}`). For GoReleaser migration compatibility, Go-style templates (`{{ Field }}` with a leading dot) are also supported and auto-detected.
+
+| Variable | Tera (default) | Go-style (compat) | Description |
+|----------|---------------|-------------------|-------------|
+| ProjectName | `{{ ProjectName }}` | `{{ .ProjectName }}` | Project name from config |
+| Version | `{{ Version }}` | `{{ .Version }}` | Semantic version (without `v` prefix) |
+| Tag | `{{ Tag }}` | `{{ .Tag }}` | Full git tag |
+| ShortCommit | `{{ ShortCommit }}` | `{{ .ShortCommit }}` | Short commit hash |
+| FullCommit | `{{ FullCommit }}` | `{{ .FullCommit }}` | Full commit hash |
+| Os | `{{ Os }}` | `{{ .Os }}` | Mapped OS (linux, darwin, windows) |
+| Arch | `{{ Arch }}` | `{{ .Arch }}` | Mapped arch (amd64, arm64) |
+| Major | `{{ Major }}` | `{{ .Major }}` | Major version component |
+| Minor | `{{ Minor }}` | `{{ .Minor }}` | Minor version component |
+| Patch | `{{ Patch }}` | `{{ .Patch }}` | Patch version component |
+| Prerelease | `{{ Prerelease }}` | `{{ .Prerelease }}` | Prerelease suffix |
+| Date | `{{ Date }}` | `{{ .Date }}` | Current date |
+| Timestamp | `{{ Timestamp }}` | `{{ .Timestamp }}` | Unix timestamp |
+| IsSnapshot | `{{ IsSnapshot }}` | `{{ .IsSnapshot }}` | Whether snapshot mode |
+| IsDraft | `{{ IsDraft }}` | `{{ .IsDraft }}` | Whether release is a draft |
+| ReleaseURL | `{{ ReleaseURL }}` | `{{ .ReleaseURL }}` | URL of created GitHub release |
+| Env.VAR | `{{ Env.VAR }}` | `{{ .Env.VAR }}` | Environment variable |
+| Signature | `{{ Signature }}` | `{{ .Signature }}` | Signature output path (sign stage) |
+| Artifact | `{{ Artifact }}` | `{{ .Artifact }}` | Artifact input path (sign stage) |
 
 ### Target Triple Mapping
 
-| Rust Target | `{{ .Os }}` | `{{ .Arch }}` |
+| Rust Target | `{{ Os }}` | `{{ Arch }}` |
 |------------|-------------|---------------|
 | `x86_64-unknown-linux-gnu` | `linux` | `amd64` |
 | `aarch64-unknown-linux-gnu` | `linux` | `arm64` |
