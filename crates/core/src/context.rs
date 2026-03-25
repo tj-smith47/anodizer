@@ -2,6 +2,7 @@ use crate::artifact::ArtifactRegistry;
 use crate::config::Config;
 use crate::git::GitInfo;
 use crate::template::TemplateVars;
+use chrono::Utc;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -61,19 +62,136 @@ impl Context {
     pub fn is_snapshot(&self) -> bool {
         self.options.snapshot
     }
+
+    /// Populate template variables from `self.git_info`.
+    ///
+    /// Must be called after `self.git_info` is set. Sets the following vars:
+    /// - `Tag`, `Version`, `RawVersion` — tag and version strings
+    /// - `Major`, `Minor`, `Patch` — semver components
+    /// - `Prerelease` — prerelease suffix (or empty)
+    /// - `FullCommit`, `Commit` — full commit SHA (`Commit` is alias for `FullCommit`)
+    /// - `ShortCommit` — abbreviated commit SHA
+    /// - `Branch` — current git branch
+    /// - `CommitDate` — ISO 8601 author date of HEAD commit
+    /// - `CommitTimestamp` — unix timestamp of HEAD commit
+    /// - `IsGitDirty` — "true"/"false"
+    /// - `GitTreeState` — "clean"/"dirty"
+    /// - `IsSnapshot` — from context options
+    /// - `IsDraft` — "false" (stages may override to "true")
+    /// - `PreviousTag` — previous matching tag (or empty)
+    ///
+    /// **Stage-scoped variables** (NOT set here; set per-artifact during stage execution):
+    /// - `Binary` — binary name, set by build/archive stages per artifact
+    /// - `ArtifactName` — output artifact filename, set by archive/checksum stages
+    /// - `ArtifactPath` — absolute path to artifact, set by archive/checksum stages
+    /// - `Os` — target OS, set by archive/nfpm stages per target
+    /// - `Arch` — target architecture, set by archive/nfpm stages per target
+    pub fn populate_git_vars(&mut self) {
+        if let Some(ref info) = self.git_info {
+            let version = format!(
+                "{}.{}.{}{}",
+                info.semver.major,
+                info.semver.minor,
+                info.semver.patch,
+                info.semver
+                    .prerelease
+                    .as_ref()
+                    .map(|p| format!("-{p}"))
+                    .unwrap_or_default()
+            );
+
+            self.template_vars.set("Tag", &info.tag);
+            self.template_vars.set("Version", &version);
+            self.template_vars.set("RawVersion", &version);
+            self.template_vars
+                .set("Major", &info.semver.major.to_string());
+            self.template_vars
+                .set("Minor", &info.semver.minor.to_string());
+            self.template_vars
+                .set("Patch", &info.semver.patch.to_string());
+            self.template_vars.set(
+                "Prerelease",
+                info.semver.prerelease.as_deref().unwrap_or(""),
+            );
+            self.template_vars.set("FullCommit", &info.commit);
+            self.template_vars.set("Commit", &info.commit);
+            self.template_vars.set("ShortCommit", &info.short_commit);
+            self.template_vars.set("Branch", &info.branch);
+            self.template_vars.set("CommitDate", &info.commit_date);
+            self.template_vars
+                .set("CommitTimestamp", &info.commit_timestamp);
+            self.template_vars.set(
+                "IsGitDirty",
+                if info.dirty { "true" } else { "false" },
+            );
+            self.template_vars.set(
+                "GitTreeState",
+                if info.dirty { "dirty" } else { "clean" },
+            );
+            self.template_vars.set(
+                "PreviousTag",
+                info.previous_tag.as_deref().unwrap_or(""),
+            );
+        }
+
+        self.template_vars.set(
+            "IsSnapshot",
+            if self.options.snapshot { "true" } else { "false" },
+        );
+        self.template_vars.set("IsDraft", "false");
+    }
+
+    /// Populate time-related template variables using the current UTC time.
+    ///
+    /// Sets:
+    /// - `Date` — current date as YYYY-MM-DD
+    /// - `Timestamp` — current unix timestamp as string
+    /// - `Now` — current UTC time as ISO 8601
+    pub fn populate_time_vars(&mut self) {
+        let now = Utc::now();
+        self.template_vars
+            .set("Date", &now.format("%Y-%m-%d").to_string());
+        self.template_vars
+            .set("Timestamp", &now.timestamp().to_string());
+        self.template_vars
+            .set("Now", &now.to_rfc3339());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::git::{GitInfo, SemVer};
+
+    fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
+        GitInfo {
+            tag: "v1.2.3".to_string(),
+            commit: "abc123def456abc123def456abc123def456abc1".to_string(),
+            short_commit: "abc123d".to_string(),
+            branch: "main".to_string(),
+            dirty,
+            semver: SemVer {
+                major: 1,
+                minor: 2,
+                patch: 3,
+                prerelease: prerelease.map(|s| s.to_string()),
+            },
+            commit_date: "2026-03-25T10:30:00+00:00".to_string(),
+            commit_timestamp: "1774463400".to_string(),
+            previous_tag: Some("v1.2.2".to_string()),
+        }
+    }
 
     #[test]
     fn test_context_template_vars() {
         let mut config = Config::default();
         config.project_name = "test-project".to_string();
         let ctx = Context::new(config, ContextOptions::default());
-        assert_eq!(ctx.template_vars().get("ProjectName"), Some(&"test-project".to_string()));
+        assert_eq!(
+            ctx.template_vars().get("ProjectName"),
+            Some(&"test-project".to_string())
+        );
     }
 
     #[test]
@@ -96,5 +214,197 @@ mod tests {
         let ctx = Context::new(config, ContextOptions::default());
         let result = ctx.render_template("{{ .ProjectName }}-release").unwrap();
         assert_eq!(result, "myapp-release");
+    }
+
+    #[test]
+    fn test_populate_git_vars_sets_all_expected_vars() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("Tag"), Some(&"v1.2.3".to_string()));
+        assert_eq!(v.get("Version"), Some(&"1.2.3".to_string()));
+        assert_eq!(v.get("RawVersion"), Some(&"1.2.3".to_string()));
+        assert_eq!(v.get("Major"), Some(&"1".to_string()));
+        assert_eq!(v.get("Minor"), Some(&"2".to_string()));
+        assert_eq!(v.get("Patch"), Some(&"3".to_string()));
+        assert_eq!(v.get("Prerelease"), Some(&"".to_string()));
+        assert_eq!(
+            v.get("FullCommit"),
+            Some(&"abc123def456abc123def456abc123def456abc1".to_string())
+        );
+        assert_eq!(v.get("ShortCommit"), Some(&"abc123d".to_string()));
+        assert_eq!(v.get("Branch"), Some(&"main".to_string()));
+        assert_eq!(
+            v.get("CommitDate"),
+            Some(&"2026-03-25T10:30:00+00:00".to_string())
+        );
+        assert_eq!(
+            v.get("CommitTimestamp"),
+            Some(&"1774463400".to_string())
+        );
+        assert_eq!(v.get("PreviousTag"), Some(&"v1.2.2".to_string()));
+    }
+
+    #[test]
+    fn test_commit_is_alias_for_full_commit() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("Commit"), v.get("FullCommit"));
+    }
+
+    #[test]
+    fn test_populate_git_vars_prerelease() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, Some("rc.1")));
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("Version"), Some(&"1.2.3-rc.1".to_string()));
+        assert_eq!(v.get("Prerelease"), Some(&"rc.1".to_string()));
+    }
+
+    #[test]
+    fn test_git_tree_state_clean() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("IsGitDirty"), Some(&"false".to_string()));
+        assert_eq!(v.get("GitTreeState"), Some(&"clean".to_string()));
+    }
+
+    #[test]
+    fn test_git_tree_state_dirty() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(true, None));
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("IsGitDirty"), Some(&"true".to_string()));
+        assert_eq!(v.get("GitTreeState"), Some(&"dirty".to_string()));
+    }
+
+    #[test]
+    fn test_is_snapshot_reflects_context_options() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsSnapshot"),
+            Some(&"true".to_string())
+        );
+
+        // Non-snapshot
+        let config2 = Config::default();
+        let opts2 = ContextOptions {
+            snapshot: false,
+            ..Default::default()
+        };
+        let mut ctx2 = Context::new(config2, opts2);
+        ctx2.git_info = Some(make_git_info(false, None));
+        ctx2.populate_git_vars();
+
+        assert_eq!(
+            ctx2.template_vars().get("IsSnapshot"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_draft_defaults_to_false() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsDraft"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_previous_tag_empty_when_none() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut info = make_git_info(false, None);
+        info.previous_tag = None;
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("PreviousTag"),
+            Some(&"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_populate_time_vars() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_time_vars();
+
+        let v = ctx.template_vars();
+
+        // Date should be YYYY-MM-DD format
+        let date = v.get("Date").expect("Date should be set");
+        assert!(
+            date.len() == 10 && date.chars().nth(4) == Some('-'),
+            "Date should be YYYY-MM-DD, got: {date}"
+        );
+
+        // Timestamp should be numeric
+        let ts = v.get("Timestamp").expect("Timestamp should be set");
+        assert!(
+            ts.parse::<i64>().is_ok(),
+            "Timestamp should be a numeric string, got: {ts}"
+        );
+
+        // Now should be ISO 8601
+        let now = v.get("Now").expect("Now should be set");
+        assert!(
+            now.contains('T'),
+            "Now should be ISO 8601, got: {now}"
+        );
+    }
+
+    #[test]
+    fn test_populate_git_vars_without_git_info_still_sets_snapshot() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        // Don't set git_info — populate_git_vars should still set IsSnapshot/IsDraft
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsSnapshot"),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            ctx.template_vars().get("IsDraft"),
+            Some(&"false".to_string())
+        );
+        // Git-specific vars should NOT be set
+        assert_eq!(ctx.template_vars().get("Tag"), None);
     }
 }

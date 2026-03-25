@@ -37,6 +37,13 @@ pub struct GitInfo {
     pub branch: String,
     pub dirty: bool,
     pub semver: SemVer,
+    /// ISO 8601 author date of HEAD commit (from `git log -1 --format=%aI`)
+    pub commit_date: String,
+    /// Unix timestamp of HEAD commit (from `git log -1 --format=%at`)
+    pub commit_timestamp: String,
+    /// Previous tag matching the same pattern, if any.
+    /// Populated externally by the release command once the tag_template is known.
+    pub previous_tag: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,8 +71,20 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     let short_commit = git_output(&["rev-parse", "--short", "HEAD"])?;
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let dirty = !git_output(&["status", "--porcelain"])?.is_empty();
+    let commit_date = git_output(&["log", "-1", "--format=%aI"]).unwrap_or_default();
+    let commit_timestamp = git_output(&["log", "-1", "--format=%at"]).unwrap_or_default();
     let semver = parse_semver(tag)?;
-    Ok(GitInfo { tag: tag.to_string(), commit, short_commit, branch, dirty, semver })
+    Ok(GitInfo {
+        tag: tag.to_string(),
+        commit,
+        short_commit,
+        branch,
+        dirty,
+        semver,
+        commit_date,
+        commit_timestamp,
+        previous_tag: None,
+    })
 }
 
 /// Find the latest tag matching a template pattern.

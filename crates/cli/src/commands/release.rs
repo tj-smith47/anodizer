@@ -57,6 +57,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         token: opts.token,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
+    ctx.populate_time_vars();
+    // TODO: call detect_git_info() + ctx.populate_git_vars() once tag resolution is implemented
     let p = pipeline::build_release_pipeline();
     let result = p.run(&mut ctx);
 
