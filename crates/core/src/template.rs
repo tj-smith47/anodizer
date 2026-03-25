@@ -1,8 +1,13 @@
 // Template rendering — Go-style {{ .Field }} engine.
 
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use anyhow::Result;
 use regex::Regex;
+
+static TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{\{\s*\.(\w+(?:\.\w+)*)\s*\}\}").unwrap()
+});
 
 pub struct TemplateVars {
     vars: HashMap<String, String>,
@@ -34,7 +39,7 @@ impl Default for TemplateVars {
 }
 
 pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
-    let re = Regex::new(r"\{\{\s*\.(\w+(?:\.\w+)*)\s*\}\}")?;
+    let re = &*TEMPLATE_RE;
     let mut result = template.to_string();
     let matches: Vec<(String, String)> = re
         .captures_iter(template)

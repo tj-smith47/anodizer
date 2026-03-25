@@ -19,7 +19,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/tj-james47/anodize"
+repository = "https://github.com/tj-smith47/anodize"
 authors = ["TJ Smith"]
 
 [workspace.dependencies]

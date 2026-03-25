@@ -91,6 +91,11 @@ pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
         a.0.major.cmp(&b.0.major)
             .then(a.0.minor.cmp(&b.0.minor))
             .then(a.0.patch.cmp(&b.0.patch))
+            .then(match (&a.0.prerelease, &b.0.prerelease) {
+                (Some(_), None) => std::cmp::Ordering::Less,    // prerelease < release
+                (None, Some(_)) => std::cmp::Ordering::Greater,  // release > prerelease
+                _ => std::cmp::Ordering::Equal,
+            })
     });
 
     Ok(matching.last().map(|(_, tag)| tag.clone()))
