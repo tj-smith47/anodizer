@@ -29,6 +29,12 @@ Config filenames: `anodize.yaml` / `anodize.toml` (or `.anodize.yaml` / `.anodiz
 - Snapcraft
 - Reproducible builds
 - macOS Universal Binaries
+- SBOM generation (e.g., syft integration)
+- Source archives
+- AUR (Arch User Repository) publishing
+- UPX binary compression
+- GitLab/Gitea support (Release 1 is GitHub-only; the `release` config is designed to be extensible to other forges)
+- Announce providers beyond Discord, Slack, and generic HTTP webhooks (e.g., Telegram, Teams, Mastodon)
 
 These are deferred to Release 2.
 
@@ -43,7 +49,7 @@ A Cargo workspace where the core pipeline engine is one crate and each pipeline 
 ### Pipeline
 
 ```
-Config Parse → Before Hooks → Build → Archive → Checksum → Changelog
+Config Parse → Before Hooks → Build → Archive → NFpm → Checksum → Changelog
 → Release → Publish → Docker → Sign → Announce → After Hooks
 ```
 
@@ -55,6 +61,8 @@ trait Stage {
     fn run(&self, ctx: &mut Context) -> Result<()>;
 }
 ```
+
+`&self` is intentional — all mutable state lives in `Context`, keeping stages stateless and composable. `Result` uses `anyhow::Result` for ergonomic error propagation; rich diagnostic formatting (colors, suggestions) is handled at the CLI layer, not in stages.
 
 ### Context
 
@@ -75,6 +83,7 @@ crates/
   stage-checksum/  # SHA256/SHA512 generation
   stage-changelog/ # Git log → grouped changelog
   stage-release/   # GitHub Release API
+  stage-nfpm/      # .deb, .rpm, .apk Linux packages
   stage-publish/   # crates.io, Homebrew, Scoop
   stage-docker/    # Docker build/push
   stage-sign/      # GPG, cosign
@@ -246,6 +255,30 @@ crates:
         binaries:
           - cfgd-csi
 
+# nFPM-style Linux package generation (.deb, .rpm, .apk)
+# Configured per-crate; omit to skip Linux packaging for that crate.
+# nfpm:
+#   - package_name: cfgd
+#     formats:
+#       - deb
+#       - rpm
+#       - apk
+#     vendor: "TJ Smith"
+#     homepage: "https://github.com/tj-smith47/cfgd"
+#     maintainer: "TJ Smith <tj@example.com>"
+#     description: "Declarative machine configuration management"
+#     license: Apache-2.0
+#     bindir: /usr/bin
+#     contents:
+#       - src: LICENSE
+#         dst: /usr/share/doc/cfgd/LICENSE
+#     dependencies:
+#       deb:
+#         - libc6
+#     overrides:
+#       rpm:
+#         file_name_template: "{{ .ProjectName }}-{{ .Version }}.{{ .Arch }}"
+
 # Changelog config is workspace-wide (filters, groups, sort order), but at
 # runtime each crate's changelog is scoped to commits touching that crate's path.
 changelog:
@@ -263,6 +296,8 @@ changelog:
     - title: Others
       order: 999
 
+# sign and docker_signs are workspace-wide — they apply to all artifacts/images
+# across all crates. Per-crate overrides are a Release 2 consideration.
 sign:
   artifacts: checksum  # none | all | checksum
   cmd: gpg
@@ -295,6 +330,13 @@ announce:
     enabled: false
     webhook_url: "{{ .Env.SLACK_WEBHOOK_URL }}"
     message_template: "{{ .ProjectName }} {{ .Tag }} released! {{ .ReleaseURL }}"
+  webhook:
+    enabled: false
+    endpoint_url: "{{ .Env.WEBHOOK_URL }}"
+    headers:
+      Authorization: "Bearer {{ .Env.WEBHOOK_TOKEN }}"
+    content_type: application/json
+    message_template: '{"project":"{{ .ProjectName }}","tag":"{{ .Tag }}","url":"{{ .ReleaseURL }}"}'
 ```
 
 ---
@@ -365,6 +407,7 @@ anodize release --all --force            # All crates regardless of changes
 anodize release --snapshot               # Build everything, don't publish
 anodize release --skip=publish,announce  # Skip specific stages
 anodize release --clean                  # Remove dist/ before building
+anodize release --dry-run                # Full pipeline, skip all external side effects
 anodize build                            # Build only
 anodize build --crate cfgd              # Build a specific crate
 anodize check                            # Validate config
@@ -374,7 +417,12 @@ anodize changelog                        # Generate changelog only
 
 ### `--skip` Stage Identifiers
 
-Valid values for `--skip`: `build`, `archive`, `checksum`, `changelog`, `release`, `publish`, `docker`, `sign`, `announce`.
+Valid values for `--skip`: `build`, `archive`, `nfpm`, `checksum`, `changelog`, `release`, `publish`, `docker`, `sign`, `announce`.
+
+### `--dry-run` vs `--snapshot`
+
+- **`--snapshot`**: Builds with a snapshot version string (no tag required). Useful for testing builds locally. Does not publish.
+- **`--dry-run`**: Runs the full pipeline with the real version/tag, validates everything, but skips all external side effects (GitHub release creation, Docker push, crates.io publish, Homebrew tap commit, announce webhooks). Useful for verifying a release pipeline end-to-end before committing to it.
 
 ### `init` Command
 
@@ -457,9 +505,19 @@ Central to the pipeline, matching GoReleaser's internal model:
 - Registers `Archive` artifacts
 - Skipped for crates with `archives: false`
 
+### NFpm (`stage-nfpm`)
+
+- Generates `.deb`, `.rpm`, and `.apk` Linux packages from compiled binaries
+- Shells out to `nfpm` CLI (must be installed; `check` command warns if missing)
+- Per-crate config via `nfpm` block — package name, formats, metadata, contents, dependencies
+- Per-format overrides for format-specific settings (e.g., different file name templates for RPM)
+- Name templating with all template variables
+- Registers `LinuxPackage` artifacts (uploaded as GitHub Release assets alongside archives)
+- Skipped for crates with no `nfpm` block
+
 ### Checksum (`stage-checksum`)
 
-- SHA256 (default) or SHA512 of all archive artifacts
+- SHA256 (default) or SHA512 of all archive and Linux package artifacts
 - Combined checksums file with configurable name template
 - Per-archive `.sha256` files
 - Registers `Checksum` artifacts
@@ -561,8 +619,10 @@ This matches the pattern used in cfgd's existing release Dockerfiles.
 
 - Discord webhook
 - Slack webhook
+- Generic HTTP webhook (custom endpoint, headers, content type)
 - Message templating with all template variables
 - Each provider independently enabled/disabled
+- Additional providers (Telegram, Teams, Mastodon, etc.) deferred to Release 2
 
 ---
 
