@@ -263,6 +263,23 @@ announce:
 | `scoop.bucket.owner` | string | — | Scoop bucket repo owner |
 | `scoop.bucket.name` | string | — | Scoop bucket repo name |
 
+### `crates[].nfpm[]`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `package_name` | string | crate name | Package name in the generated package |
+| `formats` | string[] | **required** | Package formats: `deb`, `rpm`, `apk` |
+| `vendor` | string | — | Package vendor |
+| `homepage` | string | — | Project homepage URL |
+| `maintainer` | string | — | Package maintainer email |
+| `description` | string | — | Package description |
+| `license` | string | — | Package license |
+| `bindir` | string | `/usr/bin` | Binary installation directory |
+| `file_name_template` | string | — | Output filename template |
+| `contents` | array | — | Additional files to include (`src`, `dst` pairs) |
+| `dependencies` | map | — | Per-format package dependencies (e.g., `deb: [libc6]`) |
+| `overrides` | map | — | Per-format config overrides |
+
 ### Template Variables
 
 | Variable | Description |
@@ -281,6 +298,7 @@ announce:
 | `{{ .Date }}` | Current date |
 | `{{ .Timestamp }}` | Unix timestamp |
 | `{{ .IsSnapshot }}` | Whether snapshot mode |
+| `{{ .IsDraft }}` | Whether release is a draft |
 | `{{ .ReleaseURL }}` | URL of created GitHub release |
 | `{{ .Env.VAR }}` | Environment variable |
 | `{{ .Signature }}` | Signature output path (sign stage) |

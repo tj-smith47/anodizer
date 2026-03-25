@@ -1,5 +1,4 @@
 use clap::{Parser, Subcommand};
-use anyhow::Result;
 use colored::Colorize;
 
 mod commands;

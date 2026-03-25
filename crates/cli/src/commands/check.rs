@@ -82,11 +82,10 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
                 warnings.push(format!("{}: unrecognized target triple '{}'", context, triple));
             }
         };
-        if let Some(defaults) = &config.defaults {
-            if let Some(targets) = &defaults.targets {
-                for t in targets {
-                    check_triple(t, "defaults.targets");
-                }
+        if let Some(defaults) = &config.defaults
+            && let Some(targets) = &defaults.targets {
+            for t in targets {
+                check_triple(t, "defaults.targets");
             }
         }
         for c in &config.crates {

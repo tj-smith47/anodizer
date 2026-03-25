@@ -61,10 +61,9 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     let result = p.run(&mut ctx);
 
     // Run hooks after pipeline (only if pipeline succeeded)
-    if result.is_ok() {
-        if let Some(after) = &config.after {
-            pipeline::run_hooks(&after.hooks, "after", opts.dry_run)?;
-        }
+    if result.is_ok()
+        && let Some(after) = &config.after {
+        pipeline::run_hooks(&after.hooks, "after", opts.dry_run)?;
     }
 
     result
