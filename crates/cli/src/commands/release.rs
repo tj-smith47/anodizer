@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use anyhow::Result;
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::config::CrateConfig;
@@ -15,10 +16,11 @@ pub struct ReleaseOpts {
     pub token: Option<String>,
     pub verbose: bool,
     pub debug: bool,
+    pub config_override: Option<PathBuf>,
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
-    let config = pipeline::load_config(&pipeline::find_config()?)?;
+    let config = pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
 
     if opts.clean {
         let dist = &config.dist;

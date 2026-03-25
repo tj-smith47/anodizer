@@ -6,8 +6,15 @@ use anodize_core::config::Config;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
-/// Find config file in current directory
-pub fn find_config() -> Result<PathBuf> {
+/// Find config file. If `config_override` is provided, use that path directly;
+/// otherwise search the current directory for well-known config file names.
+pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
+    if let Some(path) = config_override {
+        if path.exists() {
+            return Ok(path.to_path_buf());
+        }
+        bail!("config file not found: {}", path.display());
+    }
     let candidates = [
         ".anodize.yaml", ".anodize.yml", ".anodize.toml",
         "anodize.yaml", "anodize.yml", "anodize.toml",
@@ -114,4 +121,54 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(SignStage));
     p.add(Box::new(AnnounceStage));
     p
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_find_config_with_override_existing() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("custom-config.yaml");
+        fs::write(&cfg_path, "project_name: test\ncrates: []\n").unwrap();
+
+        let result = find_config(Some(cfg_path.as_path()));
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert_eq!(result.unwrap(), cfg_path);
+    }
+
+    #[test]
+    fn test_find_config_with_override_nonexistent() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("does-not-exist.yaml");
+
+        let result = find_config(Some(cfg_path.as_path()));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("config file not found"),
+            "unexpected error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_find_config_override_with_subdirectory_path() {
+        let tmp = TempDir::new().unwrap();
+        let subdir = tmp.path().join("nested").join("dir");
+        fs::create_dir_all(&subdir).unwrap();
+        let cfg_path = subdir.join("my-release.toml");
+        fs::write(&cfg_path, "project_name = \"test\"\ncrates = []\n").unwrap();
+
+        let result = find_config(Some(cfg_path.as_path()));
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result);
+        assert_eq!(result.unwrap(), cfg_path);
+    }
 }

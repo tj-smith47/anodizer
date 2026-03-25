@@ -1,10 +1,11 @@
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use anodize_core::config::{Config, CrateConfig};
 use crate::pipeline;
 
-pub fn run() -> Result<()> {
-    let path = pipeline::find_config()?;
+pub fn run(config_override: Option<&Path>) -> Result<()> {
+    let path = pipeline::find_config(config_override)?;
     let config = pipeline::load_config(&path)?;
     run_checks(&config, true)
 }

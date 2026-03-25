@@ -124,3 +124,78 @@ fn test_version_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("anodize"));
 }
+
+#[test]
+fn test_check_with_config_flag() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+
+    // Place config at a non-default path
+    let custom_dir = tmp.path().join("configs");
+    fs::create_dir_all(&custom_dir).unwrap();
+    let config_path = custom_dir.join("release.yaml");
+    fs::write(&config_path, r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#).unwrap();
+
+    // Use -f to point to the custom config
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["-f", config_path.to_str().unwrap(), "check"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "check -f should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_check_with_config_flag_long() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+
+    let config_path = tmp.path().join("my-anodize.yaml");
+    fs::write(&config_path, r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#).unwrap();
+
+    // Use --config (long form) to point to the custom config
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["--config", config_path.to_str().unwrap(), "check"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "check --config should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_check_with_config_flag_nonexistent() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["-f", "/tmp/does-not-exist-anodize.yaml", "check"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("config file not found"),
+        "expected 'config file not found' error, got: {}",
+        stderr
+    );
+}
