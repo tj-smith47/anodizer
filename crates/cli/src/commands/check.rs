@@ -70,7 +70,39 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         }
     }
 
-    // 5. Crate path directories exist
+    // 5. Target triples are recognized
+    {
+        let known_prefixes = ["x86_64", "aarch64", "i686", "armv7", "arm", "riscv64gc", "s390x", "powerpc64le"];
+        let known_os = ["linux", "darwin", "apple", "windows", "freebsd", "netbsd", "android"];
+        let mut check_triple = |triple: &str, context: &str| {
+            let parts: Vec<&str> = triple.split('-').collect();
+            let arch_ok = parts.first().is_some_and(|a| known_prefixes.iter().any(|p| a.starts_with(p)));
+            let os_ok = known_os.iter().any(|os| triple.contains(os));
+            if !arch_ok || !os_ok {
+                warnings.push(format!("{}: unrecognized target triple '{}'", context, triple));
+            }
+        };
+        if let Some(defaults) = &config.defaults {
+            if let Some(targets) = &defaults.targets {
+                for t in targets {
+                    check_triple(t, "defaults.targets");
+                }
+            }
+        }
+        for c in &config.crates {
+            if let Some(builds) = &c.builds {
+                for b in builds {
+                    if let Some(targets) = &b.targets {
+                        for t in targets {
+                            check_triple(t, &format!("crate '{}' build '{}'", c.name, b.binary));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Crate path directories exist
     for c in &config.crates {
         if !c.path.is_empty() {
             let p = std::path::Path::new(&c.path);
@@ -132,6 +164,24 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         let needs_nfpm = config.crates.iter().any(|c| c.nfpm.is_some());
         if needs_nfpm && !tool_available("nfpm") {
             warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
+        }
+
+        // GPG/cosign availability
+        if config.sign.is_some() {
+            let sign_cmd = config.sign.as_ref()
+                .and_then(|s| s.cmd.as_deref())
+                .unwrap_or("gpg");
+            if !tool_available(sign_cmd) {
+                warnings.push(format!("'{}' is not installed but sign section is configured", sign_cmd));
+            }
+        }
+        if let Some(docker_signs) = &config.docker_signs {
+            for ds in docker_signs {
+                let cmd = ds.cmd.as_deref().unwrap_or("cosign");
+                if !tool_available(cmd) {
+                    warnings.push(format!("'{}' is not installed but docker_signs section is configured", cmd));
+                }
+            }
         }
     }
 
