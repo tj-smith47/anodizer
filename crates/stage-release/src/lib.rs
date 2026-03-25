@@ -47,7 +47,6 @@ impl Stage for ReleaseStage {
             .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
         let selected = ctx.options.selected_crates.clone();
-        let changelog_body = ctx.changelog.clone().unwrap_or_default();
         let dry_run = ctx.is_dry_run();
 
         // Collect crates that have a `release` block.
@@ -60,8 +59,14 @@ impl Stage for ReleaseStage {
             .cloned()
             .collect();
 
+        // Create the tokio runtime once, outside the loop.
+        let rt = tokio::runtime::Runtime::new()
+            .context("release: failed to create tokio runtime")?;
+
         for crate_cfg in &crates {
             let release_cfg = crate_cfg.release.as_ref().unwrap();
+            let crate_name = crate_cfg.name.clone();
+            let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
 
             // Resolve tag from template.
             let tag = ctx
@@ -142,10 +147,7 @@ impl Stage for ReleaseStage {
 
             // Build the octocrab instance and perform async API calls inside a
             // dedicated tokio runtime (the Stage trait is synchronous).
-            let rt = tokio::runtime::Runtime::new()
-                .context("release: failed to create tokio runtime")?;
-
-            rt.block_on(async {
+            let url = rt.block_on(async {
                 let octo = octocrab::Octocrab::builder()
                     .personal_token(token_str.clone())
                     .build()
@@ -173,6 +175,8 @@ impl Stage for ReleaseStage {
                     "[release] created GitHub Release '{}' (id={}) on {}/{}",
                     release_name, release.id, github.owner, github.name
                 );
+
+                let html_url = release.html_url.to_string();
 
                 // Upload each artifact.
                 for path in &artifact_paths {
@@ -208,8 +212,10 @@ impl Stage for ReleaseStage {
                     eprintln!("[release] uploaded artifact: {}", file_name);
                 }
 
-                Ok::<(), anyhow::Error>(())
+                Ok::<String, anyhow::Error>(html_url)
             })?;
+
+            ctx.template_vars_mut().set("ReleaseURL", &url);
         }
 
         Ok(())

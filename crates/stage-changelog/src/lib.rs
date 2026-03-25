@@ -221,9 +221,11 @@ impl Stage for ChangelogStage {
             .cloned()
             .collect();
 
-        let mut all_commit_infos: Vec<CommitInfo> = Vec::new();
+        let mut combined_markdown = String::new();
 
         for crate_cfg in &crates {
+            let crate_name = crate_cfg.name.clone();
+
             // Find the previous tag for this crate.
             let prev_tag = find_latest_tag_matching(&crate_cfg.tag_template)
                 .unwrap_or(None);
@@ -242,46 +244,49 @@ impl Stage for ChangelogStage {
                     // Initial release: no previous tag, treat all commits as new.
                     eprintln!(
                         "[changelog] no previous tag found for crate '{}', using all commits",
-                        crate_cfg.name
+                        crate_name
                     );
                     get_all_commits(path_filter).unwrap_or_default()
                 }
             };
 
+            let mut all_commit_infos: Vec<CommitInfo> = Vec::new();
             for commit in raw_commits {
                 let mut info = parse_commit_message(&commit.message);
                 info.hash = commit.short_hash.clone();
                 all_commit_infos.push(info);
             }
-        }
 
-        // Apply exclude filters.
-        let filtered = apply_filters(&all_commit_infos, &exclude_filters);
+            // Apply exclude filters.
+            let filtered = apply_filters(&all_commit_infos, &exclude_filters);
 
-        // Sort commits.
-        let mut sorted = filtered;
-        sort_commits(&mut sorted, &sort_order);
+            // Sort commits.
+            let mut sorted = filtered;
+            sort_commits(&mut sorted, &sort_order);
 
-        // Group commits.
-        let grouped = if groups.is_empty() {
-            // No groups configured — put everything in a single "Changes" group.
-            if sorted.is_empty() {
-                vec![]
+            // Group commits.
+            let grouped = if groups.is_empty() {
+                // No groups configured — put everything in a single "Changes" group.
+                if sorted.is_empty() {
+                    vec![]
+                } else {
+                    vec![GroupedCommits {
+                        title: "Changes".to_string(),
+                        commits: sorted,
+                    }]
+                }
             } else {
-                vec![GroupedCommits {
-                    title: "Changes".to_string(),
-                    commits: sorted,
-                }]
-            }
-        } else {
-            group_commits(&sorted, &groups)
-        };
+                group_commits(&sorted, &groups)
+            };
 
-        // Render the markdown.
-        let markdown = render_changelog(&grouped);
+            // Render the markdown for this crate.
+            let markdown = render_changelog(&grouped);
 
-        // Store in context for the release stage.
-        ctx.changelog = Some(markdown.clone());
+            // Store per-crate changelog in context for the release stage.
+            ctx.changelogs.insert(crate_name.clone(), markdown.clone());
+
+            combined_markdown.push_str(&markdown);
+        }
 
         // Write to dist/RELEASE_NOTES.md (skip during dry-run — this is the only side effect).
         if ctx.is_dry_run() {
@@ -292,7 +297,7 @@ impl Stage for ChangelogStage {
         std::fs::create_dir_all(&dist)
             .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
         let notes_path = dist.join("RELEASE_NOTES.md");
-        std::fs::write(&notes_path, &markdown)
+        std::fs::write(&notes_path, &combined_markdown)
             .with_context(|| format!("changelog: write {}", notes_path.display()))?;
 
         eprintln!("[changelog] wrote {}", notes_path.display());

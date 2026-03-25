@@ -2,6 +2,7 @@ use crate::artifact::ArtifactRegistry;
 use crate::config::Config;
 use crate::git::GitInfo;
 use crate::template::TemplateVars;
+use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct ContextOptions {
@@ -20,7 +21,7 @@ pub struct Context {
     pub options: ContextOptions,
     template_vars: TemplateVars,
     pub git_info: Option<GitInfo>,
-    pub changelog: Option<String>,
+    pub changelogs: HashMap<String, String>,
 }
 
 impl Context {
@@ -33,7 +34,7 @@ impl Context {
             options,
             template_vars: vars,
             git_info: None,
-            changelog: None,
+            changelogs: HashMap::new(),
         }
     }
 
