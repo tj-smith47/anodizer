@@ -1,9 +1,10 @@
 use anodize_core::config::ChangelogGroup;
 use anodize_core::context::Context;
-use anodize_core::git::{find_latest_tag_matching, get_commits_between};
+use anodize_core::git::{find_latest_tag_matching, get_all_commits, get_commits_between};
 use anodize_core::stage::Stage;
 use anyhow::{Context as _, Result};
 use regex::Regex;
+use std::sync::LazyLock;
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -27,12 +28,15 @@ pub struct GroupedCommits {
 // parse_commit_message
 // ---------------------------------------------------------------------------
 
+static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.+)$").unwrap()
+});
+
 /// Parse a conventional commit message of the form `type(scope): description`
 /// or `type: description`. Falls back to `kind = "other"` for non-conventional
 /// messages.
 pub fn parse_commit_message(msg: &str) -> CommitInfo {
-    // Matches: type(optional scope): description
-    let re = Regex::new(r"^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.+)$").unwrap();
+    let re = &*CONVENTIONAL_COMMIT_RE;
     if let Some(caps) = re.captures(msg) {
         CommitInfo {
             raw_message: msg.to_string(),
@@ -59,7 +63,13 @@ pub fn parse_commit_message(msg: &str) -> CommitInfo {
 pub fn apply_filters(commits: &[CommitInfo], exclude: &[String]) -> Vec<CommitInfo> {
     let patterns: Vec<Regex> = exclude
         .iter()
-        .filter_map(|p| Regex::new(p).ok())
+        .filter_map(|p| match Regex::new(p) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                eprintln!("[changelog] warning: invalid exclude regex {:?}: {}", p, e);
+                None
+            }
+        })
         .collect();
 
     commits
@@ -100,7 +110,16 @@ pub fn group_commits(commits: &[CommitInfo], groups: &[ChangelogGroup]) -> Vec<G
     let compiled: Vec<(Option<Regex>, &ChangelogGroup)> = sorted_groups
         .iter()
         .map(|g| {
-            let re = g.regexp.as_deref().and_then(|p| Regex::new(p).ok());
+            let re = g.regexp.as_deref().and_then(|p| match Regex::new(p) {
+                Ok(re) => Some(re),
+                Err(e) => {
+                    eprintln!(
+                        "[changelog] warning: invalid group regex {:?} for group {:?}: {}",
+                        p, g.title, e
+                    );
+                    None
+                }
+            });
             (re, *g)
         })
         .collect();
@@ -176,11 +195,6 @@ impl Stage for ChangelogStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
-        if ctx.is_dry_run() {
-            eprintln!("[changelog] (dry-run) skipping changelog generation");
-            return Ok(());
-        }
-
         let changelog_cfg = ctx.config.changelog.clone();
         let sort_order = changelog_cfg
             .as_ref()
@@ -214,21 +228,23 @@ impl Stage for ChangelogStage {
             let prev_tag = find_latest_tag_matching(&crate_cfg.tag_template)
                 .unwrap_or(None);
 
+            let path_filter = if crate_cfg.path.is_empty() || crate_cfg.path == "." {
+                None
+            } else {
+                Some(crate_cfg.path.as_str())
+            };
+
             let raw_commits = match &prev_tag {
                 Some(tag) => {
-                    let path_filter = if crate_cfg.path.is_empty() || crate_cfg.path == "." {
-                        None
-                    } else {
-                        Some(crate_cfg.path.as_str())
-                    };
                     get_commits_between(tag, "HEAD", path_filter).unwrap_or_default()
                 }
                 None => {
+                    // Initial release: no previous tag, treat all commits as new.
                     eprintln!(
-                        "[changelog] no previous tag found for crate '{}', skipping",
+                        "[changelog] no previous tag found for crate '{}', using all commits",
                         crate_cfg.name
                     );
-                    continue;
+                    get_all_commits(path_filter).unwrap_or_default()
                 }
             };
 
@@ -267,7 +283,12 @@ impl Stage for ChangelogStage {
         // Store in context for the release stage.
         ctx.changelog = Some(markdown.clone());
 
-        // Write to dist/RELEASE_NOTES.md.
+        // Write to dist/RELEASE_NOTES.md (skip during dry-run — this is the only side effect).
+        if ctx.is_dry_run() {
+            eprintln!("[changelog] (dry-run) skipping write to disk");
+            return Ok(());
+        }
+
         std::fs::create_dir_all(&dist)
             .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
         let notes_path = dist.join("RELEASE_NOTES.md");

@@ -127,6 +127,32 @@ pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> R
     Ok(commits)
 }
 
+/// Get all commits reachable from HEAD, optionally filtered to a path.
+/// Used for initial releases where there is no previous tag.
+pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
+    let mut args = vec!["log", "--pretty=format:%H%n%h%n%s", "HEAD"];
+    if let Some(path) = path_filter {
+        args.push("--");
+        args.push(path);
+    }
+    let output = git_output(&args)?;
+    if output.is_empty() {
+        return Ok(vec![]);
+    }
+    let lines: Vec<&str> = output.lines().collect();
+    let mut commits = vec![];
+    for chunk in lines.chunks(3) {
+        if chunk.len() == 3 {
+            commits.push(Commit {
+                hash: chunk[0].to_string(),
+                short_hash: chunk[1].to_string(),
+                message: chunk[2].to_string(),
+            });
+        }
+    }
+    Ok(commits)
+}
+
 /// Check if there are changes in a path since a given tag.
 pub fn has_changes_since(tag: &str, path: &str) -> Result<bool> {
     let output = git_output(&["diff", "--name-only", &format!("{}..HEAD", tag), "--", path])?;
