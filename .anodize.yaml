@@ -1,4 +1,5 @@
 project_name: anodize
+dist: ./dist
 
 defaults:
   targets:
@@ -24,26 +25,42 @@ before:
     - cargo clippy -- -D warnings
     - cargo test
 
+after:
+  hooks:
+    - echo "Release complete for {{ ProjectName }} {{ Tag }}"
+
 crates:
   - name: anodize
     path: crates/cli
     tag_template: "v{{ Version }}"
     builds:
       - binary: anodize
+        features: []
+        no_default_features: false
     archives:
       - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
+        format: tar.gz
+        format_overrides:
+          - os: windows
+            format: zip
         files:
           - LICENSE
           - README.md
+          - docs/configuration.md
     checksum:
       name_template: "{{ ProjectName }}-{{ Version }}-checksums.txt"
+      algorithm: sha256
     release:
       github:
         owner: tj-smith47
         name: anodize
+      draft: false
       prerelease: auto
+      name_template: "{{ ProjectName }} {{ Tag }}"
     publish:
-      crates: true
+      crates:
+        enabled: true
+        index_timeout: 300
       homebrew:
         tap:
           owner: tj-smith47
@@ -61,6 +78,24 @@ crates:
           name: scoop-bucket
         description: "A Rust-native release automation tool"
         license: MIT
+    nfpm:
+      - package_name: anodize
+        formats:
+          - deb
+          - rpm
+          - apk
+        vendor: "TJ Smith"
+        homepage: "https://github.com/tj-smith47/anodize"
+        maintainer: "TJ Smith <tj@example.com>"
+        description: "A Rust-native release automation tool"
+        license: MIT
+        bindir: /usr/bin
+        file_name_template: "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}"
+        contents:
+          - src: LICENSE
+            dst: /usr/share/doc/anodize/LICENSE
+          - src: README.md
+            dst: /usr/share/doc/anodize/README.md
 
 changelog:
   sort: asc
@@ -69,13 +104,48 @@ changelog:
       - "^docs:"
       - "^ci:"
       - "^chore:"
+      - "^style:"
   groups:
     - title: Features
       regexp: "^feat"
+      order: 0
     - title: Bug Fixes
       regexp: "^fix"
+      order: 1
+    - title: Performance
+      regexp: "^perf"
+      order: 2
     - title: Others
       order: 999
 
+sign:
+  artifacts: checksum
+  cmd: gpg
+  args:
+    - "--batch"
+    - "--local-user"
+    - "{{ Env.GPG_FINGERPRINT }}"
+    - "--output"
+    - "{{ Signature }}"
+    - "--detach-sig"
+    - "{{ Artifact }}"
+
 snapshot:
   name_template: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}"
+
+announce:
+  discord:
+    enabled: false
+    webhook_url: "{{ Env.DISCORD_WEBHOOK_URL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
+  slack:
+    enabled: false
+    webhook_url: "{{ Env.SLACK_WEBHOOK_URL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
+  webhook:
+    enabled: false
+    endpoint_url: "{{ Env.WEBHOOK_URL }}"
+    headers:
+      Authorization: "Bearer {{ Env.WEBHOOK_TOKEN }}"
+    content_type: application/json
+    message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
