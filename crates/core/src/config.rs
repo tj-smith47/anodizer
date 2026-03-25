@@ -251,11 +251,42 @@ pub struct GitHubConfig {
 }
 
 /// `prerelease` can be the string `"auto"` or a boolean.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrereleaseConfig {
-    Auto(String), // matches "auto"
+    Auto,
     Bool(bool),
+}
+
+impl Serialize for PrereleaseConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            PrereleaseConfig::Auto => serializer.serialize_str("auto"),
+            PrereleaseConfig::Bool(b) => serializer.serialize_bool(*b),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for PrereleaseConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct PrereleaseVisitor;
+        impl serde::de::Visitor<'_> for PrereleaseVisitor {
+            type Value = PrereleaseConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "\"auto\" or a boolean")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<PrereleaseConfig, E> {
+                Ok(PrereleaseConfig::Bool(v))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<PrereleaseConfig, E> {
+                if v == "auto" {
+                    Ok(PrereleaseConfig::Auto)
+                } else {
+                    Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
+                }
+            }
+        }
+        deserializer.deserialize_any(PrereleaseVisitor)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +414,7 @@ pub struct NfpmConfig {
     pub bindir: Option<String>,
     pub contents: Option<Vec<NfpmContent>>,
     pub dependencies: Option<HashMap<String, Vec<String>>>,
-    pub overrides: Option<HashMap<String, serde_yaml::Value>>,
+    pub overrides: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
