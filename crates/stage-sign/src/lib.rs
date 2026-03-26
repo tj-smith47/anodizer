@@ -285,8 +285,7 @@ impl Stage for SignStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::Config;
-    use anodize_core::context::{Context, ContextOptions};
+    use anodize_core::test_helpers::TestContextBuilder;
 
     #[test]
     fn test_resolve_sign_args() {
@@ -354,19 +353,16 @@ mod tests {
 
     #[test]
     fn test_stage_skips_without_sign_config() {
-        let config = Config::default();
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new().build();
         let stage = SignStage;
         assert!(stage.run(&mut ctx).is_ok());
     }
 
     #[test]
     fn test_stage_skips_with_empty_signs() {
-        let config = Config {
-            signs: vec![],
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new()
+            .signs(vec![])
+            .build();
         let stage = SignStage;
         assert!(stage.run(&mut ctx).is_ok());
     }

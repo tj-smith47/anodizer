@@ -556,8 +556,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_run() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::CrateConfig;
+        use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -567,18 +567,17 @@ ids:
         let archive_path = dist.join("myapp-1.0.0-linux-amd64.tar.gz");
         fs::write(&archive_path, b"fake archive content").unwrap();
 
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        config.dist = dist.clone();
-        config.crates = vec![CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.0.0");
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
 
         // Register an Archive artifact
         ctx.artifacts.add(Artifact {
@@ -611,8 +610,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_dry_run() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::CrateConfig;
+        use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -621,23 +620,18 @@ ids:
         let archive_path = dist.join("myapp.tar.gz");
         fs::write(&archive_path, b"fake").unwrap();
 
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        config.dist = dist.clone();
-        config.crates = vec![CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let mut ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dry_run(true)
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
                 ..Default::default()
-            },
-        );
+            }])
+            .build();
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -657,8 +651,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_sha512() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::{ChecksumConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -667,21 +661,21 @@ ids:
         let archive_path = dist.join("myapp.tar.gz");
         fs::write(&archive_path, b"content").unwrap();
 
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        config.dist = dist.clone();
-        config.crates = vec![CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            checksum: Some(ChecksumConfig {
-                algorithm: Some("sha512".to_string()),
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    algorithm: Some("sha512".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        let mut ctx = Context::new(config, ContextOptions::default());
+            }])
+            .build();
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -707,23 +701,23 @@ ids:
 
     #[test]
     fn test_checksum_stage_no_artifacts_skips() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::CrateConfig;
+        use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
 
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        config.dist = dist.clone();
-        config.crates = vec![CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
         // No artifacts registered at all
 
         let stage = ChecksumStage;
@@ -735,8 +729,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_global_disable() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, Defaults};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::{ChecksumConfig, CrateConfig, Defaults};
+        use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -745,24 +739,25 @@ ids:
         let archive_path = dist.join("myapp.tar.gz");
         fs::write(&archive_path, b"fake archive content").unwrap();
 
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        config.dist = dist.clone();
-        config.defaults = Some(Defaults {
-            checksum: Some(ChecksumConfig {
-                disable: Some(true),
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .defaults(Defaults {
+                checksum: Some(ChecksumConfig {
+                    disable: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-        config.crates = vec![CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
+            })
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
 
-        let mut ctx = Context::new(config, ContextOptions::default());
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
             path: archive_path,
@@ -1181,36 +1176,46 @@ ids:
         assert_eq!(hash, expected);
     }
 
-    // -- TestContextBuilder integration test --
+    // -- TestContextBuilder + create_fake_binary integration test --
 
     #[test]
-    fn test_checksum_stage_with_test_context_builder() {
+    fn test_checksum_of_fake_binary_via_builder() {
         use anodize_core::test_helpers::{TestContextBuilder, create_fake_binary};
 
         let tmp = TempDir::new().unwrap();
-        let fake_bin = create_fake_binary(tmp.path(), "myapp");
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
 
-        let ctx = TestContextBuilder::new()
+        let fake_bin = create_fake_binary(&dist, "myapp-linux.tar.gz");
+
+        let mut ctx = TestContextBuilder::new()
             .project_name("checksum-test")
             .tag("v2.0.0")
+            .dist(dist.clone())
+            .crates(vec![anodize_core::config::CrateConfig {
+                name: "checksum-test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
             .build();
 
-        // Verify the builder provides a properly configured context
-        assert_eq!(
-            ctx.template_vars().get("ProjectName"),
-            Some(&"checksum-test".to_string())
-        );
-        assert_eq!(
-            ctx.template_vars().get("Version"),
-            Some(&"2.0.0".to_string())
-        );
-        assert_eq!(
-            ctx.template_vars().get("Major"),
-            Some(&"2".to_string())
-        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: fake_bin.clone(),
+            target: None,
+            crate_name: "checksum-test".to_string(),
+            metadata: Default::default(),
+        });
 
-        // Verify the fake binary is usable for checksum computation
-        let hash = sha256_file(&fake_bin).unwrap();
-        assert_eq!(hash.len(), 64, "SHA-256 produces 64 hex chars");
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Verify sidecar was created with correct hash
+        let sidecar = dist.join("myapp-linux.tar.gz.sha256");
+        assert!(sidecar.exists(), "sidecar should be created for fake binary");
+        let sidecar_content = fs::read_to_string(&sidecar).unwrap();
+        let expected_hash = sha256_file(&fake_bin).unwrap();
+        assert!(sidecar_content.starts_with(&expected_hash));
     }
 }

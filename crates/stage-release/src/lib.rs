@@ -439,8 +439,8 @@ impl Stage for ReleaseStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{Config, MakeLatestConfig, PrereleaseConfig};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodize_core::config::{CrateConfig, MakeLatestConfig, PrereleaseConfig, ReleaseConfig};
+    use anodize_core::test_helpers::TestContextBuilder;
 
     #[test]
     fn test_is_prerelease_auto_with_rc() {
@@ -481,8 +481,7 @@ mod tests {
 
     #[test]
     fn test_stage_skips_crate_without_release_config() {
-        let config = Config::default();
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new().build();
         let stage = ReleaseStage;
         // Should succeed — no crates have release config
         assert!(stage.run(&mut ctx).is_ok());
@@ -624,27 +623,21 @@ mod tests {
 
     #[test]
     fn test_skip_upload_dry_run_message() {
-        use anodize_core::config::{CrateConfig, ReleaseConfig};
-
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.crates.push(CrateConfig {
-            name: "testcrate".to_string(),
-            path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
-            release: Some(ReleaseConfig {
-                skip_upload: Some(true),
-                draft: Some(false),
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    skip_upload: Some(true),
+                    draft: Some(false),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        let opts = ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
+            }])
+            .build();
         let stage = ReleaseStage;
         // Dry-run should succeed even with skip_upload = true
         assert!(stage.run(&mut ctx).is_ok());
@@ -654,14 +647,12 @@ mod tests {
 
     #[test]
     fn test_replace_existing_draft_defaults() {
-        use anodize_core::config::ReleaseConfig;
         let cfg = ReleaseConfig::default();
         assert_eq!(cfg.replace_existing_draft, None);
     }
 
     #[test]
     fn test_replace_existing_artifacts_defaults() {
-        use anodize_core::config::ReleaseConfig;
         let cfg = ReleaseConfig::default();
         assert_eq!(cfg.replace_existing_artifacts, None);
     }
@@ -670,53 +661,41 @@ mod tests {
 
     #[test]
     fn test_dry_run_with_extra_files() {
-        use anodize_core::config::{CrateConfig, ReleaseConfig};
-
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.crates.push(CrateConfig {
-            name: "testcrate".to_string(),
-            path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
-            release: Some(ReleaseConfig {
-                extra_files: Some(vec!["/tmp/anodize_test_nonexistent/*.sig".to_string()]),
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    extra_files: Some(vec!["/tmp/anodize_test_nonexistent/*.sig".to_string()]),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        let opts = ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
+            }])
+            .build();
         let stage = ReleaseStage;
         assert!(stage.run(&mut ctx).is_ok());
     }
 
     #[test]
     fn test_dry_run_with_header_footer_in_changelog() {
-        use anodize_core::config::{CrateConfig, ReleaseConfig};
-
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.crates.push(CrateConfig {
-            name: "testcrate".to_string(),
-            path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
-            release: Some(ReleaseConfig {
-                header: Some("# Custom Header".to_string()),
-                footer: Some("Custom Footer".to_string()),
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    header: Some("# Custom Header".to_string()),
+                    footer: Some("Custom Footer".to_string()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        let opts = ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
+            }])
+            .build();
         ctx.changelogs
             .insert("testcrate".to_string(), "- bug fix".to_string());
         let stage = ReleaseStage;
@@ -725,26 +704,20 @@ mod tests {
 
     #[test]
     fn test_dry_run_with_make_latest() {
-        use anodize_core::config::{CrateConfig, ReleaseConfig};
-
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.crates.push(CrateConfig {
-            name: "testcrate".to_string(),
-            path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
-            release: Some(ReleaseConfig {
-                make_latest: Some(MakeLatestConfig::Bool(true)),
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    make_latest: Some(MakeLatestConfig::Bool(true)),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        let opts = ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
+            }])
+            .build();
         let stage = ReleaseStage;
         assert!(stage.run(&mut ctx).is_ok());
     }
@@ -753,39 +726,25 @@ mod tests {
 
     #[test]
     fn test_release_missing_token_errors() {
-        use anodize_core::config::{CrateConfig, GitHubConfig, ReleaseConfig};
+        use anodize_core::config::GitHubConfig;
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.crates.push(CrateConfig {
-            name: "testcrate".to_string(),
-            path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
-            release: Some(ReleaseConfig {
-                github: Some(GitHubConfig {
-                    owner: "testowner".to_string(),
-                    name: "testrepo".to_string(),
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .token(None)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(GitHubConfig {
+                        owner: "testowner".to_string(),
+                        name: "testrepo".to_string(),
+                    }),
+                    ..Default::default()
                 }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        // The token resolution in ReleaseStage::run() is:
-        //   ctx.options.token.clone().or_else(|| std::env::var("GITHUB_TOKEN").ok())
-        // By setting ctx.options.token = None and relying on GITHUB_TOKEN not
-        // being set in the test environment, we trigger the error path without
-        // any unsafe env manipulation. If GITHUB_TOKEN happens to be set in CI,
-        // we set the token to None explicitly which takes precedence via the
-        // resolution order -- but actually the `or_else` means env var would
-        // still be found. To be safe, we use a dedicated approach: set the
-        // context token to None and don't set GITHUB_TOKEN. In practice,
-        // GITHUB_TOKEN is not set in unit test environments.
-        let opts = ContextOptions {
-            token: None,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
+            }])
+            .build();
 
         let stage = ReleaseStage;
         let result = stage.run(&mut ctx);
@@ -803,24 +762,19 @@ mod tests {
 
     #[test]
     fn test_release_no_github_config_skips_silently() {
-        use anodize_core::config::{CrateConfig, ReleaseConfig};
-
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.crates.push(CrateConfig {
-            name: "testcrate".to_string(),
-            path: ".".to_string(),
-            tag_template: "v1.0.0".to_string(),
-            release: Some(ReleaseConfig {
-                github: None, // no github config
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    github: None, // no github config
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-
-        // Not dry-run, but no github config means it should skip without error
-        let opts = ContextOptions::default();
-        let mut ctx = Context::new(config, opts);
+            }])
+            .build();
 
         let stage = ReleaseStage;
         // Should succeed — no github config causes skip, not error
@@ -857,5 +811,73 @@ mod tests {
         let result = collect_extra_files(&["[invalid-glob".to_string()]);
         // collect_extra_files logs a warning and returns empty, does not panic
         assert!(result.is_empty());
+    }
+
+    // ---- MockGitHubClient integration test ----
+
+    #[test]
+    fn test_release_pipeline_with_mock_github_client() {
+        use anodize_core::github_client::{
+            CreateReleaseParams, GitHubClient, MockGitHubClient, ReleaseInfo, UploadAssetParams,
+            AssetInfo,
+        };
+
+        // Set up the mock to return a successful release creation
+        let mock = MockGitHubClient::new();
+        mock.set_create_release_response(Ok(ReleaseInfo {
+            id: 42,
+            html_url: "https://github.com/testowner/testrepo/releases/42".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            draft: false,
+        }));
+        mock.set_upload_asset_response(Ok(AssetInfo {
+            id: 100,
+            name: "artifact.tar.gz".to_string(),
+            size: 1024,
+        }));
+
+        // Build release parameters as the stage would
+        let params = CreateReleaseParams {
+            owner: "testowner".to_string(),
+            repo: "testrepo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: "Release v1.0.0".to_string(),
+            body: build_release_body("- initial release", Some("# v1.0.0"), None),
+            draft: false,
+            prerelease: should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v1.0.0"),
+            generate_release_notes: false,
+            make_latest: None,
+        };
+
+        // Simulate the release pipeline: create release + upload asset
+        let release = mock.create_release(&params).unwrap();
+        assert_eq!(release.id, 42);
+        assert_eq!(release.tag_name, "v1.0.0");
+        assert!(!release.draft);
+
+        // Simulate uploading an asset
+        let upload_params = UploadAssetParams {
+            owner: "testowner".to_string(),
+            repo: "testrepo".to_string(),
+            release_id: release.id,
+            file_name: "myapp-linux-amd64.tar.gz".to_string(),
+            file_path: std::path::PathBuf::from("/tmp/myapp-linux-amd64.tar.gz"),
+        };
+        let asset = mock.upload_asset(&upload_params).unwrap();
+        assert_eq!(asset.name, "artifact.tar.gz");
+
+        // Verify the mock recorded the correct calls
+        assert_eq!(mock.create_release_call_count(), 1);
+        assert_eq!(mock.upload_asset_call_count(), 1);
+
+        let create_calls = mock.create_release_calls();
+        assert_eq!(create_calls[0].owner, "testowner");
+        assert_eq!(create_calls[0].tag_name, "v1.0.0");
+        assert_eq!(create_calls[0].body, "# v1.0.0\n\n- initial release");
+        assert!(!create_calls[0].prerelease);
+
+        let upload_calls = mock.upload_asset_calls();
+        assert_eq!(upload_calls[0].release_id, 42);
+        assert_eq!(upload_calls[0].file_name, "myapp-linux-amd64.tar.gz");
     }
 }

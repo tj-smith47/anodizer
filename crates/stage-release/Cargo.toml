@@ -16,3 +16,6 @@ glob.workspace = true
 octocrab.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+anodize-core = { workspace = true, features = ["test-helpers"] }

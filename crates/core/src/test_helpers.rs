@@ -17,11 +17,11 @@
 //! - [`make_git_info`] — creates a [`GitInfo`] with sensible defaults
 //! - [`create_fake_binary`] — creates a dummy binary file for archive/checksum tests
 
-use crate::config::{Config, CrateConfig};
+use crate::config::{Config, CrateConfig, Defaults, SignConfig};
 use crate::context::{Context, ContextOptions};
 use crate::git::{GitInfo, SemVer};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
@@ -66,6 +66,9 @@ pub struct TestContextBuilder {
     single_target: Option<String>,
     crates: Vec<CrateConfig>,
     populate_git_vars: bool,
+    dist: Option<PathBuf>,
+    signs: Vec<SignConfig>,
+    defaults: Option<Defaults>,
 }
 
 impl Default for TestContextBuilder {
@@ -97,6 +100,9 @@ impl Default for TestContextBuilder {
             single_target: None,
             crates: Vec::new(),
             populate_git_vars: true,
+            dist: None,
+            signs: Vec::new(),
+            defaults: None,
         }
     }
 }
@@ -221,12 +227,35 @@ impl TestContextBuilder {
         self
     }
 
+    /// Set the dist directory (output directory for artifacts).
+    pub fn dist(mut self, dist: PathBuf) -> Self {
+        self.dist = Some(dist);
+        self
+    }
+
+    /// Set sign configurations.
+    pub fn signs(mut self, signs: Vec<SignConfig>) -> Self {
+        self.signs = signs;
+        self
+    }
+
+    /// Set default configuration (e.g. global checksum disable).
+    pub fn defaults(mut self, defaults: Defaults) -> Self {
+        self.defaults = Some(defaults);
+        self
+    }
+
     /// Build the [`Context`] with the configured values.
     #[allow(clippy::field_reassign_with_default)]
     pub fn build(self) -> Context {
         let mut config = Config::default();
         config.project_name = self.project_name;
         config.crates = self.crates;
+        config.signs = self.signs;
+        config.defaults = self.defaults;
+        if let Some(dist) = self.dist {
+            config.dist = dist;
+        }
 
         let options = ContextOptions {
             snapshot: self.snapshot,

@@ -834,8 +834,8 @@ crates:
 
     #[test]
     fn test_archive_stage_run() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -844,31 +844,27 @@ crates:
         let bin_path = tmp.path().join("myapp");
         fs::write(&bin_path, b"fake binary").unwrap();
 
-        let crate_cfg = CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                name_template: Some(
-                    "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
-                ),
-                format: Some("tar.gz".to_string()),
-                format_overrides: None,
-                files: None,
-                binaries: None,
-                wrap_in_directory: None,
-            }]),
-            ..Default::default()
-        };
-
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        config.dist = dist.clone();
-        config.crates = vec![crate_cfg];
-
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.0.0");
-        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    name_template: Some(
+                        "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
+                    ),
+                    format: Some("tar.gz".to_string()),
+                    format_overrides: None,
+                    files: None,
+                    binaries: None,
+                    wrap_in_directory: None,
+                }]),
+                ..Default::default()
+            }])
+            .build();
 
         // Register a Binary artifact
         ctx.artifacts.add(Artifact {
@@ -895,28 +891,24 @@ crates:
 
     #[test]
     fn test_archive_stage_disabled() {
-        use anodize_core::config::{ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::{ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
 
-        let crate_cfg = CrateConfig {
-            name: "myapp".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            archives: ArchivesConfig::Disabled,
-            ..Default::default()
-        };
-
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        config.dist = dist.clone();
-        config.crates = vec![crate_cfg];
-
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Version", "1.0.0");
-        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Disabled,
+                ..Default::default()
+            }])
+            .build();
 
         // Register a Binary artifact
         ctx.artifacts.add(Artifact {
@@ -1389,10 +1381,10 @@ crates:
         );
     }
 
-    // -- TestContextBuilder integration test --
+    // -- TestContextBuilder integration test: verify stage-scoped vars --
 
     #[test]
-    fn test_archive_stage_with_test_context_builder() {
+    fn test_archive_stage_scoped_vars_not_preset() {
         use anodize_core::test_helpers::TestContextBuilder;
 
         let ctx = TestContextBuilder::new()
@@ -1400,7 +1392,12 @@ crates:
             .tag("v1.0.0")
             .build();
 
-        // Verify the context is usable for archive stage testing
+        // Os and Arch are stage-scoped — they should NOT be set by the builder.
+        // The archive stage sets them per-target during execution.
+        assert_eq!(ctx.template_vars().get("Os"), None);
+        assert_eq!(ctx.template_vars().get("Arch"), None);
+
+        // But project-level vars should be present
         assert_eq!(
             ctx.template_vars().get("ProjectName"),
             Some(&"archive-test".to_string())
@@ -1408,15 +1405,6 @@ crates:
         assert_eq!(
             ctx.template_vars().get("Version"),
             Some(&"1.0.0".to_string())
-        );
-        let rendered = ctx
-            .render_template("{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}")
-            .unwrap_err();
-        // Os and Arch are not set by default (they are stage-scoped), so rendering should fail
-        let err = rendered.to_string();
-        assert!(
-            err.contains("Os") || err.contains("Arch"),
-            "missing stage-scoped vars should cause template error, got: {err}"
         );
     }
 }

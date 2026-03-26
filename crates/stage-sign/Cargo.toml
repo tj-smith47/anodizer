@@ -12,3 +12,6 @@ categories.workspace = true
 [dependencies]
 anodize-core.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+anodize-core = { workspace = true, features = ["test-helpers"] }
