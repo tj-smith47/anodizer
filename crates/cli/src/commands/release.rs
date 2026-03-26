@@ -112,9 +112,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
         // Determine the tag to use for git info.
         // Use latest existing tag as base, or fall back to v0.0.0 for first release.
-        let tag = latest_tag
-            .clone()
-            .unwrap_or_else(|| "v0.0.0".to_string());
+        let tag = latest_tag.clone().unwrap_or_else(|| "v0.0.0".to_string());
 
         match git::detect_git_info(&tag) {
             Ok(mut git_info) => {

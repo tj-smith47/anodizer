@@ -666,8 +666,8 @@ fn test_e2e_snapshot_release_produces_artifacts() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    // Note: Version is not yet populated by the release command (git tag
-    // resolution is TODO), so we use ProjectName + Os + Arch which ARE set.
+    // The name_template uses ProjectName + Os + Arch (not Version) so the
+    // archive filename is deterministic regardless of the resolved tag.
     let config = create_single_crate_snapshot_config(&host);
     create_config(tmp.path(), &config);
 

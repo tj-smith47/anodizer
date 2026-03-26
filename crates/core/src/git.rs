@@ -91,7 +91,9 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
 pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
     let pattern = tag_template
         .replace("{{ .Version }}", r"\d+\.\d+\.\d+(?:-.+)?")
-        .replace("{{.Version}}", r"\d+\.\d+\.\d+(?:-.+)?");
+        .replace("{{.Version}}", r"\d+\.\d+\.\d+(?:-.+)?")
+        .replace("{{ Version }}", r"\d+\.\d+\.\d+(?:-.+)?")
+        .replace("{{Version}}", r"\d+\.\d+\.\d+(?:-.+)?");
     let re = Regex::new(&format!("^{}$", pattern))?;
 
     let tags_output = git_output(&["tag", "--list"])?;
