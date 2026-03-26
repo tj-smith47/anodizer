@@ -597,6 +597,11 @@ mod tests {
         let config = make_config(vec![make_crate("  ", "v{{ .Version }}", None)]);
         let result = run_checks(&config, false);
         assert!(result.is_err(), "whitespace-only crate name should fail validation");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("1 error(s)"),
+            "error should report 1 validation error, got: {msg}"
+        );
     }
 
     // ---- tag_template compact spacing variant tests ----
@@ -614,6 +619,11 @@ mod tests {
         let config = make_config(vec![make_crate("a", "{{ .Tag }}-release", None)]);
         let result = run_checks(&config, false);
         assert!(result.is_err(), "tag_template without Version placeholder should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("1 error(s)"),
+            "error should report 1 validation error, got: {msg}"
+        );
     }
 
     // ---- Multiple validation errors test ----
@@ -628,8 +638,8 @@ mod tests {
         let result = run_checks(&config, false);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        // Should report multiple errors
-        assert!(msg.contains("3 error(s)") || msg.contains("error"), "should report multiple errors, got: {}", msg);
+        // Should report exactly 3 errors: empty name, missing dep, bad tag_template
+        assert!(msg.contains("3 error(s)"), "should report 3 error(s), got: {}", msg);
     }
 
     #[test]

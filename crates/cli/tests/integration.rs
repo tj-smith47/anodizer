@@ -30,11 +30,18 @@ fn create_config(dir: &std::path::Path, content: &str) {
 /// Helper to init git repo with a tag
 fn init_git_repo(dir: &std::path::Path) {
     let run = |args: &[&str]| {
-        Command::new("git")
+        let output = Command::new("git")
             .args(args)
             .current_dir(dir)
             .output()
-            .expect("git command failed");
+            .expect("git command failed to spawn");
+        assert!(
+            output.status.success(),
+            "git {:?} failed with status {}: {}",
+            args,
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
     };
     run(&["init"]);
     run(&["config", "user.email", "test@test.com"]);
@@ -505,23 +512,12 @@ helper-lib = { path = "../helper-lib" }
 }
 
 // ============================================================================
-// E2E Tests
+// E2E Config Helpers
 // ============================================================================
 
-/// E2E: `anodize release --snapshot` produces correct artifacts in dist/.
-///
-/// This test actually compiles a Rust project, so it may take a while.
-#[test]
-fn test_e2e_snapshot_release_produces_artifacts() {
-    let tmp = TempDir::new().unwrap();
-    let host = detect_host_target();
-
-    create_test_project(tmp.path());
-    init_git_repo(tmp.path());
-
-    // Note: Version is not yet populated by the release command (git tag
-    // resolution is TODO), so we use ProjectName + Os + Arch which ARE set.
-    let config = format!(
+/// Create the standard single-crate snapshot config string used by multiple tests.
+fn create_single_crate_snapshot_config(host: &str) -> String {
+    format!(
         r#"project_name: test-project
 crates:
   - name: test-project
@@ -539,7 +535,63 @@ crates:
       algorithm: sha256
 "#,
         host = host
-    );
+    )
+}
+
+/// Create the standard workspace config string used by multiple tests.
+fn create_workspace_snapshot_config(host: &str) -> String {
+    format!(
+        r#"project_name: my-workspace
+crates:
+  - name: core-lib
+    path: "crates/core-lib"
+    tag_template: "core-lib-v{{{{ .Version }}}}"
+
+  - name: helper-lib
+    path: "crates/helper-lib"
+    tag_template: "helper-lib-v{{{{ .Version }}}}"
+    depends_on:
+      - core-lib
+
+  - name: myapp
+    path: "crates/myapp"
+    tag_template: "myapp-v{{{{ .Version }}}}"
+    depends_on:
+      - core-lib
+      - helper-lib
+    builds:
+      - binary: myapp
+        targets:
+          - {host}
+    archives:
+      - name_template: "myapp-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        format: tar.gz
+    checksum:
+      name_template: "checksums.txt"
+      algorithm: sha256
+"#,
+        host = host
+    )
+}
+
+// ============================================================================
+// E2E Tests
+// ============================================================================
+
+/// E2E: `anodize release --snapshot` produces correct artifacts in dist/.
+///
+/// This test actually compiles a Rust project, so it may take a while.
+#[test]
+fn test_e2e_snapshot_release_produces_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    // Note: Version is not yet populated by the release command (git tag
+    // resolution is TODO), so we use ProjectName + Os + Arch which ARE set.
+    let config = create_single_crate_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
@@ -620,25 +672,7 @@ fn test_e2e_dry_run_no_side_effects() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    let config = format!(
-        r#"project_name: test-project
-crates:
-  - name: test-project
-    path: "."
-    tag_template: "v{{{{ .Version }}}}"
-    builds:
-      - binary: test-project
-        targets:
-          - {host}
-    archives:
-      - name_template: "{{{{ .ProjectName }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
-    checksum:
-      name_template: "checksums.txt"
-      algorithm: sha256
-"#,
-        host = host
-    );
+    let config = create_single_crate_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
@@ -659,10 +693,12 @@ crates:
         stderr
     );
 
-    // In dry-run mode, dist/ may be created (archive stage creates it),
-    // but no actual archive or checksum artifacts should be produced.
+    // In dry-run mode, dist/ either should not exist (the expected case),
+    // or if it does exist, it must not contain any archive/checksum artifacts.
     let dist_dir = tmp.path().join("dist");
     if dist_dir.exists() {
+        // dist/ was created (e.g., archive stage mkdir), but verify no actual
+        // artifacts were produced.
         let entries: Vec<_> = fs::read_dir(&dist_dir)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -675,6 +711,12 @@ crates:
             "dist/ should NOT contain archives after dry-run, found: {:?}",
             entries
         );
+        let has_checksums = entries.iter().any(|name| name.contains("checksum") || name.ends_with(".txt"));
+        assert!(
+            !has_checksums,
+            "dist/ should NOT contain checksum files after dry-run, found: {:?}",
+            entries
+        );
         let has_metadata = entries.iter().any(|name| name == "metadata.json");
         assert!(
             !has_metadata,
@@ -682,6 +724,7 @@ crates:
             entries
         );
     }
+    // If dist/ doesn't exist at all, that's the expected case for dry-run.
 
     // Verify the stderr mentions dry-run activity
     assert!(
@@ -701,6 +744,11 @@ fn test_e2e_check_comprehensive_config() {
         tmp.path(),
         r#"project_name: test-project
 dist: ./dist
+report_sizes: true
+
+env:
+  BUILD_ENV: ci
+  DEPLOY_TARGET: staging
 
 defaults:
   targets:
@@ -714,6 +762,21 @@ defaults:
         format: zip
   checksum:
     algorithm: sha256
+
+signs:
+  - id: gpg-sign
+    artifacts: checksum
+    cmd: gpg
+    args:
+      - "--detach-sig"
+
+publishers:
+  - name: custom-upload
+    cmd: echo
+    args:
+      - "published"
+    artifact_types:
+      - archive
 
 crates:
   - name: test-project
@@ -729,6 +792,15 @@ crates:
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
+    docker:
+      - image_templates:
+          - "myregistry/test-project:{{ .Version }}"
+        dockerfile: Dockerfile
+    nfpm:
+      - formats:
+          - deb
+        package_name: test-project
+        description: "A test project"
 
 changelog:
   sort: asc
@@ -860,38 +932,7 @@ fn test_e2e_workspace_all_force_detects_crates() {
     init_git_repo(tmp.path());
 
     // Create anodize config for the workspace with depends_on
-    let config = format!(
-        r#"project_name: my-workspace
-crates:
-  - name: core-lib
-    path: "crates/core-lib"
-    tag_template: "core-lib-v{{{{ .Version }}}}"
-
-  - name: helper-lib
-    path: "crates/helper-lib"
-    tag_template: "helper-lib-v{{{{ .Version }}}}"
-    depends_on:
-      - core-lib
-
-  - name: myapp
-    path: "crates/myapp"
-    tag_template: "myapp-v{{{{ .Version }}}}"
-    depends_on:
-      - core-lib
-      - helper-lib
-    builds:
-      - binary: myapp
-        targets:
-          - {host}
-    archives:
-      - name_template: "myapp-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
-    checksum:
-      name_template: "checksums.txt"
-      algorithm: sha256
-"#,
-        host = host
-    );
+    let config = create_workspace_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
     // 1. Verify config is valid
@@ -957,38 +998,7 @@ fn test_e2e_workspace_snapshot_produces_artifacts() {
     create_workspace_project(tmp.path());
     init_git_repo(tmp.path());
 
-    let config = format!(
-        r#"project_name: my-workspace
-crates:
-  - name: core-lib
-    path: "crates/core-lib"
-    tag_template: "core-lib-v{{{{ .Version }}}}"
-
-  - name: helper-lib
-    path: "crates/helper-lib"
-    tag_template: "helper-lib-v{{{{ .Version }}}}"
-    depends_on:
-      - core-lib
-
-  - name: myapp
-    path: "crates/myapp"
-    tag_template: "myapp-v{{{{ .Version }}}}"
-    depends_on:
-      - core-lib
-      - helper-lib
-    builds:
-      - binary: myapp
-        targets:
-          - {host}
-    archives:
-      - name_template: "myapp-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
-    checksum:
-      name_template: "checksums.txt"
-      algorithm: sha256
-"#,
-        host = host
-    );
+    let config = create_workspace_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))

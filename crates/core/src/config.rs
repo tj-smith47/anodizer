@@ -1526,22 +1526,28 @@ crates: "this should be an array"
     }
 
     #[test]
-    fn test_type_mismatch_number_where_string_expected() {
+    fn test_type_mismatch_object_where_string_expected() {
+        // An object (mapping) where a string is expected for project_name
+        // should be rejected by serde_yaml, unlike a number which gets coerced.
         let yaml = r#"
-project_name: 12345
+project_name:
+  nested: object
+  another: field
 crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
 "#;
-        // serde_yaml coerces numbers to strings in some cases; this tests
-        // that the parser at least doesn't panic
         let result: Result<Config, _> = serde_yaml::from_str(yaml);
-        // This may or may not error depending on serde_yaml coercion;
-        // the key thing is it doesn't panic
-        if let Ok(config) = result {
-            assert!(!config.project_name.is_empty());
-        }
+        assert!(
+            result.is_err(),
+            "mapping where string expected should fail to parse"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid type") || err.contains("expected a string"),
+            "error should mention type mismatch, got: {err}"
+        );
     }
 
     #[test]
@@ -1559,6 +1565,11 @@ crates:
         assert!(
             result.is_err(),
             "bool where array expected for targets should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid type") || err.contains("expected a sequence") || err.contains("targets"),
+            "error should mention type mismatch for targets, got: {err}"
         );
     }
 
@@ -1632,13 +1643,14 @@ crates:
 
     #[test]
     fn test_completely_empty_yaml() {
+        // Empty YAML deserializes to defaults because Config uses #[serde(default)].
+        // serde_yaml treats empty input as `null`, which the default impl handles.
         let yaml = "";
         let result: Result<Config, _> = serde_yaml::from_str(yaml);
-        // Empty YAML may deserialize to defaults or may fail
-        // The important thing is it doesn't panic
-        if let Err(e) = result {
-            assert!(!e.to_string().is_empty(), "error message should not be empty");
-        }
+        let config = result.expect("empty YAML should parse to Config defaults");
+        assert!(config.project_name.is_empty(), "default project_name should be empty");
+        assert!(config.crates.is_empty(), "default crates should be empty");
+        assert_eq!(config.dist, std::path::PathBuf::from("./dist"), "default dist should be ./dist");
     }
 
     // ---- Unknown fields tests ----

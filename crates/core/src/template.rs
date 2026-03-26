@@ -381,13 +381,25 @@ mod tests {
         let vars = test_vars();
         let result = render("{% if ProjectName %} hello", &vars);
         assert!(result.is_err(), "unclosed if block should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("template") || err.contains("if"),
+            "error should reference the template or block tag, got: {err}"
+        );
     }
 
     #[test]
-    fn test_unclosed_variable_tag_error() {
+    fn test_trailing_pipe_with_no_filter_name_error() {
         let vars = test_vars();
-        let result = render("{{ ProjectName", &vars);
-        assert!(result.is_err(), "unclosed variable tag should produce an error");
+        // A trailing pipe with no filter name is a distinct syntax error from
+        // just an unclosed tag (which test_bad_syntax_error already covers).
+        let result = render("{{ ProjectName | }}", &vars);
+        assert!(result.is_err(), "trailing pipe with no filter name should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("parse") || err.contains("unexpected") || err.contains("template"),
+            "error should mention a parsing issue, got: {err}"
+        );
     }
 
     #[test]
@@ -409,6 +421,11 @@ mod tests {
         // that Tera will interpret differently
         let result = render("{{ Tag | trimprefix(prefix=123) }}", &vars);
         assert!(result.is_err(), "invalid filter argument type should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("trimprefix") || err.contains("prefix") || err.contains("argument"),
+            "error should mention the filter or argument, got: {err}"
+        );
     }
 
     #[test]
