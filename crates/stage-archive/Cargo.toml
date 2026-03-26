@@ -1,10 +1,13 @@
 [package]
 name = "anodize-stage-archive"
+description = "Archive stage for the anodize release tool — packages binaries into tar.gz, zip, and other formats"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 anodize-core.workspace = true

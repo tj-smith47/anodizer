@@ -121,12 +121,7 @@ impl Stage for DockerStage {
                 let platforms: Vec<String> = docker_cfg
                     .platforms
                     .clone()
-                    .unwrap_or_else(|| {
-                        vec![
-                            "linux/amd64".to_string(),
-                            "linux/arm64".to_string(),
-                        ]
-                    });
+                    .unwrap_or_else(|| vec!["linux/amd64".to_string(), "linux/arm64".to_string()]);
 
                 // Build the staging directory path
                 let staging_dir: PathBuf =
@@ -134,10 +129,7 @@ impl Stage for DockerStage {
 
                 if !dry_run {
                     fs::create_dir_all(&staging_dir).with_context(|| {
-                        format!(
-                            "docker: create staging dir {}",
-                            staging_dir.display()
-                        )
+                        format!("docker: create staging dir {}", staging_dir.display())
                     })?;
                 }
 
@@ -150,10 +142,7 @@ impl Stage for DockerStage {
                     let binaries_dir = staging_dir.join("binaries").join(arch);
                     if !dry_run {
                         fs::create_dir_all(&binaries_dir).with_context(|| {
-                            format!(
-                                "docker: create binaries dir {}",
-                                binaries_dir.display()
-                            )
+                            format!("docker: create binaries dir {}", binaries_dir.display())
                         })?;
                     }
 
@@ -179,11 +168,8 @@ impl Stage for DockerStage {
                             match binary_filter {
                                 None => true,
                                 Some(names) => {
-                                    let bin_name = b
-                                        .metadata
-                                        .get("binary")
-                                        .map(|s| s.as_str())
-                                        .unwrap_or("");
+                                    let bin_name =
+                                        b.metadata.get("binary").map(|s| s.as_str()).unwrap_or("");
                                     names.iter().any(|n| n == bin_name)
                                 }
                             }
@@ -312,10 +298,8 @@ impl Stage for DockerStage {
                 // ------------------------------------------------------------------
                 // Build and run the docker buildx command
                 // ------------------------------------------------------------------
-                let platform_refs: Vec<&str> =
-                    platforms.iter().map(|s| s.as_str()).collect();
-                let tag_refs: Vec<&str> =
-                    rendered_tags.iter().map(|s| s.as_str()).collect();
+                let platform_refs: Vec<&str> = platforms.iter().map(|s| s.as_str()).collect();
+                let tag_refs: Vec<&str> = rendered_tags.iter().map(|s| s.as_str()).collect();
                 let staging_str = staging_dir.to_string_lossy().into_owned();
 
                 // Render build_flag_templates
@@ -337,9 +321,9 @@ impl Stage for DockerStage {
                 let mut push_flags = Vec::new();
                 if let Some(ref pf_templates) = docker_cfg.push_flags {
                     for tmpl in pf_templates {
-                        let rendered = ctx.render_template(tmpl).with_context(|| {
-                            format!("docker: render push_flag '{}'", tmpl)
-                        })?;
+                        let rendered = ctx
+                            .render_template(tmpl)
+                            .with_context(|| format!("docker: render push_flag '{}'", tmpl))?;
                         push_flags.push(rendered);
                     }
                 }
@@ -410,10 +394,11 @@ impl Stage for DockerStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_platform_to_arch() {
@@ -509,9 +494,9 @@ mod tests {
 
     #[test]
     fn test_docker_stage_dry_run_registers_artifacts() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
         use anodize_core::config::{Config, CrateConfig, DockerConfig};
         use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::artifact::{Artifact, ArtifactKind};
 
         let tmp = TempDir::new().unwrap();
 
@@ -531,10 +516,7 @@ mod tests {
                 "ghcr.io/owner/myapp:latest".to_string(),
             ],
             dockerfile: dockerfile.to_string_lossy().into_owned(),
-            platforms: Some(vec![
-                "linux/amd64".to_string(),
-                "linux/arm64".to_string(),
-            ]),
+            platforms: Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]),
             binaries: None,
             build_flag_templates: None,
             skip_push: None,
@@ -627,7 +609,10 @@ push_flags:
         assert_eq!(extra[1], "scripts/init.sh");
         let pf = cfg.push_flags.unwrap();
         assert_eq!(pf.len(), 2);
-        assert_eq!(pf[0], "--cache-to=type=registry,ref=ghcr.io/owner/app:cache");
+        assert_eq!(
+            pf[0],
+            "--cache-to=type=registry,ref=ghcr.io/owner/app:cache"
+        );
         assert_eq!(pf[1], "--provenance=true");
     }
 
@@ -689,9 +674,9 @@ push_flags:
 
     #[test]
     fn test_extra_files_copied_to_staging_dry_run() {
+        use anodize_core::artifact::ArtifactKind;
         use anodize_core::config::{Config, CrateConfig, DockerConfig};
         use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::artifact::ArtifactKind;
 
         let tmp = TempDir::new().unwrap();
 
@@ -819,8 +804,14 @@ push_flags:
         assert!(staging_dir.join("config.yaml").exists());
         assert!(staging_dir.join("init.sh").exists());
         // Verify content
-        assert_eq!(fs::read_to_string(staging_dir.join("config.yaml")).unwrap(), "key: value");
-        assert_eq!(fs::read_to_string(staging_dir.join("init.sh")).unwrap(), "#!/bin/bash\necho hello");
+        assert_eq!(
+            fs::read_to_string(staging_dir.join("config.yaml")).unwrap(),
+            "key: value"
+        );
+        assert_eq!(
+            fs::read_to_string(staging_dir.join("init.sh")).unwrap(),
+            "#!/bin/bash\necho hello"
+        );
     }
 
     /// Helper: runs the docker stage but catches the expected docker-not-found error.

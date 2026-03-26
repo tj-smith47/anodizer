@@ -19,7 +19,8 @@ impl SemVer {
 /// Parse a semver version from a tag string like "v1.2.3", "v1.0.0-rc.1", or "cfgd-core-v2.1.0"
 pub fn parse_semver(tag: &str) -> Result<SemVer> {
     let re = Regex::new(r"v?(\d+)\.(\d+)\.(\d+)(?:-(.+))?$")?;
-    let caps = re.captures(tag)
+    let caps = re
+        .captures(tag)
         .ok_or_else(|| anyhow::anyhow!("not a valid semver tag: {}", tag))?;
     Ok(SemVer {
         major: caps[1].parse()?,
@@ -55,9 +56,7 @@ pub struct Commit {
 
 /// Run a git command and return stdout, trimmed.
 fn git_output(args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .output()?;
+    let output = Command::new("git").args(args).output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("git {} failed: {}", args.join(" "), stderr.trim());
@@ -107,12 +106,13 @@ pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
         .collect();
 
     matching.sort_by(|a, b| {
-        a.0.major.cmp(&b.0.major)
+        a.0.major
+            .cmp(&b.0.major)
             .then(a.0.minor.cmp(&b.0.minor))
             .then(a.0.patch.cmp(&b.0.patch))
             .then(match (&a.0.prerelease, &b.0.prerelease) {
-                (Some(_), None) => std::cmp::Ordering::Less,    // prerelease < release
-                (None, Some(_)) => std::cmp::Ordering::Greater,  // release > prerelease
+                (Some(_), None) => std::cmp::Ordering::Less, // prerelease < release
+                (None, Some(_)) => std::cmp::Ordering::Greater, // release > prerelease
                 _ => std::cmp::Ordering::Equal,
             })
     });
@@ -211,8 +211,9 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
 /// Get the GitHub owner/name from the `origin` remote.
 pub fn detect_github_repo() -> Result<(String, String)> {
     let url = git_output(&["remote", "get-url", "origin"])?;
-    parse_github_remote(&url)
-        .ok_or_else(|| anyhow::anyhow!("could not parse GitHub owner/repo from remote URL: {}", url))
+    parse_github_remote(&url).ok_or_else(|| {
+        anyhow::anyhow!("could not parse GitHub owner/repo from remote URL: {}", url)
+    })
 }
 
 #[cfg(test)]
@@ -251,7 +252,10 @@ mod tests {
     #[test]
     fn test_parse_github_remote_https() {
         let result = parse_github_remote("https://github.com/tj-smith47/anodize.git");
-        assert_eq!(result, Some(("tj-smith47".to_string(), "anodize".to_string())));
+        assert_eq!(
+            result,
+            Some(("tj-smith47".to_string(), "anodize".to_string()))
+        );
     }
 
     #[test]

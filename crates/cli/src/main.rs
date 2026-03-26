@@ -1,7 +1,7 @@
-use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 use colored::Colorize;
+use std::path::PathBuf;
 
 mod commands;
 mod pipeline;
@@ -10,7 +10,12 @@ pub mod timeout;
 #[derive(Parser)]
 #[command(name = "anodize", version, about = "Release Rust projects with ease")]
 pub struct Cli {
-    #[arg(long, short = 'f', global = true, help = "Path to config file (overrides auto-detection)")]
+    #[arg(
+        long,
+        short = 'f',
+        global = true,
+        help = "Path to config file (overrides auto-detection)"
+    )]
     config: Option<PathBuf>,
     #[arg(long, global = true)]
     verbose: bool,
@@ -40,7 +45,11 @@ enum Commands {
         skip: Vec<String>,
         #[arg(long)]
         token: Option<String>,
-        #[arg(long, default_value = "30m", help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)")]
+        #[arg(
+            long,
+            default_value = "30m",
+            help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)"
+        )]
         timeout: String,
         #[arg(long, short = 'p', default_value_t = num_cpus(), help = "Maximum number of parallel build jobs")]
         parallelism: usize,
@@ -48,14 +57,21 @@ enum Commands {
         auto_snapshot: bool,
         #[arg(long, help = "Build only for the host target triple")]
         single_target: bool,
-        #[arg(long, help = "Path to a custom release notes file (overrides changelog)")]
+        #[arg(
+            long,
+            help = "Path to a custom release notes file (overrides changelog)"
+        )]
         release_notes: Option<PathBuf>,
     },
     /// Build binaries only
     Build {
         #[arg(long = "crate", action = clap::ArgAction::Append)]
         crate_names: Vec<String>,
-        #[arg(long, default_value = "30m", help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)")]
+        #[arg(
+            long,
+            default_value = "30m",
+            help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)"
+        )]
         timeout: String,
         #[arg(long, short = 'p', default_value_t = num_cpus(), help = "Maximum number of parallel build jobs")]
         parallelism: usize,
@@ -119,11 +135,19 @@ fn resolve_single_target(single_target: bool) -> Option<String> {
     if single_target {
         match detect_host_target() {
             Ok(triple) => {
-                eprintln!("{} building only for host target: {}", "Note:".cyan().bold(), triple);
+                eprintln!(
+                    "{} building only for host target: {}",
+                    "Note:".cyan().bold(),
+                    triple
+                );
                 Some(triple)
             }
             Err(e) => {
-                eprintln!("{} failed to detect host target: {}", "Error:".red().bold(), e);
+                eprintln!(
+                    "{} failed to detect host target: {}",
+                    "Error:".red().bold(),
+                    e
+                );
                 std::process::exit(1);
             }
         }
@@ -136,17 +160,36 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
         Commands::Release {
-            crate_names, all, force, snapshot, dry_run, clean, skip, token, timeout,
-            parallelism, auto_snapshot, single_target, release_notes,
+            crate_names,
+            all,
+            force,
+            snapshot,
+            dry_run,
+            clean,
+            skip,
+            token,
+            timeout,
+            parallelism,
+            auto_snapshot,
+            single_target,
+            release_notes,
         } => {
             let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
-                eprintln!("{} invalid --timeout value '{}': {}", "Error:".red().bold(), timeout, e);
+                eprintln!(
+                    "{} invalid --timeout value '{}': {}",
+                    "Error:".red().bold(),
+                    timeout,
+                    e
+                );
                 std::process::exit(1);
             });
 
             // Resolve --auto-snapshot: if set and repo is dirty, force snapshot mode
             let effective_snapshot = if !snapshot && auto_snapshot && is_git_dirty() {
-                eprintln!("{} repo is dirty, automatically enabling snapshot mode", "Note:".yellow().bold());
+                eprintln!(
+                    "{} repo is dirty, automatically enabling snapshot mode",
+                    "Note:".yellow().bold()
+                );
                 true
             } else {
                 snapshot
@@ -156,8 +199,16 @@ fn main() {
 
             timeout::run_with_timeout(duration, || {
                 commands::release::run(commands::release::ReleaseOpts {
-                    crate_names, all, force, snapshot: effective_snapshot, dry_run, clean, skip, token,
-                    verbose: cli.verbose, debug: cli.debug,
+                    crate_names,
+                    all,
+                    force,
+                    snapshot: effective_snapshot,
+                    dry_run,
+                    clean,
+                    skip,
+                    token,
+                    verbose: cli.verbose,
+                    debug: cli.debug,
                     config_override: cli.config.clone(),
                     parallelism,
                     single_target: resolved_single_target,
@@ -165,9 +216,19 @@ fn main() {
                 })
             })
         }
-        Commands::Build { crate_names, timeout, parallelism, single_target } => {
+        Commands::Build {
+            crate_names,
+            timeout,
+            parallelism,
+            single_target,
+        } => {
             let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
-                eprintln!("{} invalid --timeout value '{}': {}", "Error:".red().bold(), timeout, e);
+                eprintln!(
+                    "{} invalid --timeout value '{}': {}",
+                    "Error:".red().bold(),
+                    timeout,
+                    e
+                );
                 std::process::exit(1);
             });
             let config_override = cli.config.clone();
@@ -184,7 +245,9 @@ fn main() {
         }
         Commands::Check => commands::check::run(cli.config.as_deref()),
         Commands::Init => commands::init::run(),
-        Commands::Changelog { crate_name } => commands::changelog::run(crate_name, cli.config.as_deref()),
+        Commands::Changelog { crate_name } => {
+            commands::changelog::run(crate_name, cli.config.as_deref())
+        }
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
     };
@@ -210,48 +273,72 @@ mod tests {
     #[test]
     fn test_cli_parses_release_with_new_flags() {
         let cli = Cli::try_parse_from([
-            "anodize", "release",
-            "--parallelism", "8",
+            "anodize",
+            "release",
+            "--parallelism",
+            "8",
             "--auto-snapshot",
             "--single-target",
-            "--release-notes", "/tmp/notes.md",
+            "--release-notes",
+            "/tmp/notes.md",
         ]);
-        assert!(cli.is_ok(), "CLI should parse release with new flags: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "CLI should parse release with new flags: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn test_cli_parses_release_parallelism_short() {
         let cli = Cli::try_parse_from(["anodize", "release", "-p", "2"]);
-        assert!(cli.is_ok(), "CLI should parse -p shorthand: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "CLI should parse -p shorthand: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn test_cli_parses_build_with_new_flags() {
-        let cli = Cli::try_parse_from([
-            "anodize", "build",
-            "--parallelism", "4",
-            "--single-target",
-        ]);
-        assert!(cli.is_ok(), "CLI should parse build with new flags: {:?}", cli.err());
+        let cli =
+            Cli::try_parse_from(["anodize", "build", "--parallelism", "4", "--single-target"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse build with new flags: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn test_cli_parses_completion() {
         let cli = Cli::try_parse_from(["anodize", "completion", "bash"]);
-        assert!(cli.is_ok(), "CLI should parse completion command: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "CLI should parse completion command: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn test_cli_parses_healthcheck() {
         let cli = Cli::try_parse_from(["anodize", "healthcheck"]);
-        assert!(cli.is_ok(), "CLI should parse healthcheck command: {:?}", cli.err());
+        assert!(
+            cli.is_ok(),
+            "CLI should parse healthcheck command: {:?}",
+            cli.err()
+        );
     }
 
     #[test]
     fn test_cli_release_default_parallelism() {
         let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
         if let Commands::Release { parallelism, .. } = cli.command {
-            assert!(parallelism >= 1, "default parallelism should be at least 1, got {}", parallelism);
+            assert!(
+                parallelism >= 1,
+                "default parallelism should be at least 1, got {}",
+                parallelism
+            );
         } else {
             panic!("expected Release command");
         }
@@ -261,7 +348,11 @@ mod tests {
     fn test_cli_build_default_parallelism() {
         let cli = Cli::try_parse_from(["anodize", "build"]).unwrap();
         if let Commands::Build { parallelism, .. } = cli.command {
-            assert!(parallelism >= 1, "default parallelism should be at least 1, got {}", parallelism);
+            assert!(
+                parallelism >= 1,
+                "default parallelism should be at least 1, got {}",
+                parallelism
+            );
         } else {
             panic!("expected Build command");
         }
@@ -275,18 +366,31 @@ mod tests {
     #[test]
     fn test_detect_host_target_returns_triple() {
         let result = detect_host_target();
-        assert!(result.is_ok(), "detect_host_target should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "detect_host_target should succeed: {:?}",
+            result.err()
+        );
         let triple = result.unwrap();
         assert!(!triple.is_empty(), "host target triple should not be empty");
         // A target triple should contain at least two dashes (e.g., x86_64-unknown-linux-gnu)
-        assert!(triple.contains('-'), "host target triple should contain dashes: {}", triple);
+        assert!(
+            triple.contains('-'),
+            "host target triple should contain dashes: {}",
+            triple
+        );
     }
 
     #[test]
     fn test_completion_shells_are_accepted() {
         for shell in ["bash", "zsh", "fish", "powershell"] {
             let cli = Cli::try_parse_from(["anodize", "completion", shell]);
-            assert!(cli.is_ok(), "CLI should accept completion for {}: {:?}", shell, cli.err());
+            assert!(
+                cli.is_ok(),
+                "CLI should accept completion for {}: {:?}",
+                shell,
+                cli.err()
+            );
         }
     }
 
@@ -294,7 +398,13 @@ mod tests {
     fn test_help_output_contains_new_commands() {
         let mut cmd = Cli::command();
         let help = cmd.render_help().to_string();
-        assert!(help.contains("completion"), "help should mention completion command");
-        assert!(help.contains("healthcheck"), "help should mention healthcheck command");
+        assert!(
+            help.contains("completion"),
+            "help should mention completion command"
+        );
+        assert!(
+            help.contains("healthcheck"),
+            "help should mention healthcheck command"
+        );
     }
 }

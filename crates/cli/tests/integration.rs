@@ -1,13 +1,15 @@
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-use std::fs;
-use std::path::Path;
 
 /// Helper to create a minimal Cargo project for testing
 fn create_test_project(dir: &std::path::Path) {
     // Create Cargo.toml
-    fs::write(dir.join("Cargo.toml"), r#"
+    fs::write(
+        dir.join("Cargo.toml"),
+        r#"
 [package]
 name = "test-project"
 version = "0.1.0"
@@ -16,10 +18,16 @@ edition = "2024"
 [[bin]]
 name = "test-project"
 path = "src/main.rs"
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(dir.join("src/main.rs"), r#"fn main() { println!("hello"); }"#).unwrap();
+    fs::write(
+        dir.join("src/main.rs"),
+        r#"fn main() { println!("hello"); }"#,
+    )
+    .unwrap();
 }
 
 /// Helper to create an anodize.yaml config
@@ -55,13 +63,16 @@ fn init_git_repo(dir: &std::path::Path) {
 fn test_check_valid_config() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -69,7 +80,11 @@ crates:
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "check should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "check should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
@@ -99,7 +114,11 @@ fn test_init_generates_config() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "init should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "init should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("project_name:"));
     assert!(stdout.contains("test-project"));
@@ -120,8 +139,14 @@ fn test_help_output() {
     assert!(stdout.contains("check"));
     assert!(stdout.contains("init"));
     assert!(stdout.contains("changelog"));
-    assert!(stdout.contains("completion"), "help should list completion command");
-    assert!(stdout.contains("healthcheck"), "help should list healthcheck command");
+    assert!(
+        stdout.contains("completion"),
+        "help should list completion command"
+    );
+    assert!(
+        stdout.contains("healthcheck"),
+        "help should list healthcheck command"
+    );
 }
 
 #[test]
@@ -145,13 +170,17 @@ fn test_check_with_config_flag() {
     let custom_dir = tmp.path().join("configs");
     fs::create_dir_all(&custom_dir).unwrap();
     let config_path = custom_dir.join("release.yaml");
-    fs::write(&config_path, r#"
+    fs::write(
+        &config_path,
+        r#"
 project_name: test-project
 crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     // Use -f to point to the custom config
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
@@ -173,13 +202,17 @@ fn test_check_with_config_flag_long() {
     create_test_project(tmp.path());
 
     let config_path = tmp.path().join("my-anodize.yaml");
-    fs::write(&config_path, r#"
+    fs::write(
+        &config_path,
+        r#"
 project_name: test-project
 crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     // Use --config (long form) to point to the custom config
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
@@ -250,7 +283,9 @@ fn test_timeout_kills_long_running_release() {
     init_git_repo(tmp.path());
 
     // Config with a before-hook that sleeps for 60 seconds (much longer than our timeout)
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 before:
   hooks:
@@ -259,7 +294,8 @@ crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-"#);
+"#,
+    );
 
     let start = Instant::now();
 
@@ -321,10 +357,17 @@ fn test_completion_bash_produces_output() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "completion bash should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "completion bash should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty(), "bash completions should not be empty");
-    assert!(stdout.contains("anodize"), "bash completions should reference 'anodize'");
+    assert!(
+        stdout.contains("anodize"),
+        "bash completions should reference 'anodize'"
+    );
 }
 
 #[test]
@@ -346,9 +389,16 @@ fn test_healthcheck_succeeds() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "healthcheck should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "healthcheck should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Health Check"), "healthcheck should print header");
+    assert!(
+        stderr.contains("Health Check"),
+        "healthcheck should print header"
+    );
     assert!(stderr.contains("cargo"), "healthcheck should check cargo");
 }
 
@@ -361,10 +411,26 @@ fn test_release_help_shows_new_flags() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--parallelism"), "release --help should show --parallelism: {}", stdout);
-    assert!(stdout.contains("--auto-snapshot"), "release --help should show --auto-snapshot: {}", stdout);
-    assert!(stdout.contains("--single-target"), "release --help should show --single-target: {}", stdout);
-    assert!(stdout.contains("--release-notes"), "release --help should show --release-notes: {}", stdout);
+    assert!(
+        stdout.contains("--parallelism"),
+        "release --help should show --parallelism: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--auto-snapshot"),
+        "release --help should show --auto-snapshot: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--single-target"),
+        "release --help should show --single-target: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--release-notes"),
+        "release --help should show --release-notes: {}",
+        stdout
+    );
 }
 
 #[test]
@@ -376,21 +442,32 @@ fn test_build_help_shows_new_flags() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--parallelism"), "build --help should show --parallelism: {}", stdout);
-    assert!(stdout.contains("--single-target"), "build --help should show --single-target: {}", stdout);
+    assert!(
+        stdout.contains("--parallelism"),
+        "build --help should show --parallelism: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--single-target"),
+        "build --help should show --single-target: {}",
+        stdout
+    );
 }
 
 #[test]
 fn test_release_invalid_timeout_value() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .args(["release", "--timeout", "notavalidtimeout"])
@@ -599,7 +676,8 @@ fn test_e2e_snapshot_release_produces_artifacts() {
             "release",
             "--snapshot",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
-            "--timeout", "5m",
+            "--timeout",
+            "5m",
         ])
         .current_dir(tmp.path())
         .output()
@@ -680,7 +758,8 @@ fn test_e2e_dry_run_no_side_effects() {
             "release",
             "--dry-run",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
-            "--timeout", "5m",
+            "--timeout",
+            "5m",
         ])
         .current_dir(tmp.path())
         .output()
@@ -705,13 +784,17 @@ fn test_e2e_dry_run_no_side_effects() {
             .map(|e| e.file_name().to_string_lossy().to_string())
             .collect();
         // There should be no .tar.gz archives, no checksums, no metadata.json
-        let has_archives = entries.iter().any(|name| name.ends_with(".tar.gz") || name.ends_with(".zip"));
+        let has_archives = entries
+            .iter()
+            .any(|name| name.ends_with(".tar.gz") || name.ends_with(".zip"));
         assert!(
             !has_archives,
             "dist/ should NOT contain archives after dry-run, found: {:?}",
             entries
         );
-        let has_checksums = entries.iter().any(|name| name.contains("checksum") || name.ends_with(".txt"));
+        let has_checksums = entries
+            .iter()
+            .any(|name| name.contains("checksum") || name.ends_with(".txt"));
         assert!(
             !has_checksums,
             "dist/ should NOT contain checksum files after dry-run, found: {:?}",
@@ -863,7 +946,9 @@ fn test_e2e_init_generates_parseable_yaml() {
     });
 
     // Verify key fields exist in the parsed YAML
-    let map = parsed.as_mapping().expect("parsed YAML should be a mapping");
+    let map = parsed
+        .as_mapping()
+        .expect("parsed YAML should be a mapping");
     assert!(
         map.contains_key(serde_yaml::Value::String("project_name".to_string())),
         "YAML should contain project_name"
@@ -892,10 +977,7 @@ fn test_e2e_init_generates_parseable_yaml() {
         .get(serde_yaml::Value::String("crates".to_string()))
         .and_then(|v| v.as_sequence())
         .expect("crates should be an array");
-    assert!(
-        !crates.is_empty(),
-        "crates array should not be empty"
-    );
+    assert!(!crates.is_empty(), "crates array should not be empty");
 
     // Verify the generated YAML can be written and validated with `anodize check`
     let tmp2 = TempDir::new().unwrap();
@@ -956,7 +1038,8 @@ fn test_e2e_workspace_all_force_detects_crates() {
             "--all",
             "--force",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
-            "--timeout", "5m",
+            "--timeout",
+            "5m",
         ])
         .current_dir(tmp.path())
         .output()
@@ -1008,7 +1091,8 @@ fn test_e2e_workspace_snapshot_produces_artifacts() {
             "--all",
             "--force",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
-            "--timeout", "5m",
+            "--timeout",
+            "5m",
         ])
         .current_dir(tmp.path())
         .output()
@@ -1035,7 +1119,9 @@ fn test_e2e_workspace_snapshot_produces_artifacts() {
         .collect();
 
     // Should have a tar.gz archive for myapp
-    let has_archive = entries.iter().any(|name| name.contains("myapp") && name.ends_with(".tar.gz"));
+    let has_archive = entries
+        .iter()
+        .any(|name| name.contains("myapp") && name.ends_with(".tar.gz"));
     assert!(
         has_archive,
         "dist/ should contain a myapp .tar.gz archive, found: {:?}",
@@ -1081,8 +1167,14 @@ fn test_e2e_init_workspace_generates_depends_on() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Verify the output mentions all three crates
-    assert!(stdout.contains("core-lib"), "init output should mention core-lib");
-    assert!(stdout.contains("helper-lib"), "init output should mention helper-lib");
+    assert!(
+        stdout.contains("core-lib"),
+        "init output should mention core-lib"
+    );
+    assert!(
+        stdout.contains("helper-lib"),
+        "init output should mention helper-lib"
+    );
     assert!(stdout.contains("myapp"), "init output should mention myapp");
 
     // Verify depends_on relationships are detected
@@ -1092,7 +1184,9 @@ fn test_e2e_init_workspace_generates_depends_on() {
     );
 
     // Verify topological order: core-lib should appear before myapp
-    let core_pos = stdout.find("name: core-lib").expect("core-lib should appear");
+    let core_pos = stdout
+        .find("name: core-lib")
+        .expect("core-lib should appear");
     let app_pos = stdout.find("name: myapp").expect("myapp should appear");
     assert!(
         core_pos < app_pos,
@@ -1235,7 +1329,8 @@ crates:
             "--all",
             "--single-target",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
-            "--timeout", "5m",
+            "--timeout",
+            "5m",
         ])
         .current_dir(tmp.path())
         .output()
@@ -1278,14 +1373,17 @@ crates:
 #[test]
 fn test_check_malformed_yaml_reports_parse_error() {
     let tmp = TempDir::new().unwrap();
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test
 crates:
   - name: a
     path: "."
     tag_template: [[[invalid yaml
       this is broken
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1293,11 +1391,17 @@ crates:
         .output()
         .unwrap();
 
-    assert!(!output.status.success(), "check with malformed YAML should fail");
+    assert!(
+        !output.status.success(),
+        "check with malformed YAML should fail"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     // The error should mention a parsing issue
     assert!(
-        stderr.contains("error") || stderr.contains("Error") || stderr.contains("parse") || stderr.contains("invalid"),
+        stderr.contains("error")
+            || stderr.contains("Error")
+            || stderr.contains("parse")
+            || stderr.contains("invalid"),
         "stderr should indicate a parse error, got:\n{}",
         stderr
     );
@@ -1307,10 +1411,13 @@ crates:
 #[test]
 fn test_check_type_mismatch_crates_not_array() {
     let tmp = TempDir::new().unwrap();
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test
 crates: "this should be an array not a string"
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1318,7 +1425,10 @@ crates: "this should be an array not a string"
         .output()
         .unwrap();
 
-    assert!(!output.status.success(), "check with type mismatch should fail");
+    assert!(
+        !output.status.success(),
+        "check with type mismatch should fail"
+    );
 }
 
 /// Error path: `--skip` flag causes stages to be skipped in dry-run output.
@@ -1354,7 +1464,8 @@ crates:
             "release",
             "--dry-run",
             "--skip=build,archive,checksum,release,publish,docker,sign,announce,changelog,nfpm",
-            "--timeout", "30s",
+            "--timeout",
+            "30s",
         ])
         .current_dir(tmp.path())
         .output()
@@ -1383,13 +1494,16 @@ crates:
 fn test_check_empty_crate_name_rejected() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 crates:
   - name: ""
     path: "."
     tag_template: "v{{ .Version }}"
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1414,13 +1528,16 @@ crates:
 fn test_check_tag_template_missing_version_rejected() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 crates:
   - name: test-project
     path: "."
     tag_template: "release-{{ .Tag }}"
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1447,7 +1564,9 @@ fn test_failed_compilation_snapshot() {
     let host = detect_host_target();
 
     // Create a Cargo project with invalid Rust code
-    fs::write(tmp.path().join("Cargo.toml"), r#"
+    fs::write(
+        tmp.path().join("Cargo.toml"),
+        r#"
 [package]
 name = "bad-project"
 version = "0.1.0"
@@ -1456,13 +1575,16 @@ edition = "2021"
 [[bin]]
 name = "bad-project"
 path = "src/main.rs"
-"#).unwrap();
+"#,
+    )
+    .unwrap();
 
     fs::create_dir_all(tmp.path().join("src")).unwrap();
     fs::write(
         tmp.path().join("src/main.rs"),
         r#"fn main() { let x: i32 = "not a number"; }"#,
-    ).unwrap();
+    )
+    .unwrap();
 
     init_git_repo(tmp.path());
 
@@ -1487,7 +1609,8 @@ crates:
             "--snapshot",
             "--single-target",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
-            "--timeout", "2m",
+            "--timeout",
+            "2m",
         ])
         .current_dir(tmp.path())
         .output()
@@ -1505,7 +1628,9 @@ crates:
 fn test_check_unknown_yaml_fields_ignored() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 future_feature: "this field does not exist yet"
 experimental_mode: true
@@ -1514,7 +1639,8 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     unknown_crate_field: 42
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1534,7 +1660,9 @@ crates:
 fn test_check_per_crate_checksum_disable_valid() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 crates:
   - name: test-project
@@ -1542,7 +1670,8 @@ crates:
     tag_template: "v{{ .Version }}"
     checksum:
       disable: true
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1562,14 +1691,17 @@ crates:
 fn test_check_archives_disabled_valid() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
     archives: false
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1589,7 +1721,9 @@ crates:
 fn test_check_global_checksum_disable_valid() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 defaults:
   checksum:
@@ -1598,7 +1732,8 @@ crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1618,7 +1753,9 @@ crates:
 fn test_check_changelog_disabled_valid() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
-    create_config(tmp.path(), r#"
+    create_config(
+        tmp.path(),
+        r#"
 project_name: test-project
 changelog:
   disable: true
@@ -1626,7 +1763,8 @@ crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-"#);
+"#,
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")

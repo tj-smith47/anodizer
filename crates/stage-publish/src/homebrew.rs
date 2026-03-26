@@ -81,7 +81,9 @@ pub fn generate_formula(
                 ));
             }
 
-            for (os_block, os_entries) in [("on_macos", &macos_entries), ("on_linux", &linux_entries)] {
+            for (os_block, os_entries) in
+                [("on_macos", &macos_entries), ("on_linux", &linux_entries)]
+            {
                 if os_entries.is_empty() {
                     continue;
                 }
@@ -185,10 +187,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
         .description
         .clone()
         .unwrap_or_else(|| crate_name.to_string());
-    let license = hb_cfg
-        .license
-        .clone()
-        .unwrap_or_else(|| "MIT".to_string());
+    let license = hb_cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
     let install = hb_cfg
         .install
         .clone()
@@ -201,10 +200,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
     // Collect Archive artifacts for this crate to build the formula entries.
     let archives: Vec<(&str, &str, &str)> = ctx
         .artifacts
-        .by_kind_and_crate(
-            anodize_core::artifact::ArtifactKind::Archive,
-            crate_name,
-        )
+        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
         .iter()
         .filter_map(|a| {
             let url = a.metadata.get("url")?.as_str();
@@ -230,23 +226,35 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
     let repo_path = tmp_dir.path();
 
     // Determine the token for git auth.
-    let token = ctx.options.token.clone()
+    let token = ctx
+        .options
+        .token
+        .clone()
         .or_else(|| std::env::var("HOMEBREW_TAP_TOKEN").ok())
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
     let clone_url = if let Some(ref tok) = token {
-        format!(
-            "https://{}@github.com/{}/{}.git",
-            tok, tap.owner, tap.name
-        )
+        format!("https://{}@github.com/{}/{}.git", tok, tap.owner, tap.name)
     } else {
         tap_repo.clone()
     };
 
-    run_cmd("git", &["clone", "--depth=1", &clone_url, &repo_path.to_string_lossy()], "homebrew: git clone")?;
+    run_cmd(
+        "git",
+        &[
+            "clone",
+            "--depth=1",
+            &clone_url,
+            &repo_path.to_string_lossy(),
+        ],
+        "homebrew: git clone",
+    )?;
 
     // Determine formula folder.
-    let folder = hb_cfg.folder.clone().unwrap_or_else(|| "Formula".to_string());
+    let folder = hb_cfg
+        .folder
+        .clone()
+        .unwrap_or_else(|| "Formula".to_string());
     let formula_dir = repo_path.join(&folder);
     std::fs::create_dir_all(&formula_dir)
         .with_context(|| format!("homebrew: create formula dir {}", formula_dir.display()))?;
@@ -255,7 +263,10 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
     std::fs::write(&formula_path, &formula)
         .with_context(|| format!("homebrew: write formula {}", formula_path.display()))?;
 
-    eprintln!("[publish] wrote Homebrew formula: {}", formula_path.display());
+    eprintln!(
+        "[publish] wrote Homebrew formula: {}",
+        formula_path.display()
+    );
 
     // git add + commit + push
     run_cmd_in(
@@ -299,7 +310,12 @@ fn run_cmd(program: &str, args: &[&str], context_msg: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_cmd_in(dir: &std::path::Path, program: &str, args: &[&str], context_msg: &str) -> Result<()> {
+fn run_cmd_in(
+    dir: &std::path::Path,
+    program: &str,
+    args: &[&str],
+    context_msg: &str,
+) -> Result<()> {
     let status = Command::new(program)
         .current_dir(dir)
         .args(args)
@@ -324,7 +340,11 @@ mod tests {
         let formula = generate_formula(
             "cfgd",
             "1.0.0",
-            &[("darwin-amd64", "https://example.com/cfgd-1.0.0-darwin-amd64.tar.gz", "sha256abc")],
+            &[(
+                "darwin-amd64",
+                "https://example.com/cfgd-1.0.0-darwin-amd64.tar.gz",
+                "sha256abc",
+            )],
             "Declarative config management",
             "MIT",
             "bin.install \"cfgd\"",
@@ -342,8 +362,16 @@ mod tests {
             "my-tool",
             "2.0.0",
             &[
-                ("darwin-amd64", "https://example.com/my-tool-2.0.0-darwin-amd64.tar.gz", "abc123"),
-                ("linux-amd64", "https://example.com/my-tool-2.0.0-linux-amd64.tar.gz", "def456"),
+                (
+                    "darwin-amd64",
+                    "https://example.com/my-tool-2.0.0-darwin-amd64.tar.gz",
+                    "abc123",
+                ),
+                (
+                    "linux-amd64",
+                    "https://example.com/my-tool-2.0.0-linux-amd64.tar.gz",
+                    "def456",
+                ),
             ],
             "A tool",
             "Apache-2.0",
@@ -379,9 +407,21 @@ mod tests {
             "mytool",
             "3.0.0",
             &[
-                ("darwin-amd64", "https://example.com/mytool-darwin-amd64.tar.gz", "aaaa"),
-                ("darwin-arm64", "https://example.com/mytool-darwin-arm64.tar.gz", "bbbb"),
-                ("linux-amd64", "https://example.com/mytool-linux-amd64.tar.gz", "cccc"),
+                (
+                    "darwin-amd64",
+                    "https://example.com/mytool-darwin-amd64.tar.gz",
+                    "aaaa",
+                ),
+                (
+                    "darwin-arm64",
+                    "https://example.com/mytool-darwin-arm64.tar.gz",
+                    "bbbb",
+                ),
+                (
+                    "linux-amd64",
+                    "https://example.com/mytool-linux-amd64.tar.gz",
+                    "cccc",
+                ),
             ],
             "My tool",
             "MIT",
@@ -409,7 +449,11 @@ mod tests {
         let formula = generate_formula(
             "anodize",
             "3.2.1",
-            &[("darwin-arm64", "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-darwin-arm64.tar.gz", "aabbccdd11223344")],
+            &[(
+                "darwin-arm64",
+                "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-darwin-arm64.tar.gz",
+                "aabbccdd11223344",
+            )],
             "Release automation for Rust projects",
             "Apache-2.0",
             "bin.install \"anodize\"",
@@ -417,7 +461,10 @@ mod tests {
         );
 
         // Verify class declaration
-        assert!(formula.starts_with("class Anodize < Formula\n"), "should start with class declaration");
+        assert!(
+            formula.starts_with("class Anodize < Formula\n"),
+            "should start with class declaration"
+        );
 
         // Verify desc field
         assert!(formula.contains("  desc \"Release automation for Rust projects\"\n"));
@@ -451,7 +498,11 @@ mod tests {
         assert_eq!(formula.matches("class ").count(), 1);
         // The "end" count: 1 for install, 1 for test, 1 for class
         let end_lines: Vec<&str> = formula.lines().filter(|l| l.trim() == "end").collect();
-        assert_eq!(end_lines.len(), 3, "should have 3 'end' lines: install, test, class");
+        assert_eq!(
+            end_lines.len(),
+            3,
+            "should have 3 'end' lines: install, test, class"
+        );
     }
 
     #[test]
@@ -460,10 +511,26 @@ mod tests {
             "my-cli",
             "2.0.0",
             &[
-                ("darwin-arm64", "https://example.com/my-cli-2.0.0-darwin-arm64.tar.gz", "sha_darwin_arm64"),
-                ("darwin-amd64", "https://example.com/my-cli-2.0.0-darwin-amd64.tar.gz", "sha_darwin_amd64"),
-                ("linux-amd64", "https://example.com/my-cli-2.0.0-linux-amd64.tar.gz", "sha_linux_amd64"),
-                ("linux-arm64", "https://example.com/my-cli-2.0.0-linux-arm64.tar.gz", "sha_linux_arm64"),
+                (
+                    "darwin-arm64",
+                    "https://example.com/my-cli-2.0.0-darwin-arm64.tar.gz",
+                    "sha_darwin_arm64",
+                ),
+                (
+                    "darwin-amd64",
+                    "https://example.com/my-cli-2.0.0-darwin-amd64.tar.gz",
+                    "sha_darwin_amd64",
+                ),
+                (
+                    "linux-amd64",
+                    "https://example.com/my-cli-2.0.0-linux-amd64.tar.gz",
+                    "sha_linux_amd64",
+                ),
+                (
+                    "linux-arm64",
+                    "https://example.com/my-cli-2.0.0-linux-arm64.tar.gz",
+                    "sha_linux_arm64",
+                ),
             ],
             "A CLI tool",
             "MIT",
@@ -475,12 +542,23 @@ mod tests {
         assert!(formula.contains("class MyCli < Formula"));
 
         // Verify on_macos block with arch sub-blocks
-        assert_eq!(formula.matches("on_macos do").count(), 1, "exactly one on_macos block");
-        assert_eq!(formula.matches("on_linux do").count(), 1, "exactly one on_linux block");
+        assert_eq!(
+            formula.matches("on_macos do").count(),
+            1,
+            "exactly one on_macos block"
+        );
+        assert_eq!(
+            formula.matches("on_linux do").count(),
+            1,
+            "exactly one on_linux block"
+        );
 
         // Verify on_arm and on_intel are present inside macos
         assert!(formula.contains("on_arm do"), "should have on_arm block");
-        assert!(formula.contains("on_intel do"), "should have on_intel block");
+        assert!(
+            formula.contains("on_intel do"),
+            "should have on_intel block"
+        );
 
         // Verify all 4 URLs are present
         assert!(formula.contains("sha_darwin_arm64"));
@@ -489,7 +567,9 @@ mod tests {
         assert!(formula.contains("sha_linux_arm64"));
 
         // Verify indentation of arch blocks (6 spaces for url/sha256 inside arch)
-        assert!(formula.contains("      url \"https://example.com/my-cli-2.0.0-darwin-arm64.tar.gz\""));
+        assert!(
+            formula.contains("      url \"https://example.com/my-cli-2.0.0-darwin-arm64.tar.gz\"")
+        );
         assert!(formula.contains("      sha256 \"sha_darwin_arm64\""));
 
         // Verify install and test blocks are still present
@@ -522,9 +602,7 @@ mod tests {
 
     #[test]
     fn test_publish_to_homebrew_dry_run() {
-        use anodize_core::config::{
-            Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig,
-        };
+        use anodize_core::config::{Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig};
         use anodize_core::context::{Context, ContextOptions};
 
         let config = Config {

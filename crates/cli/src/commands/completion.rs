@@ -52,6 +52,9 @@ mod tests {
         let mut buf = Vec::new();
         generate(Shell::PowerShell, &mut cmd, "anodize", &mut buf);
         let output = String::from_utf8(buf).expect("completions should be valid UTF-8");
-        assert!(!output.is_empty(), "powershell completions should not be empty");
+        assert!(
+            !output.is_empty(),
+            "powershell completions should not be empty"
+        );
     }
 }

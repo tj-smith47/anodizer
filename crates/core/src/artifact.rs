@@ -118,9 +118,19 @@ pub fn print_size_report(registry: &ArtifactRegistry) {
     eprintln!();
     eprintln!("Artifact Sizes:");
     for (name, size) in &entries {
-        eprintln!("  {:<width$}  {}", name, format_size(*size), width = max_name_len);
+        eprintln!(
+            "  {:<width$}  {}",
+            name,
+            format_size(*size),
+            width = max_name_len
+        );
     }
-    eprintln!("  {:<width$}  {}", "Total:", format_size(total), width = max_name_len);
+    eprintln!(
+        "  {:<width$}  {}",
+        "Total:",
+        format_size(total),
+        width = max_name_len
+    );
 }
 
 #[cfg(test)]

@@ -8,14 +8,38 @@ struct ToolCheck {
 }
 
 const TOOLS: &[ToolCheck] = &[
-    ToolCheck { name: "cargo", description: "Rust package manager" },
-    ToolCheck { name: "git", description: "Version control" },
-    ToolCheck { name: "docker", description: "Container runtime" },
-    ToolCheck { name: "nfpm", description: "Linux package builder (deb/rpm/apk)" },
-    ToolCheck { name: "cargo-zigbuild", description: "Cross-compilation via Zig" },
-    ToolCheck { name: "cross", description: "Cross-compilation via Docker" },
-    ToolCheck { name: "gpg", description: "GNU Privacy Guard (signing)" },
-    ToolCheck { name: "cosign", description: "Sigstore container signing" },
+    ToolCheck {
+        name: "cargo",
+        description: "Rust package manager",
+    },
+    ToolCheck {
+        name: "git",
+        description: "Version control",
+    },
+    ToolCheck {
+        name: "docker",
+        description: "Container runtime",
+    },
+    ToolCheck {
+        name: "nfpm",
+        description: "Linux package builder (deb/rpm/apk)",
+    },
+    ToolCheck {
+        name: "cargo-zigbuild",
+        description: "Cross-compilation via Zig",
+    },
+    ToolCheck {
+        name: "cross",
+        description: "Cross-compilation via Docker",
+    },
+    ToolCheck {
+        name: "gpg",
+        description: "GNU Privacy Guard (signing)",
+    },
+    ToolCheck {
+        name: "cosign",
+        description: "Sigstore container signing",
+    },
 ];
 
 fn tool_available(name: &str) -> bool {

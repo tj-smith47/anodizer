@@ -98,10 +98,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
     // Find the windows-amd64 Archive artifact.
     let windows_artifact = ctx
         .artifacts
-        .by_kind_and_crate(
-            anodize_core::artifact::ArtifactKind::Archive,
-            crate_name,
-        )
+        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
         .into_iter()
         .find(|a| {
             a.target
@@ -120,11 +117,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
             .get("url")
             .cloned()
             .unwrap_or_else(|| art.path.to_string_lossy().into_owned());
-        let hash = art
-            .metadata
-            .get("sha256")
-            .cloned()
-            .unwrap_or_default();
+        let hash = art.metadata.get("sha256").cloned().unwrap_or_default();
         (url, hash)
     } else {
         eprintln!(
@@ -156,10 +149,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
             tok, bucket.owner, bucket.name
         )
     } else {
-        format!(
-            "https://github.com/{}/{}.git",
-            bucket.owner, bucket.name
-        )
+        format!("https://github.com/{}/{}.git", bucket.owner, bucket.name)
     };
 
     let tmp_dir = tempfile::tempdir().context("scoop: create temp dir")?;
@@ -167,7 +157,12 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
 
     run_cmd(
         "git",
-        &["clone", "--depth=1", &clone_url, &repo_path.to_string_lossy()],
+        &[
+            "clone",
+            "--depth=1",
+            &clone_url,
+            &repo_path.to_string_lossy(),
+        ],
         "scoop: git clone",
     )?;
 
@@ -175,7 +170,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
     std::fs::write(&manifest_path, &manifest)
         .with_context(|| format!("scoop: write manifest {}", manifest_path.display()))?;
 
-    eprintln!("[publish] wrote Scoop manifest: {}", manifest_path.display());
+    eprintln!(
+        "[publish] wrote Scoop manifest: {}",
+        manifest_path.display()
+    );
 
     run_cmd_in(
         repo_path,
@@ -240,6 +238,7 @@ fn run_cmd_in(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -273,14 +272,15 @@ mod tests {
         assert_eq!(json["description"], "A helpful tool");
         assert_eq!(json["version"], "2.1.0");
         assert_eq!(json["license"], "Apache-2.0");
-        assert_eq!(json["architecture"]["64bit"]["url"], "https://example.com/my-tool-2.1.0-windows-amd64.zip");
+        assert_eq!(
+            json["architecture"]["64bit"]["url"],
+            "https://example.com/my-tool-2.1.0-windows-amd64.zip"
+        );
     }
 
     #[test]
     fn test_publish_to_scoop_dry_run() {
-        use anodize_core::config::{
-            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
-        };
+        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
         use anodize_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
@@ -330,8 +330,8 @@ mod tests {
         );
 
         // Parse the manifest as JSON
-        let json: serde_json::Value = serde_json::from_str(&manifest)
-            .expect("manifest should be valid JSON");
+        let json: serde_json::Value =
+            serde_json::from_str(&manifest).expect("manifest should be valid JSON");
 
         // Verify top-level fields exist and have correct values
         assert_eq!(json["version"], "3.2.1");
@@ -341,7 +341,10 @@ mod tests {
 
         // Verify architecture.64bit structure
         let arch_64 = &json["architecture"]["64bit"];
-        assert!(arch_64.is_object(), "architecture.64bit should be an object");
+        assert!(
+            arch_64.is_object(),
+            "architecture.64bit should be an object"
+        );
         assert_eq!(
             arch_64["url"],
             "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip"
@@ -356,7 +359,10 @@ mod tests {
         let autoupdate = &json["autoupdate"];
         assert!(autoupdate.is_object(), "autoupdate should be an object");
         let auto_64 = &autoupdate["architecture"]["64bit"];
-        assert!(auto_64.is_object(), "autoupdate.architecture.64bit should be an object");
+        assert!(
+            auto_64.is_object(),
+            "autoupdate.architecture.64bit should be an object"
+        );
         let auto_url = auto_64["url"].as_str().unwrap();
         assert!(
             auto_url.contains("anodize"),
@@ -389,13 +395,34 @@ mod tests {
         // Verify all expected top-level keys
         let obj = json.as_object().unwrap();
         let keys: Vec<&String> = obj.keys().collect();
-        assert!(keys.iter().any(|k| k.as_str() == "version"), "should have version key");
-        assert!(keys.iter().any(|k| k.as_str() == "description"), "should have description key");
-        assert!(keys.iter().any(|k| k.as_str() == "homepage"), "should have homepage key");
-        assert!(keys.iter().any(|k| k.as_str() == "license"), "should have license key");
-        assert!(keys.iter().any(|k| k.as_str() == "architecture"), "should have architecture key");
-        assert!(keys.iter().any(|k| k.as_str() == "checkver"), "should have checkver key");
-        assert!(keys.iter().any(|k| k.as_str() == "autoupdate"), "should have autoupdate key");
+        assert!(
+            keys.iter().any(|k| k.as_str() == "version"),
+            "should have version key"
+        );
+        assert!(
+            keys.iter().any(|k| k.as_str() == "description"),
+            "should have description key"
+        );
+        assert!(
+            keys.iter().any(|k| k.as_str() == "homepage"),
+            "should have homepage key"
+        );
+        assert!(
+            keys.iter().any(|k| k.as_str() == "license"),
+            "should have license key"
+        );
+        assert!(
+            keys.iter().any(|k| k.as_str() == "architecture"),
+            "should have architecture key"
+        );
+        assert!(
+            keys.iter().any(|k| k.as_str() == "checkver"),
+            "should have checkver key"
+        );
+        assert!(
+            keys.iter().any(|k| k.as_str() == "autoupdate"),
+            "should have autoupdate key"
+        );
     }
 
     #[test]
@@ -412,7 +439,10 @@ mod tests {
         // Even with special characters, should produce valid JSON
         let json: serde_json::Value = serde_json::from_str(&manifest)
             .expect("manifest with special chars should still be valid JSON");
-        assert_eq!(json["description"], "A tool for \"parsing\" JSON & XML <data>");
+        assert_eq!(
+            json["description"],
+            "A tool for \"parsing\" JSON & XML <data>"
+        );
     }
 
     #[test]
@@ -429,8 +459,7 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(
-            json["architecture"]["64bit"]["bin"],
-            "my-special-cli",
+            json["architecture"]["64bit"]["bin"], "my-special-cli",
             "bin should match the tool name"
         );
     }
@@ -453,7 +482,9 @@ mod tests {
 
         // The autoupdate URL should follow the pattern:
         // https://github.com/<name>/<name>/releases/download/v$version/<name>-$version-windows-amd64.zip
-        assert!(auto_url.starts_with("https://github.com/release-tool/release-tool/releases/download/v$version/"));
+        assert!(auto_url.starts_with(
+            "https://github.com/release-tool/release-tool/releases/download/v$version/"
+        ));
         assert!(auto_url.ends_with("-windows-amd64.zip"));
         assert!(auto_url.contains("release-tool-$version-"));
     }

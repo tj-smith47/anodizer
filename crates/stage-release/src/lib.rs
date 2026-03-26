@@ -17,10 +17,7 @@ pub fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &str) -> b
     match config {
         Some(PrereleaseConfig::Auto) => {
             let t = tag.to_ascii_lowercase();
-            t.contains("-rc")
-                || t.contains("-beta")
-                || t.contains("-alpha")
-                || t.contains("-dev")
+            t.contains("-rc") || t.contains("-beta") || t.contains("-alpha") || t.contains("-dev")
         }
         Some(PrereleaseConfig::Bool(b)) => *b,
         None => false,
@@ -137,8 +134,8 @@ impl Stage for ReleaseStage {
             .collect();
 
         // Create the tokio runtime once, outside the loop.
-        let rt = tokio::runtime::Runtime::new()
-            .context("release: failed to create tokio runtime")?;
+        let rt =
+            tokio::runtime::Runtime::new().context("release: failed to create tokio runtime")?;
 
         for crate_cfg in &crates {
             let release_cfg = crate_cfg.release.as_ref().unwrap();
@@ -146,11 +143,15 @@ impl Stage for ReleaseStage {
             let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
 
             // Template-render header/footer before building release body.
-            let rendered_header = release_cfg.header.as_deref()
+            let rendered_header = release_cfg
+                .header
+                .as_deref()
                 .map(|h| ctx.render_template(h))
                 .transpose()
                 .with_context(|| format!("release: render header for crate '{}'", crate_name))?;
-            let rendered_footer = release_cfg.footer.as_deref()
+            let rendered_footer = release_cfg
+                .footer
+                .as_deref()
                 .map(|f| ctx.render_template(f))
                 .transpose()
                 .with_context(|| format!("release: render footer for crate '{}'", crate_name))?;
@@ -435,6 +436,7 @@ impl Stage for ReleaseStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use anodize_core::config::{Config, MakeLatestConfig, PrereleaseConfig};
@@ -442,22 +444,34 @@ mod tests {
 
     #[test]
     fn test_is_prerelease_auto_with_rc() {
-        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v1.0.0-rc.1"));
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v1.0.0-rc.1"
+        ));
     }
 
     #[test]
     fn test_is_prerelease_auto_stable() {
-        assert!(!should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v1.0.0"));
+        assert!(!should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v1.0.0"
+        ));
     }
 
     #[test]
     fn test_is_prerelease_explicit_true() {
-        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Bool(true)), "v1.0.0"));
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Bool(true)),
+            "v1.0.0"
+        ));
     }
 
     #[test]
     fn test_is_prerelease_explicit_false() {
-        assert!(!should_mark_prerelease(&Some(PrereleaseConfig::Bool(false)), "v1.0.0-rc.1"));
+        assert!(!should_mark_prerelease(
+            &Some(PrereleaseConfig::Bool(false)),
+            "v1.0.0-rc.1"
+        ));
     }
 
     #[test]
@@ -536,9 +550,8 @@ mod tests {
 
     #[test]
     fn test_collect_extra_files_no_matches() {
-        let result = collect_extra_files(&[
-            "/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string(),
-        ]);
+        let result =
+            collect_extra_files(&["/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string()]);
         assert!(result.is_empty());
     }
 
@@ -552,7 +565,11 @@ mod tests {
 
         let pattern = dir.join("*.txt").to_string_lossy().into_owned();
         let result = collect_extra_files(&[pattern]);
-        assert!(result.iter().any(|p| p.file_name().unwrap() == "test_extra.txt"));
+        assert!(
+            result
+                .iter()
+                .any(|p| p.file_name().unwrap() == "test_extra.txt")
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -662,9 +679,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v1.0.0".to_string(),
             release: Some(ReleaseConfig {
-                extra_files: Some(vec![
-                    "/tmp/anodize_test_nonexistent/*.sig".to_string(),
-                ]),
+                extra_files: Some(vec!["/tmp/anodize_test_nonexistent/*.sig".to_string()]),
                 ..Default::default()
             }),
             ..Default::default()
@@ -814,17 +829,26 @@ mod tests {
 
     #[test]
     fn test_prerelease_auto_detects_alpha() {
-        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v1.0.0-alpha.1"));
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v1.0.0-alpha.1"
+        ));
     }
 
     #[test]
     fn test_prerelease_auto_detects_beta() {
-        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v2.0.0-beta"));
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v2.0.0-beta"
+        ));
     }
 
     #[test]
     fn test_prerelease_auto_detects_dev() {
-        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v1.0.0-dev.5"));
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v1.0.0-dev.5"
+        ));
     }
 
     #[test]

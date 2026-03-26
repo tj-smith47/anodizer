@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use anyhow::Result;
+use std::path::PathBuf;
 
 #[allow(dead_code)] // Fields consumed when build command is fully implemented
 pub struct BuildOpts {
@@ -39,7 +39,10 @@ mod tests {
             parallelism: 2,
             single_target: Some("x86_64-unknown-linux-gnu".to_string()),
         };
-        assert_eq!(opts.single_target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+        assert_eq!(
+            opts.single_target.as_deref(),
+            Some("x86_64-unknown-linux-gnu")
+        );
     }
 
     #[test]

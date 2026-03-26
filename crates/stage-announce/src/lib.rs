@@ -32,92 +32,92 @@ impl Stage for AnnounceStage {
         // Discord
         // ----------------------------------------------------------------
         if let Some(discord_cfg) = &announce.discord
-            && discord_cfg.enabled.unwrap_or(false) {
-                let raw_url = discord_cfg
-                    .webhook_url
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("announce.discord: missing webhook_url"))?;
-                let url = ctx.render_template(raw_url)?;
+            && discord_cfg.enabled.unwrap_or(false)
+        {
+            let raw_url = discord_cfg
+                .webhook_url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("announce.discord: missing webhook_url"))?;
+            let url = ctx.render_template(raw_url)?;
 
-                let tmpl = discord_cfg
-                    .message_template
-                    .as_deref()
-                    .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
+            let tmpl = discord_cfg
+                .message_template
+                .as_deref()
+                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
 
-                let message = ctx.render_template(tmpl)?;
+            let message = ctx.render_template(tmpl)?;
 
-                if ctx.is_dry_run() {
-                    eprintln!("[announce] (dry-run) discord: {}", message);
-                } else {
-                    eprintln!("[announce] discord: {}", message);
-                    discord::send_discord(&url, &message)?;
-                }
+            if ctx.is_dry_run() {
+                eprintln!("[announce] (dry-run) discord: {}", message);
+            } else {
+                eprintln!("[announce] discord: {}", message);
+                discord::send_discord(&url, &message)?;
+            }
         }
 
         // ----------------------------------------------------------------
         // Slack
         // ----------------------------------------------------------------
         if let Some(slack_cfg) = &announce.slack
-            && slack_cfg.enabled.unwrap_or(false) {
-                let raw_url = slack_cfg
-                    .webhook_url
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("announce.slack: missing webhook_url"))?;
-                let url = ctx.render_template(raw_url)?;
+            && slack_cfg.enabled.unwrap_or(false)
+        {
+            let raw_url = slack_cfg
+                .webhook_url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("announce.slack: missing webhook_url"))?;
+            let url = ctx.render_template(raw_url)?;
 
-                let tmpl = slack_cfg
-                    .message_template
-                    .as_deref()
-                    .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
+            let tmpl = slack_cfg
+                .message_template
+                .as_deref()
+                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
 
-                let message = ctx.render_template(tmpl)?;
+            let message = ctx.render_template(tmpl)?;
 
-                if ctx.is_dry_run() {
-                    eprintln!("[announce] (dry-run) slack: {}", message);
-                } else {
-                    eprintln!("[announce] slack: {}", message);
-                    slack::send_slack(&url, &message)?;
-                }
+            if ctx.is_dry_run() {
+                eprintln!("[announce] (dry-run) slack: {}", message);
+            } else {
+                eprintln!("[announce] slack: {}", message);
+                slack::send_slack(&url, &message)?;
+            }
         }
 
         // ----------------------------------------------------------------
         // Generic HTTP webhook
         // ----------------------------------------------------------------
         if let Some(webhook_cfg) = &announce.webhook
-            && webhook_cfg.enabled.unwrap_or(false) {
-                let raw_url = webhook_cfg
-                    .endpoint_url
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("announce.webhook: missing endpoint_url"))?;
-                let url = ctx.render_template(raw_url)?;
+            && webhook_cfg.enabled.unwrap_or(false)
+        {
+            let raw_url = webhook_cfg
+                .endpoint_url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("announce.webhook: missing endpoint_url"))?;
+            let url = ctx.render_template(raw_url)?;
 
-                let tmpl = webhook_cfg
-                    .message_template
-                    .as_deref()
-                    .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
+            let tmpl = webhook_cfg
+                .message_template
+                .as_deref()
+                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
 
-                let message = ctx.render_template(tmpl)?;
+            let message = ctx.render_template(tmpl)?;
 
-                let raw_headers = webhook_cfg
-                    .headers
-                    .clone()
-                    .unwrap_or_default();
-                let mut headers = HashMap::new();
-                for (k, v) in &raw_headers {
-                    headers.insert(k.clone(), ctx.render_template(v)?);
-                }
+            let raw_headers = webhook_cfg.headers.clone().unwrap_or_default();
+            let mut headers = HashMap::new();
+            for (k, v) in &raw_headers {
+                headers.insert(k.clone(), ctx.render_template(v)?);
+            }
 
-                let content_type = webhook_cfg
-                    .content_type
-                    .clone()
-                    .unwrap_or_else(|| "application/json".to_string());
+            let content_type = webhook_cfg
+                .content_type
+                .clone()
+                .unwrap_or_else(|| "application/json".to_string());
 
-                if ctx.is_dry_run() {
-                    eprintln!("[announce] (dry-run) webhook: {}", message);
-                } else {
-                    eprintln!("[announce] webhook: {}", message);
-                    webhook::send_webhook(&url, &message, &headers, &content_type)?;
-                }
+            if ctx.is_dry_run() {
+                eprintln!("[announce] (dry-run) webhook: {}", message);
+            } else {
+                eprintln!("[announce] webhook: {}", message);
+                webhook::send_webhook(&url, &message, &headers, &content_type)?;
+            }
         }
 
         Ok(())
@@ -129,6 +129,7 @@ impl Stage for AnnounceStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use anodize_core::config::{AnnounceConfig, AnnounceProviderConfig, Config, WebhookConfig};
@@ -140,8 +141,10 @@ mod tests {
         config.announce = announce;
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v1.0.0");
-        ctx.template_vars_mut()
-            .set("ReleaseURL", "https://github.com/org/myapp/releases/tag/v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
         ctx
     }
 
@@ -206,9 +209,7 @@ mod tests {
             discord: Some(AnnounceProviderConfig {
                 enabled: Some(true),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
-                message_template: Some(
-                    "{{ .ProjectName }} {{ .Tag }} released!".to_string(),
-                ),
+                message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
             }),
             slack: None,
             webhook: None,
@@ -233,9 +234,7 @@ mod tests {
             slack: Some(AnnounceProviderConfig {
                 enabled: Some(true),
                 webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
-                message_template: Some(
-                    "{{ .ProjectName }} {{ .Tag }} released!".to_string(),
-                ),
+                message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
             }),
             webhook: None,
         };
@@ -261,9 +260,7 @@ mod tests {
                 endpoint_url: Some("https://example.invalid/hook".to_string()),
                 headers: None,
                 content_type: Some("application/json".to_string()),
-                message_template: Some(
-                    "{{ .ProjectName }} {{ .Tag }} released!".to_string(),
-                ),
+                message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
             }),
         };
         let mut config = Config::default();

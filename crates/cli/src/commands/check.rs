@@ -1,8 +1,8 @@
+use crate::pipeline;
+use anodize_core::config::{Config, CrateConfig};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use anodize_core::config::{Config, CrateConfig};
-use crate::pipeline;
 
 pub fn run(config_override: Option<&Path>) -> Result<()> {
     let path = pipeline::find_config(config_override)?;
@@ -82,18 +82,35 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
 
     // 5. Target triples are recognized
     {
-        let known_prefixes = ["x86_64", "aarch64", "i686", "armv7", "arm", "riscv64gc", "s390x", "powerpc64le"];
-        let known_os = ["linux", "darwin", "apple", "windows", "freebsd", "netbsd", "android"];
+        let known_prefixes = [
+            "x86_64",
+            "aarch64",
+            "i686",
+            "armv7",
+            "arm",
+            "riscv64gc",
+            "s390x",
+            "powerpc64le",
+        ];
+        let known_os = [
+            "linux", "darwin", "apple", "windows", "freebsd", "netbsd", "android",
+        ];
         let mut check_triple = |triple: &str, context: &str| {
             let parts: Vec<&str> = triple.split('-').collect();
-            let arch_ok = parts.first().is_some_and(|a| known_prefixes.iter().any(|p| a.starts_with(p)));
+            let arch_ok = parts
+                .first()
+                .is_some_and(|a| known_prefixes.iter().any(|p| a.starts_with(p)));
             let os_ok = known_os.iter().any(|os| triple.contains(os));
             if !arch_ok || !os_ok {
-                warnings.push(format!("{}: unrecognized target triple '{}'", context, triple));
+                warnings.push(format!(
+                    "{}: unrecognized target triple '{}'",
+                    context, triple
+                ));
             }
         };
         if let Some(defaults) = &config.defaults
-            && let Some(targets) = &defaults.targets {
+            && let Some(targets) = &defaults.targets
+        {
             for t in targets {
                 check_triple(t, "defaults.targets");
             }
@@ -132,7 +149,8 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
     // 6b. Validate changelog use_source value
     if let Some(cl) = &config.changelog
         && let Some(ref use_source) = cl.use_source
-        && use_source != "git" && use_source != "github-native"
+        && use_source != "git"
+        && use_source != "github-native"
     {
         warnings.push(format!(
             "changelog: unrecognized 'use' value '{}' (valid: git, github-native)",
@@ -145,8 +163,10 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         && let Some(cksum) = &defaults.checksum
         && cksum.disable == Some(true)
     {
-        let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some()
-            || cksum.extra_files.is_some() || cksum.ids.is_some();
+        let has_other = cksum.algorithm.is_some()
+            || cksum.name_template.is_some()
+            || cksum.extra_files.is_some()
+            || cksum.ids.is_some();
         if has_other {
             warnings.push(
                 "defaults.checksum: disable is true but other checksum fields are also set (they will be ignored)".to_string(),
@@ -159,8 +179,10 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         if let Some(cksum) = &c.checksum
             && cksum.disable == Some(true)
         {
-            let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some()
-                || cksum.extra_files.is_some() || cksum.ids.is_some();
+            let has_other = cksum.algorithm.is_some()
+                || cksum.name_template.is_some()
+                || cksum.extra_files.is_some()
+                || cksum.ids.is_some();
             if has_other {
                 warnings.push(format!(
                     "crate '{}': checksum disable is true but other checksum fields are also set (they will be ignored)",
@@ -184,7 +206,9 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
     }
 
     // 10. Validate sign artifact filter values
-    let valid_artifact_filters = ["none", "all", "checksum", "source", "archive", "binary", "package"];
+    let valid_artifact_filters = [
+        "none", "all", "checksum", "source", "archive", "binary", "package",
+    ];
     for sign_cfg in &config.signs {
         if let Some(ref filter) = sign_cfg.artifacts
             && !valid_artifact_filters.contains(&filter.as_str())
@@ -198,7 +222,9 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
     }
 
     // 11. Validate checksum algorithm values
-    let valid_algorithms = ["sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "blake2s"];
+    let valid_algorithms = [
+        "sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "blake2s",
+    ];
     if let Some(defaults) = &config.defaults
         && let Some(cksum) = &defaults.checksum
         && let Some(ref algo) = cksum.algorithm
@@ -206,7 +232,8 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
     {
         warnings.push(format!(
             "defaults.checksum: unrecognized algorithm '{}' (valid: {})",
-            algo, valid_algorithms.join(", ")
+            algo,
+            valid_algorithms.join(", ")
         ));
     }
     for c in &config.crates {
@@ -216,7 +243,9 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         {
             warnings.push(format!(
                 "crate '{}': unrecognized checksum algorithm '{}' (valid: {})",
-                c.name, algo, valid_algorithms.join(", ")
+                c.name,
+                algo,
+                valid_algorithms.join(", ")
             ));
         }
     }
@@ -228,27 +257,35 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
     if check_env {
         let needs_cross = config.crates.iter().any(|c| {
             use anodize_core::config::CrossStrategy;
-            matches!(&c.cross, Some(CrossStrategy::Zigbuild) | Some(CrossStrategy::Auto))
-                || config
-                    .defaults
-                    .as_ref()
-                    .and_then(|d| d.cross.as_ref())
-                    .is_some_and(|cs| matches!(cs, CrossStrategy::Zigbuild | CrossStrategy::Auto))
+            matches!(
+                &c.cross,
+                Some(CrossStrategy::Zigbuild) | Some(CrossStrategy::Auto)
+            ) || config
+                .defaults
+                .as_ref()
+                .and_then(|d| d.cross.as_ref())
+                .is_some_and(|cs| matches!(cs, CrossStrategy::Zigbuild | CrossStrategy::Auto))
         });
 
         if needs_cross || config.crates.iter().any(|c| c.builds.is_some()) {
             if !tool_available("cargo-zigbuild") {
-                warnings.push("cargo-zigbuild is not installed (needed for cross-compilation via zigbuild)".to_string());
+                warnings.push(
+                    "cargo-zigbuild is not installed (needed for cross-compilation via zigbuild)"
+                        .to_string(),
+                );
             }
             if !tool_available("cross") {
-                warnings.push("cross is not installed (needed for cross-compilation via cross)".to_string());
+                warnings.push(
+                    "cross is not installed (needed for cross-compilation via cross)".to_string(),
+                );
             }
         }
 
         let needs_docker = config.crates.iter().any(|c| c.docker.is_some());
         if needs_docker {
             if !tool_available("docker") {
-                warnings.push("docker is not installed but docker sections are configured".to_string());
+                warnings
+                    .push("docker is not installed but docker sections are configured".to_string());
             } else {
                 // Check for docker buildx
                 let buildx_ok = std::process::Command::new("docker")
@@ -257,14 +294,18 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
                     .map(|o| o.status.success())
                     .unwrap_or(false);
                 if !buildx_ok {
-                    warnings.push("docker buildx is not available but docker sections are configured".to_string());
+                    warnings.push(
+                        "docker buildx is not available but docker sections are configured"
+                            .to_string(),
+                    );
                 }
             }
         }
 
         let needs_release = config.crates.iter().any(|c| c.release.is_some());
         if needs_release && std::env::var("GITHUB_TOKEN").is_err() {
-            warnings.push("GITHUB_TOKEN is not set but release sections are configured".to_string());
+            warnings
+                .push("GITHUB_TOKEN is not set but release sections are configured".to_string());
         }
 
         let needs_nfpm = config.crates.iter().any(|c| c.nfpm.is_some());
@@ -277,7 +318,10 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
             for sign_cfg in &config.signs {
                 let sign_cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg");
                 if !tool_available(sign_cmd) {
-                    warnings.push(format!("'{}' is not installed but signs section is configured", sign_cmd));
+                    warnings.push(format!(
+                        "'{}' is not installed but signs section is configured",
+                        sign_cmd
+                    ));
                 }
             }
         }
@@ -285,7 +329,10 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
             for ds in docker_signs {
                 let cmd = ds.cmd.as_deref().unwrap_or("cosign");
                 if !tool_available(cmd) {
-                    warnings.push(format!("'{}' is not installed but docker_signs section is configured", cmd));
+                    warnings.push(format!(
+                        "'{}' is not installed but docker_signs section is configured",
+                        cmd
+                    ));
                 }
             }
         }
@@ -518,7 +565,10 @@ mod tests {
         use anodize_core::config::BuildConfig;
         let mut c = make_crate("a", "a-v{{ .Version }}", None);
         c.builds = Some(vec![
-            BuildConfig { binary: "a".to_string(), ..Default::default() },
+            BuildConfig {
+                binary: "a".to_string(),
+                ..Default::default()
+            },
             BuildConfig {
                 binary: "b".to_string(),
                 copy_from: Some("a".to_string()),
@@ -598,7 +648,10 @@ mod tests {
     fn test_whitespace_only_crate_name_fails() {
         let config = make_config(vec![make_crate("  ", "v{{ .Version }}", None)]);
         let result = run_checks(&config, false);
-        assert!(result.is_err(), "whitespace-only crate name should fail validation");
+        assert!(
+            result.is_err(),
+            "whitespace-only crate name should fail validation"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("1 error(s)"),
@@ -634,7 +687,10 @@ mod tests {
         // Has a placeholder but not {{ .Version }}
         let config = make_config(vec![make_crate("a", "{{ .Tag }}-release", None)]);
         let result = run_checks(&config, false);
-        assert!(result.is_err(), "tag_template without Version placeholder should fail");
+        assert!(
+            result.is_err(),
+            "tag_template without Version placeholder should fail"
+        );
         let msg = result.unwrap_err().to_string();
         assert!(
             msg.contains("1 error(s)"),
@@ -647,15 +703,19 @@ mod tests {
     #[test]
     fn test_multiple_validation_errors_reported() {
         let crates = vec![
-            make_crate("", "v{{ .Version }}", None),  // empty name
-            make_crate("b", "bad-tag", Some(vec!["nonexistent"])),  // missing dep + bad template
+            make_crate("", "v{{ .Version }}", None), // empty name
+            make_crate("b", "bad-tag", Some(vec!["nonexistent"])), // missing dep + bad template
         ];
         let config = make_config(crates);
         let result = run_checks(&config, false);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         // Should report exactly 3 errors: empty name, missing dep, bad tag_template
-        assert!(msg.contains("3 error(s)"), "should report 3 error(s), got: {}", msg);
+        assert!(
+            msg.contains("3 error(s)"),
+            "should report 3 error(s), got: {}",
+            msg
+        );
     }
 
     #[test]

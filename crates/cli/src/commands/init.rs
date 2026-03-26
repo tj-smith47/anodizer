@@ -80,7 +80,11 @@ pub fn generate_config(root: &str) -> Result<String> {
                     .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
                     .unwrap_or_else(|| "project".to_string())
             });
-        let is_binary = root_cargo.bin.as_ref().map(|b| !b.is_empty()).unwrap_or(false)
+        let is_binary = root_cargo
+            .bin
+            .as_ref()
+            .map(|b| !b.is_empty())
+            .unwrap_or(false)
             || root_path.join("src/main.rs").exists();
         vec![CrateInfo {
             name: name.clone(),
@@ -197,7 +201,9 @@ fn extract_workspace_deps(cargo: &CargoToml, member_names: &HashSet<String>) -> 
             let is_member = member_names.contains(dep_name) && {
                 match val {
                     toml::Value::Table(t) => {
-                        t.contains_key("path") || t.get("workspace").is_some_and(|v| v.as_bool() == Some(true))
+                        t.contains_key("path")
+                            || t.get("workspace")
+                                .is_some_and(|v| v.as_bool() == Some(true))
                     }
                     _ => false,
                 }
@@ -235,9 +241,8 @@ fn topological_sort(crates: &[CrateInfo]) -> Vec<&CrateInfo> {
         }
     }
 
-    let mut queue: std::collections::VecDeque<usize> = (0..crates.len())
-        .filter(|&i| in_degree[i] == 0)
-        .collect();
+    let mut queue: std::collections::VecDeque<usize> =
+        (0..crates.len()).filter(|&i| in_degree[i] == 0).collect();
     let mut result = vec![];
 
     while let Some(node) = queue.pop_front() {

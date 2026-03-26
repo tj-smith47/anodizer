@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use anyhow::{Context as _, Result};
-use anodize_core::context::{Context, ContextOptions};
-use anodize_core::config::{CrateConfig, GitHubConfig};
-use anodize_core::artifact;
-use anodize_core::git;
 use crate::pipeline;
+use anodize_core::artifact;
+use anodize_core::config::{CrateConfig, GitHubConfig};
+use anodize_core::context::{Context, ContextOptions};
+use anodize_core::git;
+use anyhow::{Context as _, Result};
+use std::path::PathBuf;
 
 pub struct ReleaseOpts {
     pub crate_names: Vec<String>,
@@ -24,7 +24,8 @@ pub struct ReleaseOpts {
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
-    let mut config = pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
+    let mut config =
+        pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
 
     // Auto-detect GitHub owner/name from git remote when release config is
     // present but the `github` section is omitted. Detect once and reuse.
@@ -34,7 +35,10 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             && release.github.is_none()
         {
             if let Some((ref owner, ref name)) = detected_github {
-                release.github = Some(GitHubConfig { owner: owner.clone(), name: name.clone() });
+                release.github = Some(GitHubConfig {
+                    owner: owner.clone(),
+                    name: name.clone(),
+                });
             } else {
                 eprintln!("[release] warning: could not auto-detect GitHub repo from git remote");
             }
@@ -90,7 +94,46 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         }
     }
 
-    // TODO: call detect_git_info() + ctx.populate_git_vars() once tag resolution is implemented
+    // Resolve tag and populate git variables before running the pipeline.
+    // Each selected crate gets its own tag via tag_template; for now we resolve
+    // the first selected crate's tag (monorepo support will iterate later).
+    let first_crate = ctx
+        .options
+        .selected_crates
+        .first()
+        .and_then(|name| config.crates.iter().find(|c| &c.name == name))
+        .or_else(|| config.crates.first());
+
+    if let Some(crate_cfg) = first_crate {
+        // Find latest existing tag matching this crate's tag_template
+        let latest_tag = git::find_latest_tag_matching(&crate_cfg.tag_template)
+            .ok()
+            .flatten();
+
+        // Determine the tag to use for git info.
+        // Use latest existing tag as base, or fall back to v0.0.0 for first release.
+        let tag = latest_tag
+            .clone()
+            .unwrap_or_else(|| "v0.0.0".to_string());
+
+        match git::detect_git_info(&tag) {
+            Ok(mut git_info) => {
+                // Set previous tag
+                git_info.previous_tag = latest_tag;
+                ctx.git_info = Some(git_info);
+                ctx.populate_git_vars();
+            }
+            Err(e) => {
+                eprintln!("[release] warning: could not detect git info: {e}");
+                // Still populate snapshot/draft vars even without git info
+                ctx.populate_git_vars();
+            }
+        }
+    } else {
+        // No crates configured; populate non-git vars only
+        ctx.populate_git_vars();
+    }
+
     let p = pipeline::build_release_pipeline();
     let result = p.run(&mut ctx);
 
@@ -102,14 +145,16 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         }
 
         // Write metadata.json to dist/
-        let metadata = ctx.artifacts.to_metadata_json()
+        let metadata = ctx
+            .artifacts
+            .to_metadata_json()
             .context("failed to serialize artifact metadata")?;
         let dist = &config.dist;
         std::fs::create_dir_all(dist)
             .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
         let metadata_path = dist.join("metadata.json");
-        let json_str = serde_json::to_string_pretty(&metadata)
-            .context("failed to serialize metadata JSON")?;
+        let json_str =
+            serde_json::to_string_pretty(&metadata).context("failed to serialize metadata JSON")?;
         std::fs::write(&metadata_path, &json_str)
             .with_context(|| format!("failed to write {}", metadata_path.display()))?;
         eprintln!("  wrote {}", metadata_path.display());
@@ -131,7 +176,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Run hooks after pipeline (only if pipeline succeeded)
     if result.is_ok()
-        && let Some(after) = &config.after {
+        && let Some(after) = &config.after
+    {
         pipeline::run_hooks(&after.hooks, "after", opts.dry_run)?;
     }
 
@@ -157,11 +203,17 @@ fn detect_changed_crates(crates: &[CrateConfig]) -> Result<Vec<String>> {
                 // Track the earliest tag for workspace-level check
                 let sv = git::parse_semver(tag).ok();
                 if let Some(sv) = sv {
-                    let is_older = oldest_tag.as_ref().and_then(|t| git::parse_semver(t).ok()).map(|osv| {
-                        sv.major < osv.major
-                            || (sv.major == osv.major && sv.minor < osv.minor)
-                            || (sv.major == osv.major && sv.minor == osv.minor && sv.patch < osv.patch)
-                    }).unwrap_or(true);
+                    let is_older = oldest_tag
+                        .as_ref()
+                        .and_then(|t| git::parse_semver(t).ok())
+                        .map(|osv| {
+                            sv.major < osv.major
+                                || (sv.major == osv.major && sv.minor < osv.minor)
+                                || (sv.major == osv.major
+                                    && sv.minor == osv.minor
+                                    && sv.patch < osv.patch)
+                        })
+                        .unwrap_or(true);
                     if is_older {
                         oldest_tag = Some(tag.clone());
                     }
@@ -185,7 +237,14 @@ fn detect_changed_crates(crates: &[CrateConfig]) -> Result<Vec<String>> {
 /// Check if workspace-level files (Cargo.toml, Cargo.lock) changed since tag.
 fn check_workspace_files_changed(tag: &str) -> Result<bool> {
     let output = std::process::Command::new("git")
-        .args(["diff", "--name-only", &format!("{}..HEAD", tag), "--", "Cargo.toml", "Cargo.lock"])
+        .args([
+            "diff",
+            "--name-only",
+            &format!("{}..HEAD", tag),
+            "--",
+            "Cargo.toml",
+            "Cargo.lock",
+        ])
         .output()?;
     if output.status.success() {
         Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())

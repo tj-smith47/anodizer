@@ -184,7 +184,9 @@ where
             if !v {
                 Ok(ArchivesConfig::Disabled)
             } else {
-                Err(E::custom("archives: true is not valid; use false or a list"))
+                Err(E::custom(
+                    "archives: true is not valid; use false or a list",
+                ))
             }
         }
 
@@ -323,7 +325,10 @@ pub enum PrereleaseConfig {
 }
 
 impl Serialize for PrereleaseConfig {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         match self {
             PrereleaseConfig::Auto => serializer.serialize_str("auto"),
             PrereleaseConfig::Bool(b) => serializer.serialize_bool(*b),
@@ -332,17 +337,25 @@ impl Serialize for PrereleaseConfig {
 }
 
 impl<'de> Deserialize<'de> for PrereleaseConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         struct PrereleaseVisitor;
         impl serde::de::Visitor<'_> for PrereleaseVisitor {
             type Value = PrereleaseConfig;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "\"auto\" or a boolean")
             }
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<PrereleaseConfig, E> {
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                v: bool,
+            ) -> std::result::Result<PrereleaseConfig, E> {
                 Ok(PrereleaseConfig::Bool(v))
             }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<PrereleaseConfig, E> {
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<PrereleaseConfig, E> {
                 if v == "auto" {
                     Ok(PrereleaseConfig::Auto)
                 } else {
@@ -362,7 +375,10 @@ pub enum MakeLatestConfig {
 }
 
 impl Serialize for MakeLatestConfig {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         match self {
             MakeLatestConfig::Auto => serializer.serialize_str("auto"),
             MakeLatestConfig::Bool(b) => serializer.serialize_bool(*b),
@@ -371,17 +387,25 @@ impl Serialize for MakeLatestConfig {
 }
 
 impl<'de> Deserialize<'de> for MakeLatestConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         struct MakeLatestVisitor;
         impl serde::de::Visitor<'_> for MakeLatestVisitor {
             type Value = MakeLatestConfig;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "\"auto\" or a boolean")
             }
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<MakeLatestConfig, E> {
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                v: bool,
+            ) -> std::result::Result<MakeLatestConfig, E> {
                 Ok(MakeLatestConfig::Bool(v))
             }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<MakeLatestConfig, E> {
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<MakeLatestConfig, E> {
                 if v == "auto" {
                     Ok(MakeLatestConfig::Auto)
                 } else {
@@ -413,7 +437,10 @@ impl PublishConfig {
                 enabled: *enabled,
                 index_timeout: 300,
             },
-            Some(CratesPublishConfig::Object { enabled, index_timeout }) => CratesPublishSettings {
+            Some(CratesPublishConfig::Object {
+                enabled,
+                index_timeout,
+            }) => CratesPublishSettings {
                 enabled: *enabled,
                 index_timeout: *index_timeout,
             },
@@ -794,7 +821,10 @@ crates:
     archives: false
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(config.crates[0].archives, ArchivesConfig::Disabled));
+        assert!(matches!(
+            config.crates[0].archives,
+            ArchivesConfig::Disabled
+        ));
     }
 
     #[test]
@@ -809,7 +839,14 @@ crates:
       crates: true
 "#;
         let config: Config = serde_yaml::from_str(yaml_bool).unwrap();
-        assert!(config.crates[0].publish.as_ref().unwrap().crates_config().enabled);
+        assert!(
+            config.crates[0]
+                .publish
+                .as_ref()
+                .unwrap()
+                .crates_config()
+                .enabled
+        );
 
         let yaml_obj = r#"
 project_name: test
@@ -1501,10 +1538,7 @@ crates:
         assert!(result.is_err(), "malformed YAML should fail to parse");
         let err = result.unwrap_err().to_string();
         // Serde_yaml errors include line/column info
-        assert!(
-            !err.is_empty(),
-            "error message should not be empty"
-        );
+        assert!(!err.is_empty(), "error message should not be empty");
     }
 
     #[test]
@@ -1514,10 +1548,7 @@ project_name: test
 crates: "this should be an array"
 "#;
         let result: Result<Config, _> = serde_yaml::from_str(yaml);
-        assert!(
-            result.is_err(),
-            "string where array expected should fail"
-        );
+        assert!(result.is_err(), "string where array expected should fail");
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("invalid type") || err.contains("expected a sequence"),
@@ -1568,7 +1599,9 @@ crates:
         );
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("invalid type") || err.contains("expected a sequence") || err.contains("targets"),
+            err.contains("invalid type")
+                || err.contains("expected a sequence")
+                || err.contains("targets"),
             "error should mention type mismatch for targets, got: {err}"
         );
     }
@@ -1648,9 +1681,16 @@ crates:
         let yaml = "";
         let result: Result<Config, _> = serde_yaml::from_str(yaml);
         let config = result.expect("empty YAML should parse to Config defaults");
-        assert!(config.project_name.is_empty(), "default project_name should be empty");
+        assert!(
+            config.project_name.is_empty(),
+            "default project_name should be empty"
+        );
         assert!(config.crates.is_empty(), "default crates should be empty");
-        assert_eq!(config.dist, std::path::PathBuf::from("./dist"), "default dist should be ./dist");
+        assert_eq!(
+            config.dist,
+            std::path::PathBuf::from("./dist"),
+            "default dist should be ./dist"
+        );
     }
 
     // ---- Unknown fields tests ----
@@ -1707,8 +1747,21 @@ crates:
       future_field: "ignored"
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.defaults.as_ref().unwrap().targets.as_ref().unwrap().len(), 1);
-        assert_eq!(config.changelog.as_ref().unwrap().sort, Some("asc".to_string()));
+        assert_eq!(
+            config
+                .defaults
+                .as_ref()
+                .unwrap()
+                .targets
+                .as_ref()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            config.changelog.as_ref().unwrap().sort,
+            Some("asc".to_string())
+        );
         assert_eq!(
             config.crates[0].checksum.as_ref().unwrap().algorithm,
             Some("sha256".to_string())

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
@@ -25,9 +25,9 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
             if current_num.is_empty() {
                 bail!("invalid duration: expected a number before '{}'", ch);
             }
-            let n: u64 = current_num.parse().map_err(|_| {
-                anyhow::anyhow!("invalid number in duration: {}", current_num)
-            })?;
+            let n: u64 = current_num
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid number in duration: {}", current_num))?;
             current_num.clear();
 
             match ch {
@@ -169,10 +169,7 @@ mod tests {
             anyhow::bail!("intentional error");
         });
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "intentional error"
-        );
+        assert_eq!(result.unwrap_err().to_string(), "intentional error");
     }
 
     // Note: we cannot easily test the actual timeout/process::exit path in a

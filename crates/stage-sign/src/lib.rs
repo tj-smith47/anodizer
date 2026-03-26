@@ -36,11 +36,7 @@ pub fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> bool {
 
 /// Resolve the signature output path from a `SignConfig::signature` template
 /// or fall back to the default `{artifact}.sig`.
-fn resolve_signature_path(
-    sign_cfg: &SignConfig,
-    artifact_path: &str,
-    ctx: &Context,
-) -> String {
+fn resolve_signature_path(sign_cfg: &SignConfig, artifact_path: &str, ctx: &Context) -> String {
     if let Some(ref sig_template) = sign_cfg.signature {
         // Set Artifact as a template variable so Tera can resolve it natively.
         // Also do a Go-compat string replacement for {{ .Artifact }} patterns
@@ -100,36 +96,29 @@ impl Stage for SignStage {
         // ----------------------------------------------------------------
         let sign_configs = ctx.config.signs.clone();
         for sign_cfg in &sign_configs {
-            let filter = sign_cfg
-                .artifacts
-                .as_deref()
-                .unwrap_or("checksum");
+            let filter = sign_cfg.artifacts.as_deref().unwrap_or("checksum");
 
             if filter == "none" {
                 continue;
             }
 
-            let cmd = sign_cfg
-                .cmd
-                .as_deref()
-                .unwrap_or("gpg")
-                .to_string();
+            let cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg").to_string();
 
-            let args = sign_cfg
-                .args
-                .clone()
-                .unwrap_or_else(|| {
-                    vec![
-                        "--output".to_string(),
-                        "{{ .Signature }}".to_string(),
-                        "--detach-sig".to_string(),
-                        "{{ .Artifact }}".to_string(),
-                    ]
-                });
+            let args = sign_cfg.args.clone().unwrap_or_else(|| {
+                vec![
+                    "--output".to_string(),
+                    "{{ .Signature }}".to_string(),
+                    "--detach-sig".to_string(),
+                    "{{ .Artifact }}".to_string(),
+                ]
+            });
 
             // Collect matching artifacts (avoid holding an immutable borrow
             // while we later add new ones, so clone paths up-front).
-            let artifact_paths: Vec<(std::path::PathBuf, std::collections::HashMap<String, String>)> = ctx
+            let artifact_paths: Vec<(
+                std::path::PathBuf,
+                std::collections::HashMap<String, String>,
+            )> = ctx
                 .artifacts
                 .all()
                 .iter()
@@ -154,11 +143,7 @@ impl Stage for SignStage {
                 let artifact_str = artifact_path.to_string_lossy();
                 let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx);
 
-                let resolved = resolve_sign_args(
-                    &args,
-                    artifact_str.as_ref(),
-                    &signature_str,
-                );
+                let resolved = resolve_sign_args(&args, artifact_str.as_ref(), &signature_str);
 
                 // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
                 let fully_resolved: Vec<String> = resolved
@@ -178,9 +163,7 @@ impl Stage for SignStage {
                 let id_label = sign_cfg.id.as_deref().unwrap_or("default");
                 eprintln!(
                     "[sign:{}] signing {} -> {}",
-                    id_label,
-                    artifact_str,
-                    signature_str
+                    id_label, artifact_str, signature_str
                 );
 
                 let (stdin_cfg, stdin_data) = prepare_stdin(sign_cfg)?;
@@ -230,17 +213,9 @@ impl Stage for SignStage {
                 let args = docker_sign_cfg
                     .args
                     .clone()
-                    .unwrap_or_else(|| {
-                        vec![
-                            "sign".to_string(),
-                            "{{ .Artifact }}".to_string(),
-                        ]
-                    });
+                    .unwrap_or_else(|| vec!["sign".to_string(), "{{ .Artifact }}".to_string()]);
 
-                let docker_filter = docker_sign_cfg
-                    .artifacts
-                    .as_deref()
-                    .unwrap_or("all");
+                let docker_filter = docker_sign_cfg.artifacts.as_deref().unwrap_or("all");
 
                 if docker_filter == "none" {
                     continue;
@@ -260,11 +235,7 @@ impl Stage for SignStage {
                     // if the user has {{ .Signature }} in their args.
                     let signature_str = format!("{}.sig", image_str);
 
-                    let resolved = resolve_sign_args(
-                        &args,
-                        image_str.as_ref(),
-                        &signature_str,
-                    );
+                    let resolved = resolve_sign_args(&args, image_str.as_ref(), &signature_str);
 
                     let fully_resolved: Vec<String> = resolved
                         .iter()

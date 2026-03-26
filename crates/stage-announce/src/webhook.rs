@@ -43,10 +43,7 @@ pub fn send_webhook(
 
     let resp = builder.send()?;
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "webhook returned non-success status: {}",
-            resp.status()
-        );
+        anyhow::bail!("webhook returned non-success status: {}", resp.status());
     }
     Ok(())
 }

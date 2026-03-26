@@ -28,9 +28,8 @@ pub struct GroupedCommits {
 // parse_commit_message
 // ---------------------------------------------------------------------------
 
-static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.+)$").unwrap()
-});
+static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.+)$").unwrap());
 
 /// Parse a conventional commit message of the form `type(scope): description`
 /// or `type: description`. Falls back to `kind = "other"` for non-conventional
@@ -228,7 +227,11 @@ impl Stage for ChangelogStage {
         let changelog_cfg = ctx.config.changelog.clone();
 
         // If disabled, skip the stage entirely.
-        if changelog_cfg.as_ref().and_then(|c| c.disable).unwrap_or(false) {
+        if changelog_cfg
+            .as_ref()
+            .and_then(|c| c.disable)
+            .unwrap_or(false)
+        {
             eprintln!("[changelog] disabled, skipping");
             return Ok(());
         }
@@ -278,10 +281,7 @@ impl Stage for ChangelogStage {
             .unwrap_or_default();
         let header: Option<String> = changelog_cfg.as_ref().and_then(|c| c.header.clone());
         let footer: Option<String> = changelog_cfg.as_ref().and_then(|c| c.footer.clone());
-        let abbrev: usize = changelog_cfg
-            .as_ref()
-            .and_then(|c| c.abbrev)
-            .unwrap_or(7);
+        let abbrev: usize = changelog_cfg.as_ref().and_then(|c| c.abbrev).unwrap_or(7);
 
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
@@ -300,8 +300,7 @@ impl Stage for ChangelogStage {
             let crate_name = crate_cfg.name.clone();
 
             // Find the previous tag for this crate.
-            let prev_tag = find_latest_tag_matching(&crate_cfg.tag_template)
-                .unwrap_or(None);
+            let prev_tag = find_latest_tag_matching(&crate_cfg.tag_template).unwrap_or(None);
 
             let path_filter = if crate_cfg.path.is_empty() || crate_cfg.path == "." {
                 None
@@ -310,9 +309,7 @@ impl Stage for ChangelogStage {
             };
 
             let raw_commits = match &prev_tag {
-                Some(tag) => {
-                    get_commits_between(tag, "HEAD", path_filter).unwrap_or_default()
-                }
+                Some(tag) => get_commits_between(tag, "HEAD", path_filter).unwrap_or_default(),
                 None => {
                     // Initial release: no previous tag, treat all commits as new.
                     eprintln!(
@@ -396,6 +393,7 @@ impl Stage for ChangelogStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -423,13 +421,36 @@ mod tests {
     #[test]
     fn test_group_commits() {
         let commits = vec![
-            CommitInfo { raw_message: "feat: new thing".into(), kind: "feat".into(), description: "new thing".into(), hash: "abc".into() },
-            CommitInfo { raw_message: "fix: broken thing".into(), kind: "fix".into(), description: "broken thing".into(), hash: "def".into() },
-            CommitInfo { raw_message: "feat: another thing".into(), kind: "feat".into(), description: "another thing".into(), hash: "ghi".into() },
+            CommitInfo {
+                raw_message: "feat: new thing".into(),
+                kind: "feat".into(),
+                description: "new thing".into(),
+                hash: "abc".into(),
+            },
+            CommitInfo {
+                raw_message: "fix: broken thing".into(),
+                kind: "fix".into(),
+                description: "broken thing".into(),
+                hash: "def".into(),
+            },
+            CommitInfo {
+                raw_message: "feat: another thing".into(),
+                kind: "feat".into(),
+                description: "another thing".into(),
+                hash: "ghi".into(),
+            },
         ];
         let groups = vec![
-            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
-            ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+            ChangelogGroup {
+                title: "Features".into(),
+                regexp: Some("^feat".into()),
+                order: Some(0),
+            },
+            ChangelogGroup {
+                title: "Bug Fixes".into(),
+                regexp: Some("^fix".into()),
+                order: Some(1),
+            },
         ];
         let result = group_commits(&commits, &groups);
         assert_eq!(result.len(), 2);
@@ -442,9 +463,24 @@ mod tests {
     #[test]
     fn test_apply_filters() {
         let commits = vec![
-            CommitInfo { raw_message: "docs: update readme".into(), kind: "docs".into(), description: "update readme".into(), hash: "a".into() },
-            CommitInfo { raw_message: "feat: new feature".into(), kind: "feat".into(), description: "new feature".into(), hash: "b".into() },
-            CommitInfo { raw_message: "ci: fix pipeline".into(), kind: "ci".into(), description: "fix pipeline".into(), hash: "c".into() },
+            CommitInfo {
+                raw_message: "docs: update readme".into(),
+                kind: "docs".into(),
+                description: "update readme".into(),
+                hash: "a".into(),
+            },
+            CommitInfo {
+                raw_message: "feat: new feature".into(),
+                kind: "feat".into(),
+                description: "new feature".into(),
+                hash: "b".into(),
+            },
+            CommitInfo {
+                raw_message: "ci: fix pipeline".into(),
+                kind: "ci".into(),
+                description: "fix pipeline".into(),
+                hash: "c".into(),
+            },
         ];
         let filters = vec!["^docs:".to_string(), "^ci:".to_string()];
         let filtered = apply_filters(&commits, &filters);
@@ -457,15 +493,21 @@ mod tests {
         let grouped = vec![
             GroupedCommits {
                 title: "Features".into(),
-                commits: vec![
-                    CommitInfo { raw_message: "feat: add X".into(), kind: "feat".into(), description: "add X".into(), hash: "abc1234".into() },
-                ],
+                commits: vec![CommitInfo {
+                    raw_message: "feat: add X".into(),
+                    kind: "feat".into(),
+                    description: "add X".into(),
+                    hash: "abc1234".into(),
+                }],
             },
             GroupedCommits {
                 title: "Bug Fixes".into(),
-                commits: vec![
-                    CommitInfo { raw_message: "fix: fix Y".into(), kind: "fix".into(), description: "fix Y".into(), hash: "def5678".into() },
-                ],
+                commits: vec![CommitInfo {
+                    raw_message: "fix: fix Y".into(),
+                    kind: "fix".into(),
+                    description: "fix Y".into(),
+                    hash: "def5678".into(),
+                }],
             },
         ];
         let md = render_changelog(&grouped, 7);
@@ -479,8 +521,18 @@ mod tests {
     #[test]
     fn test_sort_asc() {
         let mut commits = vec![
-            CommitInfo { raw_message: "b".into(), kind: "feat".into(), description: "b".into(), hash: "2".into() },
-            CommitInfo { raw_message: "a".into(), kind: "feat".into(), description: "a".into(), hash: "1".into() },
+            CommitInfo {
+                raw_message: "b".into(),
+                kind: "feat".into(),
+                description: "b".into(),
+                hash: "2".into(),
+            },
+            CommitInfo {
+                raw_message: "a".into(),
+                kind: "feat".into(),
+                description: "a".into(),
+                hash: "1".into(),
+            },
         ];
         sort_commits(&mut commits, "asc");
         assert_eq!(commits[0].description, "a");
@@ -489,8 +541,18 @@ mod tests {
     #[test]
     fn test_sort_desc() {
         let mut commits = vec![
-            CommitInfo { raw_message: "a".into(), kind: "feat".into(), description: "a".into(), hash: "1".into() },
-            CommitInfo { raw_message: "b".into(), kind: "feat".into(), description: "b".into(), hash: "2".into() },
+            CommitInfo {
+                raw_message: "a".into(),
+                kind: "feat".into(),
+                description: "a".into(),
+                hash: "1".into(),
+            },
+            CommitInfo {
+                raw_message: "b".into(),
+                kind: "feat".into(),
+                description: "b".into(),
+                hash: "2".into(),
+            },
         ];
         sort_commits(&mut commits, "desc");
         assert_eq!(commits[0].description, "b");
@@ -499,12 +561,24 @@ mod tests {
     #[test]
     fn test_group_commits_others_bucket() {
         let commits = vec![
-            CommitInfo { raw_message: "feat: new thing".into(), kind: "feat".into(), description: "new thing".into(), hash: "abc".into() },
-            CommitInfo { raw_message: "chore: update deps".into(), kind: "chore".into(), description: "update deps".into(), hash: "xyz".into() },
+            CommitInfo {
+                raw_message: "feat: new thing".into(),
+                kind: "feat".into(),
+                description: "new thing".into(),
+                hash: "abc".into(),
+            },
+            CommitInfo {
+                raw_message: "chore: update deps".into(),
+                kind: "chore".into(),
+                description: "update deps".into(),
+                hash: "xyz".into(),
+            },
         ];
-        let groups = vec![
-            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
-        ];
+        let groups = vec![ChangelogGroup {
+            title: "Features".into(),
+            regexp: Some("^feat".into()),
+            order: Some(0),
+        }];
         let result = group_commits(&commits, &groups);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "Features");
@@ -515,12 +589,23 @@ mod tests {
 
     #[test]
     fn test_group_commits_empty_group_omitted() {
-        let commits = vec![
-            CommitInfo { raw_message: "feat: only feat".into(), kind: "feat".into(), description: "only feat".into(), hash: "abc".into() },
-        ];
+        let commits = vec![CommitInfo {
+            raw_message: "feat: only feat".into(),
+            kind: "feat".into(),
+            description: "only feat".into(),
+            hash: "abc".into(),
+        }];
         let groups = vec![
-            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
-            ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+            ChangelogGroup {
+                title: "Features".into(),
+                regexp: Some("^feat".into()),
+                order: Some(0),
+            },
+            ChangelogGroup {
+                title: "Bug Fixes".into(),
+                regexp: Some("^fix".into()),
+                order: Some(1),
+            },
         ];
         let result = group_commits(&commits, &groups);
         // "Bug Fixes" has no commits, should be omitted
@@ -554,23 +639,27 @@ mod tests {
 
     #[test]
     fn test_apply_filters_empty_exclude() {
-        let commits = vec![
-            CommitInfo { raw_message: "feat: something".into(), kind: "feat".into(), description: "something".into(), hash: "a".into() },
-        ];
+        let commits = vec![CommitInfo {
+            raw_message: "feat: something".into(),
+            kind: "feat".into(),
+            description: "something".into(),
+            hash: "a".into(),
+        }];
         let filtered = apply_filters(&commits, &[]);
         assert_eq!(filtered.len(), 1);
     }
 
     #[test]
     fn test_render_changelog_with_header_and_footer() {
-        let grouped = vec![
-            GroupedCommits {
-                title: "Features".into(),
-                commits: vec![
-                    CommitInfo { raw_message: "feat: add X".into(), kind: "feat".into(), description: "add X".into(), hash: "abc1234".into() },
-                ],
-            },
-        ];
+        let grouped = vec![GroupedCommits {
+            title: "Features".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: add X".into(),
+                kind: "feat".into(),
+                description: "add X".into(),
+                hash: "abc1234".into(),
+            }],
+        }];
         let body = render_changelog(&grouped, 7);
 
         // Simulate the header/footer wrapping logic from ChangelogStage::run
@@ -591,14 +680,15 @@ mod tests {
 
     #[test]
     fn test_render_changelog_with_header_only() {
-        let grouped = vec![
-            GroupedCommits {
-                title: "Changes".into(),
-                commits: vec![
-                    CommitInfo { raw_message: "fix: bug".into(), kind: "fix".into(), description: "bug".into(), hash: "def5678".into() },
-                ],
-            },
-        ];
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "fix: bug".into(),
+                kind: "fix".into(),
+                description: "bug".into(),
+                hash: "def5678".into(),
+            }],
+        }];
         let body = render_changelog(&grouped, 7);
 
         let header = "# Changelog";
@@ -612,14 +702,15 @@ mod tests {
 
     #[test]
     fn test_render_changelog_with_footer_only() {
-        let grouped = vec![
-            GroupedCommits {
-                title: "Changes".into(),
-                commits: vec![
-                    CommitInfo { raw_message: "fix: bug".into(), kind: "fix".into(), description: "bug".into(), hash: "def5678".into() },
-                ],
-            },
-        ];
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "fix: bug".into(),
+                kind: "fix".into(),
+                description: "bug".into(),
+                hash: "def5678".into(),
+            }],
+        }];
         let body = render_changelog(&grouped, 7);
 
         let footer = "-- end --";
@@ -673,10 +764,30 @@ mod tests {
     #[test]
     fn test_apply_include_filters_matching() {
         let commits = vec![
-            CommitInfo { raw_message: "feat: add login".into(), kind: "feat".into(), description: "add login".into(), hash: "a".into() },
-            CommitInfo { raw_message: "fix: crash on start".into(), kind: "fix".into(), description: "crash on start".into(), hash: "b".into() },
-            CommitInfo { raw_message: "docs: update readme".into(), kind: "docs".into(), description: "update readme".into(), hash: "c".into() },
-            CommitInfo { raw_message: "chore: bump deps".into(), kind: "chore".into(), description: "bump deps".into(), hash: "d".into() },
+            CommitInfo {
+                raw_message: "feat: add login".into(),
+                kind: "feat".into(),
+                description: "add login".into(),
+                hash: "a".into(),
+            },
+            CommitInfo {
+                raw_message: "fix: crash on start".into(),
+                kind: "fix".into(),
+                description: "crash on start".into(),
+                hash: "b".into(),
+            },
+            CommitInfo {
+                raw_message: "docs: update readme".into(),
+                kind: "docs".into(),
+                description: "update readme".into(),
+                hash: "c".into(),
+            },
+            CommitInfo {
+                raw_message: "chore: bump deps".into(),
+                kind: "chore".into(),
+                description: "bump deps".into(),
+                hash: "d".into(),
+            },
         ];
         let include = vec!["^feat".to_string(), "^fix".to_string()];
         let result = apply_include_filters(&commits, &include);
@@ -688,8 +799,18 @@ mod tests {
     #[test]
     fn test_apply_include_filters_no_match() {
         let commits = vec![
-            CommitInfo { raw_message: "docs: update readme".into(), kind: "docs".into(), description: "update readme".into(), hash: "a".into() },
-            CommitInfo { raw_message: "chore: bump deps".into(), kind: "chore".into(), description: "bump deps".into(), hash: "b".into() },
+            CommitInfo {
+                raw_message: "docs: update readme".into(),
+                kind: "docs".into(),
+                description: "update readme".into(),
+                hash: "a".into(),
+            },
+            CommitInfo {
+                raw_message: "chore: bump deps".into(),
+                kind: "chore".into(),
+                description: "bump deps".into(),
+                hash: "b".into(),
+            },
         ];
         let include = vec!["^feat".to_string()];
         let result = apply_include_filters(&commits, &include);
@@ -699,8 +820,18 @@ mod tests {
     #[test]
     fn test_apply_include_filters_empty_keeps_all() {
         let commits = vec![
-            CommitInfo { raw_message: "feat: something".into(), kind: "feat".into(), description: "something".into(), hash: "a".into() },
-            CommitInfo { raw_message: "fix: something else".into(), kind: "fix".into(), description: "something else".into(), hash: "b".into() },
+            CommitInfo {
+                raw_message: "feat: something".into(),
+                kind: "feat".into(),
+                description: "something".into(),
+                hash: "a".into(),
+            },
+            CommitInfo {
+                raw_message: "fix: something else".into(),
+                kind: "fix".into(),
+                description: "something else".into(),
+                hash: "b".into(),
+            },
         ];
         let result = apply_include_filters(&commits, &[]);
         assert_eq!(result.len(), 2);
@@ -708,9 +839,12 @@ mod tests {
 
     #[test]
     fn test_apply_include_filters_invalid_regex_skipped() {
-        let commits = vec![
-            CommitInfo { raw_message: "feat: good".into(), kind: "feat".into(), description: "good".into(), hash: "a".into() },
-        ];
+        let commits = vec![CommitInfo {
+            raw_message: "feat: good".into(),
+            kind: "feat".into(),
+            description: "good".into(),
+            hash: "a".into(),
+        }];
         // Invalid regex is skipped; valid one still works.
         let include = vec!["[invalid".to_string(), "^feat".to_string()];
         let result = apply_include_filters(&commits, &include);
@@ -856,10 +990,30 @@ abbrev: 10
     fn test_include_and_exclude_together() {
         // Exclude runs first, then include further restricts.
         let commits = vec![
-            CommitInfo { raw_message: "feat: good feature".into(), kind: "feat".into(), description: "good feature".into(), hash: "a".into() },
-            CommitInfo { raw_message: "feat(wip): work in progress".into(), kind: "feat".into(), description: "work in progress".into(), hash: "b".into() },
-            CommitInfo { raw_message: "fix: important fix".into(), kind: "fix".into(), description: "important fix".into(), hash: "c".into() },
-            CommitInfo { raw_message: "docs: update readme".into(), kind: "docs".into(), description: "update readme".into(), hash: "d".into() },
+            CommitInfo {
+                raw_message: "feat: good feature".into(),
+                kind: "feat".into(),
+                description: "good feature".into(),
+                hash: "a".into(),
+            },
+            CommitInfo {
+                raw_message: "feat(wip): work in progress".into(),
+                kind: "feat".into(),
+                description: "work in progress".into(),
+                hash: "b".into(),
+            },
+            CommitInfo {
+                raw_message: "fix: important fix".into(),
+                kind: "fix".into(),
+                description: "important fix".into(),
+                hash: "c".into(),
+            },
+            CommitInfo {
+                raw_message: "docs: update readme".into(),
+                kind: "docs".into(),
+                description: "update readme".into(),
+                hash: "d".into(),
+            },
         ];
 
         // Exclude WIP commits
@@ -867,7 +1021,8 @@ abbrev: 10
         assert_eq!(after_exclude.len(), 3); // feat, fix, docs
 
         // Then include only feat and fix
-        let after_include = apply_include_filters(&after_exclude, &["^feat".to_string(), "^fix".to_string()]);
+        let after_include =
+            apply_include_filters(&after_exclude, &["^feat".to_string(), "^fix".to_string()]);
         assert_eq!(after_include.len(), 2);
         assert_eq!(after_include[0].description, "good feature");
         assert_eq!(after_include[1].description, "important fix");
@@ -886,14 +1041,46 @@ abbrev: 10
 
         // Simulate raw git commits as the changelog stage would receive them
         let raw_messages = vec![
-            ("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "a1b2c3d", "feat: add user authentication"),
-            ("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3", "b2c3d4e", "fix: resolve login redirect loop"),
-            ("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4", "c3d4e5f", "docs: update API reference"),
-            ("d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5", "d4e5f6a", "feat(core): add rate limiting"),
-            ("e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6", "e5f6a1b", "fix(auth): handle expired tokens"),
-            ("f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1", "f6a1b2c", "chore: update dependencies"),
-            ("a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6", "a7b8c9d", "ci: fix GitHub Actions workflow"),
-            ("b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7", "b8c9d0e", "feat!: drop support for v1 API"),
+            (
+                "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+                "a1b2c3d",
+                "feat: add user authentication",
+            ),
+            (
+                "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+                "b2c3d4e",
+                "fix: resolve login redirect loop",
+            ),
+            (
+                "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+                "c3d4e5f",
+                "docs: update API reference",
+            ),
+            (
+                "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5",
+                "d4e5f6a",
+                "feat(core): add rate limiting",
+            ),
+            (
+                "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+                "e5f6a1b",
+                "fix(auth): handle expired tokens",
+            ),
+            (
+                "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1",
+                "f6a1b2c",
+                "chore: update dependencies",
+            ),
+            (
+                "a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
+                "a7b8c9d",
+                "ci: fix GitHub Actions workflow",
+            ),
+            (
+                "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7",
+                "b8c9d0e",
+                "feat!: drop support for v1 API",
+            ),
         ];
 
         // Parse all commits
@@ -916,8 +1103,14 @@ abbrev: 10
         let exclude = vec!["^docs:".to_string(), "^ci:".to_string()];
         let filtered = apply_filters(&all_commits, &exclude);
         assert_eq!(filtered.len(), 6, "docs and ci commits should be excluded");
-        assert!(!filtered.iter().any(|c| c.kind == "docs"), "no docs commits after filter");
-        assert!(!filtered.iter().any(|c| c.kind == "ci"), "no ci commits after filter");
+        assert!(
+            !filtered.iter().any(|c| c.kind == "docs"),
+            "no docs commits after filter"
+        );
+        assert!(
+            !filtered.iter().any(|c| c.kind == "ci"),
+            "no ci commits after filter"
+        );
 
         // Sort ascending
         let mut sorted = filtered;
@@ -925,13 +1118,24 @@ abbrev: 10
 
         // Group into sections
         let groups = vec![
-            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
-            ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+            ChangelogGroup {
+                title: "Features".into(),
+                regexp: Some("^feat".into()),
+                order: Some(0),
+            },
+            ChangelogGroup {
+                title: "Bug Fixes".into(),
+                regexp: Some("^fix".into()),
+                order: Some(1),
+            },
         ];
         let grouped = group_commits(&sorted, &groups);
 
         // Verify grouping
-        assert!(grouped.len() >= 2, "should have at least Features and Bug Fixes groups");
+        assert!(
+            grouped.len() >= 2,
+            "should have at least Features and Bug Fixes groups"
+        );
         assert_eq!(grouped[0].title, "Features");
         assert_eq!(grouped[0].commits.len(), 3, "3 feat commits");
         assert_eq!(grouped[1].title, "Bug Fixes");
@@ -948,27 +1152,61 @@ abbrev: 10
         let md = render_changelog(&grouped, 7);
 
         // Verify structural output
-        assert!(md.contains("## Features\n"), "should have Features section header");
-        assert!(md.contains("## Bug Fixes\n"), "should have Bug Fixes section header");
+        assert!(
+            md.contains("## Features\n"),
+            "should have Features section header"
+        );
+        assert!(
+            md.contains("## Bug Fixes\n"),
+            "should have Bug Fixes section header"
+        );
 
         // Verify commit messages appear in the output
-        assert!(md.contains("add user authentication"), "feat commit should appear");
-        assert!(md.contains("add rate limiting"), "scoped feat commit should appear");
-        assert!(md.contains("drop support for v1 API"), "breaking feat should appear");
-        assert!(md.contains("resolve login redirect loop"), "fix commit should appear");
-        assert!(md.contains("handle expired tokens"), "scoped fix should appear");
+        assert!(
+            md.contains("add user authentication"),
+            "feat commit should appear"
+        );
+        assert!(
+            md.contains("add rate limiting"),
+            "scoped feat commit should appear"
+        );
+        assert!(
+            md.contains("drop support for v1 API"),
+            "breaking feat should appear"
+        );
+        assert!(
+            md.contains("resolve login redirect loop"),
+            "fix commit should appear"
+        );
+        assert!(
+            md.contains("handle expired tokens"),
+            "scoped fix should appear"
+        );
 
         // Verify excluded commits do NOT appear
-        assert!(!md.contains("update API reference"), "docs commit should be filtered out");
-        assert!(!md.contains("fix GitHub Actions"), "ci commit should be filtered out");
+        assert!(
+            !md.contains("update API reference"),
+            "docs commit should be filtered out"
+        );
+        assert!(
+            !md.contains("fix GitHub Actions"),
+            "ci commit should be filtered out"
+        );
 
         // Verify hash abbreviations are present
-        assert!(md.contains("(a1b2c3d)"), "hash should be abbreviated to 7 chars");
+        assert!(
+            md.contains("(a1b2c3d)"),
+            "hash should be abbreviated to 7 chars"
+        );
         assert!(md.contains("(b2c3d4e)"));
 
         // Verify bullets
         let bullet_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("- ")).collect();
-        assert_eq!(bullet_lines.len(), 6, "should have 6 bullet points total (3 feat + 2 fix + 1 chore)");
+        assert_eq!(
+            bullet_lines.len(),
+            6,
+            "should have 6 bullet points total (3 feat + 2 fix + 1 chore)"
+        );
     }
 
     #[test]
@@ -1001,8 +1239,16 @@ abbrev: 10
         let mut sorted = included;
         sort_commits(&mut sorted, "asc");
         let groups = vec![
-            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
-            ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+            ChangelogGroup {
+                title: "Features".into(),
+                regexp: Some("^feat".into()),
+                order: Some(0),
+            },
+            ChangelogGroup {
+                title: "Bug Fixes".into(),
+                regexp: Some("^fix".into()),
+                order: Some(1),
+            },
         ];
         let grouped = group_commits(&sorted, &groups);
 
@@ -1064,20 +1310,38 @@ abbrev: 10
     fn test_integration_changelog_empty_after_filters() {
         // When all commits are filtered out, output should be empty
         let commits = vec![
-            CommitInfo { raw_message: "ci: fix build".into(), kind: "ci".into(), description: "fix build".into(), hash: "aaa".into() },
-            CommitInfo { raw_message: "docs: update guide".into(), kind: "docs".into(), description: "update guide".into(), hash: "bbb".into() },
+            CommitInfo {
+                raw_message: "ci: fix build".into(),
+                kind: "ci".into(),
+                description: "fix build".into(),
+                hash: "aaa".into(),
+            },
+            CommitInfo {
+                raw_message: "docs: update guide".into(),
+                kind: "docs".into(),
+                description: "update guide".into(),
+                hash: "bbb".into(),
+            },
         ];
 
         let filtered = apply_filters(&commits, &["^ci:".to_string(), "^docs:".to_string()]);
         assert!(filtered.is_empty());
 
-        let grouped = group_commits(&filtered, &[
-            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
-        ]);
+        let grouped = group_commits(
+            &filtered,
+            &[ChangelogGroup {
+                title: "Features".into(),
+                regexp: Some("^feat".into()),
+                order: Some(0),
+            }],
+        );
         assert!(grouped.is_empty());
 
         let md = render_changelog(&grouped, 7);
-        assert!(md.is_empty(), "changelog should be empty when all commits are filtered");
+        assert!(
+            md.is_empty(),
+            "changelog should be empty when all commits are filtered"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1086,7 +1350,9 @@ abbrev: 10
 
     #[test]
     fn test_integration_changelog_stage_with_real_git_repo() {
-        use anodize_core::config::{ChangelogConfig, ChangelogFilters, ChangelogGroup, Config, CrateConfig};
+        use anodize_core::config::{
+            ChangelogConfig, ChangelogFilters, ChangelogGroup, Config, CrateConfig,
+        };
         use anodize_core::context::{Context, ContextOptions};
         use std::process::Command;
 
@@ -1143,8 +1409,16 @@ abbrev: 10
                     include: None,
                 }),
                 groups: Some(vec![
-                    ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
-                    ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+                    ChangelogGroup {
+                        title: "Features".into(),
+                        regexp: Some("^feat".into()),
+                        order: Some(0),
+                    },
+                    ChangelogGroup {
+                        title: "Bug Fixes".into(),
+                        regexp: Some("^fix".into()),
+                        order: Some(1),
+                    },
                 ]),
                 header: Some("# Changelog".to_string()),
                 footer: None,
@@ -1171,27 +1445,53 @@ abbrev: 10
         result.unwrap();
 
         // Verify the per-crate changelog was populated
-        let changelog = ctx.changelogs.get("test-project")
+        let changelog = ctx
+            .changelogs
+            .get("test-project")
             .expect("changelog for test-project should exist");
         assert!(!changelog.is_empty(), "changelog should not be empty");
 
         // Verify expected sections exist
-        assert!(changelog.contains("## Features"), "should have Features section");
-        assert!(changelog.contains("## Bug Fixes"), "should have Bug Fixes section");
+        assert!(
+            changelog.contains("## Features"),
+            "should have Features section"
+        );
+        assert!(
+            changelog.contains("## Bug Fixes"),
+            "should have Bug Fixes section"
+        );
 
         // Verify expected commit messages appear
-        assert!(changelog.contains("add initial feature"), "should contain feat commit");
-        assert!(changelog.contains("add rate limiting"), "should contain scoped feat commit");
-        assert!(changelog.contains("resolve startup crash"), "should contain fix commit");
+        assert!(
+            changelog.contains("add initial feature"),
+            "should contain feat commit"
+        );
+        assert!(
+            changelog.contains("add rate limiting"),
+            "should contain scoped feat commit"
+        );
+        assert!(
+            changelog.contains("resolve startup crash"),
+            "should contain fix commit"
+        );
 
         // Verify excluded docs commit does NOT appear
-        assert!(!changelog.contains("update readme"), "docs commit should be filtered out");
+        assert!(
+            !changelog.contains("update readme"),
+            "docs commit should be filtered out"
+        );
 
         // Verify RELEASE_NOTES.md was written
         let notes_path = repo.join("dist").join("RELEASE_NOTES.md");
         assert!(notes_path.exists(), "RELEASE_NOTES.md should be written");
         let notes_content = std::fs::read_to_string(&notes_path).unwrap();
-        assert!(notes_content.starts_with("# Changelog\n"), "should start with header");
-        assert!(notes_content.contains("## Features"), "notes should contain Features");
+        assert!(
+            notes_content.starts_with("# Changelog\n"),
+            "should start with header"
+        );
+        assert!(
+            notes_content.contains("## Features"),
+            "notes should contain Features"
+        );
     }
 }

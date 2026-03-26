@@ -48,12 +48,7 @@ impl Stage for PublishStage {
             .crates
             .iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| {
-                c.publish
-                    .as_ref()
-                    .and_then(|p| p.scoop.as_ref())
-                    .is_some()
-            })
+            .filter(|c| c.publish.as_ref().and_then(|p| p.scoop.as_ref()).is_some())
             .map(|c| c.name.clone())
             .collect();
 
@@ -70,6 +65,7 @@ impl Stage for PublishStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use anodize_core::config::{

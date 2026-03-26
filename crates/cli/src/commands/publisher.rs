@@ -1,9 +1,9 @@
 use std::process::Command;
 
-use anyhow::{Context as _, Result, bail};
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::PublisherConfig;
 use anodize_core::template::{self, TemplateVars};
+use anyhow::{Context as _, Result, bail};
 
 /// Run all configured publishers against matching artifacts.
 ///
@@ -18,10 +18,7 @@ pub fn run_publishers(
 ) -> Result<()> {
     for (i, publisher) in publishers.iter().enumerate() {
         let default_label = format!("publisher[{}]", i);
-        let label = publisher
-            .name
-            .as_deref()
-            .unwrap_or(&default_label);
+        let label = publisher.name.as_deref().unwrap_or(&default_label);
 
         if publisher.cmd.is_empty() {
             eprintln!("  [publisher] skipping {} — empty cmd", label);
@@ -39,11 +36,13 @@ pub fn run_publishers(
         }
 
         for artifact in &matching {
-            let (rendered_cmd, rendered_args) =
-                build_publisher_command(&publisher.cmd, publisher.args.as_deref(), artifact, base_vars)
-                    .with_context(|| {
-                        format!("failed to render publisher command for {}", label)
-                    })?;
+            let (rendered_cmd, rendered_args) = build_publisher_command(
+                &publisher.cmd,
+                publisher.args.as_deref(),
+                artifact,
+                base_vars,
+            )
+            .with_context(|| format!("failed to render publisher command for {}", label))?;
 
             if dry_run {
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
@@ -130,7 +129,7 @@ pub fn build_publisher_command(
     args: Option<&[String]>,
     artifact: &Artifact,
     base_vars: &TemplateVars,
-    ) -> Result<(String, Vec<String>)> {
+) -> Result<(String, Vec<String>)> {
     // Clone the base vars and add artifact-scoped variables
     let mut vars = base_vars.clone();
     vars.set("ArtifactPath", &artifact.path.to_string_lossy());
@@ -278,25 +277,18 @@ mod tests {
 
     #[test]
     fn test_filter_by_ids_and_artifact_types_combined() {
-        let publisher = make_publisher(
-            "echo",
-            Some(vec!["linux-amd64"]),
-            Some(vec!["archive"]),
-        );
+        let publisher = make_publisher("echo", Some(vec!["linux-amd64"]), Some(vec!["archive"]));
 
         // Matches both filters
-        let good =
-            make_artifact(ArtifactKind::Archive, "dist/a.tar.gz", Some("linux-amd64"));
+        let good = make_artifact(ArtifactKind::Archive, "dist/a.tar.gz", Some("linux-amd64"));
         assert!(matches_publisher_filter(&good, &publisher));
 
         // Right type but wrong id
-        let wrong_id =
-            make_artifact(ArtifactKind::Archive, "dist/b.tar.gz", Some("darwin-arm64"));
+        let wrong_id = make_artifact(ArtifactKind::Archive, "dist/b.tar.gz", Some("darwin-arm64"));
         assert!(!matches_publisher_filter(&wrong_id, &publisher));
 
         // Right id but wrong type
-        let wrong_type =
-            make_artifact(ArtifactKind::Binary, "dist/myapp", Some("linux-amd64"));
+        let wrong_type = make_artifact(ArtifactKind::Binary, "dist/myapp", Some("linux-amd64"));
         assert!(!matches_publisher_filter(&wrong_type, &publisher));
     }
 
@@ -309,7 +301,10 @@ mod tests {
 
         let (cmd, args) = build_publisher_command(
             "curl -F 'file=@{{ ArtifactPath }}'",
-            Some(&["--header".to_string(), "X-Name: {{ ArtifactName }}".to_string()]),
+            Some(&[
+                "--header".to_string(),
+                "X-Name: {{ ArtifactName }}".to_string(),
+            ]),
             &artifact,
             &vars,
         )
@@ -342,13 +337,8 @@ mod tests {
         let vars = base_vars();
         let artifact = make_artifact(ArtifactKind::LinuxPackage, "/dist/myapp.deb", None);
 
-        let (cmd, _) = build_publisher_command(
-            "echo {{ ArtifactKind }}",
-            None,
-            &artifact,
-            &vars,
-        )
-        .unwrap();
+        let (cmd, _) =
+            build_publisher_command("echo {{ ArtifactKind }}", None, &artifact, &vars).unwrap();
 
         assert_eq!(cmd, "echo linux_package");
     }
@@ -358,9 +348,11 @@ mod tests {
     #[test]
     fn test_dry_run_does_not_execute() {
         let vars = base_vars();
-        let artifacts = vec![
-            make_artifact(ArtifactKind::Archive, "/dist/myapp.tar.gz", None),
-        ];
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
         let publishers = vec![PublisherConfig {
             name: Some("test".to_string()),
             cmd: "this-command-does-not-exist --should-not-run".to_string(),
@@ -373,7 +365,11 @@ mod tests {
         // In dry-run mode, the command is never executed, so a non-existent
         // command should not cause an error.
         let result = run_publishers(&publishers, &artifacts, &vars, true);
-        assert!(result.is_ok(), "dry-run should not execute commands: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "dry-run should not execute commands: {:?}",
+            result.err()
+        );
     }
 
     // --- Empty publishers is a no-op ---
@@ -381,9 +377,7 @@ mod tests {
     #[test]
     fn test_empty_publishers_is_noop() {
         let vars = base_vars();
-        let artifacts = vec![
-            make_artifact(ArtifactKind::Binary, "/dist/myapp", None),
-        ];
+        let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
 
         let result = run_publishers(&[], &artifacts, &vars, false);
         assert!(result.is_ok());
@@ -394,9 +388,7 @@ mod tests {
     #[test]
     fn test_empty_cmd_is_skipped() {
         let vars = base_vars();
-        let artifacts = vec![
-            make_artifact(ArtifactKind::Binary, "/dist/myapp", None),
-        ];
+        let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
         let publishers = vec![PublisherConfig {
             name: Some("empty".to_string()),
             cmd: String::new(),
@@ -468,10 +460,7 @@ crates:
 
         let p1 = &publishers[1];
         assert_eq!(p1.name, Some("notify".to_string()));
-        assert_eq!(
-            p1.ids.as_ref().unwrap(),
-            &["linux-amd64", "darwin-arm64"]
-        );
+        assert_eq!(p1.ids.as_ref().unwrap(), &["linux-amd64", "darwin-arm64"]);
         assert!(p1.artifact_types.is_none());
     }
 

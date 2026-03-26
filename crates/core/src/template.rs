@@ -4,18 +4,16 @@
 // Tera gives us: if/else/endif, for loops, pipes (| lower, | upper, | replace),
 // | default, | trim, | title, and many more built-in filters.
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
 use anyhow::{Context as _, Result};
 use regex::Regex;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 use tera::Value;
 
 /// Regex to find Go-style dot-prefixed references inside `{{ }}` blocks.
 /// Matches `{{ .Field }}`, `{{.Field}}`, `{{ .Env.VAR }}`, and also expressions
 /// like `{{ .Field | filter }}`. We only strip the dot from the variable name.
-static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{\{(\s*)\.(\w+)").unwrap()
-});
+static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{(\s*)\.(\w+)").unwrap());
 
 /// Base Tera instance with custom filters pre-registered.
 /// Cloned per render() call (cheap — no templates to clone).
@@ -23,20 +21,14 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     let mut tera = tera::Tera::default();
 
     // GoReleaser-compat aliases
-    tera.register_filter(
-        "tolower",
-        |value: &Value, _: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("tolower", "value", String, value);
-            Ok(Value::String(s.to_lowercase()))
-        },
-    );
-    tera.register_filter(
-        "toupper",
-        |value: &Value, _: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("toupper", "value", String, value);
-            Ok(Value::String(s.to_uppercase()))
-        },
-    );
+    tera.register_filter("tolower", |value: &Value, _: &HashMap<String, Value>| {
+        let s = tera::try_get_value!("tolower", "value", String, value);
+        Ok(Value::String(s.to_lowercase()))
+    });
+    tera.register_filter("toupper", |value: &Value, _: &HashMap<String, Value>| {
+        let s = tera::try_get_value!("toupper", "value", String, value);
+        Ok(Value::String(s.to_uppercase()))
+    });
 
     // trimprefix(prefix="...") — strip prefix from a string
     tera.register_filter(
@@ -77,7 +69,10 @@ pub struct TemplateVars {
 
 impl TemplateVars {
     pub fn new() -> Self {
-        Self { vars: HashMap::new(), env: HashMap::new() }
+        Self {
+            vars: HashMap::new(),
+            env: HashMap::new(),
+        }
     }
 
     pub fn set(&mut self, key: &str, value: &str) {
@@ -202,7 +197,11 @@ mod tests {
     #[test]
     fn test_archive_name_template() {
         let vars = test_vars();
-        let result = render("{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}", &vars).unwrap();
+        let result = render(
+            "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}",
+            &vars,
+        )
+        .unwrap();
         assert_eq!(result, "cfgd-1.2.3-linux-amd64");
     }
 
@@ -257,8 +256,7 @@ mod tests {
     fn test_conditional_false_else() {
         let mut vars = test_vars();
         vars.set("IsSnapshot", "false");
-        let result =
-            render("{% if IsSnapshot %}SNAP{% else %}RELEASE{% endif %}", &vars).unwrap();
+        let result = render("{% if IsSnapshot %}SNAP{% else %}RELEASE{% endif %}", &vars).unwrap();
         assert_eq!(result, "RELEASE");
     }
 
@@ -321,8 +319,7 @@ mod tests {
     #[test]
     fn test_default_value_for_undefined() {
         let vars = test_vars();
-        let result =
-            render("{{ Undefined | default(value=\"fallback\") }}", &vars).unwrap();
+        let result = render("{{ Undefined | default(value=\"fallback\") }}", &vars).unwrap();
         assert_eq!(result, "fallback");
     }
 
@@ -336,8 +333,7 @@ mod tests {
     #[test]
     fn test_nested_env_conditional() {
         let vars = test_vars();
-        let result =
-            render("{% if Env.GITHUB_TOKEN %}has token{% endif %}", &vars).unwrap();
+        let result = render("{% if Env.GITHUB_TOKEN %}has token{% endif %}", &vars).unwrap();
         assert_eq!(result, "has token");
     }
 
@@ -394,7 +390,10 @@ mod tests {
         // A trailing pipe with no filter name is a distinct syntax error from
         // just an unclosed tag (which test_bad_syntax_error already covers).
         let result = render("{{ ProjectName | }}", &vars);
-        assert!(result.is_err(), "trailing pipe with no filter name should produce an error");
+        assert!(
+            result.is_err(),
+            "trailing pipe with no filter name should produce an error"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("parse") || err.contains("unexpected") || err.contains("template"),
@@ -420,7 +419,10 @@ mod tests {
         // trimprefix expects prefix=<string>, but we pass an unquoted value
         // that Tera will interpret differently
         let result = render("{{ Tag | trimprefix(prefix=123) }}", &vars);
-        assert!(result.is_err(), "invalid filter argument type should produce an error");
+        assert!(
+            result.is_err(),
+            "invalid filter argument type should produce an error"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("trimprefix") || err.contains("prefix") || err.contains("argument"),
@@ -446,6 +448,9 @@ mod tests {
     fn test_mismatched_endfor_with_if_error() {
         let vars = test_vars();
         let result = render("{% if ProjectName %}hello{% endfor %}", &vars);
-        assert!(result.is_err(), "mismatched block tags should produce an error");
+        assert!(
+            result.is_err(),
+            "mismatched block tags should produce an error"
+        );
     }
 }

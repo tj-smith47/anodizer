@@ -4,8 +4,8 @@ use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::{ArchiveConfig, ArchivesConfig, FormatOverride};
@@ -101,8 +101,7 @@ pub fn create_tar_zst(
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
-    let enc = zstd::Encoder::new(out_file, 3)
-        .context("tar.zst: create zstd encoder")?;
+    let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
     let mut tar = tar::Builder::new(enc);
 
     for &src in files {
@@ -132,11 +131,7 @@ pub fn create_tar_zst(
 /// Create a zip archive containing the given files.
 /// Each file is stored under its own filename (no directory prefix).
 /// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
-pub fn create_zip(
-    files: &[&Path],
-    output: &Path,
-    wrap_dir: Option<&str>,
-) -> Result<()> {
+pub fn create_zip(files: &[&Path], output: &Path, wrap_dir: Option<&str>) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create zip: {}", output.display()))?;
     let mut zip = zip::ZipWriter::new(out_file);
@@ -158,8 +153,7 @@ pub fn create_zip(
         };
         zip.start_file(&name, options)
             .with_context(|| format!("zip: start_file {name}"))?;
-        let data = fs::read(src)
-            .with_context(|| format!("zip: read {}", src.display()))?;
+        let data = fs::read(src).with_context(|| format!("zip: read {}", src.display()))?;
         zip.write_all(&data)
             .with_context(|| format!("zip: write {name}"))?;
     }
@@ -184,9 +178,7 @@ pub fn copy_binary(files: &[&Path], output: &Path) -> Result<()> {
         fs::copy(src, output)
             .with_context(|| format!("binary: copy {} -> {}", src.display(), output.display()))?;
     } else {
-        let out_dir = output
-            .parent()
-            .unwrap_or(Path::new("."));
+        let out_dir = output.parent().unwrap_or(Path::new("."));
         for &src in files {
             if !src.exists() {
                 continue;
@@ -211,11 +203,10 @@ pub fn resolve_glob_patterns(patterns: &[String]) -> Result<Vec<PathBuf>> {
     for pattern in patterns {
         // Check if the pattern contains glob metacharacters
         if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
-            let entries = glob::glob(pattern)
-                .with_context(|| format!("invalid glob pattern: {pattern}"))?;
+            let entries =
+                glob::glob(pattern).with_context(|| format!("invalid glob pattern: {pattern}"))?;
             for entry in entries {
-                let path = entry
-                    .with_context(|| format!("glob error for pattern: {pattern}"))?;
+                let path = entry.with_context(|| format!("glob error for pattern: {pattern}"))?;
                 results.push(path);
             }
         } else {
@@ -382,26 +373,18 @@ impl Stage for ArchiveStage {
 
                 // Name template
                 let default_tmpl = default_name_template();
-                let name_tmpl = archive_cfg
-                    .name_template
-                    .as_deref()
-                    .unwrap_or(default_tmpl);
+                let name_tmpl = archive_cfg.name_template.as_deref().unwrap_or(default_tmpl);
 
                 for (target, target_bins) in &by_target {
                     // Filter binaries for this archive config
                     let selected_bins: Vec<&Artifact> = target_bins
                         .iter()
-                        .filter(|b| {
-                            match binary_filter {
-                                None => true,
-                                Some(names) => {
-                                    let bin_name = b
-                                        .metadata
-                                        .get("binary")
-                                        .map(|s| s.as_str())
-                                        .unwrap_or("");
-                                    names.iter().any(|n| n == bin_name)
-                                }
+                        .filter(|b| match binary_filter {
+                            None => true,
+                            Some(names) => {
+                                let bin_name =
+                                    b.metadata.get("binary").map(|s| s.as_str()).unwrap_or("");
+                                names.iter().any(|n| n == bin_name)
                             }
                         })
                         .collect();
@@ -420,24 +403,27 @@ impl Stage for ArchiveStage {
                     tvars.set("Arch", &arch);
 
                     // Set Binary to the first selected binary's name (matches GoReleaser behavior)
-                    if let Some(bin_name) = selected_bins.first().and_then(|b| b.metadata.get("binary")) {
+                    if let Some(bin_name) =
+                        selected_bins.first().and_then(|b| b.metadata.get("binary"))
+                    {
                         tvars.set("Binary", bin_name);
                     }
 
                     // Render wrap_in_directory (template-aware)
-                    let wrap_dir_rendered = if let Some(tmpl) = archive_cfg.wrap_in_directory.as_deref() {
-                        Some(ctx.render_template(tmpl).with_context(|| {
-                            format!("render wrap_in_directory for {crate_name}/{target}")
-                        })?)
-                    } else {
-                        None
-                    };
+                    let wrap_dir_rendered =
+                        if let Some(tmpl) = archive_cfg.wrap_in_directory.as_deref() {
+                            Some(ctx.render_template(tmpl).with_context(|| {
+                                format!("render wrap_in_directory for {crate_name}/{target}")
+                            })?)
+                        } else {
+                            None
+                        };
                     let wrap_dir = wrap_dir_rendered.as_deref();
 
                     // Render name
-                    let archive_stem = ctx
-                        .render_template(name_tmpl)
-                        .with_context(|| format!("render archive name for {crate_name}/{target}"))?;
+                    let archive_stem = ctx.render_template(name_tmpl).with_context(|| {
+                        format!("render archive name for {crate_name}/{target}")
+                    })?;
 
                     // For binary format, no extension; otherwise append format
                     let archive_filename = if format == "binary" {
@@ -462,10 +448,9 @@ impl Stage for ArchiveStage {
 
                     // Extra files (LICENSE, README, etc.) — with glob support
                     if let Some(extra_files) = &archive_cfg.files {
-                        let resolved = resolve_glob_patterns(extra_files)
-                            .with_context(|| {
-                                format!("resolve file patterns for {crate_name}/{target}")
-                            })?;
+                        let resolved = resolve_glob_patterns(extra_files).with_context(|| {
+                            format!("resolve file patterns for {crate_name}/{target}")
+                        })?;
                         paths.extend(resolved);
                     }
 
@@ -522,6 +507,7 @@ impl Stage for ArchiveStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::fs;
@@ -599,10 +585,7 @@ mod tests {
         let entries: Vec<_> = tar.entries().unwrap().collect();
         assert_eq!(entries.len(), 1);
         let entry = entries.into_iter().next().unwrap().unwrap();
-        assert_eq!(
-            entry.path().unwrap().to_str().unwrap(),
-            "mybin"
-        );
+        assert_eq!(entry.path().unwrap().to_str().unwrap(), "mybin");
     }
 
     // ---------------------------------------------------------------------------
@@ -629,10 +612,7 @@ mod tests {
         let entries: Vec<_> = tar.entries().unwrap().collect();
         assert_eq!(entries.len(), 1);
         let entry = entries.into_iter().next().unwrap().unwrap();
-        assert_eq!(
-            entry.path().unwrap().to_str().unwrap(),
-            "mybin"
-        );
+        assert_eq!(entry.path().unwrap().to_str().unwrap(), "mybin");
     }
 
     // ---------------------------------------------------------------------------
@@ -689,14 +669,22 @@ mod tests {
 
         let pattern = format!("{}/*", tmp.path().display());
         let results = resolve_glob_patterns(&[pattern]).unwrap();
-        assert!(results.len() >= 3, "should match at least 3 files, got {}", results.len());
+        assert!(
+            results.len() >= 3,
+            "should match at least 3 files, got {}",
+            results.len()
+        );
 
         // Test with LICENSE* glob
         let license_pattern = format!("{}/LICENSE*", tmp.path().display());
         let results = resolve_glob_patterns(&[license_pattern]).unwrap();
         assert_eq!(results.len(), 2, "LICENSE* should match 2 files");
         assert!(results.iter().any(|p| p.file_name().unwrap() == "LICENSE"));
-        assert!(results.iter().any(|p| p.file_name().unwrap() == "LICENSE-MIT"));
+        assert!(
+            results
+                .iter()
+                .any(|p| p.file_name().unwrap() == "LICENSE-MIT")
+        );
     }
 
     #[test]
@@ -758,12 +746,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.zip");
-        create_zip(
-            &[&bin_path],
-            &archive_path,
-            Some("myapp-1.0.0"),
-        )
-        .unwrap();
+        create_zip(&[&bin_path], &archive_path, Some("myapp-1.0.0")).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -780,13 +763,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.xz");
-        create_tar_xz(
-            &[&bin_path],
-            &archive_path,
-            None,
-            Some("myapp-1.0.0"),
-        )
-        .unwrap();
+        create_tar_xz(&[&bin_path], &archive_path, None, Some("myapp-1.0.0")).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -795,10 +772,7 @@ mod tests {
         let entries: Vec<_> = tar.entries().unwrap().collect();
         assert_eq!(entries.len(), 1);
         let entry = entries.into_iter().next().unwrap().unwrap();
-        assert_eq!(
-            entry.path().unwrap().to_str().unwrap(),
-            "myapp-1.0.0/mybin"
-        );
+        assert_eq!(entry.path().unwrap().to_str().unwrap(), "myapp-1.0.0/mybin");
     }
 
     #[test]
@@ -808,13 +782,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.zst");
-        create_tar_zst(
-            &[&bin_path],
-            &archive_path,
-            None,
-            Some("myapp-1.0.0"),
-        )
-        .unwrap();
+        create_tar_zst(&[&bin_path], &archive_path, None, Some("myapp-1.0.0")).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -823,10 +791,7 @@ mod tests {
         let entries: Vec<_> = tar.entries().unwrap().collect();
         assert_eq!(entries.len(), 1);
         let entry = entries.into_iter().next().unwrap().unwrap();
-        assert_eq!(
-            entry.path().unwrap().to_str().unwrap(),
-            "myapp-1.0.0/mybin"
-        );
+        assert_eq!(entry.path().unwrap().to_str().unwrap(), "myapp-1.0.0/mybin");
     }
 
     // ---------------------------------------------------------------------------
@@ -972,7 +937,9 @@ crates:
 
     #[test]
     fn test_archive_stage_zip_for_windows() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig, FormatOverride};
+        use anodize_core::config::{
+            ArchiveConfig, ArchivesConfig, Config, CrateConfig, FormatOverride,
+        };
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -1184,9 +1151,21 @@ crates:
         let bin = dir.join("myapp");
         let license = dir.join("LICENSE");
         let readme = dir.join("README.md");
-        fs::write(&bin, b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03").unwrap();
-        fs::write(&license, b"MIT License\n\nCopyright (c) 2026 Example Corp\n\nPermission is hereby granted...").unwrap();
-        fs::write(&readme, b"# MyApp\n\nA tool for doing things.\n\n## Usage\n\n```\nmyapp --help\n```\n").unwrap();
+        fs::write(
+            &bin,
+            b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03",
+        )
+        .unwrap();
+        fs::write(
+            &license,
+            b"MIT License\n\nCopyright (c) 2026 Example Corp\n\nPermission is hereby granted...",
+        )
+        .unwrap();
+        fs::write(
+            &readme,
+            b"# MyApp\n\nA tool for doing things.\n\n## Usage\n\n```\nmyapp --help\n```\n",
+        )
+        .unwrap();
         (bin, license, readme)
     }
 
@@ -1196,23 +1175,30 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.gz");
-        create_tar_gz(
-            &[&bin, &license, &readme],
-            &archive_path,
-            None,
-            None,
-        )
-        .unwrap();
+        create_tar_gz(&[&bin, &license, &readme], &archive_path, None, None).unwrap();
 
         // Open the archive and verify all files are present with correct names
         let file = File::open(&archive_path).unwrap();
         let dec = flate2::read::GzDecoder::new(file);
         let found_files = read_tar_entries(tar::Archive::new(dec));
 
-        assert_eq!(found_files.len(), 3, "archive should contain exactly 3 files");
-        assert!(found_files.contains_key("myapp"), "should contain myapp binary");
-        assert!(found_files.contains_key("LICENSE"), "should contain LICENSE");
-        assert!(found_files.contains_key("README.md"), "should contain README.md");
+        assert_eq!(
+            found_files.len(),
+            3,
+            "archive should contain exactly 3 files"
+        );
+        assert!(
+            found_files.contains_key("myapp"),
+            "should contain myapp binary"
+        );
+        assert!(
+            found_files.contains_key("LICENSE"),
+            "should contain LICENSE"
+        );
+        assert!(
+            found_files.contains_key("README.md"),
+            "should contain README.md"
+        );
 
         // Verify file contents are preserved byte-for-byte
         assert_eq!(
@@ -1236,12 +1222,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-windows-amd64.zip");
-        create_zip(
-            &[&bin, &license, &readme],
-            &archive_path,
-            None,
-        )
-        .unwrap();
+        create_zip(&[&bin, &license, &readme], &archive_path, None).unwrap();
 
         // Open the zip and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -1284,20 +1265,18 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.xz");
-        create_tar_xz(
-            &[&bin, &license, &readme],
-            &archive_path,
-            None,
-            None,
-        )
-        .unwrap();
+        create_tar_xz(&[&bin, &license, &readme], &archive_path, None, None).unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
         let dec = xz2::read::XzDecoder::new(file);
         let found_files = read_tar_entries(tar::Archive::new(dec));
 
-        assert_eq!(found_files.len(), 3, "tar.xz should contain exactly 3 files");
+        assert_eq!(
+            found_files.len(),
+            3,
+            "tar.xz should contain exactly 3 files"
+        );
         assert!(found_files.contains_key("myapp"));
         assert!(found_files.contains_key("LICENSE"));
         assert!(found_files.contains_key("README.md"));
@@ -1311,8 +1290,14 @@ crates:
 
         // Verify text content
         let readme_str = String::from_utf8(found_files["README.md"].clone()).unwrap();
-        assert!(readme_str.contains("## Usage"), "README structure should be intact");
-        assert!(readme_str.contains("myapp --help"), "README content should be preserved");
+        assert!(
+            readme_str.contains("## Usage"),
+            "README structure should be intact"
+        );
+        assert!(
+            readme_str.contains("myapp --help"),
+            "README content should be preserved"
+        );
     }
 
     #[test]
@@ -1356,23 +1341,30 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.zst");
-        create_tar_zst(
-            &[&bin, &license, &readme],
-            &archive_path,
-            None,
-            None,
-        )
-        .unwrap();
+        create_tar_zst(&[&bin, &license, &readme], &archive_path, None, None).unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
         let dec = zstd::Decoder::new(file).unwrap();
         let found_files = read_tar_entries(tar::Archive::new(dec));
 
-        assert_eq!(found_files.len(), 3, "tar.zst should contain exactly 3 files");
-        assert!(found_files.contains_key("myapp"), "should contain myapp binary");
-        assert!(found_files.contains_key("LICENSE"), "should contain LICENSE");
-        assert!(found_files.contains_key("README.md"), "should contain README.md");
+        assert_eq!(
+            found_files.len(),
+            3,
+            "tar.zst should contain exactly 3 files"
+        );
+        assert!(
+            found_files.contains_key("myapp"),
+            "should contain myapp binary"
+        );
+        assert!(
+            found_files.contains_key("LICENSE"),
+            "should contain LICENSE"
+        );
+        assert!(
+            found_files.contains_key("README.md"),
+            "should contain README.md"
+        );
 
         // Verify binary content is preserved byte-for-byte
         assert_eq!(
@@ -1387,7 +1379,13 @@ crates:
             "LICENSE content should be preserved"
         );
         let readme_str = String::from_utf8(found_files["README.md"].clone()).unwrap();
-        assert!(readme_str.contains("## Usage"), "README structure should be intact");
-        assert!(readme_str.contains("myapp --help"), "README content should be preserved");
+        assert!(
+            readme_str.contains("## Usage"),
+            "README structure should be intact"
+        );
+        assert!(
+            readme_str.contains("myapp --help"),
+            "README content should be preserved"
+        );
     }
 }

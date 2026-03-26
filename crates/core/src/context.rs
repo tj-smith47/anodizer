@@ -147,23 +147,21 @@ impl Context {
             self.template_vars.set("CommitDate", &info.commit_date);
             self.template_vars
                 .set("CommitTimestamp", &info.commit_timestamp);
-            self.template_vars.set(
-                "IsGitDirty",
-                if info.dirty { "true" } else { "false" },
-            );
-            self.template_vars.set(
-                "GitTreeState",
-                if info.dirty { "dirty" } else { "clean" },
-            );
-            self.template_vars.set(
-                "PreviousTag",
-                info.previous_tag.as_deref().unwrap_or(""),
-            );
+            self.template_vars
+                .set("IsGitDirty", if info.dirty { "true" } else { "false" });
+            self.template_vars
+                .set("GitTreeState", if info.dirty { "dirty" } else { "clean" });
+            self.template_vars
+                .set("PreviousTag", info.previous_tag.as_deref().unwrap_or(""));
         }
 
         self.template_vars.set(
             "IsSnapshot",
-            if self.options.snapshot { "true" } else { "false" },
+            if self.options.snapshot {
+                "true"
+            } else {
+                "false"
+            },
         );
         self.template_vars.set("IsDraft", "false");
     }
@@ -180,12 +178,12 @@ impl Context {
             .set("Date", &now.format("%Y-%m-%d").to_string());
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());
-        self.template_vars
-            .set("Now", &now.to_rfc3339());
+        self.template_vars.set("Now", &now.to_rfc3339());
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::config::Config;
@@ -268,10 +266,7 @@ mod tests {
             v.get("CommitDate"),
             Some(&"2026-03-25T10:30:00+00:00".to_string())
         );
-        assert_eq!(
-            v.get("CommitTimestamp"),
-            Some(&"1774463400".to_string())
-        );
+        assert_eq!(v.get("CommitTimestamp"), Some(&"1774463400".to_string()));
         assert_eq!(v.get("PreviousTag"), Some(&"v1.2.2".to_string()));
     }
 
@@ -406,10 +401,7 @@ mod tests {
 
         // Now should be ISO 8601
         let now = v.get("Now").expect("Now should be set");
-        assert!(
-            now.contains('T'),
-            "Now should be ISO 8601, got: {now}"
-        );
+        assert!(now.contains('T'), "Now should be ISO 8601, got: {now}");
     }
 
     #[test]
@@ -420,7 +412,9 @@ mod tests {
         ctx.template_vars_mut().set_env("MY_VAR", "hello-world");
         ctx.template_vars_mut().set_env("DEPLOY_ENV", "staging");
 
-        let result = ctx.render_template("{{ .Env.MY_VAR }}-{{ .Env.DEPLOY_ENV }}").unwrap();
+        let result = ctx
+            .render_template("{{ .Env.MY_VAR }}-{{ .Env.DEPLOY_ENV }}")
+            .unwrap();
         assert_eq!(result, "hello-world-staging");
     }
 

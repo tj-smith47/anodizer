@@ -144,7 +144,10 @@ fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> R
                 );
             }
             Err(e) => {
-                eprintln!("[publish] HTTP error polling index for {}: {}", crate_name, e);
+                eprintln!(
+                    "[publish] HTTP error polling index for {}: {}",
+                    crate_name, e
+                );
             }
         }
 
@@ -200,9 +203,9 @@ pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()
         .crates
         .iter()
         .filter_map(|c| {
-            c.publish.as_ref().map(|p| {
-                (c.name.clone(), p.crates_config().index_timeout)
-            })
+            c.publish
+                .as_ref()
+                .map(|p| (c.name.clone(), p.crates_config().index_timeout))
         })
         .collect();
 
@@ -239,11 +242,7 @@ pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()
             .with_context(|| format!("publish: spawn `{}`", cmd.join(" ")))?;
 
         if !status.success() {
-            anyhow::bail!(
-                "publish: `{}` exited with {}",
-                cmd.join(" "),
-                status
-            );
+            anyhow::bail!("publish: `{}` exited with {}", cmd.join(" "), status);
         }
 
         eprintln!("[publish] published crate '{}'", name);
@@ -290,10 +289,7 @@ mod tests {
 
     #[test]
     fn test_topo_sort_no_deps() {
-        let order = vec![
-            ("a".to_string(), vec![]),
-            ("b".to_string(), vec![]),
-        ];
+        let order = vec![("a".to_string(), vec![]), ("b".to_string(), vec![])];
         let sorted = topo_sort(&order);
         assert_eq!(sorted.len(), 2);
     }

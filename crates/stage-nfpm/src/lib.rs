@@ -86,10 +86,7 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
 
     // Contents section — always include the binary
     lines.push("contents:".to_string());
-    let bindir = config
-        .bindir
-        .as_deref()
-        .unwrap_or("/usr/local/bin");
+    let bindir = config.bindir.as_deref().unwrap_or("/usr/local/bin");
     let binary_name = PathBuf::from(binary_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -257,10 +254,7 @@ impl Stage for NfpmStage {
                         }
 
                         // Determine package file name (template or default)
-                        let pkg_name = nfpm_cfg
-                            .package_name
-                            .as_deref()
-                            .unwrap_or(&krate.name);
+                        let pkg_name = nfpm_cfg.package_name.as_deref().unwrap_or(&krate.name);
                         let ext = format_extension(format);
                         let pkg_filename = if let Some(tmpl) = &nfpm_cfg.file_name_template {
                             // Set Os/Arch in template vars temporarily
@@ -298,13 +292,12 @@ impl Stage for NfpmStage {
                         }
 
                         // Write temp nfpm YAML config
-                        let tmp_dir = tempfile::tempdir()
-                            .context("create temp dir for nfpm config")?;
+                        let tmp_dir =
+                            tempfile::tempdir().context("create temp dir for nfpm config")?;
                         let config_path = tmp_dir.path().join("nfpm.yaml");
-                        fs::write(&config_path, &yaml_content)
-                            .with_context(|| {
-                                format!("write nfpm config to {}", config_path.display())
-                            })?;
+                        fs::write(&config_path, &yaml_content).with_context(|| {
+                            format!("write nfpm config to {}", config_path.display())
+                        })?;
 
                         let cmd_args = nfpm_command(
                             &config_path.to_string_lossy(),
@@ -373,10 +366,11 @@ fn format_extension(format: &str) -> &str {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn test_generate_nfpm_yaml() {
@@ -443,16 +437,19 @@ mod tests {
     #[test]
     fn test_nfpm_command_structure() {
         let cmd = nfpm_command("/etc/nfpm.yaml", "rpm", "/out");
-        assert_eq!(cmd, vec![
-            "nfpm",
-            "pkg",
-            "--config",
-            "/etc/nfpm.yaml",
-            "--packager",
-            "rpm",
-            "--target",
-            "/out",
-        ]);
+        assert_eq!(
+            cmd,
+            vec![
+                "nfpm",
+                "pkg",
+                "--config",
+                "/etc/nfpm.yaml",
+                "--packager",
+                "rpm",
+                "--target",
+                "/out",
+            ]
+        );
     }
 
     #[test]

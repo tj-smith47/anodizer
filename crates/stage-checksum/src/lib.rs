@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use blake2::{Blake2b512, Blake2s256};
 use sha1::Sha1;
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
@@ -239,26 +239,18 @@ impl Stage for ChecksumStage {
 
             // Apply ids filter: only include artifacts whose metadata "id" is in the list
             if let Some(ref ids) = ids_filter {
-                source_artifacts.extend(
-                    archive_artifacts
-                        .into_iter()
-                        .filter(|a| {
-                            a.metadata
-                                .get("id")
-                                .map(|id| ids.contains(id))
-                                .unwrap_or(false)
-                        }),
-                );
-                source_artifacts.extend(
-                    package_artifacts
-                        .into_iter()
-                        .filter(|a| {
-                            a.metadata
-                                .get("id")
-                                .map(|id| ids.contains(id))
-                                .unwrap_or(false)
-                        }),
-                );
+                source_artifacts.extend(archive_artifacts.into_iter().filter(|a| {
+                    a.metadata
+                        .get("id")
+                        .map(|id| ids.contains(id))
+                        .unwrap_or(false)
+                }));
+                source_artifacts.extend(package_artifacts.into_iter().filter(|a| {
+                    a.metadata
+                        .get("id")
+                        .map(|id| ids.contains(id))
+                        .unwrap_or(false)
+                }));
             } else {
                 source_artifacts.extend(archive_artifacts);
                 source_artifacts.extend(package_artifacts);
@@ -363,10 +355,7 @@ impl Stage for ChecksumStage {
                 .with_context(|| format!("checksum: create dist dir {}", dist.display()))?;
 
             let mut combined_file = File::create(&combined_path).with_context(|| {
-                format!(
-                    "checksum: create combined file {}",
-                    combined_path.display()
-                )
+                format!("checksum: create combined file {}", combined_path.display())
             })?;
             for line in &combined_lines {
                 writeln!(combined_file, "{}", line).with_context(|| {
@@ -406,6 +395,7 @@ impl Stage for ChecksumStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::fs;
@@ -452,9 +442,9 @@ mod tests {
         let f = tmp.path().join("test.txt");
         fs::write(&f, b"hello world").unwrap();
         let hash = sha384_file(&f).unwrap();
-        assert!(hash.starts_with(
-            "fdbd8e75a67f29f701a4e040385e2e23986303ea10239211af907fcbb83578b3"
-        ));
+        assert!(
+            hash.starts_with("fdbd8e75a67f29f701a4e040385e2e23986303ea10239211af907fcbb83578b3")
+        );
         assert_eq!(hash.len(), 96); // SHA-384 hex length
     }
 
@@ -474,7 +464,9 @@ mod tests {
         let f = tmp.path().join("test.txt");
         fs::write(&f, b"hello world").unwrap();
         let hash = blake2b_file(&f).unwrap();
-        assert!(hash.starts_with("021ced8799296ceca557832ab941a50b4a11f83478cf141f51f933f653ab9fbc"));
+        assert!(
+            hash.starts_with("021ced8799296ceca557832ab941a50b4a11f83478cf141f51f933f653ab9fbc")
+        );
         assert_eq!(hash.len(), 128); // Blake2b-512 hex length
     }
 
@@ -556,10 +548,7 @@ ids:
         let cfg: anodize_core::config::ChecksumConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
             cfg.ids,
-            Some(vec![
-                "linux-amd64".to_string(),
-                "darwin-arm64".to_string()
-            ])
+            Some(vec!["linux-amd64".to_string(), "darwin-arm64".to_string()])
         );
     }
 
@@ -1028,8 +1017,15 @@ ids:
 
         // Verify format: exactly two spaces between hash and filename
         let parts: Vec<&str> = sidecar1_line.splitn(2, "  ").collect();
-        assert_eq!(parts.len(), 2, "checksum line should have hash and filename separated by two spaces");
-        assert_eq!(parts[0], "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(
+            parts.len(),
+            2,
+            "checksum line should have hash and filename separated by two spaces"
+        );
+        assert_eq!(
+            parts[0],
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
         assert_eq!(parts[1], "app-linux.tar.gz");
 
         // Verify second sidecar
@@ -1038,7 +1034,10 @@ ids:
         let sidecar2_content = fs::read_to_string(&sidecar2).unwrap();
         let sidecar2_line = sidecar2_content.trim();
         let parts2: Vec<&str> = sidecar2_line.splitn(2, "  ").collect();
-        assert_eq!(parts2[0], "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9");
+        assert_eq!(
+            parts2[0],
+            "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
+        );
         assert_eq!(parts2[1], "app-darwin.tar.gz");
 
         // Verify combined checksums file has correct multi-line format
@@ -1052,7 +1051,11 @@ ids:
         for line in &lines {
             let parts: Vec<&str> = line.splitn(2, "  ").collect();
             assert_eq!(parts.len(), 2, "each line should have hash and filename");
-            assert_eq!(parts[0].len(), 64, "SHA-256 hash should be 64 hex characters");
+            assert_eq!(
+                parts[0].len(),
+                64,
+                "SHA-256 hash should be 64 hex characters"
+            );
             assert!(
                 parts[0].chars().all(|c| c.is_ascii_hexdigit()),
                 "hash should be all hex characters"
@@ -1111,13 +1114,19 @@ ids:
         let sidecar_content = fs::read_to_string(&sidecar).unwrap();
         let actual_hash = sidecar_content.trim().split("  ").next().unwrap();
 
-        assert_eq!(actual_hash, expected_hash, "sidecar hash should match independently computed hash");
+        assert_eq!(
+            actual_hash, expected_hash,
+            "sidecar hash should match independently computed hash"
+        );
 
         // Also verify via the combined file
         let combined = dist.join("fox_checksums.sha256");
         let combined_content = fs::read_to_string(&combined).unwrap();
         let combined_hash = combined_content.trim().split("  ").next().unwrap();
-        assert_eq!(combined_hash, expected_hash, "combined file hash should match too");
+        assert_eq!(
+            combined_hash, expected_hash,
+            "combined file hash should match too"
+        );
     }
 
     #[test]

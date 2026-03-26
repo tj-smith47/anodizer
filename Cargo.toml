@@ -21,19 +21,21 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/tj-smith47/anodize"
 authors = ["TJ Smith"]
+keywords = ["release", "automation", "cargo", "ci-cd", "packaging"]
+categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
-anodize-core = { path = "crates/core" }
-anodize-stage-build = { path = "crates/stage-build" }
-anodize-stage-archive = { path = "crates/stage-archive" }
-anodize-stage-nfpm = { path = "crates/stage-nfpm" }
-anodize-stage-checksum = { path = "crates/stage-checksum" }
-anodize-stage-changelog = { path = "crates/stage-changelog" }
-anodize-stage-release = { path = "crates/stage-release" }
-anodize-stage-publish = { path = "crates/stage-publish" }
-anodize-stage-docker = { path = "crates/stage-docker" }
-anodize-stage-sign = { path = "crates/stage-sign" }
-anodize-stage-announce = { path = "crates/stage-announce" }
+anodize-core = { path = "crates/core", version = "0.1.0" }
+anodize-stage-build = { path = "crates/stage-build", version = "0.1.0" }
+anodize-stage-archive = { path = "crates/stage-archive", version = "0.1.0" }
+anodize-stage-nfpm = { path = "crates/stage-nfpm", version = "0.1.0" }
+anodize-stage-checksum = { path = "crates/stage-checksum", version = "0.1.0" }
+anodize-stage-changelog = { path = "crates/stage-changelog", version = "0.1.0" }
+anodize-stage-release = { path = "crates/stage-release", version = "0.1.0" }
+anodize-stage-publish = { path = "crates/stage-publish", version = "0.1.0" }
+anodize-stage-docker = { path = "crates/stage-docker", version = "0.1.0" }
+anodize-stage-sign = { path = "crates/stage-sign", version = "0.1.0" }
+anodize-stage-announce = { path = "crates/stage-announce", version = "0.1.0" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

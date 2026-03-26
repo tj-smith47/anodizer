@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use anyhow::{Context as _, Result, bail};
-use colored::Colorize;
 use anodize_core::config::Config;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
+use anyhow::{Context as _, Result, bail};
+use colored::Colorize;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Find config file. If `config_override` is provided, use that path directly;
 /// otherwise search the current directory for well-known config file names.
@@ -16,8 +16,12 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
         bail!("config file not found: {}", path.display());
     }
     let candidates = [
-        ".anodize.yaml", ".anodize.yml", ".anodize.toml",
-        "anodize.yaml", "anodize.yml", "anodize.toml",
+        ".anodize.yaml",
+        ".anodize.yml",
+        ".anodize.toml",
+        "anodize.yaml",
+        "anodize.yml",
+        "anodize.toml",
     ];
     for name in &candidates {
         let path = PathBuf::from(name);
@@ -25,7 +29,10 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    bail!("no anodize config file found (tried: {}). Run `anodize init` to generate one.", candidates.join(", "))
+    bail!(
+        "no anodize config file found (tried: {}). Run `anodize init` to generate one.",
+        candidates.join(", ")
+    )
 }
 
 /// Load config from a file, auto-detecting format by extension
@@ -70,7 +77,9 @@ pub struct Pipeline {
 }
 
 impl Pipeline {
-    pub fn new() -> Self { Self { stages: vec![] } }
+    pub fn new() -> Self {
+        Self { stages: vec![] }
+    }
 
     pub fn add(&mut self, stage: Box<dyn Stage>) {
         self.stages.push(stage);
@@ -98,16 +107,16 @@ impl Pipeline {
 
 /// Build the full release pipeline with all stages in order
 pub fn build_release_pipeline() -> Pipeline {
-    use anodize_stage_build::BuildStage;
-    use anodize_stage_archive::ArchiveStage;
-    use anodize_stage_nfpm::NfpmStage;
-    use anodize_stage_checksum::ChecksumStage;
-    use anodize_stage_changelog::ChangelogStage;
-    use anodize_stage_release::ReleaseStage;
-    use anodize_stage_publish::PublishStage;
-    use anodize_stage_docker::DockerStage;
-    use anodize_stage_sign::SignStage;
     use anodize_stage_announce::AnnounceStage;
+    use anodize_stage_archive::ArchiveStage;
+    use anodize_stage_build::BuildStage;
+    use anodize_stage_changelog::ChangelogStage;
+    use anodize_stage_checksum::ChecksumStage;
+    use anodize_stage_docker::DockerStage;
+    use anodize_stage_nfpm::NfpmStage;
+    use anodize_stage_publish::PublishStage;
+    use anodize_stage_release::ReleaseStage;
+    use anodize_stage_sign::SignStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));

@@ -135,11 +135,8 @@ impl Stage for BuildStage {
             .as_ref()
             .and_then(|d| d.cross.clone())
             .unwrap_or(CrossStrategy::Auto);
-        let default_flags: Option<String> = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.flags.clone());
+        let default_flags: Option<String> =
+            ctx.config.defaults.as_ref().and_then(|d| d.flags.clone());
 
         // Collect crates to process (cloned to avoid borrow conflict with ctx.artifacts)
         let crates: Vec<_> = ctx
@@ -194,25 +191,17 @@ impl Stage for BuildStage {
                     .unwrap_or_else(|| default_strategy.clone());
 
                 // Flags: per-build or global default
-                let flags: Option<&str> = build
-                    .flags
-                    .as_deref()
-                    .or(default_flags.as_deref());
+                let flags: Option<&str> = build.flags.as_deref().or(default_flags.as_deref());
 
                 // Features and no_default_features
-                let features: Vec<String> =
-                    build.features.clone().unwrap_or_default();
-                let no_default_features: bool =
-                    build.no_default_features.unwrap_or(false);
+                let features: Vec<String> = build.features.clone().unwrap_or_default();
+                let no_default_features: bool = build.no_default_features.unwrap_or(false);
 
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {
                     // Determine the binary path
                     // Flags may contain --release; check for it
-                    let profile = if flags
-                        .map(|f| f.contains("--release"))
-                        .unwrap_or(false)
-                    {
+                    let profile = if flags.map(|f| f.contains("--release")).unwrap_or(false) {
                         "release"
                     } else {
                         "debug"
@@ -295,17 +284,9 @@ impl Stage for BuildStage {
                         );
 
                         if dry_run {
-                            eprintln!(
-                                "[build] (dry-run) {} {}",
-                                cmd.program,
-                                cmd.args.join(" ")
-                            );
+                            eprintln!("[build] (dry-run) {} {}", cmd.program, cmd.args.join(" "));
                         } else {
-                            eprintln!(
-                                "[build] running: {} {}",
-                                cmd.program,
-                                cmd.args.join(" ")
-                            );
+                            eprintln!("[build] running: {} {}", cmd.program, cmd.args.join(" "));
                             let status = Command::new(&cmd.program)
                                 .args(&cmd.args)
                                 .envs(&cmd.env)
@@ -360,6 +341,7 @@ impl Stage for BuildStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -526,7 +508,9 @@ mod tests {
         // Should succeed without error -- empty targets list is skipped
         assert!(stage.run(&mut ctx).is_ok());
         // No artifacts should be registered
-        let binaries = ctx.artifacts.by_kind(anodize_core::artifact::ArtifactKind::Binary);
+        let binaries = ctx
+            .artifacts
+            .by_kind(anodize_core::artifact::ArtifactKind::Binary);
         assert!(binaries.is_empty());
     }
 
@@ -534,7 +518,10 @@ mod tests {
     fn test_build_command_with_env_vars() {
         let mut env = HashMap::new();
         env.insert("CC".to_string(), "gcc-12".to_string());
-        env.insert("RUSTFLAGS".to_string(), "-C target-feature=+crt-static".to_string());
+        env.insert(
+            "RUSTFLAGS".to_string(),
+            "-C target-feature=+crt-static".to_string(),
+        );
 
         let cmd = build_command(
             "mybin",
