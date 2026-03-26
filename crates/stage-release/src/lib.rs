@@ -310,6 +310,14 @@ impl Stage for ReleaseStage {
                     builder = builder.make_latest(ml);
                 }
 
+                // TODO: When `ctx.github_native_changelog` is true, set
+                // `generate_release_notes: true` in the GitHub API request.
+                // octocrab's CreateReleaseBuilder does not expose this parameter
+                // yet. When it does, wire it here:
+                // if github_native_changelog {
+                //     builder = builder.generate_release_notes(true);
+                // }
+
                 let release = builder
                     .send()
                     .await

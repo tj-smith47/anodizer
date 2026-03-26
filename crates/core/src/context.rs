@@ -43,6 +43,9 @@ pub struct Context {
     pub config: Config,
     pub artifacts: ArtifactRegistry,
     pub options: ContextOptions,
+    /// Set by changelog stage when `use: github-native` is configured.
+    /// The release stage reads this to set `generate_release_notes(true)` on the GitHub API.
+    pub github_native_changelog: bool,
     template_vars: TemplateVars,
     pub git_info: Option<GitInfo>,
     pub changelogs: HashMap<String, String>,
@@ -56,6 +59,7 @@ impl Context {
             config,
             artifacts: ArtifactRegistry::new(),
             options,
+            github_native_changelog: false,
             template_vars: vars,
             git_info: None,
             changelogs: HashMap::new(),

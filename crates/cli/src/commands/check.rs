@@ -110,12 +110,25 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
             || cl.filters.is_some()
             || cl.groups.is_some()
             || cl.header.is_some()
-            || cl.footer.is_some();
+            || cl.footer.is_some()
+            || cl.use_source.is_some()
+            || cl.abbrev.is_some();
         if has_other {
             warnings.push(
                 "changelog: disable is true but other changelog fields are also set (they will be ignored)".to_string(),
             );
         }
+    }
+
+    // 6b. Validate changelog use_source value
+    if let Some(cl) = &config.changelog
+        && let Some(ref use_source) = cl.use_source
+        && use_source != "git" && use_source != "github-native"
+    {
+        warnings.push(format!(
+            "changelog: unrecognized 'use' value '{}' (valid: git, github-native)",
+            use_source
+        ));
     }
 
     // 7. Warn if checksum is disabled but has other fields configured (global defaults)

@@ -196,6 +196,7 @@ pub fn group_commits(commits: &[CommitInfo], groups: &[ChangelogGroup]) -> Vec<G
 ///
 /// `abbrev` controls the hash abbreviation length (default 7).
 pub fn render_changelog(grouped: &[GroupedCommits], abbrev: usize) -> String {
+    let abbrev = abbrev.max(1); // Enforce minimum of 1 to avoid empty hashes
     let mut out = String::new();
     for group in grouped {
         out.push_str(&format!("## {}\n\n", group.title));
@@ -242,6 +243,7 @@ impl Stage for ChangelogStage {
 
         if use_source == "github-native" {
             eprintln!("[changelog] using github-native changelog — skipping local generation");
+            ctx.github_native_changelog = true;
             let selected = ctx.options.selected_crates.clone();
             let crates: Vec<_> = ctx
                 .config
