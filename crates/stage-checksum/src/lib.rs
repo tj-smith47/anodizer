@@ -964,4 +964,211 @@ ids:
         assert!(content.contains("myapp-linux.tar.gz"));
         assert!(!content.contains("myapp-darwin.tar.gz"));
     }
+
+    // -----------------------------------------------------------------------
+    // Deep integration tests: verify checksum format and hash correctness
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_integration_checksum_file_format_and_correctness() {
+        // Create files with known content and verify checksums are correct
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        // Known content: "hello world" -> SHA-256 = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+        let file1 = dist.join("app-linux.tar.gz");
+        fs::write(&file1, b"hello world").unwrap();
+
+        // Known content: "test data" -> SHA-256 = 916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9
+        let file2 = dist.join("app-darwin.tar.gz");
+        fs::write(&file2, b"test data").unwrap();
+
+        use anodize_core::config::{Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config {
+            project_name: "app".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "2.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: file1.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: file2.clone(),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Verify sidecar file format: each line is "<hash>  <filename>\n"
+        let sidecar1 = dist.join("app-linux.tar.gz.sha256");
+        assert!(sidecar1.exists());
+        let sidecar1_content = fs::read_to_string(&sidecar1).unwrap();
+        let sidecar1_line = sidecar1_content.trim();
+
+        // Verify format: exactly two spaces between hash and filename
+        let parts: Vec<&str> = sidecar1_line.splitn(2, "  ").collect();
+        assert_eq!(parts.len(), 2, "checksum line should have hash and filename separated by two spaces");
+        assert_eq!(parts[0], "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(parts[1], "app-linux.tar.gz");
+
+        // Verify second sidecar
+        let sidecar2 = dist.join("app-darwin.tar.gz.sha256");
+        assert!(sidecar2.exists());
+        let sidecar2_content = fs::read_to_string(&sidecar2).unwrap();
+        let sidecar2_line = sidecar2_content.trim();
+        let parts2: Vec<&str> = sidecar2_line.splitn(2, "  ").collect();
+        assert_eq!(parts2[0], "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9");
+        assert_eq!(parts2[1], "app-darwin.tar.gz");
+
+        // Verify combined checksums file has correct multi-line format
+        let combined = dist.join("app_checksums.sha256");
+        assert!(combined.exists());
+        let combined_content = fs::read_to_string(&combined).unwrap();
+        let lines: Vec<&str> = combined_content.trim().lines().collect();
+        assert_eq!(lines.len(), 2, "combined file should have exactly 2 lines");
+
+        // Each line should match the format "<64-char-hex>  <filename>"
+        for line in &lines {
+            let parts: Vec<&str> = line.splitn(2, "  ").collect();
+            assert_eq!(parts.len(), 2, "each line should have hash and filename");
+            assert_eq!(parts[0].len(), 64, "SHA-256 hash should be 64 hex characters");
+            assert!(
+                parts[0].chars().all(|c| c.is_ascii_hexdigit()),
+                "hash should be all hex characters"
+            );
+        }
+
+        // Verify the combined file contains both filenames
+        assert!(combined_content.contains("app-linux.tar.gz"));
+        assert!(combined_content.contains("app-darwin.tar.gz"));
+    }
+
+    #[test]
+    fn test_integration_checksum_hash_independently_verifiable() {
+        // Generate a checksum via the stage, then independently compute the hash
+        // and confirm they match.
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let content = b"The quick brown fox jumps over the lazy dog";
+        let archive = dist.join("release.tar.gz");
+        fs::write(&archive, content).unwrap();
+
+        use anodize_core::config::{Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config {
+            project_name: "fox".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "fox".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive.clone(),
+            target: None,
+            crate_name: "fox".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Independently compute the SHA-256 hash using the crate's own function
+        let expected_hash = sha256_file(&archive).unwrap();
+
+        // Read the sidecar and extract the hash
+        let sidecar = dist.join("release.tar.gz.sha256");
+        let sidecar_content = fs::read_to_string(&sidecar).unwrap();
+        let actual_hash = sidecar_content.trim().split("  ").next().unwrap();
+
+        assert_eq!(actual_hash, expected_hash, "sidecar hash should match independently computed hash");
+
+        // Also verify via the combined file
+        let combined = dist.join("fox_checksums.sha256");
+        let combined_content = fs::read_to_string(&combined).unwrap();
+        let combined_hash = combined_content.trim().split("  ").next().unwrap();
+        assert_eq!(combined_hash, expected_hash, "combined file hash should match too");
+    }
+
+    #[test]
+    fn test_integration_checksum_multiple_algorithms_produce_correct_lengths() {
+        // Test that sha512 produces the right hash length in the output file
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive = dist.join("pkg.tar.gz");
+        fs::write(&archive, b"some package content").unwrap();
+
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config {
+            project_name: "pkg".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "pkg".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    algorithm: Some("sha512".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive.clone(),
+            target: None,
+            crate_name: "pkg".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        let sidecar = dist.join("pkg.tar.gz.sha512");
+        assert!(sidecar.exists());
+        let content = fs::read_to_string(&sidecar).unwrap();
+        let hash = content.trim().split("  ").next().unwrap();
+        assert_eq!(hash.len(), 128, "SHA-512 should produce 128 hex chars");
+
+        // Independently verify the hash value
+        let expected = sha512_file(&archive).unwrap();
+        assert_eq!(hash, expected);
+    }
 }

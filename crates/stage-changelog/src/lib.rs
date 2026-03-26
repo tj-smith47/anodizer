@@ -872,4 +872,210 @@ abbrev: 10
         assert_eq!(after_include[0].description, "good feature");
         assert_eq!(after_include[1].description, "important fix");
     }
+
+    // -----------------------------------------------------------------------
+    // Deep integration tests: full pipeline with realistic commit data
+    // -----------------------------------------------------------------------
+
+    /// Simulate what ChangelogStage.run does internally: parse commits,
+    /// apply filters, sort, group, and render, using realistic conventional
+    /// commit messages with real-looking hashes.
+    #[test]
+    fn test_integration_full_changelog_pipeline_with_groups() {
+        use anodize_core::config::ChangelogGroup;
+
+        // Simulate raw git commits as the changelog stage would receive them
+        let raw_messages = vec![
+            ("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2", "a1b2c3d", "feat: add user authentication"),
+            ("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3", "b2c3d4e", "fix: resolve login redirect loop"),
+            ("c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4", "c3d4e5f", "docs: update API reference"),
+            ("d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5", "d4e5f6a", "feat(core): add rate limiting"),
+            ("e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6", "e5f6a1b", "fix(auth): handle expired tokens"),
+            ("f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1", "f6a1b2c", "chore: update dependencies"),
+            ("a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6", "a7b8c9d", "ci: fix GitHub Actions workflow"),
+            ("b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7", "b8c9d0e", "feat!: drop support for v1 API"),
+        ];
+
+        // Parse all commits
+        let mut all_commits: Vec<CommitInfo> = Vec::new();
+        for (_hash, short_hash, message) in &raw_messages {
+            let mut info = parse_commit_message(message);
+            info.hash = short_hash.to_string();
+            all_commits.push(info);
+        }
+
+        // Verify parsing was correct
+        assert_eq!(all_commits[0].kind, "feat");
+        assert_eq!(all_commits[0].description, "add user authentication");
+        assert_eq!(all_commits[1].kind, "fix");
+        assert_eq!(all_commits[2].kind, "docs");
+        assert_eq!(all_commits[7].kind, "feat"); // breaking change still parsed as feat
+        assert_eq!(all_commits[7].description, "drop support for v1 API");
+
+        // Apply exclude filters (filter out docs and ci)
+        let exclude = vec!["^docs:".to_string(), "^ci:".to_string()];
+        let filtered = apply_filters(&all_commits, &exclude);
+        assert_eq!(filtered.len(), 6, "docs and ci commits should be excluded");
+        assert!(!filtered.iter().any(|c| c.kind == "docs"), "no docs commits after filter");
+        assert!(!filtered.iter().any(|c| c.kind == "ci"), "no ci commits after filter");
+
+        // Sort ascending
+        let mut sorted = filtered;
+        sort_commits(&mut sorted, "asc");
+
+        // Group into sections
+        let groups = vec![
+            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
+            ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+        ];
+        let grouped = group_commits(&sorted, &groups);
+
+        // Verify grouping
+        assert!(grouped.len() >= 2, "should have at least Features and Bug Fixes groups");
+        assert_eq!(grouped[0].title, "Features");
+        assert_eq!(grouped[0].commits.len(), 3, "3 feat commits");
+        assert_eq!(grouped[1].title, "Bug Fixes");
+        assert_eq!(grouped[1].commits.len(), 2, "2 fix commits");
+
+        // The "chore" commit should end up in "Others"
+        if grouped.len() > 2 {
+            assert_eq!(grouped[2].title, "Others");
+            assert_eq!(grouped[2].commits.len(), 1);
+            assert_eq!(grouped[2].commits[0].kind, "chore");
+        }
+
+        // Render
+        let md = render_changelog(&grouped, 7);
+
+        // Verify structural output
+        assert!(md.contains("## Features\n"), "should have Features section header");
+        assert!(md.contains("## Bug Fixes\n"), "should have Bug Fixes section header");
+
+        // Verify commit messages appear in the output
+        assert!(md.contains("add user authentication"), "feat commit should appear");
+        assert!(md.contains("add rate limiting"), "scoped feat commit should appear");
+        assert!(md.contains("drop support for v1 API"), "breaking feat should appear");
+        assert!(md.contains("resolve login redirect loop"), "fix commit should appear");
+        assert!(md.contains("handle expired tokens"), "scoped fix should appear");
+
+        // Verify excluded commits do NOT appear
+        assert!(!md.contains("update API reference"), "docs commit should be filtered out");
+        assert!(!md.contains("fix GitHub Actions"), "ci commit should be filtered out");
+
+        // Verify hash abbreviations are present
+        assert!(md.contains("(a1b2c3d)"), "hash should be abbreviated to 7 chars");
+        assert!(md.contains("(b2c3d4e)"));
+
+        // Verify bullets
+        let bullet_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("- ")).collect();
+        assert_eq!(bullet_lines.len(), 6, "should have 6 bullet points total (3 feat + 2 fix + 1 chore)");
+    }
+
+    #[test]
+    fn test_integration_changelog_with_include_filters() {
+        use anodize_core::config::ChangelogGroup;
+
+        // Simulate commits
+        let messages = [
+            ("abc1234", "feat: new dashboard"),
+            ("def5678", "fix: crash on empty input"),
+            ("ghi9012", "chore: bump version"),
+            ("jkl3456", "refactor: simplify parser"),
+            ("mno7890", "feat(api): add pagination"),
+        ];
+
+        let mut commits: Vec<CommitInfo> = messages
+            .iter()
+            .map(|(hash, msg)| {
+                let mut info = parse_commit_message(msg);
+                info.hash = hash.to_string();
+                info
+            })
+            .collect();
+
+        // Include only feat and fix
+        let included = apply_include_filters(&commits, &["^feat".to_string(), "^fix".to_string()]);
+        assert_eq!(included.len(), 3);
+
+        // Sort and group
+        sort_commits(&mut commits, "asc");
+        let groups = vec![
+            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
+            ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+        ];
+        let grouped = group_commits(&included, &groups);
+
+        let md = render_changelog(&grouped, 7);
+
+        // Features and Bug Fixes should appear, but not chore or refactor
+        assert!(md.contains("## Features"));
+        assert!(md.contains("new dashboard"));
+        assert!(md.contains("add pagination"));
+        assert!(md.contains("## Bug Fixes"));
+        assert!(md.contains("crash on empty input"));
+        assert!(!md.contains("bump version"));
+        assert!(!md.contains("simplify parser"));
+    }
+
+    #[test]
+    fn test_integration_changelog_header_footer_assembly() {
+        // Test the full assembly with header/footer like the stage does
+        let messages = [
+            ("abc1234", "feat: initial release"),
+            ("def5678", "fix: typo in config"),
+        ];
+
+        let commits: Vec<CommitInfo> = messages
+            .iter()
+            .map(|(hash, msg)| {
+                let mut info = parse_commit_message(msg);
+                info.hash = hash.to_string();
+                info
+            })
+            .collect();
+
+        let grouped = vec![GroupedCommits {
+            title: "Changes".to_string(),
+            commits,
+        }];
+
+        let body = render_changelog(&grouped, 7);
+
+        // Simulate header/footer wrapping as ChangelogStage.run does
+        let header = "# Release v1.0.0";
+        let footer = "---\nFull changelog: https://github.com/example/repo/compare/v0.9.0...v1.0.0";
+
+        let mut final_md = String::new();
+        final_md.push_str(header);
+        final_md.push('\n');
+        final_md.push_str(&body);
+        final_md.push_str(footer);
+        final_md.push('\n');
+
+        // Verify structure
+        assert!(final_md.starts_with("# Release v1.0.0\n## Changes"));
+        assert!(final_md.contains("- initial release (abc1234)"));
+        assert!(final_md.contains("- typo in config (def5678)"));
+        assert!(final_md.ends_with("compare/v0.9.0...v1.0.0\n"));
+    }
+
+    #[test]
+    fn test_integration_changelog_empty_after_filters() {
+        // When all commits are filtered out, output should be empty
+        let commits = vec![
+            CommitInfo { raw_message: "ci: fix build".into(), kind: "ci".into(), description: "fix build".into(), hash: "aaa".into() },
+            CommitInfo { raw_message: "docs: update guide".into(), kind: "docs".into(), description: "update guide".into(), hash: "bbb".into() },
+        ];
+
+        let filtered = apply_filters(&commits, &["^ci:".to_string(), "^docs:".to_string()]);
+        assert!(filtered.is_empty());
+
+        let grouped = group_commits(&filtered, &[
+            ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
+        ]);
+        assert!(grouped.is_empty());
+
+        let md = render_changelog(&grouped, 7);
+        assert!(md.is_empty(), "changelog should be empty when all commits are filtered");
+    }
 }

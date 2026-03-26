@@ -419,6 +419,13 @@ impl Stage for ArchiveStage {
                     tvars.set("Os", &os);
                     tvars.set("Arch", &arch);
 
+                    // Set Binary to the first selected binary's name (matches GoReleaser behavior)
+                    if let Some(first_bin) = selected_bins.first() {
+                        if let Some(bin_name) = first_bin.metadata.get("binary") {
+                            tvars.set("Binary", bin_name);
+                        }
+                    }
+
                     // Render wrap_in_directory (template-aware)
                     let wrap_dir_rendered = if let Some(tmpl) = archive_cfg.wrap_in_directory.as_deref() {
                         Some(ctx.render_template(tmpl).with_context(|| {
@@ -482,6 +489,11 @@ impl Stage for ArchiveStage {
                             _ => create_tar_gz(&path_refs, &archive_path, None, wrap_dir)?,
                         }
                     }
+
+                    // Update stage-scoped template vars for downstream stages
+                    let tvars = ctx.template_vars_mut();
+                    tvars.set("ArtifactName", &archive_filename);
+                    tvars.set("ArtifactPath", &archive_path.to_string_lossy());
 
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::Archive,
@@ -1149,5 +1161,203 @@ crates:
         assert!(!name.contains(".gz"));
         assert!(archives[0].path.exists());
         assert_eq!(fs::read(&archives[0].path).unwrap(), b"raw binary content");
+    }
+
+    // -----------------------------------------------------------------------
+    // Deep integration tests: realistic file trees, verify archive contents
+    // -----------------------------------------------------------------------
+
+    /// Helper: create a realistic file tree with a binary, LICENSE, and README.
+    fn create_realistic_file_tree(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let bin = dir.join("myapp");
+        let license = dir.join("LICENSE");
+        let readme = dir.join("README.md");
+        fs::write(&bin, b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03").unwrap();
+        fs::write(&license, b"MIT License\n\nCopyright (c) 2026 Example Corp\n\nPermission is hereby granted...").unwrap();
+        fs::write(&readme, b"# MyApp\n\nA tool for doing things.\n\n## Usage\n\n```\nmyapp --help\n```\n").unwrap();
+        (bin, license, readme)
+    }
+
+    #[test]
+    fn test_integration_tar_gz_realistic_file_tree() {
+        let tmp = TempDir::new().unwrap();
+        let (bin, license, readme) = create_realistic_file_tree(tmp.path());
+
+        let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.gz");
+        create_tar_gz(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Open the archive and verify all files are present with correct names
+        let file = File::open(&archive_path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(dec);
+
+        let mut found_files: HashMap<String, Vec<u8>> = HashMap::new();
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().to_string();
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
+            found_files.insert(name, content);
+        }
+
+        assert_eq!(found_files.len(), 3, "archive should contain exactly 3 files");
+        assert!(found_files.contains_key("myapp"), "should contain myapp binary");
+        assert!(found_files.contains_key("LICENSE"), "should contain LICENSE");
+        assert!(found_files.contains_key("README.md"), "should contain README.md");
+
+        // Verify file contents are preserved byte-for-byte
+        assert_eq!(
+            found_files["myapp"],
+            b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03".to_vec(),
+            "binary content should be preserved exactly"
+        );
+        assert!(
+            found_files["LICENSE"].starts_with(b"MIT License"),
+            "LICENSE content should be preserved"
+        );
+        assert!(
+            found_files["README.md"].starts_with(b"# MyApp"),
+            "README content should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_integration_zip_realistic_file_tree() {
+        let tmp = TempDir::new().unwrap();
+        let (bin, license, readme) = create_realistic_file_tree(tmp.path());
+
+        let archive_path = tmp.path().join("myapp-1.0.0-windows-amd64.zip");
+        create_zip(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+        )
+        .unwrap();
+
+        // Open the zip and verify all files
+        let file = File::open(&archive_path).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+
+        assert_eq!(zip.len(), 3, "zip should contain exactly 3 files");
+
+        let mut found_names: Vec<String> = Vec::new();
+        for i in 0..zip.len() {
+            let entry = zip.by_index(i).unwrap();
+            found_names.push(entry.name().to_string());
+        }
+        found_names.sort();
+        assert_eq!(found_names, vec!["LICENSE", "README.md", "myapp"]);
+
+        // Verify binary content is preserved
+        {
+            let mut bin_entry = zip.by_name("myapp").unwrap();
+            let mut bin_content = Vec::new();
+            std::io::Read::read_to_end(&mut bin_entry, &mut bin_content).unwrap();
+            assert_eq!(
+                bin_content,
+                b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03".to_vec(),
+                "binary content in zip should be preserved exactly"
+            );
+        }
+
+        // Verify LICENSE content is preserved
+        {
+            let mut lic_entry = zip.by_name("LICENSE").unwrap();
+            let mut lic_content = Vec::new();
+            std::io::Read::read_to_end(&mut lic_entry, &mut lic_content).unwrap();
+            assert!(lic_content.starts_with(b"MIT License"));
+        }
+    }
+
+    #[test]
+    fn test_integration_tar_xz_realistic_file_tree() {
+        let tmp = TempDir::new().unwrap();
+        let (bin, license, readme) = create_realistic_file_tree(tmp.path());
+
+        let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.xz");
+        create_tar_xz(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Open the archive and verify all files
+        let file = File::open(&archive_path).unwrap();
+        let dec = xz2::read::XzDecoder::new(file);
+        let mut tar = tar::Archive::new(dec);
+
+        let mut found_files: HashMap<String, Vec<u8>> = HashMap::new();
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().to_string();
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
+            found_files.insert(name, content);
+        }
+
+        assert_eq!(found_files.len(), 3, "tar.xz should contain exactly 3 files");
+        assert!(found_files.contains_key("myapp"));
+        assert!(found_files.contains_key("LICENSE"));
+        assert!(found_files.contains_key("README.md"));
+
+        // Verify binary content
+        assert_eq!(
+            found_files["myapp"],
+            b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03".to_vec(),
+            "binary content in tar.xz should be preserved exactly"
+        );
+
+        // Verify text content
+        let readme_str = String::from_utf8(found_files["README.md"].clone()).unwrap();
+        assert!(readme_str.contains("## Usage"), "README structure should be intact");
+        assert!(readme_str.contains("myapp --help"), "README content should be preserved");
+    }
+
+    #[test]
+    fn test_integration_tar_gz_with_wrap_dir_contents_verified() {
+        let tmp = TempDir::new().unwrap();
+        let (bin, license, readme) = create_realistic_file_tree(tmp.path());
+
+        let archive_path = tmp.path().join("myapp-1.0.0.tar.gz");
+        create_tar_gz(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+            Some("myapp-1.0.0"),
+        )
+        .unwrap();
+
+        let file = File::open(&archive_path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(dec);
+
+        let mut found_files: HashMap<String, Vec<u8>> = HashMap::new();
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().to_string();
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
+            found_files.insert(name, content);
+        }
+
+        // All entries should be prefixed with wrap directory
+        assert_eq!(found_files.len(), 3);
+        assert!(found_files.contains_key("myapp-1.0.0/myapp"));
+        assert!(found_files.contains_key("myapp-1.0.0/LICENSE"));
+        assert!(found_files.contains_key("myapp-1.0.0/README.md"));
+
+        // Contents still preserved after wrapping
+        assert_eq!(
+            found_files["myapp-1.0.0/myapp"],
+            b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03".to_vec()
+        );
     }
 }

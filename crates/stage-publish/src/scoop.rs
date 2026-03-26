@@ -313,4 +313,148 @@ mod tests {
         // dry-run should succeed without any network/git calls
         assert!(publish_to_scoop(&ctx, "cfgd").is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // Deep integration tests: verify manifest JSON structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_integration_manifest_complete_json_structure() {
+        let manifest = generate_manifest(
+            "anodize",
+            "3.2.1",
+            "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip",
+            "aabbccdd1122334455667788",
+            "Release automation for Rust projects",
+            "Apache-2.0",
+        );
+
+        // Parse the manifest as JSON
+        let json: serde_json::Value = serde_json::from_str(&manifest)
+            .expect("manifest should be valid JSON");
+
+        // Verify top-level fields exist and have correct values
+        assert_eq!(json["version"], "3.2.1");
+        assert_eq!(json["description"], "Release automation for Rust projects");
+        assert_eq!(json["homepage"], "https://github.com/anodize");
+        assert_eq!(json["license"], "Apache-2.0");
+
+        // Verify architecture.64bit structure
+        let arch_64 = &json["architecture"]["64bit"];
+        assert!(arch_64.is_object(), "architecture.64bit should be an object");
+        assert_eq!(
+            arch_64["url"],
+            "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip"
+        );
+        assert_eq!(arch_64["hash"], "aabbccdd1122334455667788");
+        assert_eq!(arch_64["bin"], "anodize");
+
+        // Verify checkver field
+        assert_eq!(json["checkver"], "github");
+
+        // Verify autoupdate structure
+        let autoupdate = &json["autoupdate"];
+        assert!(autoupdate.is_object(), "autoupdate should be an object");
+        let auto_64 = &autoupdate["architecture"]["64bit"];
+        assert!(auto_64.is_object(), "autoupdate.architecture.64bit should be an object");
+        let auto_url = auto_64["url"].as_str().unwrap();
+        assert!(
+            auto_url.contains("anodize"),
+            "autoupdate URL should contain the app name"
+        );
+        assert!(
+            auto_url.contains("$version"),
+            "autoupdate URL should contain $version placeholder"
+        );
+    }
+
+    #[test]
+    fn test_integration_manifest_is_valid_pretty_json() {
+        let manifest = generate_manifest(
+            "my-tool",
+            "1.5.0",
+            "https://example.com/my-tool-1.5.0-windows-amd64.zip",
+            "deadbeefcafebabe",
+            "A useful tool",
+            "MIT",
+        );
+
+        // Verify it is pretty-printed (has newlines and indentation)
+        assert!(manifest.contains('\n'), "should be pretty-printed");
+        assert!(manifest.contains("  "), "should have indentation");
+
+        // Verify it can be re-parsed
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+
+        // Verify all expected top-level keys
+        let obj = json.as_object().unwrap();
+        let keys: Vec<&String> = obj.keys().collect();
+        assert!(keys.iter().any(|k| k.as_str() == "version"), "should have version key");
+        assert!(keys.iter().any(|k| k.as_str() == "description"), "should have description key");
+        assert!(keys.iter().any(|k| k.as_str() == "homepage"), "should have homepage key");
+        assert!(keys.iter().any(|k| k.as_str() == "license"), "should have license key");
+        assert!(keys.iter().any(|k| k.as_str() == "architecture"), "should have architecture key");
+        assert!(keys.iter().any(|k| k.as_str() == "checkver"), "should have checkver key");
+        assert!(keys.iter().any(|k| k.as_str() == "autoupdate"), "should have autoupdate key");
+    }
+
+    #[test]
+    fn test_integration_manifest_special_characters_in_description() {
+        let manifest = generate_manifest(
+            "json-tool",
+            "1.0.0",
+            "https://example.com/tool.zip",
+            "hash123",
+            "A tool for \"parsing\" JSON & XML <data>",
+            "MIT",
+        );
+
+        // Even with special characters, should produce valid JSON
+        let json: serde_json::Value = serde_json::from_str(&manifest)
+            .expect("manifest with special chars should still be valid JSON");
+        assert_eq!(json["description"], "A tool for \"parsing\" JSON & XML <data>");
+    }
+
+    #[test]
+    fn test_integration_manifest_bin_matches_name() {
+        // Verify that the bin field in the manifest matches the name parameter
+        let manifest = generate_manifest(
+            "my-special-cli",
+            "0.1.0",
+            "https://example.com/cli.zip",
+            "abc",
+            "desc",
+            "MIT",
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(
+            json["architecture"]["64bit"]["bin"],
+            "my-special-cli",
+            "bin should match the tool name"
+        );
+    }
+
+    #[test]
+    fn test_integration_manifest_autoupdate_url_format() {
+        let manifest = generate_manifest(
+            "release-tool",
+            "5.0.0",
+            "https://example.com/release-tool-5.0.0-windows-amd64.zip",
+            "hash",
+            "desc",
+            "MIT",
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let auto_url = json["autoupdate"]["architecture"]["64bit"]["url"]
+            .as_str()
+            .unwrap();
+
+        // The autoupdate URL should follow the pattern:
+        // https://github.com/<name>/<name>/releases/download/v$version/<name>-$version-windows-amd64.zip
+        assert!(auto_url.starts_with("https://github.com/release-tool/release-tool/releases/download/v$version/"));
+        assert!(auto_url.ends_with("-windows-amd64.zip"));
+        assert!(auto_url.contains("release-tool-$version-"));
+    }
 }

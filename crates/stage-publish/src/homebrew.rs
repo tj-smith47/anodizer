@@ -399,4 +399,145 @@ mod tests {
         // on_linux should still appear once.
         assert_eq!(formula.matches("on_linux do").count(), 1);
     }
+
+    // -----------------------------------------------------------------------
+    // Deep integration tests: verify full formula structure
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_integration_formula_complete_structure() {
+        let formula = generate_formula(
+            "anodize",
+            "3.2.1",
+            &[("darwin-arm64", "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-darwin-arm64.tar.gz", "aabbccdd11223344")],
+            "Release automation for Rust projects",
+            "Apache-2.0",
+            "bin.install \"anodize\"",
+            "system \"#{bin}/anodize\", \"--version\"",
+        );
+
+        // Verify class declaration
+        assert!(formula.starts_with("class Anodize < Formula\n"), "should start with class declaration");
+
+        // Verify desc field
+        assert!(formula.contains("  desc \"Release automation for Rust projects\"\n"));
+
+        // Verify homepage
+        assert!(formula.contains("  homepage \"https://github.com/anodize\"\n"));
+
+        // Verify license
+        assert!(formula.contains("  license \"Apache-2.0\"\n"));
+
+        // Verify version
+        assert!(formula.contains("  version \"3.2.1\"\n"));
+
+        // Verify url and sha256 (single archive = flat, no on_macos block)
+        assert!(formula.contains("  url \"https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-darwin-arm64.tar.gz\"\n"));
+        assert!(formula.contains("  sha256 \"aabbccdd11223344\"\n"));
+
+        // Verify install block
+        assert!(formula.contains("  def install\n"));
+        assert!(formula.contains("    bin.install \"anodize\"\n"));
+        assert!(formula.contains("  end\n"));
+
+        // Verify test block
+        assert!(formula.contains("  test do\n"));
+        assert!(formula.contains("    system \"#{bin}/anodize\", \"--version\"\n"));
+
+        // Verify formula ends properly
+        assert!(formula.ends_with("end\n"));
+
+        // Verify the overall structure has exactly one class/end pair
+        assert_eq!(formula.matches("class ").count(), 1);
+        // The "end" count: 1 for install, 1 for test, 1 for class
+        let end_lines: Vec<&str> = formula.lines().filter(|l| l.trim() == "end").collect();
+        assert_eq!(end_lines.len(), 3, "should have 3 'end' lines: install, test, class");
+    }
+
+    #[test]
+    fn test_integration_formula_multi_arch_complete_structure() {
+        let formula = generate_formula(
+            "my-cli",
+            "2.0.0",
+            &[
+                ("darwin-arm64", "https://example.com/my-cli-2.0.0-darwin-arm64.tar.gz", "sha_darwin_arm64"),
+                ("darwin-amd64", "https://example.com/my-cli-2.0.0-darwin-amd64.tar.gz", "sha_darwin_amd64"),
+                ("linux-amd64", "https://example.com/my-cli-2.0.0-linux-amd64.tar.gz", "sha_linux_amd64"),
+                ("linux-arm64", "https://example.com/my-cli-2.0.0-linux-arm64.tar.gz", "sha_linux_arm64"),
+            ],
+            "A CLI tool",
+            "MIT",
+            "bin.install \"my-cli\"",
+            "system \"#{bin}/my-cli\", \"--version\"",
+        );
+
+        // Verify class name transforms hyphen to PascalCase
+        assert!(formula.contains("class MyCli < Formula"));
+
+        // Verify on_macos block with arch sub-blocks
+        assert_eq!(formula.matches("on_macos do").count(), 1, "exactly one on_macos block");
+        assert_eq!(formula.matches("on_linux do").count(), 1, "exactly one on_linux block");
+
+        // Verify on_arm and on_intel are present inside macos
+        assert!(formula.contains("on_arm do"), "should have on_arm block");
+        assert!(formula.contains("on_intel do"), "should have on_intel block");
+
+        // Verify all 4 URLs are present
+        assert!(formula.contains("sha_darwin_arm64"));
+        assert!(formula.contains("sha_darwin_amd64"));
+        assert!(formula.contains("sha_linux_amd64"));
+        assert!(formula.contains("sha_linux_arm64"));
+
+        // Verify indentation of arch blocks (6 spaces for url/sha256 inside arch)
+        assert!(formula.contains("      url \"https://example.com/my-cli-2.0.0-darwin-arm64.tar.gz\""));
+        assert!(formula.contains("      sha256 \"sha_darwin_arm64\""));
+
+        // Verify install and test blocks are still present
+        assert!(formula.contains("  def install\n"));
+        assert!(formula.contains("  test do\n"));
+    }
+
+    #[test]
+    fn test_integration_formula_no_archives() {
+        // Edge case: no archive entries
+        let formula = generate_formula(
+            "empty-tool",
+            "0.1.0",
+            &[],
+            "An empty tool",
+            "MIT",
+            "bin.install \"empty-tool\"",
+            "system \"#{bin}/empty-tool\", \"--help\"",
+        );
+
+        assert!(formula.contains("class EmptyTool < Formula"));
+        assert!(formula.contains("  version \"0.1.0\""));
+        // Should not contain any url/sha256 blocks
+        assert!(!formula.contains("url \""));
+        assert!(!formula.contains("sha256 \""));
+        // But should still have install and test
+        assert!(formula.contains("  def install\n"));
+        assert!(formula.contains("  test do\n"));
+    }
+
+    #[test]
+    fn test_integration_formula_multiline_install() {
+        let formula = generate_formula(
+            "complex-app",
+            "1.0.0",
+            &[("linux-amd64", "https://example.com/app.tar.gz", "hash123")],
+            "Complex app",
+            "MIT",
+            "bin.install \"complex-app\"\nman1.install \"complex-app.1\"",
+            "system \"#{bin}/complex-app\", \"--version\"\nassert_match \"complex-app\", shell_output(\"#{bin}/complex-app --help\")",
+        );
+
+        // Verify multi-line install block with proper indentation
+        assert!(formula.contains("    bin.install \"complex-app\"\n"));
+        assert!(formula.contains("    man1.install \"complex-app.1\"\n"));
+
+        // Verify multi-line test block
+        assert!(formula.contains("    system \"#{bin}/complex-app\", \"--version\"\n"));
+        assert!(formula.contains("    assert_match \"complex-app\","));
+    }
 }
