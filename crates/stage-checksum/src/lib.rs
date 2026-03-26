@@ -1180,4 +1180,37 @@ ids:
         let expected = sha512_file(&archive).unwrap();
         assert_eq!(hash, expected);
     }
+
+    // -- TestContextBuilder integration test --
+
+    #[test]
+    fn test_checksum_stage_with_test_context_builder() {
+        use anodize_core::test_helpers::{TestContextBuilder, create_fake_binary};
+
+        let tmp = TempDir::new().unwrap();
+        let fake_bin = create_fake_binary(tmp.path(), "myapp");
+
+        let ctx = TestContextBuilder::new()
+            .project_name("checksum-test")
+            .tag("v2.0.0")
+            .build();
+
+        // Verify the builder provides a properly configured context
+        assert_eq!(
+            ctx.template_vars().get("ProjectName"),
+            Some(&"checksum-test".to_string())
+        );
+        assert_eq!(
+            ctx.template_vars().get("Version"),
+            Some(&"2.0.0".to_string())
+        );
+        assert_eq!(
+            ctx.template_vars().get("Major"),
+            Some(&"2".to_string())
+        );
+
+        // Verify the fake binary is usable for checksum computation
+        let hash = sha256_file(&fake_bin).unwrap();
+        assert_eq!(hash.len(), 64, "SHA-256 produces 64 hex chars");
+    }
 }

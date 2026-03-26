@@ -1388,4 +1388,35 @@ crates:
             "README content should be preserved"
         );
     }
+
+    // -- TestContextBuilder integration test --
+
+    #[test]
+    fn test_archive_stage_with_test_context_builder() {
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let ctx = TestContextBuilder::new()
+            .project_name("archive-test")
+            .tag("v1.0.0")
+            .build();
+
+        // Verify the context is usable for archive stage testing
+        assert_eq!(
+            ctx.template_vars().get("ProjectName"),
+            Some(&"archive-test".to_string())
+        );
+        assert_eq!(
+            ctx.template_vars().get("Version"),
+            Some(&"1.0.0".to_string())
+        );
+        let rendered = ctx
+            .render_template("{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}")
+            .unwrap_err();
+        // Os and Arch are not set by default (they are stage-scoped), so rendering should fail
+        let err = rendered.to_string();
+        assert!(
+            err.contains("Os") || err.contains("Arch"),
+            "missing stage-scoped vars should cause template error, got: {err}"
+        );
+    }
 }

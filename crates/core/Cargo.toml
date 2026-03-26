@@ -9,6 +9,9 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+test-helpers = []
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true
