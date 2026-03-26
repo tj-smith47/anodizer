@@ -178,6 +178,43 @@ pub fn has_changes_since(tag: &str, path: &str) -> Result<bool> {
     Ok(!output.is_empty())
 }
 
+/// Parse owner and repo name from a GitHub remote URL.
+/// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH (`git@github.com:owner/repo.git`).
+pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+
+    // Strip trailing ".git" if present
+    let url = url.strip_suffix(".git").unwrap_or(url);
+
+    // HTTPS: https://github.com/owner/repo
+    if let Some(path) = url.strip_prefix("https://github.com/") {
+        let parts: Vec<&str> = path.splitn(3, '/').collect();
+        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+
+    // SSH: git@github.com:owner/repo
+    if let Some(path) = url.strip_prefix("git@github.com:") {
+        let parts: Vec<&str> = path.splitn(3, '/').collect();
+        if parts.len() >= 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            return Some((parts[0].to_string(), parts[1].to_string()));
+        }
+    }
+
+    None
+}
+
+/// Get the GitHub owner/name from the `origin` remote.
+pub fn detect_github_repo() -> Result<(String, String)> {
+    let url = git_output(&["remote", "get-url", "origin"])?;
+    parse_github_remote(&url)
+        .ok_or_else(|| anyhow::anyhow!("could not parse GitHub owner/repo from remote URL: {}", url))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +246,41 @@ mod tests {
     fn test_is_prerelease() {
         assert!(parse_semver("v1.0.0-rc.1").unwrap().is_prerelease());
         assert!(!parse_semver("v1.0.0").unwrap().is_prerelease());
+    }
+
+    #[test]
+    fn test_parse_github_remote_https() {
+        let result = parse_github_remote("https://github.com/tj-smith47/anodize.git");
+        assert_eq!(result, Some(("tj-smith47".to_string(), "anodize".to_string())));
+    }
+
+    #[test]
+    fn test_parse_github_remote_https_no_dotgit() {
+        let result = parse_github_remote("https://github.com/owner/repo");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
+    fn test_parse_github_remote_ssh() {
+        let result = parse_github_remote("git@github.com:owner/repo.git");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
+    fn test_parse_github_remote_ssh_no_dotgit() {
+        let result = parse_github_remote("git@github.com:owner/repo");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
+    fn test_parse_github_remote_invalid() {
+        let result = parse_github_remote("https://gitlab.com/foo/bar.git");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_github_remote_empty() {
+        let result = parse_github_remote("");
+        assert_eq!(result, None);
     }
 }

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use anyhow::Result;
 use anodize_core::context::{Context, ContextOptions};
-use anodize_core::config::CrateConfig;
+use anodize_core::config::{CrateConfig, GitHubConfig};
 use anodize_core::git;
 use crate::pipeline;
 
@@ -20,7 +20,22 @@ pub struct ReleaseOpts {
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
-    let config = pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
+    let mut config = pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
+
+    // Auto-detect GitHub owner/name from git remote when release config is
+    // present but the `github` section is omitted. Detect once and reuse.
+    let detected_github = git::detect_github_repo().ok();
+    for crate_cfg in &mut config.crates {
+        if let Some(ref mut release) = crate_cfg.release
+            && release.github.is_none()
+        {
+            if let Some((ref owner, ref name)) = detected_github {
+                release.github = Some(GitHubConfig { owner: owner.clone(), name: name.clone() });
+            } else {
+                eprintln!("[release] warning: could not auto-detect GitHub repo from git remote");
+            }
+        }
+    }
 
     if opts.clean {
         let dist = &config.dist;
