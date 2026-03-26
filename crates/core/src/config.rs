@@ -18,7 +18,8 @@ pub struct Config {
     pub after: Option<HooksConfig>,
     pub crates: Vec<CrateConfig>,
     pub changelog: Option<ChangelogConfig>,
-    pub sign: Option<SignConfig>,
+    #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
+    pub signs: Vec<SignConfig>,
     pub docker_signs: Option<Vec<DockerSignConfig>>,
     pub snapshot: Option<SnapshotConfig>,
     pub announce: Option<AnnounceConfig>,
@@ -38,7 +39,7 @@ impl Default for Config {
             after: None,
             crates: Vec::new(),
             changelog: None,
-            sign: None,
+            signs: Vec::new(),
             docker_signs: None,
             snapshot: None,
             announce: None,
@@ -200,6 +201,51 @@ where
     }
 
     deserializer.deserialize_any(ArchivesVisitor)
+}
+
+/// Custom deserializer for the `signs` / `sign` field.
+/// Accepts:
+///   - null/missing → empty vec (via serde default)
+///   - a single object → vec of one SignConfig
+///   - an array → vec of SignConfig
+fn deserialize_signs<'de, D>(deserializer: D) -> Result<Vec<SignConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct SignsVisitor;
+
+    impl<'de> Visitor<'de> for SignsVisitor {
+        type Value = Vec<SignConfig>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a sign config object or an array of sign config objects")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut configs = Vec::new();
+            while let Some(item) = seq.next_element::<SignConfig>()? {
+                configs.push(item);
+            }
+            Ok(configs)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            let config = SignConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![config])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(SignsVisitor)
 }
 
 // ---------------------------------------------------------------------------
@@ -514,9 +560,14 @@ pub struct ChangelogGroup {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SignConfig {
+    pub id: Option<String>,
     pub artifacts: Option<String>,
     pub cmd: Option<String>,
     pub args: Option<Vec<String>>,
+    pub signature: Option<String>,
+    pub stdin: Option<String>,
+    pub stdin_file: Option<String>,
+    pub ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1086,5 +1137,199 @@ crates:
         assert_eq!(release.replace_existing_draft, Some(true));
         assert_eq!(release.replace_existing_artifacts, Some(false));
         assert_eq!(release.make_latest, Some(MakeLatestConfig::Auto));
+    }
+
+    // ---- SignConfig / signs migration tests ----
+
+    #[test]
+    fn test_signs_single_object_backward_compat() {
+        let yaml = r#"
+project_name: test
+sign:
+  artifacts: all
+  cmd: gpg
+  args:
+    - "--detach-sig"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.signs.len(), 1);
+        assert_eq!(config.signs[0].artifacts, Some("all".to_string()));
+        assert_eq!(config.signs[0].cmd, Some("gpg".to_string()));
+        assert_eq!(config.signs[0].args.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_signs_array_format() {
+        let yaml = r#"
+project_name: test
+signs:
+  - id: gpg-sign
+    artifacts: checksum
+    cmd: gpg
+    args:
+      - "--detach-sig"
+  - id: cosign-sign
+    artifacts: binary
+    cmd: cosign
+    args:
+      - "sign"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.signs.len(), 2);
+        assert_eq!(config.signs[0].id, Some("gpg-sign".to_string()));
+        assert_eq!(config.signs[0].artifacts, Some("checksum".to_string()));
+        assert_eq!(config.signs[1].id, Some("cosign-sign".to_string()));
+        assert_eq!(config.signs[1].artifacts, Some("binary".to_string()));
+    }
+
+    #[test]
+    fn test_signs_omitted_is_empty() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.signs.is_empty());
+    }
+
+    #[test]
+    fn test_signs_new_fields() {
+        let yaml = r#"
+project_name: test
+signs:
+  - id: my-signer
+    artifacts: archive
+    cmd: gpg
+    args:
+      - "--detach-sig"
+    signature: "{{ .Artifact }}.asc"
+    stdin: "my-passphrase"
+    ids:
+      - my-archive
+      - my-binary
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.signs.len(), 1);
+        let sign = &config.signs[0];
+        assert_eq!(sign.id, Some("my-signer".to_string()));
+        assert_eq!(sign.artifacts, Some("archive".to_string()));
+        assert_eq!(sign.signature, Some("{{ .Artifact }}.asc".to_string()));
+        assert_eq!(sign.stdin, Some("my-passphrase".to_string()));
+        assert_eq!(sign.ids.as_ref().unwrap().len(), 2);
+        assert_eq!(sign.ids.as_ref().unwrap()[0], "my-archive");
+    }
+
+    #[test]
+    fn test_signs_stdin_file_field() {
+        let yaml = r#"
+project_name: test
+signs:
+  - artifacts: all
+    cmd: gpg
+    stdin_file: "/path/to/passphrase.txt"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.signs.len(), 1);
+        assert_eq!(
+            config.signs[0].stdin_file,
+            Some("/path/to/passphrase.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_signs_single_object_with_new_fields() {
+        let yaml = r#"
+project_name: test
+sign:
+  id: default
+  artifacts: package
+  cmd: gpg
+  signature: "{{ .Artifact }}.sig"
+  stdin: "pass"
+  ids:
+    - pkg-id
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.signs.len(), 1);
+        let sign = &config.signs[0];
+        assert_eq!(sign.id, Some("default".to_string()));
+        assert_eq!(sign.artifacts, Some("package".to_string()));
+        assert_eq!(sign.signature, Some("{{ .Artifact }}.sig".to_string()));
+        assert_eq!(sign.stdin, Some("pass".to_string()));
+        assert_eq!(sign.ids.as_ref().unwrap(), &["pkg-id"]);
+    }
+
+    #[test]
+    fn test_signs_toml_single_object() {
+        let toml_str = r#"
+project_name = "test"
+
+[sign]
+artifacts = "checksum"
+cmd = "gpg"
+
+[[crates]]
+name = "a"
+path = "."
+tag_template = "v{{ .Version }}"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.signs.len(), 1);
+        assert_eq!(config.signs[0].artifacts, Some("checksum".to_string()));
+    }
+
+    #[test]
+    fn test_signs_toml_array() {
+        let toml_str = r#"
+project_name = "test"
+
+[[signs]]
+id = "first"
+artifacts = "all"
+cmd = "gpg"
+
+[[signs]]
+id = "second"
+artifacts = "binary"
+cmd = "cosign"
+
+[[crates]]
+name = "a"
+path = "."
+tag_template = "v{{ .Version }}"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.signs.len(), 2);
+        assert_eq!(config.signs[0].id, Some("first".to_string()));
+        assert_eq!(config.signs[1].id, Some("second".to_string()));
+    }
+
+    #[test]
+    fn test_signs_default_config_has_empty_signs() {
+        let config = Config::default();
+        assert!(config.signs.is_empty());
     }
 }

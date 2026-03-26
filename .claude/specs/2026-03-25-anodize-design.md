@@ -296,19 +296,26 @@ changelog:
     - title: Others
       order: 999
 
-# sign and docker_signs are workspace-wide — they apply to all artifacts/images
+# signs and docker_signs are workspace-wide — they apply to all artifacts/images
 # across all crates. Per-crate overrides are a Release 2 consideration.
-sign:
-  artifacts: checksum  # none | all | checksum
-  cmd: gpg
-  args:
-    - "--batch"
-    - "--local-user"
-    - "{{ .Env.GPG_FINGERPRINT }}"
-    - "--output"
-    - "{{ .Signature }}"
-    - "--detach-sig"
-    - "{{ .Artifact }}"
+# Accepts both `sign:` (single object, backward compat) and `signs:` (array).
+signs:
+  - id: default
+    artifacts: checksum  # none | all | checksum | source | archive | binary | package
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "{{ .Signature }}"
+      - "--detach-sig"
+      - "{{ .Artifact }}"
+    # signature: "{{ .Artifact }}.asc"  # optional: custom signature output path template
+    # stdin: "passphrase"               # optional: pipe string to stdin
+    # stdin_file: "/path/to/file"       # optional: pipe file contents to stdin
+    # ids:                              # optional: filter by artifact IDs
+    #   - my-archive
 
 docker_signs:
   - artifacts: all
@@ -614,7 +621,8 @@ This matches the pattern used in cfgd's existing release Dockerfiles.
 
 - GPG signing of checksum files (shells out to `gpg`)
 - Cosign signing of Docker images (shells out to `cosign`)
-- Configurable via `sign` and `docker_signs` sections
+- Configurable via `signs` (array) and `docker_signs` sections; backward compat: `sign` (single object) is auto-wrapped into an array
+- Multiple sign configs supported, each with optional `id`, `artifacts` filter (`none`, `all`, `checksum`, `source`, `archive`, `binary`, `package`), `ids` filter, `signature` template, `stdin`/`stdin_file` for piping to the signing command
 - Template variables `{{ .Signature }}` and `{{ .Artifact }}` resolve to output path and input artifact path respectively
 - Same config surface as GoReleaser
 

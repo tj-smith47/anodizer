@@ -129,17 +129,18 @@ changelog:
     - title: Others
       order: 999
 
-sign:
-  artifacts: checksum
-  cmd: gpg
-  args:
-    - "--batch"
-    - "--local-user"
-    - "{{ Env.GPG_FINGERPRINT }}"
-    - "--output"
-    - "{{ Signature }}"
-    - "--detach-sig"
-    - "{{ Artifact }}"
+signs:
+  - id: default
+    artifacts: checksum
+    cmd: gpg
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "{{ Signature }}"
+      - "--detach-sig"
+      - "{{ Artifact }}"
 
 snapshot:
   name_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"

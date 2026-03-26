@@ -1,8 +1,10 @@
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::ArtifactKind;
+use anodize_core::config::SignConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -16,12 +18,52 @@ use anodize_core::stage::Stage;
 /// Filter values:
 /// - `"none"`     → nothing is signed
 /// - `"all"`      → every artifact kind is signed
+/// - `"source"`   → only `ArtifactKind::Archive` (source archives)
+/// - `"archive"`  → only `ArtifactKind::Archive`
+/// - `"binary"`   → only `ArtifactKind::Binary`
+/// - `"package"`  → only `ArtifactKind::LinuxPackage`
 /// - `"checksum"` (default) → only `ArtifactKind::Checksum`
 pub fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> bool {
     match filter {
         "none" => false,
         "all" => true,
+        "source" | "archive" => kind == ArtifactKind::Archive,
+        "binary" => kind == ArtifactKind::Binary,
+        "package" => kind == ArtifactKind::LinuxPackage,
         _ => kind == ArtifactKind::Checksum,
+    }
+}
+
+/// Resolve the signature output path from a `SignConfig::signature` template
+/// or fall back to the default `{artifact}.sig`.
+fn resolve_signature_path(
+    sign_cfg: &SignConfig,
+    artifact_path: &str,
+    ctx: &Context,
+) -> String {
+    if let Some(ref sig_template) = sign_cfg.signature {
+        ctx.render_template(
+            &sig_template
+                .replace("{{ .Artifact }}", artifact_path)
+                .replace("{{ Artifact }}", artifact_path),
+        )
+        .unwrap_or_else(|_| format!("{}.sig", artifact_path))
+    } else {
+        format!("{}.sig", artifact_path)
+    }
+}
+
+/// Pipe `stdin_content` or the contents of `stdin_file` to a child process's
+/// stdin. Returns the appropriate `Stdio` and an optional content buffer.
+fn prepare_stdin(sign_cfg: &SignConfig) -> Result<(Stdio, Option<Vec<u8>>)> {
+    if let Some(ref content) = sign_cfg.stdin {
+        Ok((Stdio::piped(), Some(content.as_bytes().to_vec())))
+    } else if let Some(ref path) = sign_cfg.stdin_file {
+        let data = std::fs::read(path)
+            .with_context(|| format!("sign: failed to read stdin_file '{}'", path))?;
+        Ok((Stdio::piped(), Some(data)))
+    } else {
+        Ok((Stdio::inherit(), None))
     }
 }
 
@@ -52,88 +94,121 @@ impl Stage for SignStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         // ----------------------------------------------------------------
-        // GPG / generic signing via `sign` config
+        // GPG / generic signing via `signs` config (supports multiple)
         // ----------------------------------------------------------------
-        if let Some(sign_cfg) = ctx.config.sign.clone() {
+        let sign_configs = ctx.config.signs.clone();
+        for sign_cfg in &sign_configs {
             let filter = sign_cfg
                 .artifacts
                 .as_deref()
                 .unwrap_or("checksum");
 
-            if filter != "none" {
-                let cmd = sign_cfg
-                    .cmd
-                    .as_deref()
-                    .unwrap_or("gpg")
-                    .to_string();
+            if filter == "none" {
+                continue;
+            }
 
-                let args = sign_cfg
-                    .args
-                    .clone()
-                    .unwrap_or_else(|| {
-                        vec![
-                            "--output".to_string(),
-                            "{{ .Signature }}".to_string(),
-                            "--detach-sig".to_string(),
-                            "{{ .Artifact }}".to_string(),
-                        ]
-                    });
+            let cmd = sign_cfg
+                .cmd
+                .as_deref()
+                .unwrap_or("gpg")
+                .to_string();
 
-                // Collect matching artifacts (avoid holding an immutable borrow
-                // while we later add new ones, so clone paths up-front).
-                let artifact_paths: Vec<std::path::PathBuf> = ctx
-                    .artifacts
-                    .all()
+            let args = sign_cfg
+                .args
+                .clone()
+                .unwrap_or_else(|| {
+                    vec![
+                        "--output".to_string(),
+                        "{{ .Signature }}".to_string(),
+                        "--detach-sig".to_string(),
+                        "{{ .Artifact }}".to_string(),
+                    ]
+                });
+
+            // Collect matching artifacts (avoid holding an immutable borrow
+            // while we later add new ones, so clone paths up-front).
+            let artifact_paths: Vec<(std::path::PathBuf, std::collections::HashMap<String, String>)> = ctx
+                .artifacts
+                .all()
+                .iter()
+                .filter(|a| {
+                    if !should_sign_artifact(a.kind, filter) {
+                        return false;
+                    }
+                    // If `ids` filter is set, only sign artifacts whose metadata
+                    // contains a matching "id" entry.
+                    if let Some(ref ids) = sign_cfg.ids {
+                        if let Some(artifact_id) = a.metadata.get("id") {
+                            return ids.contains(artifact_id);
+                        }
+                        return false;
+                    }
+                    true
+                })
+                .map(|a| (a.path.clone(), a.metadata.clone()))
+                .collect();
+
+            for (artifact_path, _metadata) in &artifact_paths {
+                let artifact_str = artifact_path.to_string_lossy();
+                let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx);
+
+                let resolved = resolve_sign_args(
+                    &args,
+                    artifact_str.as_ref(),
+                    &signature_str,
+                );
+
+                // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
+                let fully_resolved: Vec<String> = resolved
                     .iter()
-                    .filter(|a| should_sign_artifact(a.kind, filter))
-                    .map(|a| a.path.clone())
+                    .map(|arg| ctx.render_template(arg).unwrap_or_else(|_| arg.clone()))
                     .collect();
 
-                for artifact_path in &artifact_paths {
-                    let artifact_str = artifact_path.to_string_lossy();
-                    let signature_str = format!("{}.sig", artifact_str);
-
-                    let resolved = resolve_sign_args(
-                        &args,
-                        artifact_str.as_ref(),
-                        &signature_str,
-                    );
-
-                    // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
-                    let fully_resolved: Vec<String> = resolved
-                        .iter()
-                        .map(|arg| ctx.render_template(arg).unwrap_or_else(|_| arg.clone()))
-                        .collect();
-
-                    if ctx.is_dry_run() {
-                        eprintln!(
-                            "[sign] (dry-run) would run: {} {}",
-                            cmd,
-                            fully_resolved.join(" ")
-                        );
-                        continue;
-                    }
-
+                if ctx.is_dry_run() {
                     eprintln!(
-                        "[sign] signing {} -> {}",
-                        artifact_str,
-                        signature_str
+                        "[sign] (dry-run) would run: {} {}",
+                        cmd,
+                        fully_resolved.join(" ")
                     );
+                    continue;
+                }
 
-                    let status = Command::new(&cmd)
-                        .args(&fully_resolved)
-                        .status()
-                        .with_context(|| {
-                            format!("sign: failed to spawn '{}' for {}", cmd, artifact_str)
-                        })?;
+                let id_label = sign_cfg.id.as_deref().unwrap_or("default");
+                eprintln!(
+                    "[sign:{}] signing {} -> {}",
+                    id_label,
+                    artifact_str,
+                    signature_str
+                );
 
-                    if !status.success() {
-                        anyhow::bail!(
-                            "sign: '{}' exited with non-zero status for {}",
-                            cmd,
-                            artifact_str
-                        );
-                    }
+                let (stdin_cfg, stdin_data) = prepare_stdin(sign_cfg)?;
+
+                let mut child = Command::new(&cmd)
+                    .args(&fully_resolved)
+                    .stdin(stdin_cfg)
+                    .spawn()
+                    .with_context(|| {
+                        format!("sign: failed to spawn '{}' for {}", cmd, artifact_str)
+                    })?;
+
+                if let Some(data) = stdin_data
+                    && let Some(mut child_stdin) = child.stdin.take()
+                {
+                    child_stdin.write_all(&data).with_context(|| {
+                        format!("sign: failed to write stdin for {}", artifact_str)
+                    })?;
+                }
+
+                let status = child.wait().with_context(|| {
+                    format!("sign: failed to wait for '{}' for {}", cmd, artifact_str)
+                })?;
+
+                if !status.success() {
+                    anyhow::bail!(
+                        "sign: '{}' exited with non-zero status for {}",
+                        cmd,
+                        artifact_str
+                    );
                 }
             }
         }
@@ -272,8 +347,51 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_artifacts_archive() {
+        assert!(should_sign_artifact(ArtifactKind::Archive, "archive"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "archive"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "archive"));
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "archive"));
+    }
+
+    #[test]
+    fn test_filter_artifacts_source() {
+        // "source" is an alias for "archive"
+        assert!(should_sign_artifact(ArtifactKind::Archive, "source"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "source"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "source"));
+    }
+
+    #[test]
+    fn test_filter_artifacts_binary() {
+        assert!(should_sign_artifact(ArtifactKind::Binary, "binary"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "binary"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "binary"));
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "binary"));
+    }
+
+    #[test]
+    fn test_filter_artifacts_package() {
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "package"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "package"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "package"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "package"));
+    }
+
+    #[test]
     fn test_stage_skips_without_sign_config() {
         let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let stage = SignStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_stage_skips_with_empty_signs() {
+        let config = Config {
+            signs: vec![],
+            ..Default::default()
+        };
         let mut ctx = Context::new(config, ContextOptions::default());
         let stage = SignStage;
         assert!(stage.run(&mut ctx).is_ok());

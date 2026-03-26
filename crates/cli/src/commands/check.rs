@@ -211,12 +211,12 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         }
 
         // GPG/cosign availability
-        if config.sign.is_some() {
-            let sign_cmd = config.sign.as_ref()
-                .and_then(|s| s.cmd.as_deref())
-                .unwrap_or("gpg");
-            if !tool_available(sign_cmd) {
-                warnings.push(format!("'{}' is not installed but sign section is configured", sign_cmd));
+        if !config.signs.is_empty() {
+            for sign_cfg in &config.signs {
+                let sign_cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg");
+                if !tool_available(sign_cmd) {
+                    warnings.push(format!("'{}' is not installed but signs section is configured", sign_cmd));
+                }
             }
         }
         if let Some(docker_signs) = &config.docker_signs {
