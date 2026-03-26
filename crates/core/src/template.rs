@@ -361,4 +361,74 @@ mod tests {
         let result = render("{{ Tag | trimprefix(prefix=\"v\") | upper }}", &vars).unwrap();
         assert_eq!(result, "1.2.3");
     }
+
+    // ---- Error path tests (Task 3B) ----
+
+    #[test]
+    fn test_unknown_filter_error() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName | nonexistent_filter }}", &vars);
+        assert!(result.is_err(), "unknown filter should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nonexistent_filter"),
+            "error should mention the unknown filter name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_block_tag_error() {
+        let vars = test_vars();
+        let result = render("{% if ProjectName %} hello", &vars);
+        assert!(result.is_err(), "unclosed if block should produce an error");
+    }
+
+    #[test]
+    fn test_unclosed_variable_tag_error() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName", &vars);
+        assert!(result.is_err(), "unclosed variable tag should produce an error");
+    }
+
+    #[test]
+    fn test_nested_missing_var_in_expression_error() {
+        let vars = test_vars();
+        // Using an undefined variable in an expression (not just a conditional
+        // truthiness check) should error when the template tries to render it.
+        let result = render("{{ Undefined ~ ' suffix' }}", &vars);
+        assert!(
+            result.is_err(),
+            "undefined variable in an expression should produce an error"
+        );
+    }
+
+    #[test]
+    fn test_invalid_filter_argument_type_error() {
+        let vars = test_vars();
+        // trimprefix expects prefix=<string>, but we pass an unquoted value
+        // that Tera will interpret differently
+        let result = render("{{ Tag | trimprefix(prefix=123) }}", &vars);
+        assert!(result.is_err(), "invalid filter argument type should produce an error");
+    }
+
+    #[test]
+    fn test_error_message_includes_original_template() {
+        let vars = test_vars();
+        let template = "{{ .Nonexistent }}";
+        let result = render(template, &vars);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // Our render() adds context with the original template
+        assert!(
+            err.contains("Nonexistent") || err.contains(template),
+            "error should reference the template or variable name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_mismatched_endfor_with_if_error() {
+        let vars = test_vars();
+        let result = render("{% if ProjectName %}hello{% endfor %}", &vars);
+        assert!(result.is_err(), "mismatched block tags should produce an error");
+    }
 }

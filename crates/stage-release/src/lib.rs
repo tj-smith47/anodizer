@@ -733,4 +733,105 @@ mod tests {
         let stage = ReleaseStage;
         assert!(stage.run(&mut ctx).is_ok());
     }
+
+    // ---- Error path tests (Task 3B) ----
+
+    #[test]
+    fn test_release_missing_token_errors() {
+        use anodize_core::config::{CrateConfig, GitHubConfig, ReleaseConfig};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(GitHubConfig {
+                    owner: "testowner".to_string(),
+                    name: "testrepo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        // Not dry-run, no token set, GITHUB_TOKEN env not set
+        let opts = ContextOptions {
+            token: None,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // Temporarily remove GITHUB_TOKEN from environment for this test
+        let saved_token = std::env::var("GITHUB_TOKEN").ok();
+        // SAFETY: This test is not run in parallel with other tests that
+        // depend on GITHUB_TOKEN, and we restore it immediately after.
+        unsafe { std::env::remove_var("GITHUB_TOKEN"); }
+
+        let stage = ReleaseStage;
+        let result = stage.run(&mut ctx);
+
+        // Restore the environment variable if it was set
+        if let Some(token) = saved_token {
+            // SAFETY: Restoring the original environment value.
+            unsafe { std::env::set_var("GITHUB_TOKEN", token); }
+        }
+
+        assert!(result.is_err(), "release without token should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("GITHUB_TOKEN") || err.contains("--token"),
+            "error should mention GITHUB_TOKEN or --token, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_release_no_github_config_skips_silently() {
+        use anodize_core::config::{CrateConfig, ReleaseConfig};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                github: None, // no github config
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        // Not dry-run, but no github config means it should skip without error
+        let opts = ContextOptions::default();
+        let mut ctx = Context::new(config, opts);
+
+        let stage = ReleaseStage;
+        // Should succeed — no github config causes skip, not error
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_prerelease_auto_detects_alpha() {
+        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v1.0.0-alpha.1"));
+    }
+
+    #[test]
+    fn test_prerelease_auto_detects_beta() {
+        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v2.0.0-beta"));
+    }
+
+    #[test]
+    fn test_prerelease_auto_detects_dev() {
+        assert!(should_mark_prerelease(&Some(PrereleaseConfig::Auto), "v1.0.0-dev.5"));
+    }
+
+    #[test]
+    fn test_collect_extra_files_invalid_glob_pattern() {
+        // An invalid glob pattern should be handled gracefully
+        let result = collect_extra_files(&["[invalid-glob".to_string()]);
+        // collect_extra_files logs a warning and returns empty, does not panic
+        assert!(result.is_empty());
+    }
 }

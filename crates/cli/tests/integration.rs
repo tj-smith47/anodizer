@@ -1259,3 +1259,107 @@ crates:
         stderr
     );
 }
+
+// ============================================================================
+// Error Path Tests (Task 3B)
+// ============================================================================
+
+/// Error path: `anodize check` with malformed YAML should fail with a clear error.
+#[test]
+fn test_check_malformed_yaml_reports_parse_error() {
+    let tmp = TempDir::new().unwrap();
+    create_config(tmp.path(), r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: [[[invalid yaml
+      this is broken
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "check with malformed YAML should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The error should mention a parsing issue
+    assert!(
+        stderr.contains("error") || stderr.contains("Error") || stderr.contains("parse") || stderr.contains("invalid"),
+        "stderr should indicate a parse error, got:\n{}",
+        stderr
+    );
+}
+
+/// Error path: `anodize check` with type mismatch should fail with a clear error.
+#[test]
+fn test_check_type_mismatch_crates_not_array() {
+    let tmp = TempDir::new().unwrap();
+    create_config(tmp.path(), r#"
+project_name: test
+crates: "this should be an array not a string"
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "check with type mismatch should fail");
+}
+
+/// Error path: `--skip` flag causes stages to be skipped in dry-run output.
+#[test]
+fn test_skip_flag_skips_specified_stages() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let host = detect_host_target();
+    let config = format!(
+        r#"project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: test-project
+        targets:
+          - {host}
+    archives:
+      - name_template: "{{{{ .ProjectName }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        format: tar.gz
+    checksum:
+      name_template: "checksums.txt"
+"#,
+        host = host
+    );
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args([
+            "release",
+            "--dry-run",
+            "--skip=build,archive,checksum,release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout", "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "release with all stages skipped should succeed.\nstderr:\n{}",
+        stderr
+    );
+    // The skipped stages should appear as "skipped" in the output
+    assert!(
+        stderr.contains("skipped"),
+        "stderr should mention 'skipped' when stages are skipped, got:\n{}",
+        stderr
+    );
+}

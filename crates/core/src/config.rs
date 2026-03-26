@@ -1483,4 +1483,161 @@ tag_template = "v{{ .Version }}"
         assert_eq!(env.get("API_KEY").unwrap(), "secret123");
         assert_eq!(env.get("STAGE").unwrap(), "prod");
     }
+
+    // ---- Error path tests (Task 3B) ----
+
+    #[test]
+    fn test_malformed_yaml_syntax_error() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+  invalid_indentation
+    this_is_broken: [
+"#;
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err(), "malformed YAML should fail to parse");
+        let err = result.unwrap_err().to_string();
+        // Serde_yaml errors include line/column info
+        assert!(
+            !err.is_empty(),
+            "error message should not be empty"
+        );
+    }
+
+    #[test]
+    fn test_type_mismatch_string_where_array_expected() {
+        let yaml = r#"
+project_name: test
+crates: "this should be an array"
+"#;
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "string where array expected should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid type") || err.contains("expected a sequence"),
+            "error should mention type mismatch, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_type_mismatch_number_where_string_expected() {
+        let yaml = r#"
+project_name: 12345
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        // serde_yaml coerces numbers to strings in some cases; this tests
+        // that the parser at least doesn't panic
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        // This may or may not error depending on serde_yaml coercion;
+        // the key thing is it doesn't panic
+        if let Ok(config) = result {
+            assert!(!config.project_name.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_type_mismatch_bool_where_array_expected_for_targets() {
+        let yaml = r#"
+project_name: test
+defaults:
+  targets: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "bool where array expected for targets should fail"
+        );
+    }
+
+    #[test]
+    fn test_invalid_cross_strategy_value() {
+        let yaml = r#"
+project_name: test
+defaults:
+  cross: invalid_strategy
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "invalid cross strategy should fail to parse"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unknown variant") || err.contains("invalid_strategy"),
+            "error should mention the invalid variant, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_prerelease_invalid_string_value() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      prerelease: "always"
+"#;
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "prerelease: 'always' should fail (only 'auto' or bool accepted)"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("auto") || err.contains("always"),
+            "error should mention expected values, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_archives_true_is_invalid() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives: true
+"#;
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "archives: true should be rejected (only false or array accepted)"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("true is not valid") || err.contains("false or a list"),
+            "error should explain valid archives values, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_completely_empty_yaml() {
+        let yaml = "";
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        // Empty YAML may deserialize to defaults or may fail
+        // The important thing is it doesn't panic
+        if let Err(e) = result {
+            assert!(!e.to_string().is_empty(), "error message should not be empty");
+        }
+    }
 }

@@ -454,4 +454,99 @@ mod tests {
             CrossStrategy::Cargo | CrossStrategy::Zigbuild | CrossStrategy::Cross
         ));
     }
+
+    // ---- Error path tests (Task 3B) ----
+
+    #[test]
+    fn test_build_command_with_invalid_target_triple() {
+        // build_command itself does not validate target triples -- it just
+        // constructs the command.  Verify the invalid triple is passed through
+        // so that cargo (or cross) reports the error at execution time.
+        let cmd = build_command(
+            "mybin",
+            "crates/mybin",
+            "this-is-not-a-valid-triple",
+            &CrossStrategy::Cargo,
+            Some("--release"),
+            &[],
+            false,
+            &Default::default(),
+        );
+        assert!(cmd.args.contains(&"this-is-not-a-valid-triple".to_string()));
+        assert_eq!(cmd.program, "cargo");
+    }
+
+    #[test]
+    fn test_build_command_empty_binary_name() {
+        // An empty binary name should still be passed through to --bin
+        let cmd = build_command(
+            "",
+            ".",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+            None,
+            &[],
+            false,
+            &Default::default(),
+        );
+        assert!(cmd.args.contains(&"--bin".to_string()));
+        // Empty string is present in args
+        assert!(cmd.args.contains(&"".to_string()));
+    }
+
+    #[test]
+    fn test_build_stage_no_targets_skips_gracefully() {
+        use anodize_core::config::{BuildConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: "myapp".to_string(),
+                targets: Some(vec![]), // explicitly empty targets
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        let stage = BuildStage;
+        // Should succeed without error -- empty targets list is skipped
+        assert!(stage.run(&mut ctx).is_ok());
+        // No artifacts should be registered
+        let binaries = ctx.artifacts.by_kind(anodize_core::artifact::ArtifactKind::Binary);
+        assert!(binaries.is_empty());
+    }
+
+    #[test]
+    fn test_build_command_with_env_vars() {
+        let mut env = HashMap::new();
+        env.insert("CC".to_string(), "gcc-12".to_string());
+        env.insert("RUSTFLAGS".to_string(), "-C target-feature=+crt-static".to_string());
+
+        let cmd = build_command(
+            "mybin",
+            ".",
+            "x86_64-unknown-linux-musl",
+            &CrossStrategy::Cargo,
+            Some("--release"),
+            &[],
+            false,
+            &env,
+        );
+        assert_eq!(cmd.env.get("CC").unwrap(), "gcc-12");
+        assert_eq!(
+            cmd.env.get("RUSTFLAGS").unwrap(),
+            "-C target-feature=+crt-static"
+        );
+    }
 }
