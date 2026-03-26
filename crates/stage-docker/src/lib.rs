@@ -261,6 +261,12 @@ impl Stage for DockerStage {
                 if let Some(ref extra_files) = docker_cfg.extra_files {
                     for file_path in extra_files {
                         let src = PathBuf::from(file_path);
+                        if src.is_dir() {
+                            anyhow::bail!(
+                                "docker: extra_files entry '{}' is a directory; only files are supported",
+                                file_path
+                            );
+                        }
                         let file_name = src
                             .file_name()
                             .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
@@ -327,8 +333,16 @@ impl Stage for DockerStage {
                 let skip_push = docker_cfg.skip_push.unwrap_or(false);
                 let should_push = !dry_run && !skip_push;
 
-                // Collect push_flags
-                let push_flags = docker_cfg.push_flags.clone().unwrap_or_default();
+                // Render push_flags (template-aware, consistent with build_flag_templates)
+                let mut push_flags = Vec::new();
+                if let Some(ref pf_templates) = docker_cfg.push_flags {
+                    for tmpl in pf_templates {
+                        let rendered = ctx.render_template(tmpl).with_context(|| {
+                            format!("docker: render push_flag '{}'", tmpl)
+                        })?;
+                        push_flags.push(rendered);
+                    }
+                }
 
                 let cmd_args = build_docker_command(
                     &staging_str,
