@@ -569,12 +569,18 @@ pub struct ChangelogConfig {
     pub header: Option<String>,
     pub footer: Option<String>,
     pub disable: Option<bool>,
+    /// Changelog source: `"git"` (default) or `"github-native"`.
+    #[serde(rename = "use")]
+    pub use_source: Option<String>,
+    /// Hash abbreviation length (default 7).
+    pub abbrev: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ChangelogFilters {
     pub exclude: Option<Vec<String>>,
+    pub include: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -80,6 +80,34 @@ pub fn apply_filters(commits: &[CommitInfo], exclude: &[String]) -> Vec<CommitIn
 }
 
 // ---------------------------------------------------------------------------
+// apply_include_filters
+// ---------------------------------------------------------------------------
+
+/// Keep only commits whose `raw_message` matches at least one of the include
+/// regex patterns. If `include` is empty, all commits are kept (no-op).
+pub fn apply_include_filters(commits: &[CommitInfo], include: &[String]) -> Vec<CommitInfo> {
+    if include.is_empty() {
+        return commits.to_vec();
+    }
+    let patterns: Vec<Regex> = include
+        .iter()
+        .filter_map(|p| match Regex::new(p) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                eprintln!("[changelog] warning: invalid include regex {:?}: {}", p, e);
+                None
+            }
+        })
+        .collect();
+
+    commits
+        .iter()
+        .filter(|c| patterns.iter().any(|re| re.is_match(&c.raw_message)))
+        .cloned()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // sort_commits
 // ---------------------------------------------------------------------------
 
@@ -165,14 +193,15 @@ pub fn group_commits(commits: &[CommitInfo], groups: &[ChangelogGroup]) -> Vec<G
 
 /// Render grouped commits as a Markdown string. Each group becomes a `## Title`
 /// section, and each commit is a `- description (short_hash)` bullet.
-pub fn render_changelog(grouped: &[GroupedCommits]) -> String {
+///
+/// `abbrev` controls the hash abbreviation length (default 7).
+pub fn render_changelog(grouped: &[GroupedCommits], abbrev: usize) -> String {
     let mut out = String::new();
     for group in grouped {
         out.push_str(&format!("## {}\n\n", group.title));
         for commit in &group.commits {
-            // Use first 7 chars of hash as short hash if longer.
-            let short = if commit.hash.len() > 7 {
-                &commit.hash[..7]
+            let short = if commit.hash.len() > abbrev {
+                &commit.hash[..abbrev]
             } else {
                 &commit.hash
             };
@@ -203,6 +232,30 @@ impl Stage for ChangelogStage {
             return Ok(());
         }
 
+        // If `use: github-native`, skip changelog generation and store empty
+        // bodies so the release stage can delegate to GitHub's auto-generated
+        // release notes.
+        let use_source = changelog_cfg
+            .as_ref()
+            .and_then(|c| c.use_source.clone())
+            .unwrap_or_else(|| "git".to_string());
+
+        if use_source == "github-native" {
+            eprintln!("[changelog] using github-native changelog — skipping local generation");
+            let selected = ctx.options.selected_crates.clone();
+            let crates: Vec<_> = ctx
+                .config
+                .crates
+                .iter()
+                .filter(|c| selected.is_empty() || selected.contains(&c.name))
+                .cloned()
+                .collect();
+            for crate_cfg in &crates {
+                ctx.changelogs.insert(crate_cfg.name.clone(), String::new());
+            }
+            return Ok(());
+        }
+
         let sort_order = changelog_cfg
             .as_ref()
             .and_then(|c| c.sort.clone())
@@ -212,12 +265,21 @@ impl Stage for ChangelogStage {
             .and_then(|c| c.filters.as_ref())
             .and_then(|f| f.exclude.clone())
             .unwrap_or_default();
+        let include_filters: Vec<String> = changelog_cfg
+            .as_ref()
+            .and_then(|c| c.filters.as_ref())
+            .and_then(|f| f.include.clone())
+            .unwrap_or_default();
         let groups: Vec<ChangelogGroup> = changelog_cfg
             .as_ref()
             .and_then(|c| c.groups.clone())
             .unwrap_or_default();
         let header: Option<String> = changelog_cfg.as_ref().and_then(|c| c.header.clone());
         let footer: Option<String> = changelog_cfg.as_ref().and_then(|c| c.footer.clone());
+        let abbrev: usize = changelog_cfg
+            .as_ref()
+            .and_then(|c| c.abbrev)
+            .unwrap_or(7);
 
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
@@ -266,8 +328,9 @@ impl Stage for ChangelogStage {
                 all_commit_infos.push(info);
             }
 
-            // Apply exclude filters.
-            let filtered = apply_filters(&all_commit_infos, &exclude_filters);
+            // Apply exclude filters, then include filters.
+            let after_exclude = apply_filters(&all_commit_infos, &exclude_filters);
+            let filtered = apply_include_filters(&after_exclude, &include_filters);
 
             // Sort commits.
             let mut sorted = filtered;
@@ -289,7 +352,7 @@ impl Stage for ChangelogStage {
             };
 
             // Render the markdown for this crate.
-            let markdown = render_changelog(&grouped);
+            let markdown = render_changelog(&grouped, abbrev);
 
             // Store per-crate changelog in context for the release stage.
             ctx.changelogs.insert(crate_name.clone(), markdown.clone());
@@ -403,7 +466,7 @@ mod tests {
                 ],
             },
         ];
-        let md = render_changelog(&grouped);
+        let md = render_changelog(&grouped, 7);
         assert!(md.contains("## Features"));
         assert!(md.contains("add X"));
         assert!(md.contains("## Bug Fixes"));
@@ -475,7 +538,7 @@ mod tests {
                 hash: "abc1234".into(),
             }],
         }];
-        let md = render_changelog(&grouped);
+        let md = render_changelog(&grouped, 7);
         assert!(md.contains("(abc1234)"));
     }
 
@@ -506,7 +569,7 @@ mod tests {
                 ],
             },
         ];
-        let body = render_changelog(&grouped);
+        let body = render_changelog(&grouped, 7);
 
         // Simulate the header/footer wrapping logic from ChangelogStage::run
         let header = "# My Release Notes";
@@ -534,7 +597,7 @@ mod tests {
                 ],
             },
         ];
-        let body = render_changelog(&grouped);
+        let body = render_changelog(&grouped, 7);
 
         let header = "# Changelog";
         let mut final_md = String::new();
@@ -555,7 +618,7 @@ mod tests {
                 ],
             },
         ];
-        let body = render_changelog(&grouped);
+        let body = render_changelog(&grouped, 7);
 
         let footer = "-- end --";
         let mut final_md = String::new();
@@ -581,6 +644,8 @@ mod tests {
             groups: None,
             header: None,
             footer: None,
+            use_source: None,
+            abbrev: None,
         });
         config.crates = vec![CrateConfig {
             name: "test".to_string(),
@@ -597,5 +662,212 @@ mod tests {
 
         // No changelogs should be generated.
         assert!(ctx.changelogs.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for include filters
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_apply_include_filters_matching() {
+        let commits = vec![
+            CommitInfo { raw_message: "feat: add login".into(), kind: "feat".into(), description: "add login".into(), hash: "a".into() },
+            CommitInfo { raw_message: "fix: crash on start".into(), kind: "fix".into(), description: "crash on start".into(), hash: "b".into() },
+            CommitInfo { raw_message: "docs: update readme".into(), kind: "docs".into(), description: "update readme".into(), hash: "c".into() },
+            CommitInfo { raw_message: "chore: bump deps".into(), kind: "chore".into(), description: "bump deps".into(), hash: "d".into() },
+        ];
+        let include = vec!["^feat".to_string(), "^fix".to_string()];
+        let result = apply_include_filters(&commits, &include);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].kind, "feat");
+        assert_eq!(result[1].kind, "fix");
+    }
+
+    #[test]
+    fn test_apply_include_filters_no_match() {
+        let commits = vec![
+            CommitInfo { raw_message: "docs: update readme".into(), kind: "docs".into(), description: "update readme".into(), hash: "a".into() },
+            CommitInfo { raw_message: "chore: bump deps".into(), kind: "chore".into(), description: "bump deps".into(), hash: "b".into() },
+        ];
+        let include = vec!["^feat".to_string()];
+        let result = apply_include_filters(&commits, &include);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_apply_include_filters_empty_keeps_all() {
+        let commits = vec![
+            CommitInfo { raw_message: "feat: something".into(), kind: "feat".into(), description: "something".into(), hash: "a".into() },
+            CommitInfo { raw_message: "fix: something else".into(), kind: "fix".into(), description: "something else".into(), hash: "b".into() },
+        ];
+        let result = apply_include_filters(&commits, &[]);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_apply_include_filters_invalid_regex_skipped() {
+        let commits = vec![
+            CommitInfo { raw_message: "feat: good".into(), kind: "feat".into(), description: "good".into(), hash: "a".into() },
+        ];
+        // Invalid regex is skipped; valid one still works.
+        let include = vec!["[invalid".to_string(), "^feat".to_string()];
+        let result = apply_include_filters(&commits, &include);
+        assert_eq!(result.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for abbrev
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_abbrev_controls_hash_length() {
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: test abbrev".into(),
+                kind: "feat".into(),
+                description: "test abbrev".into(),
+                hash: "abc1234567890".into(),
+            }],
+        }];
+        // abbrev = 5 should truncate to "abc12"
+        let md = render_changelog(&grouped, 5);
+        assert!(md.contains("(abc12)"), "expected (abc12) in: {}", md);
+        assert!(!md.contains("abc1234"), "should not contain full hash");
+    }
+
+    #[test]
+    fn test_abbrev_longer_than_hash_uses_full_hash() {
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: short".into(),
+                kind: "feat".into(),
+                description: "short".into(),
+                hash: "abc".into(),
+            }],
+        }];
+        // abbrev = 10, but hash is only 3 chars — use full hash
+        let md = render_changelog(&grouped, 10);
+        assert!(md.contains("(abc)"), "expected (abc) in: {}", md);
+    }
+
+    #[test]
+    fn test_abbrev_default_is_seven() {
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: default abbrev".into(),
+                kind: "feat".into(),
+                description: "default abbrev".into(),
+                hash: "abc1234def5678".into(),
+            }],
+        }];
+        let md = render_changelog(&grouped, 7);
+        assert!(md.contains("(abc1234)"), "expected (abc1234) in: {}", md);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for config parsing (include, use_source, abbrev)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_filters_include() {
+        let yaml = r#"
+sort: asc
+filters:
+  include:
+    - "^feat"
+    - "^fix"
+  exclude:
+    - "^chore"
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml::from_str(yaml).unwrap();
+        let include = cfg.filters.as_ref().unwrap().include.as_ref().unwrap();
+        assert_eq!(include.len(), 2);
+        assert_eq!(include[0], "^feat");
+        assert_eq!(include[1], "^fix");
+        let exclude = cfg.filters.as_ref().unwrap().exclude.as_ref().unwrap();
+        assert_eq!(exclude.len(), 1);
+    }
+
+    #[test]
+    fn test_config_parse_use_source_github_native() {
+        let yaml = r#"
+use: github-native
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.use_source.as_deref(), Some("github-native"));
+    }
+
+    #[test]
+    fn test_config_parse_abbrev() {
+        let yaml = r#"
+abbrev: 10
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.abbrev, Some(10));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test github-native produces empty changelog
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_changelog_stage_github_native_produces_empty() {
+        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.changelog = Some(ChangelogConfig {
+            disable: None,
+            sort: None,
+            filters: None,
+            groups: None,
+            header: None,
+            footer: None,
+            use_source: Some("github-native".to_string()),
+            abbrev: None,
+        });
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let stage = ChangelogStage;
+        stage.run(&mut ctx).unwrap();
+
+        // github-native should produce an empty changelog body per crate.
+        assert_eq!(ctx.changelogs.get("mylib"), Some(&String::new()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Test include + exclude together
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_include_and_exclude_together() {
+        // Exclude runs first, then include further restricts.
+        let commits = vec![
+            CommitInfo { raw_message: "feat: good feature".into(), kind: "feat".into(), description: "good feature".into(), hash: "a".into() },
+            CommitInfo { raw_message: "feat(wip): work in progress".into(), kind: "feat".into(), description: "work in progress".into(), hash: "b".into() },
+            CommitInfo { raw_message: "fix: important fix".into(), kind: "fix".into(), description: "important fix".into(), hash: "c".into() },
+            CommitInfo { raw_message: "docs: update readme".into(), kind: "docs".into(), description: "update readme".into(), hash: "d".into() },
+        ];
+
+        // Exclude WIP commits
+        let after_exclude = apply_filters(&commits, &["wip".to_string()]);
+        assert_eq!(after_exclude.len(), 3); // feat, fix, docs
+
+        // Then include only feat and fix
+        let after_include = apply_include_filters(&after_exclude, &["^feat".to_string(), "^fix".to_string()]);
+        assert_eq!(after_include.len(), 2);
+        assert_eq!(after_include[0].description, "good feature");
+        assert_eq!(after_include[1].description, "important fix");
     }
 }

@@ -512,6 +512,8 @@ mod tests {
                 regexp: Some("^feat".to_string()),
                 order: Some(0),
             }]),
+            use_source: None,
+            abbrev: None,
         });
         // Should pass (warnings only, not errors)
         assert!(run_checks(&config, false).is_ok());
