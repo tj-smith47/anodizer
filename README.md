@@ -9,17 +9,19 @@ Written by [Claude](https://claude.ai); maintained by us.
 ## Features
 
 - **Cross-platform builds** via `cargo-zigbuild`, `cross`, or native `cargo build`
-- **Archives** with tar.gz/zip and OS-specific format overrides
-- **Checksums** (SHA256/SHA512) with combined checksums file
-- **Changelog** generation from conventional commits
-- **GitHub Releases** with asset uploads, draft/prerelease detection
+- **Archives** in tar.gz, tar.xz, tar.zst, zip, or raw binary format with OS-specific overrides
+- **Checksums** with SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, BLAKE2b, and BLAKE2s
+- **Changelog** generation from conventional commits or GitHub-native release notes
+- **GitHub Releases** with asset uploads, draft/prerelease detection, header/footer templates
 - **crates.io** publishing with dependency-aware ordering and index polling
 - **Homebrew** formula generation and tap updates
 - **Scoop** manifest generation and bucket updates
-- **Docker** multi-arch image builds via `docker buildx`
-- **Linux packages** (.deb, .rpm, .apk) via nFPM
-- **Signing** with GPG and cosign
+- **Docker** multi-arch image builds via `docker buildx` with extra files and push control
+- **Linux packages** (.deb, .rpm, .apk) via nFPM with full lifecycle scripts
+- **Signing** with GPG and cosign (multiple signing configs supported)
+- **Custom publishers** for generic post-release artifact publishing
 - **Announcements** via Discord, Slack, and generic webhooks
+- **Tera templates** (Jinja2-like) with GoReleaser-compatible `{{ .Field }}` syntax
 - **Workspace support** with per-crate independent release cadences
 
 ## Installation
@@ -87,7 +89,7 @@ crates:
           name: homebrew-tap
 ```
 
-See the [full configuration reference](docs/configuration.md) for all available fields.
+See the [full configuration reference](docs/configuration.md) for all available fields, the [template reference](docs/templates.md) for template variables and filters, and the [migration guide](docs/migration-from-goreleaser.md) if you are coming from GoReleaser.
 
 ## GitHub Actions
 
@@ -122,18 +124,51 @@ jobs:
 
 ## CLI Reference
 
+### Commands
+
 ```
 anodize release                    Full release pipeline
-anodize release --crate <name>     Release a specific crate
-anodize release --all              Release all changed crates
-anodize release --snapshot         Build without publishing
-anodize release --dry-run          Full pipeline, no side effects
-anodize release --skip=<stages>    Skip stages (comma-separated)
-anodize release --clean            Remove dist/ first
-anodize build                      Build only
-anodize check                      Validate config
+anodize build                      Build binaries only
+anodize check                      Validate configuration
 anodize init                       Generate starter config
 anodize changelog                  Generate changelog only
+anodize completion <shell>         Generate shell completions (bash/zsh/fish/powershell)
+anodize healthcheck                Check availability of required external tools
+```
+
+### Global Flags
+
+```
+-f, --config <path>                Path to config file (overrides auto-detection)
+    --verbose                      Enable verbose output
+    --debug                        Enable debug output
+```
+
+### Release Flags
+
+```
+    --crate <name>                 Release a specific crate (repeatable)
+    --all                          Release all crates with unreleased changes
+    --force                        Force release even without changes
+    --snapshot                     Build without publishing
+    --dry-run                      Full pipeline, no side effects
+    --clean                        Remove dist/ directory first
+    --skip=<stages>                Skip stages (comma-separated)
+    --token <token>                GitHub token (overrides GITHUB_TOKEN env)
+    --timeout <duration>           Pipeline timeout (default: 30m)
+-p, --parallelism <n>              Max parallel build jobs (default: CPU count)
+    --auto-snapshot                Auto-enable snapshot if repo is dirty
+    --single-target                Build only for the host target triple
+    --release-notes <path>         Custom release notes file (overrides changelog)
+```
+
+### Build Flags
+
+```
+    --crate <name>                 Build a specific crate (repeatable)
+    --timeout <duration>           Pipeline timeout (default: 30m)
+-p, --parallelism <n>              Max parallel build jobs (default: CPU count)
+    --single-target                Build only for the host target triple
 ```
 
 ## Coming Soon
