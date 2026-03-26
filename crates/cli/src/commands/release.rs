@@ -94,15 +94,16 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     let p = pipeline::build_release_pipeline();
     let result = p.run(&mut ctx);
 
-    // Post-pipeline: report sizes and write metadata (only if pipeline succeeded)
-    if result.is_ok() {
+    // Post-pipeline: report sizes and write metadata (only if pipeline succeeded, not in dry-run)
+    if result.is_ok() && !ctx.is_dry_run() {
         // Print artifact size table if configured
         if config.report_sizes.unwrap_or(false) {
             artifact::print_size_report(&ctx.artifacts);
         }
 
         // Write metadata.json to dist/
-        let metadata = ctx.artifacts.to_metadata_json();
+        let metadata = ctx.artifacts.to_metadata_json()
+            .context("failed to serialize artifact metadata")?;
         let dist = &config.dist;
         std::fs::create_dir_all(dist)
             .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;

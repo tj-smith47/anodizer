@@ -123,7 +123,8 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         && let Some(cksum) = &defaults.checksum
         && cksum.disable == Some(true)
     {
-        let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some();
+        let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some()
+            || cksum.extra_files.is_some() || cksum.ids.is_some();
         if has_other {
             warnings.push(
                 "defaults.checksum: disable is true but other checksum fields are also set (they will be ignored)".to_string(),
@@ -136,7 +137,8 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         if let Some(cksum) = &c.checksum
             && cksum.disable == Some(true)
         {
-            let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some();
+            let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some()
+                || cksum.extra_files.is_some() || cksum.ids.is_some();
             if has_other {
                 warnings.push(format!(
                     "crate '{}': checksum disable is true but other checksum fields are also set (they will be ignored)",
@@ -169,6 +171,30 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
                 "signs: unrecognized artifacts filter '{}' (valid: {})",
                 filter,
                 valid_artifact_filters.join(", ")
+            ));
+        }
+    }
+
+    // 11. Validate checksum algorithm values
+    let valid_algorithms = ["sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "blake2s"];
+    if let Some(defaults) = &config.defaults
+        && let Some(cksum) = &defaults.checksum
+        && let Some(ref algo) = cksum.algorithm
+        && !valid_algorithms.contains(&algo.as_str())
+    {
+        warnings.push(format!(
+            "defaults.checksum: unrecognized algorithm '{}' (valid: {})",
+            algo, valid_algorithms.join(", ")
+        ));
+    }
+    for c in &config.crates {
+        if let Some(cksum) = &c.checksum
+            && let Some(ref algo) = cksum.algorithm
+            && !valid_algorithms.contains(&algo.as_str())
+        {
+            warnings.push(format!(
+                "crate '{}': unrecognized checksum algorithm '{}' (valid: {})",
+                c.name, algo, valid_algorithms.join(", ")
             ));
         }
     }

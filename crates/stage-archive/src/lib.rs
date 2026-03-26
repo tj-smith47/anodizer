@@ -387,9 +387,6 @@ impl Stage for ArchiveStage {
                     .as_deref()
                     .unwrap_or(default_tmpl);
 
-                // wrap_in_directory
-                let wrap_dir = archive_cfg.wrap_in_directory.as_deref();
-
                 for (target, target_bins) in &by_target {
                     // Filter binaries for this archive config
                     let selected_bins: Vec<&Artifact> = target_bins
@@ -421,6 +418,16 @@ impl Stage for ArchiveStage {
                     let tvars = ctx.template_vars_mut();
                     tvars.set("Os", &os);
                     tvars.set("Arch", &arch);
+
+                    // Render wrap_in_directory (template-aware)
+                    let wrap_dir_rendered = if let Some(tmpl) = archive_cfg.wrap_in_directory.as_deref() {
+                        Some(ctx.render_template(tmpl).with_context(|| {
+                            format!("render wrap_in_directory for {crate_name}/{target}")
+                        })?)
+                    } else {
+                        None
+                    };
+                    let wrap_dir = wrap_dir_rendered.as_deref();
 
                     // Render name
                     let archive_stem = ctx

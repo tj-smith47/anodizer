@@ -53,8 +53,8 @@ impl ArtifactRegistry {
     }
 
     /// Serialize all artifacts to a JSON value suitable for writing to metadata.json.
-    pub fn to_metadata_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.artifacts).unwrap_or(serde_json::Value::Array(vec![]))
+    pub fn to_metadata_json(&self) -> anyhow::Result<serde_json::Value> {
+        Ok(serde_json::to_value(&self.artifacts)?)
     }
 }
 
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn test_to_metadata_json_empty() {
         let registry = ArtifactRegistry::new();
-        let json = registry.to_metadata_json();
+        let json = registry.to_metadata_json().unwrap();
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 0);
     }
@@ -173,7 +173,7 @@ mod tests {
             metadata: Default::default(),
         });
 
-        let json = registry.to_metadata_json();
+        let json = registry.to_metadata_json().unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
 
@@ -202,7 +202,7 @@ mod tests {
             metadata: Default::default(),
         });
 
-        let json = registry.to_metadata_json();
+        let json = registry.to_metadata_json().unwrap();
         let serialized = serde_json::to_string_pretty(&json).unwrap();
         // Should be parseable back
         let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
