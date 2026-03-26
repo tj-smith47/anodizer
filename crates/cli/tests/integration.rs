@@ -928,10 +928,20 @@ crates:
         stderr
     );
 
-    // 3. Verify the dry-run output mentions the binary build (myapp)
+    // 3. Verify the dry-run output mentions all three crates, proving --all detected them
     assert!(
-        stderr.contains("myapp") || stderr.contains("dry-run"),
-        "stderr should mention myapp or dry-run activity, got:\n{}",
+        stderr.contains("core-lib"),
+        "stderr should mention core-lib crate, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("helper-lib"),
+        "stderr should mention helper-lib crate, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("myapp"),
+        "stderr should mention myapp crate, got:\n{}",
         stderr
     );
 }
@@ -1124,6 +1134,128 @@ crates:
     assert!(
         stderr.contains("nonexistent-crate") && stderr.contains("does not exist"),
         "error should mention the missing dependency, got:\n{}",
+        stderr
+    );
+}
+
+/// E2E: Workspace change detection only picks up crates with changes since their last tag.
+///
+/// This test verifies that `--all` without `--force` uses git-based change detection:
+/// 1. Creates the workspace fixture and initializes git
+/// 2. Tags all crates (core-lib-v0.1.0, helper-lib-v0.1.0, myapp-v0.1.0)
+/// 3. Modifies only core-lib's source file and commits
+/// 4. Runs `anodize release --all --dry-run` (no --force)
+/// 5. Verifies that only core-lib (the changed crate) is detected
+///
+/// Note: depends_on propagation (helper-lib and myapp depend on core-lib) is not
+/// yet implemented in detect_changed_crates(), so only the directly-changed crate
+/// should appear in the output.
+#[test]
+fn test_e2e_workspace_change_detection_without_force() {
+    let tmp = TempDir::new().unwrap();
+
+    create_workspace_project(tmp.path());
+
+    // Initialize git repo (creates initial commit and v0.1.0 tag)
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@test.com"]);
+    git(&["config", "user.name", "Test"]);
+
+    // Create anodize config before the initial commit so it's tracked
+    create_config(
+        tmp.path(),
+        r#"project_name: my-workspace
+crates:
+  - name: core-lib
+    path: "crates/core-lib"
+    tag_template: "core-lib-v{{ .Version }}"
+
+  - name: helper-lib
+    path: "crates/helper-lib"
+    tag_template: "helper-lib-v{{ .Version }}"
+    depends_on:
+      - core-lib
+
+  - name: myapp
+    path: "crates/myapp"
+    tag_template: "myapp-v{{ .Version }}"
+    depends_on:
+      - core-lib
+      - helper-lib
+"#,
+    );
+
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial workspace"]);
+
+    // Tag all crates at the initial commit
+    git(&["tag", "core-lib-v0.1.0"]);
+    git(&["tag", "helper-lib-v0.1.0"]);
+    git(&["tag", "myapp-v0.1.0"]);
+
+    // Modify only core-lib's source and commit the change
+    fs::write(
+        tmp.path().join("crates/core-lib/src/lib.rs"),
+        r#"pub fn core_fn() -> &'static str { "core-modified" }"#,
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "modify core-lib only"]);
+
+    // Run release with --all but WITHOUT --force, so change detection kicks in
+    let release_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args([
+            "release",
+            "--dry-run",
+            "--all",
+            "--single-target",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout", "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&release_output.stderr);
+    assert!(
+        release_output.status.success(),
+        "workspace dry-run release (change detection) should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // core-lib was modified, so it must appear in the output
+    assert!(
+        stderr.contains("core-lib"),
+        "stderr should mention core-lib (the changed crate), got:\n{}",
+        stderr
+    );
+
+    // helper-lib and myapp were NOT modified, so they should NOT appear.
+    // Note: depends_on propagation is not implemented in detect_changed_crates(),
+    // so dependents of core-lib are not automatically included.
+    assert!(
+        !stderr.contains("helper-lib"),
+        "stderr should NOT mention helper-lib (unchanged crate), got:\n{}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("myapp"),
+        "stderr should NOT mention myapp (unchanged crate), got:\n{}",
         stderr
     );
 }
