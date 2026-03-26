@@ -56,7 +56,7 @@ pub fn build_release_body(
         parts.push(f);
     }
 
-    parts.join("\n")
+    parts.join("\n\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -144,11 +144,20 @@ impl Stage for ReleaseStage {
             let crate_name = crate_cfg.name.clone();
             let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
 
-            // Build release body with optional header/footer.
+            // Template-render header/footer before building release body.
+            let rendered_header = release_cfg.header.as_deref()
+                .map(|h| ctx.render_template(h))
+                .transpose()
+                .with_context(|| format!("release: render header for crate '{}'", crate_name))?;
+            let rendered_footer = release_cfg.footer.as_deref()
+                .map(|f| ctx.render_template(f))
+                .transpose()
+                .with_context(|| format!("release: render footer for crate '{}'", crate_name))?;
+
             let release_body = build_release_body(
                 &changelog_body,
-                release_cfg.header.as_deref(),
-                release_cfg.footer.as_deref(),
+                rendered_header.as_deref(),
+                rendered_footer.as_deref(),
             );
 
             // Resolve tag from template.
@@ -445,20 +454,20 @@ mod tests {
         );
         assert_eq!(
             body,
-            "# Release v1.0\n## Changes\n- Fixed a bug\n---\nPowered by anodize"
+            "# Release v1.0\n\n## Changes\n- Fixed a bug\n\n---\nPowered by anodize"
         );
     }
 
     #[test]
     fn test_build_release_body_header_only() {
         let body = build_release_body("changelog content", Some("HEADER"), None);
-        assert_eq!(body, "HEADER\nchangelog content");
+        assert_eq!(body, "HEADER\n\nchangelog content");
     }
 
     #[test]
     fn test_build_release_body_footer_only() {
         let body = build_release_body("changelog content", None, Some("FOOTER"));
-        assert_eq!(body, "changelog content\nFOOTER");
+        assert_eq!(body, "changelog content\n\nFOOTER");
     }
 
     #[test]
@@ -470,7 +479,7 @@ mod tests {
     #[test]
     fn test_build_release_body_empty_changelog() {
         let body = build_release_body("", Some("HEADER"), Some("FOOTER"));
-        assert_eq!(body, "HEADER\nFOOTER");
+        assert_eq!(body, "HEADER\n\nFOOTER");
     }
 
     #[test]
