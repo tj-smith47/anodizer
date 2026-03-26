@@ -231,6 +231,124 @@
 
 ---
 
+## Session 4: Test Parity — Close the Gap with GoReleaser
+
+**Depends on:** Session 3 complete (all tests passing, docs written, CI green).
+
+**Why before audit/publish:** GoReleaser has thousands of tests covering every config field, stage, edge case, and error path. Anodize has ~436. Publishing with shallow test coverage means bugs ship to users. This session systematically identifies and closes the gap by category.
+
+### Task 4A: Audit test parity gap
+- Clone or browse GoReleaser's test suite (https://github.com/goreleaser/goreleaser) to understand their coverage strategy per stage
+- For each anodize stage/module, compare:
+  - **Config parsing tests:** How many config field variations does GoReleaser test per stage vs anodize? (GoReleaser typically tests: valid value, invalid value, zero value, default value, interaction with other fields — ~5-10 cases per field)
+  - **Stage behavior tests:** Does anodize test each config field's effect on stage output, or just that the field parses?
+  - **Error path tests:** Does each stage have tests for every error condition (missing tools, invalid input, API failures, permission errors)?
+  - **E2E tests:** Does anodize have snapshot/dry-run E2E tests that exercise real builds end-to-end?
+- Produce a gap matrix: `| Stage | Config parsing | Behavior | Error paths | E2E | GoReleaser approx | Anodize current | Delta |`
+
+**Done when:** Gap matrix produced with specific counts per stage. Every "delta" cell has a concrete list of missing test cases.
+
+### Task 4B: Config parsing depth — every field, every variation
+For EVERY config field across all stages, add tests for:
+- Valid value (happy path)
+- Default value (field omitted)
+- Invalid type (string where int expected, etc.)
+- Edge cases (empty string, empty array, null/None)
+- Interaction with related fields (e.g., `disable: true` + other fields set)
+
+Priority order (by user impact):
+1. `crates/core/src/config.rs` — top-level and per-crate config fields
+2. Release config fields (`make_latest`, `extra_files`, `skip_upload`, `replace_existing_*`)
+3. Archive config fields (`wrap_in_directory`, `format_overrides`, glob `files`)
+4. Sign config fields (`signs[]` array, backward compat, `ids` filter, `stdin`/`stdin_file`)
+5. Changelog, checksum, docker, nfpm, publish, announce config fields
+
+**Done when:** Every config field has at least 3 test cases (valid, default, invalid). Fields with complex behavior have 5+.
+
+### Task 4C: Stage behavior tests — config fields actually do things
+For each stage, verify that config fields produce the correct output:
+- Archive: `wrap_in_directory` actually wraps, `format_overrides` actually switches format, glob `files` resolves correctly, `binary` format copies raw file
+- Checksum: each algorithm produces correct hash (verify against known test vectors), `extra_files` appear in output, `ids` filter works, `disable` skips stage
+- Changelog: `header`/`footer` appear in output, `filters.include` restricts commits, `abbrev` truncates hashes, `disable` skips stage, `use: github-native` delegates correctly
+- Release: `header`/`footer` in release body, `extra_files` in upload list, `skip_upload` prevents upload, `make_latest` value passed to API, `replace_existing_draft` finds and updates existing draft
+- Sign: multiple sign configs each run independently, `artifacts` filter selects correct artifacts, `ids` filter works, `signature` template resolves, `stdin`/`stdin_file` pipe correctly
+- Docker: `skip_push` prevents push, `extra_files` copied to staging dir, `push_flags` appended to command
+- NFpm: `scripts` block appears in generated config, `recommends`/`suggests`/`conflicts`/`replaces`/`provides` all appear, `contents[].type` and `file_info` serialize correctly
+- Publish: Homebrew formula format correct with multi-arch, Scoop manifest structure correct, publishers `cmd` templates resolve with artifact vars, dry-run logs without executing
+
+**Done when:** Each config field that changes stage output has a dedicated test verifying the output change. Not just "it parses" but "it does what it says."
+
+### Task 4D: Error path completeness
+For each stage, add tests for every error condition:
+- **Build:** missing cargo binary, invalid target triple, compilation failure (bad source), `copy_from` referencing nonexistent binary, timeout exceeded
+- **Archive:** missing binary artifact, empty file list, invalid format string, write permission denied
+- **Checksum:** missing archive artifacts, unsupported algorithm string, write failure
+- **Changelog:** no git history, no previous tag, invalid regex in filters
+- **Release:** missing GITHUB_TOKEN, API 401/403/404/422 errors, upload failure, network timeout
+- **Sign:** missing gpg/cosign binary, signing command failure (nonzero exit), missing artifact for signing
+- **Docker:** missing docker/buildx, build failure, push failure, missing Dockerfile
+- **NFpm:** missing nfpm binary, invalid format, missing required fields
+- **Publish:** crates.io publish failure, Homebrew tap clone failure, Scoop bucket write failure
+- **Template:** undefined variable, syntax error, invalid filter name, unclosed block
+- **Config:** circular `depends_on`, duplicate crate names, invalid `tag_template`, referencing nonexistent crate path
+
+**Done when:** Every stage has error path tests for at least its 3 most likely failure modes. Error messages are verified to be clear and actionable (not just "an error occurred").
+
+### Task 4E: E2E pipeline tests
+Expand E2E coverage beyond the current 6 tests:
+- **Multi-format archive:** config with `tar.gz`, `tar.xz`, `zip`, and `binary` format — verify all four produced correctly
+- **Multi-sign:** two sign configs with different `artifacts` filters — verify each signs the correct subset
+- **Changelog with groups:** real git history with feat/fix/chore commits — verify grouped output
+- **Config validation round-trip:** `init` generates config → `check` validates it → `build --snapshot` succeeds
+- **Workspace dependency ordering:** crate A depends on B — verify B builds before A, and `--all` detects changes in both
+- **Skip stages:** `--skip=archive,checksum` produces binaries but no archives or checksums
+- **Custom publishers:** publisher config with `cmd` and artifact filtering — verify command construction in dry-run
+- **Docker staging:** verify the staging directory structure (`binaries/amd64/`, `binaries/arm64/`, Dockerfile copied)
+- **Cross-platform archives:** verify format_overrides (windows → zip, linux → tar.gz) applied per target
+
+**Done when:** 15+ E2E tests covering the major pipeline variations. Each test exercises real file I/O and verifies artifact contents structurally.
+
+### Task 4F: Test infrastructure improvements
+- **Shared test helpers:** Extract common fixture creation, git repo setup, config building into a shared test utilities module (avoid duplication across test files)
+- **Mock GitHub API:** Create a lightweight mock for octocrab/GitHub API calls so release stage tests can verify API call parameters without network access
+- **Test coverage report:** Run `cargo tarpaulin` or `cargo llvm-cov` to identify untested code paths — use as input for targeted test additions
+- **Cross-platform CI matrix:** Ensure tests run on Linux + macOS in CI (Windows if feasible)
+
+**Done when:** Shared test helpers exist and are used by 3+ test files. Mock GitHub API enables release stage unit tests. Coverage report generated.
+
+**Session 4 exit criteria:** 800+ tests. Every config field has parsing + behavior tests. Every stage has error path tests. 15+ E2E tests. Coverage report shows no major untested code paths. Test infrastructure supports efficient test development going forward.
+
+---
+
+## Session 5: Full Audit — Code Quality Gate
+
+**Depends on:** Session 4 complete (test parity gap closed, 800+ tests passing).
+
+**Why before publish:** Sessions 1-4 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Session 4 provides a safety net for refactoring.
+
+### Task 5A: Run `/full-audit`
+- Run the full-audit skill which dispatches three parallel agents:
+  - **Design + Cohesion review** — inconsistent error handling, parameter styles, logging, naming conventions, cohesion issues across all 12 crates
+  - **Duplication scan** — duplicated logic across stage crates, shared code that should be in `core`
+  - **Gap analysis** — config fields parsed but never consumed, public functions with no production callers, error variants never constructed
+- All automated checks (fmt, clippy, test) must pass before and after
+
+### Task 5B: Fix all Round 1 findings
+- Create task list from aggregated findings
+- Fix all findings in priority order (critical → important → minor)
+- Run test suite after each logical group of changes
+
+### Task 5C: Round 2 verification
+- Re-run full-audit to catch regressions and issues missed in Round 1
+- Fix any new findings
+- Continue until a round returns zero findings or 3 rounds complete
+
+**Done when:** Full audit returns zero findings. All automated checks pass. No dead code, no duplication, no design inconsistencies across crates.
+
+**Session 5 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
+
+---
+
 ## Post-Publish (requires anodize on crates.io)
 
 These cannot start until anodize is published and installable:

@@ -89,7 +89,7 @@ crates:
           name: homebrew-tap
 ```
 
-See the [full configuration reference](docs/configuration.md) for all available fields, the [template reference](docs/templates.md) for template variables and filters, and the [migration guide](docs/migration-from-goreleaser.md) if you are coming from GoReleaser.
+See the [full configuration reference](docs/configuration.md) for all available fields and the [template reference](docs/templates.md) for template variables and filters.
 
 ## GitHub Actions
 
