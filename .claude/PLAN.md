@@ -220,13 +220,6 @@
 
 **Done when:** `cargo publish --dry-run` succeeds for all crates. CI workflow runs and passes. Dogfood snapshot release produces expected output.
 
-### Task 3F: Documentation site (can be deferred to post-publish)
-- Set up docs site with mdBook or Zola
-- Getting started guide, per-stage documentation, CI/CD integration guides, FAQ
-- Deploy to GitHub Pages
-
-**Done when:** Docs site builds and deploys. All major features have a dedicated page.
-
 **Session 3 exit criteria:** 220+ tests including workspace-aware E2E and error paths. Cross-platform CI green. All features documented. `cargo publish --dry-run` succeeds. Ready for `cargo publish`.
 
 ---
@@ -235,7 +228,9 @@
 
 **Depends on:** Session 3 complete (all tests passing, docs written, CI green).
 
-**Why before audit/publish:** GoReleaser has thousands of tests covering every config field, stage, edge case, and error path. Anodize has ~436. Publishing with shallow test coverage means bugs ship to users. This session systematically identifies and closes the gap by category.
+> **Before starting this session:** Do a fresh evaluation of GoReleaser's current feature set and test coverage. Clone/browse https://github.com/goreleaser/goreleaser and compare against anodize's current state. Any newly identified feature gaps or missing test categories should be added to this session's tasks before implementation begins. The tasks below are a starting point, not a closed list.
+
+**Why before audit/publish:** GoReleaser has thousands of tests covering every config field, stage, edge case, and error path. Anodize has ~441. Publishing with shallow test coverage means bugs ship to users. This session systematically identifies and closes the gap by category.
 
 ### Task 4A: Audit test parity gap
 - Clone or browse GoReleaser's test suite (https://github.com/goreleaser/goreleaser) to understand their coverage strategy per stage
@@ -320,64 +315,14 @@ Expand E2E coverage beyond the current 6 tests:
 
 ---
 
-## Session 5: Full Audit — Code Quality Gate
+## Session 5: Extended Features — Completeness Pass
 
 **Depends on:** Session 4 complete (test parity gap closed, 800+ tests passing).
 
-**Why before publish:** Sessions 1-4 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Session 4 provides a safety net for refactoring.
-
-### Task 5A: Run `/full-audit`
-- Run the full-audit skill which dispatches three parallel agents:
-  - **Design + Cohesion review** — inconsistent error handling, parameter styles, logging, naming conventions, cohesion issues across all 12 crates
-  - **Duplication scan** — duplicated logic across stage crates, shared code that should be in `core`
-  - **Gap analysis** — config fields parsed but never consumed, public functions with no production callers, error variants never constructed
-- All automated checks (fmt, clippy, test) must pass before and after
-
-### Task 5B: Fix all Round 1 findings
-- Create task list from aggregated findings
-- Fix all findings in priority order (critical → important → minor)
-- Run test suite after each logical group of changes
-
-### Task 5C: Round 2 verification
-- Re-run full-audit to catch regressions and issues missed in Round 1
-- Fix any new findings
-- Continue until a round returns zero findings or 3 rounds complete
-
-**Done when:** Full audit returns zero findings. All automated checks pass. No dead code, no duplication, no design inconsistencies across crates.
-
-**Session 5 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
-
----
-
-## Post-Publish (requires anodize on crates.io)
-
-These cannot start until anodize is published and installable:
-
-### Full-featured GitHub Action (separate repo: `tj-smith47/anodize-action`)
-- TypeScript action with `@actions/tool-cache` for binary caching
-- Structured outputs (artifacts, metadata JSON)
-- Grouped log output via `@actions/core`
-- Semver version constraints (`~> v0.1`)
-- Cross-platform runner support
-
-### cfgd Migration — First Real-World Adoption
-- Write `.anodize.yaml` for cfgd (multi-crate, multi-docker, homebrew, krew, crates.io with ordering)
-- Identify cfgd features needing new anodize capabilities (Helm, Krew, Crossplane, OLM → `after` hooks or new stages)
-- Evaluate Cargo.toml version sync as first-class feature (`version_from: tag`)
-- Replace cfgd's 633-line release workflow with `uses: tj-smith47/anodize@v1`
-- Add cfgd as showcase in README
-
-### Community Adoption — Popular Repo PRs
-Target repos: ripgrep, bat, starship, nushell, zoxide, tokio, serde, clap
-- Survey release workflows, identify pain points
-- Submit PRs converting workflows to `.anodize.yaml`
-
----
-
-## Release 2 — Future Features
+**Why before audit:** These are features that round out anodize as a complete release tool. Implementing them before the audit means the audit catches quality issues across the full feature set, not just a subset.
 
 ### Rust-Specific First-Class Features (brainstorm — scope TBD)
-Evaluate which of these are must-have vs nice-to-have based on what popular Rust projects actually need (informed by community adoption work). Ideas to explore:
+Evaluate which of these are must-have vs nice-to-have based on what popular Rust projects actually need. Ideas to explore:
 - `cargo-binstall` metadata generation
 - `rust-toolchain.toml` awareness / MSRV checking
 - Workspace dependency version sync
@@ -414,3 +359,64 @@ Eliminate the need for a separate tagging action (like `anothrNick/github-tag-ac
 - Migrate from `serde_yaml` (deprecated) to `serde_yml` or alternative
 - Keep dependencies updated (octocrab, reqwest, clap)
 - Dogfood: CI pipeline for anodize itself using anodize
+
+### Documentation Site
+- Set up docs site with mdBook or Zola
+- Getting started guide, per-stage documentation, CI/CD integration guides, FAQ
+- Deploy to GitHub Pages
+
+**Done when:** Docs site builds and deploys. All major features have a dedicated page. Scope of other tasks TBD after Session 4 fresh evaluation.
+
+---
+
+## Session 6: Full Audit — Code Quality Gate
+
+**Depends on:** Session 5 complete.
+
+**Why before publish:** Sessions 1-5 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Session 4 provides a safety net for refactoring.
+
+### Task 6A: Run `/full-audit`
+- Run the full-audit skill which dispatches three parallel agents:
+  - **Design + Cohesion review** — inconsistent error handling, parameter styles, logging, naming conventions, cohesion issues across all 12 crates
+  - **Duplication scan** — duplicated logic across stage crates, shared code that should be in `core`
+  - **Gap analysis** — config fields parsed but never consumed, public functions with no production callers, error variants never constructed
+- All automated checks (fmt, clippy, test) must pass before and after
+
+### Task 6B: Fix all Round 1 findings
+- Create task list from aggregated findings
+- Fix all findings in priority order (critical → important → minor)
+- Run test suite after each logical group of changes
+
+### Task 6C: Round 2 verification
+- Re-run full-audit to catch regressions and issues missed in Round 1
+- Fix any new findings
+- Continue until a round returns zero findings or 3 rounds complete
+
+**Done when:** Full audit returns zero findings. All automated checks pass. No dead code, no duplication, no design inconsistencies across crates.
+
+**Session 6 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
+
+---
+
+## Post-Publish (requires anodize on crates.io)
+
+These cannot start until anodize is published and installable:
+
+### Full-featured GitHub Action (separate repo: `tj-smith47/anodize-action`)
+- TypeScript action with `@actions/tool-cache` for binary caching
+- Structured outputs (artifacts, metadata JSON)
+- Grouped log output via `@actions/core`
+- Semver version constraints (`~> v0.1`)
+- Cross-platform runner support
+
+### cfgd Migration — First Real-World Adoption
+- Write `.anodize.yaml` for cfgd (multi-crate, multi-docker, homebrew, krew, crates.io with ordering)
+- Identify cfgd features needing new anodize capabilities (Helm, Krew, Crossplane, OLM → `after` hooks or new stages)
+- Evaluate Cargo.toml version sync as first-class feature (`version_from: tag`)
+- Replace cfgd's 633-line release workflow with `uses: tj-smith47/anodize@v1`
+- Add cfgd as showcase in README
+
+### Community Adoption — Popular Repo PRs
+Target repos: ripgrep, bat, starship, nushell, zoxide, tokio, serde, clap
+- Survey release workflows, identify pain points
+- Submit PRs converting workflows to `.anodize.yaml`
