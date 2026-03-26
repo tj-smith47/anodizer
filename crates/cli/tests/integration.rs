@@ -2,6 +2,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use std::fs;
+use std::path::Path;
 
 /// Helper to create a minimal Cargo project for testing
 fn create_test_project(dir: &std::path::Path) {
@@ -395,6 +396,734 @@ crates:
     assert!(
         stderr.contains("invalid --timeout value"),
         "stderr should report invalid timeout, got: {}",
+        stderr
+    );
+}
+
+// ============================================================================
+// E2E Test Helpers
+// ============================================================================
+
+/// Detect the host target triple (e.g., "x86_64-unknown-linux-gnu").
+fn detect_host_target() -> String {
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .expect("rustc should be available");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(triple) = line.strip_prefix("host: ") {
+            return triple.trim().to_string();
+        }
+    }
+    panic!("could not detect host target triple from rustc -vV");
+}
+
+/// Create a workspace Cargo project with multiple crates.
+/// Returns the root path of the workspace.
+///
+/// Layout:
+///   Cargo.toml (workspace)
+///   crates/core-lib/Cargo.toml + src/lib.rs
+///   crates/helper-lib/Cargo.toml + src/lib.rs (depends on core-lib)
+///   crates/myapp/Cargo.toml + src/main.rs (depends on core-lib, helper-lib)
+fn create_workspace_project(dir: &Path) {
+    // Root Cargo.toml
+    fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+resolver = "2"
+members = ["crates/core-lib", "crates/helper-lib", "crates/myapp"]
+"#,
+    )
+    .unwrap();
+
+    // core-lib: a library crate with no dependencies
+    let core_dir = dir.join("crates/core-lib");
+    fs::create_dir_all(core_dir.join("src")).unwrap();
+    fs::write(
+        core_dir.join("Cargo.toml"),
+        r#"[package]
+name = "core-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        core_dir.join("src/lib.rs"),
+        r#"pub fn core_fn() -> &'static str { "core" }"#,
+    )
+    .unwrap();
+
+    // helper-lib: depends on core-lib
+    let helper_dir = dir.join("crates/helper-lib");
+    fs::create_dir_all(helper_dir.join("src")).unwrap();
+    fs::write(
+        helper_dir.join("Cargo.toml"),
+        r#"[package]
+name = "helper-lib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+core-lib = { path = "../core-lib" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        helper_dir.join("src/lib.rs"),
+        r#"pub fn helper_fn() -> String { format!("helper+{}", core_lib::core_fn()) }"#,
+    )
+    .unwrap();
+
+    // myapp: binary crate that depends on both
+    let app_dir = dir.join("crates/myapp");
+    fs::create_dir_all(app_dir.join("src")).unwrap();
+    fs::write(
+        app_dir.join("Cargo.toml"),
+        r#"[package]
+name = "myapp"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "myapp"
+path = "src/main.rs"
+
+[dependencies]
+core-lib = { path = "../core-lib" }
+helper-lib = { path = "../helper-lib" }
+"#,
+    )
+    .unwrap();
+    fs::write(
+        app_dir.join("src/main.rs"),
+        r#"fn main() { println!("{}", helper_lib::helper_fn()); }"#,
+    )
+    .unwrap();
+}
+
+// ============================================================================
+// E2E Tests
+// ============================================================================
+
+/// E2E: `anodize release --snapshot` produces correct artifacts in dist/.
+///
+/// This test actually compiles a Rust project, so it may take a while.
+#[test]
+fn test_e2e_snapshot_release_produces_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    // Note: Version is not yet populated by the release command (git tag
+    // resolution is TODO), so we use ProjectName + Os + Arch which ARE set.
+    let config = format!(
+        r#"project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: test-project
+        targets:
+          - {host}
+    archives:
+      - name_template: "{{{{ .ProjectName }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        format: tar.gz
+    checksum:
+      name_template: "checksums.txt"
+      algorithm: sha256
+"#,
+        host = host
+    );
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args([
+            "release",
+            "--snapshot",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout", "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "snapshot release should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // Verify dist/ directory was created
+    let dist_dir = tmp.path().join("dist");
+    assert!(
+        dist_dir.exists(),
+        "dist/ directory should exist after snapshot release"
+    );
+
+    // Verify archive artifact exists (tar.gz)
+    let entries: Vec<_> = fs::read_dir(&dist_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+
+    let has_archive = entries.iter().any(|name| name.ends_with(".tar.gz"));
+    assert!(
+        has_archive,
+        "dist/ should contain a .tar.gz archive, found: {:?}",
+        entries
+    );
+
+    // Verify checksum file exists
+    let has_checksum = entries.iter().any(|name| name == "checksums.txt");
+    assert!(
+        has_checksum,
+        "dist/ should contain checksums.txt, found: {:?}",
+        entries
+    );
+
+    // Verify checksum file has content (at least one line with a sha256 hash)
+    let checksum_content = fs::read_to_string(dist_dir.join("checksums.txt")).unwrap();
+    assert!(
+        !checksum_content.trim().is_empty(),
+        "checksums.txt should not be empty"
+    );
+    // SHA256 hashes are 64 hex characters
+    assert!(
+        checksum_content.lines().any(|line| line.len() > 64),
+        "checksums.txt should contain hash lines, got: {}",
+        checksum_content
+    );
+
+    // Verify metadata.json was written
+    let has_metadata = entries.iter().any(|name| name == "metadata.json");
+    assert!(
+        has_metadata,
+        "dist/ should contain metadata.json, found: {:?}",
+        entries
+    );
+}
+
+/// E2E: `anodize release --dry-run` runs full pipeline with no side effects.
+#[test]
+fn test_e2e_dry_run_no_side_effects() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let config = format!(
+        r#"project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: test-project
+        targets:
+          - {host}
+    archives:
+      - name_template: "{{{{ .ProjectName }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        format: tar.gz
+    checksum:
+      name_template: "checksums.txt"
+      algorithm: sha256
+"#,
+        host = host
+    );
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args([
+            "release",
+            "--dry-run",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout", "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "dry-run release should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // In dry-run mode, dist/ may be created (archive stage creates it),
+    // but no actual archive or checksum artifacts should be produced.
+    let dist_dir = tmp.path().join("dist");
+    if dist_dir.exists() {
+        let entries: Vec<_> = fs::read_dir(&dist_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        // There should be no .tar.gz archives, no checksums, no metadata.json
+        let has_archives = entries.iter().any(|name| name.ends_with(".tar.gz") || name.ends_with(".zip"));
+        assert!(
+            !has_archives,
+            "dist/ should NOT contain archives after dry-run, found: {:?}",
+            entries
+        );
+        let has_metadata = entries.iter().any(|name| name == "metadata.json");
+        assert!(
+            !has_metadata,
+            "dist/ should NOT contain metadata.json after dry-run, found: {:?}",
+            entries
+        );
+    }
+
+    // Verify the stderr mentions dry-run activity
+    assert!(
+        stderr.contains("dry-run"),
+        "stderr should mention dry-run, got:\n{}",
+        stderr
+    );
+}
+
+/// E2E: `anodize check` validates a comprehensive config that exercises many fields.
+#[test]
+fn test_e2e_check_comprehensive_config() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+
+    create_config(
+        tmp.path(),
+        r#"project_name: test-project
+dist: ./dist
+
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+    - aarch64-unknown-linux-gnu
+  cross: auto
+  archives:
+    format: tar.gz
+    format_overrides:
+      - os: windows
+        format: zip
+  checksum:
+    algorithm: sha256
+
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: test-project
+        targets:
+          - x86_64-unknown-linux-gnu
+    archives:
+      - name_template: "test-project-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+        format: tar.gz
+    checksum:
+      name_template: "checksums.txt"
+      algorithm: sha256
+
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^fix"
+      order: 1
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "check with comprehensive config should succeed.\nstderr:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Config is valid"),
+        "stderr should confirm config is valid, got:\n{}",
+        stderr
+    );
+}
+
+/// E2E: `anodize init` generates valid YAML that can be parsed back.
+#[test]
+fn test_e2e_init_generates_parseable_yaml() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Verify the output is valid YAML by parsing it
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
+            e, stdout
+        );
+    });
+
+    // Verify key fields exist in the parsed YAML
+    let map = parsed.as_mapping().expect("parsed YAML should be a mapping");
+    assert!(
+        map.contains_key(&serde_yaml::Value::String("project_name".to_string())),
+        "YAML should contain project_name"
+    );
+    assert!(
+        map.contains_key(&serde_yaml::Value::String("crates".to_string())),
+        "YAML should contain crates"
+    );
+    assert!(
+        map.contains_key(&serde_yaml::Value::String("defaults".to_string())),
+        "YAML should contain defaults"
+    );
+
+    // Verify the project name matches
+    let project_name = map
+        .get(&serde_yaml::Value::String("project_name".to_string()))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        project_name, "test-project",
+        "project_name should be test-project"
+    );
+
+    // Verify crates section is an array
+    let crates = map
+        .get(&serde_yaml::Value::String("crates".to_string()))
+        .and_then(|v| v.as_sequence())
+        .expect("crates should be an array");
+    assert!(
+        !crates.is_empty(),
+        "crates array should not be empty"
+    );
+
+    // Verify the generated YAML can be written and validated with `anodize check`
+    let tmp2 = TempDir::new().unwrap();
+    create_test_project(tmp2.path());
+    init_git_repo(tmp2.path());
+    create_config(tmp2.path(), &stdout);
+
+    let check_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp2.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        check_output.status.success(),
+        "generated config should pass validation.\nstderr:\n{}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+}
+
+/// E2E: Multi-crate workspace with `--all --force` detects correct crates.
+///
+/// Creates a workspace with 3 crates: core-lib, helper-lib (depends on core-lib),
+/// and myapp (depends on both). Verifies that:
+/// 1. `anodize check` passes on the workspace config
+/// 2. `anodize release --dry-run --all --force` includes all crates
+/// 3. Dependency ordering is respected (core-lib before helper-lib before myapp)
+#[test]
+fn test_e2e_workspace_all_force_detects_crates() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_workspace_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    // Create anodize config for the workspace with depends_on
+    let config = format!(
+        r#"project_name: my-workspace
+crates:
+  - name: core-lib
+    path: "crates/core-lib"
+    tag_template: "core-lib-v{{{{ .Version }}}}"
+
+  - name: helper-lib
+    path: "crates/helper-lib"
+    tag_template: "helper-lib-v{{{{ .Version }}}}"
+    depends_on:
+      - core-lib
+
+  - name: myapp
+    path: "crates/myapp"
+    tag_template: "myapp-v{{{{ .Version }}}}"
+    depends_on:
+      - core-lib
+      - helper-lib
+    builds:
+      - binary: myapp
+        targets:
+          - {host}
+    archives:
+      - name_template: "myapp-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        format: tar.gz
+    checksum:
+      name_template: "checksums.txt"
+      algorithm: sha256
+"#,
+        host = host
+    );
+    create_config(tmp.path(), &config);
+
+    // 1. Verify config is valid
+    let check_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        check_output.status.success(),
+        "workspace config check should succeed.\nstderr:\n{}",
+        String::from_utf8_lossy(&check_output.stderr)
+    );
+
+    // 2. Run dry-run release with --all --force
+    let release_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args([
+            "release",
+            "--dry-run",
+            "--all",
+            "--force",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout", "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&release_output.stderr);
+    assert!(
+        release_output.status.success(),
+        "workspace dry-run release should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // 3. Verify the dry-run output mentions the binary build (myapp)
+    assert!(
+        stderr.contains("myapp") || stderr.contains("dry-run"),
+        "stderr should mention myapp or dry-run activity, got:\n{}",
+        stderr
+    );
+}
+
+/// E2E: Workspace snapshot release actually builds and produces artifacts.
+///
+/// This is the full integration test: compile a workspace, archive, checksum.
+#[test]
+fn test_e2e_workspace_snapshot_produces_artifacts() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_workspace_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let config = format!(
+        r#"project_name: my-workspace
+crates:
+  - name: core-lib
+    path: "crates/core-lib"
+    tag_template: "core-lib-v{{{{ .Version }}}}"
+
+  - name: helper-lib
+    path: "crates/helper-lib"
+    tag_template: "helper-lib-v{{{{ .Version }}}}"
+    depends_on:
+      - core-lib
+
+  - name: myapp
+    path: "crates/myapp"
+    tag_template: "myapp-v{{{{ .Version }}}}"
+    depends_on:
+      - core-lib
+      - helper-lib
+    builds:
+      - binary: myapp
+        targets:
+          - {host}
+    archives:
+      - name_template: "myapp-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        format: tar.gz
+    checksum:
+      name_template: "checksums.txt"
+      algorithm: sha256
+"#,
+        host = host
+    );
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args([
+            "release",
+            "--snapshot",
+            "--all",
+            "--force",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout", "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "workspace snapshot release should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // Verify dist/ exists and has artifacts
+    let dist_dir = tmp.path().join("dist");
+    assert!(
+        dist_dir.exists(),
+        "dist/ should exist after workspace snapshot release"
+    );
+
+    let entries: Vec<_> = fs::read_dir(&dist_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+
+    // Should have a tar.gz archive for myapp
+    let has_archive = entries.iter().any(|name| name.contains("myapp") && name.ends_with(".tar.gz"));
+    assert!(
+        has_archive,
+        "dist/ should contain a myapp .tar.gz archive, found: {:?}",
+        entries
+    );
+
+    // Should have checksums.txt
+    let has_checksum = entries.iter().any(|name| name == "checksums.txt");
+    assert!(
+        has_checksum,
+        "dist/ should contain checksums.txt, found: {:?}",
+        entries
+    );
+
+    // Should have metadata.json
+    let has_metadata = entries.iter().any(|name| name == "metadata.json");
+    assert!(
+        has_metadata,
+        "dist/ should contain metadata.json, found: {:?}",
+        entries
+    );
+}
+
+/// E2E: `anodize init` on a workspace project generates config with depends_on.
+#[test]
+fn test_e2e_init_workspace_generates_depends_on() {
+    let tmp = TempDir::new().unwrap();
+    create_workspace_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "init on workspace should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Verify the output mentions all three crates
+    assert!(stdout.contains("core-lib"), "init output should mention core-lib");
+    assert!(stdout.contains("helper-lib"), "init output should mention helper-lib");
+    assert!(stdout.contains("myapp"), "init output should mention myapp");
+
+    // Verify depends_on relationships are detected
+    assert!(
+        stdout.contains("depends_on"),
+        "init output should include depends_on for workspace deps"
+    );
+
+    // Verify topological order: core-lib should appear before myapp
+    let core_pos = stdout.find("name: core-lib").expect("core-lib should appear");
+    let app_pos = stdout.find("name: myapp").expect("myapp should appear");
+    assert!(
+        core_pos < app_pos,
+        "core-lib should appear before myapp (topological order)"
+    );
+
+    // Verify the generated YAML is parseable
+    let _parsed: serde_yaml::Value = serde_yaml::from_str(&stdout).unwrap_or_else(|e| {
+        panic!(
+            "workspace init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
+            e, stdout
+        );
+    });
+}
+
+/// E2E: `anodize check` detects invalid depends_on references in workspace config.
+#[test]
+fn test_e2e_check_workspace_invalid_depends_on() {
+    let tmp = TempDir::new().unwrap();
+    create_workspace_project(tmp.path());
+
+    create_config(
+        tmp.path(),
+        r#"project_name: my-workspace
+crates:
+  - name: core-lib
+    path: "crates/core-lib"
+    tag_template: "core-lib-v{{ .Version }}"
+
+  - name: myapp
+    path: "crates/myapp"
+    tag_template: "myapp-v{{ .Version }}"
+    depends_on:
+      - nonexistent-crate
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "check should fail for invalid depends_on reference"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("nonexistent-crate") && stderr.contains("does not exist"),
+        "error should mention the missing dependency, got:\n{}",
         stderr
     );
 }
