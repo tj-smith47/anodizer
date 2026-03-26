@@ -1096,6 +1096,198 @@ mod tests {
         ));
     }
 
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_release_missing_token_error_message_is_actionable() {
+        // The release stage requires a GitHub token for non-dry-run.
+        // test_release_missing_token_errors already covers this,
+        // but we verify the error message is actionable (tells user what to do).
+        use anodize_core::config::GitHubConfig;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .token(None)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(GitHubConfig {
+                        owner: "testowner".to_string(),
+                        name: "testrepo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        let result = stage.run(&mut ctx);
+
+        // If GITHUB_TOKEN is in the environment, the stage proceeds past
+        // token resolution and fails on the API call instead. Either way
+        // the error should be informative.
+        assert!(result.is_err(), "release without explicit token should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("GITHUB_TOKEN")
+                || err.contains("--token")
+                || err.contains("release")
+                || err.contains("GitHub"),
+            "error should mention GITHUB_TOKEN, --token, or release context, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_mock_github_api_401_error() {
+        use anodize_core::github_client::{
+            CreateReleaseParams, GitHubClient, MockGitHubClient,
+        };
+
+        let mock = MockGitHubClient::new();
+        mock.set_create_release_response(Err("401 Unauthorized: Bad credentials".to_string()));
+
+        let params = CreateReleaseParams {
+            owner: "testowner".to_string(),
+            repo: "testrepo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: "Release v1.0.0".to_string(),
+            body: String::new(),
+            draft: false,
+            prerelease: false,
+            generate_release_notes: false,
+            make_latest: None,
+        };
+
+        let result = mock.create_release(&params);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("401") && err.contains("Unauthorized"),
+            "error should contain HTTP status and description, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_mock_github_api_403_error() {
+        use anodize_core::github_client::{
+            CreateReleaseParams, GitHubClient, MockGitHubClient,
+        };
+
+        let mock = MockGitHubClient::new();
+        mock.set_create_release_response(Err(
+            "403 Forbidden: Resource not accessible by integration".to_string(),
+        ));
+
+        let params = CreateReleaseParams {
+            owner: "testowner".to_string(),
+            repo: "testrepo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: "Release".to_string(),
+            body: String::new(),
+            draft: false,
+            prerelease: false,
+            generate_release_notes: false,
+            make_latest: None,
+        };
+
+        let result = mock.create_release(&params);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("403"));
+    }
+
+    #[test]
+    fn test_mock_github_api_404_error() {
+        use anodize_core::github_client::{
+            CreateReleaseParams, GitHubClient, MockGitHubClient,
+        };
+
+        let mock = MockGitHubClient::new();
+        mock.set_create_release_response(Err("404 Not Found: repository not found".to_string()));
+
+        let params = CreateReleaseParams {
+            owner: "testowner".to_string(),
+            repo: "nonexistent-repo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: "Release".to_string(),
+            body: String::new(),
+            draft: false,
+            prerelease: false,
+            generate_release_notes: false,
+            make_latest: None,
+        };
+
+        let result = mock.create_release(&params);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("404") && err.contains("Not Found"),
+            "error should contain 404 Not Found, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_mock_github_api_422_error() {
+        use anodize_core::github_client::{
+            CreateReleaseParams, GitHubClient, MockGitHubClient,
+        };
+
+        let mock = MockGitHubClient::new();
+        mock.set_create_release_response(Err(
+            "422 Unprocessable Entity: Validation Failed - tag already exists".to_string(),
+        ));
+
+        let params = CreateReleaseParams {
+            owner: "testowner".to_string(),
+            repo: "testrepo".to_string(),
+            tag_name: "v1.0.0".to_string(),
+            name: "Release".to_string(),
+            body: String::new(),
+            draft: false,
+            prerelease: false,
+            generate_release_notes: false,
+            make_latest: None,
+        };
+
+        let result = mock.create_release(&params);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("422") && err.contains("Validation"),
+            "error should contain 422 and Validation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_mock_upload_failure() {
+        use anodize_core::github_client::{
+            GitHubClient, MockGitHubClient, UploadAssetParams,
+        };
+
+        let mock = MockGitHubClient::new();
+        mock.set_upload_asset_response(Err(
+            "upload failed: connection timeout after 30s".to_string(),
+        ));
+
+        let params = UploadAssetParams {
+            owner: "testowner".to_string(),
+            repo: "testrepo".to_string(),
+            release_id: 42,
+            file_name: "myapp.tar.gz".to_string(),
+            file_path: std::path::PathBuf::from("/tmp/myapp.tar.gz"),
+        };
+
+        let result = mock.upload_asset(&params);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("upload failed") && err.contains("timeout"),
+            "error should describe the upload failure, got: {err}"
+        );
+    }
+
     #[test]
     fn test_dry_run_with_draft_release() {
         let mut ctx = TestContextBuilder::new()

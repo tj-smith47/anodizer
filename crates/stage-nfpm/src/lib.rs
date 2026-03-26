@@ -973,4 +973,86 @@ crates:
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp");
         assert!(yaml.contains("    dst: /opt/myapp/bin/myapp"));
     }
+
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_nfpm_missing_binary_produces_error_in_live_mode() {
+        // When nfpm binary is missing, the stage should fail with a clear error
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false, // live mode
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let stage = NfpmStage;
+        let result = stage.run(&mut ctx);
+        // nfpm binary likely not installed in test environment
+        assert!(result.is_err(), "nfpm binary missing should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nfpm") || err.contains("execute"),
+            "error should mention nfpm or execution failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_format_extension_unknown_returns_empty() {
+        // Unknown format returns empty extension
+        assert_eq!(format_extension("invalid-format"), "");
+        assert_eq!(format_extension(""), "");
+        assert_eq!(format_extension("snap"), "");
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_without_package_name() {
+        // When package_name is None, it should not appear in YAML
+        let nfpm_cfg = NfpmConfig {
+            package_name: None,
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        assert!(!yaml.contains("name:"), "no name: line should appear when package_name is None");
+        assert!(yaml.contains("version: 1.0.0"));
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_minimal_config() {
+        // A minimal config with just formats should still produce valid YAML
+        let nfpm_cfg = NfpmConfig {
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "0.1.0", "/bin/test");
+        assert!(yaml.contains("version: 0.1.0"));
+        assert!(yaml.contains("contents:"));
+        assert!(yaml.contains("  - src: /bin/test"));
+        assert!(yaml.contains("    dst: /usr/local/bin/test"));
+    }
 }

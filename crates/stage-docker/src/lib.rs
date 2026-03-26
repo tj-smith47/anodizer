@@ -1089,4 +1089,167 @@ dockerfile: Dockerfile
         );
         assert_eq!(cmd.last().unwrap(), "/my/staging/dir");
     }
+
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_missing_dockerfile_errors_with_path() {
+        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let docker_cfg = DockerConfig {
+            image_templates: vec!["ghcr.io/owner/app:latest".to_string()],
+            dockerfile: "/nonexistent/Dockerfile-that-does-not-exist".to_string(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            binaries: None,
+            build_flag_templates: None,
+            skip_push: None,
+            extra_files: None,
+            push_flags: None,
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![docker_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let stage = DockerStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "missing Dockerfile should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Dockerfile") || err.contains("docker"),
+            "error should mention Dockerfile, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_docker_build_failure_dry_run_skips_execution() {
+        // In dry-run mode, even with invalid config, docker should not fail
+        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let docker_cfg = DockerConfig {
+            image_templates: vec!["ghcr.io/owner/app:latest".to_string()],
+            dockerfile: "/nonexistent/Dockerfile".to_string(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            binaries: None,
+            build_flag_templates: None,
+            skip_push: None,
+            extra_files: None,
+            push_flags: None,
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![docker_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let stage = DockerStage;
+        let result = stage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "dry-run should skip docker execution, got: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_extra_files_directory_entry_errors() {
+        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create a real Dockerfile so we get past that check
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+        // Create a directory to use as an extra_files entry
+        let extra_dir = tmp.path().join("some_directory");
+        fs::create_dir_all(&extra_dir).unwrap();
+
+        let docker_cfg = DockerConfig {
+            image_templates: vec!["ghcr.io/owner/app:latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            binaries: None,
+            build_flag_templates: None,
+            skip_push: None,
+            extra_files: Some(vec![extra_dir.to_string_lossy().into_owned()]),
+            push_flags: None,
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![docker_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let stage = DockerStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "directory as extra_files entry should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("directory") || err.contains("some_directory"),
+            "error should mention that directories are not supported, got: {err}"
+        );
+    }
 }

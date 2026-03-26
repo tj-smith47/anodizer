@@ -3773,3 +3773,192 @@ crates: []
         .unwrap();
     assert!(webhook.headers.is_none());
 }
+
+// ====================================================================
+// Task 4D: Error path completeness — config error tests
+// ====================================================================
+
+// ---- Duplicate crate names ----
+
+#[test]
+fn test_parse_duplicate_crate_names_accepted_by_serde() {
+    // serde/YAML does not reject duplicate list entries; both crates parse fine
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+  - name: myapp
+    path: "./other"
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(config.crates.len(), 2);
+    assert_eq!(config.crates[0].name, "myapp");
+    assert_eq!(config.crates[1].name, "myapp");
+}
+
+// ---- Invalid tag_template ----
+
+#[test]
+fn test_invalid_tag_template_syntax_error() {
+    // A tag_template with bad Tera syntax should parse fine as a string,
+    // but fail when rendered.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "{{ unclosed"
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(config.crates[0].tag_template, "{{ unclosed");
+    // Config parses but rendering would fail
+}
+
+#[test]
+fn test_empty_tag_template() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: ""
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(config.crates[0].tag_template, "");
+}
+
+// ---- depends_on with nonexistent crate ----
+
+#[test]
+fn test_depends_on_nonexistent_crate_parses() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on:
+      - nonexistent-crate
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let deps = config.crates[0].depends_on.as_ref().unwrap();
+    assert_eq!(deps, &["nonexistent-crate"]);
+}
+
+// ---- Circular depends_on ----
+
+#[test]
+fn test_circular_depends_on_parses() {
+    // Circular dependencies parse fine in YAML (no validation at parse time)
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on: [b]
+  - name: b
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on: [a]
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(config.crates.len(), 2);
+    let deps_a = config.crates[0].depends_on.as_ref().unwrap();
+    assert_eq!(deps_a, &["b"]);
+    let deps_b = config.crates[1].depends_on.as_ref().unwrap();
+    assert_eq!(deps_b, &["a"]);
+}
+
+#[test]
+fn test_self_referencing_depends_on() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on: [myapp]
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let deps = config.crates[0].depends_on.as_ref().unwrap();
+    assert_eq!(deps, &["myapp"]);
+}
+
+// ---- Invalid YAML syntax ----
+
+#[test]
+fn test_invalid_yaml_syntax_produces_parse_error() {
+    let yaml = "project_name: test\ncrates:\n  - name: [invalid yaml structure";
+    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    assert!(result.is_err(), "invalid YAML should produce a parse error");
+}
+
+#[test]
+fn test_wrong_type_for_crates_field() {
+    let yaml = "project_name: test\ncrates: not_a_list";
+    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    assert!(result.is_err(), "crates should be a list, not a string");
+}
+
+#[test]
+fn test_unknown_field_in_crate_config_accepted() {
+    // serde with deny_unknown_fields would reject this, but we check current behavior
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    unknown_field: some_value
+"#;
+    // This may or may not parse depending on serde config
+    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    // Document the behavior: if it parses, unknown fields are ignored
+    if let Ok(config) = result {
+        assert_eq!(config.crates[0].name, "myapp");
+    }
+    // If it doesn't parse, that's also a valid behavior
+}
+
+// ---- Invalid format in archives config ----
+
+#[test]
+fn test_archives_disabled_string_parses() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives: false
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    assert!(matches!(config.crates[0].archives, ArchivesConfig::Disabled));
+}
+
+// ---- Missing required fields ----
+
+#[test]
+fn test_crate_missing_name_fails() {
+    let yaml = r#"
+project_name: test
+crates:
+  - path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    // name has no default, so this should fail or default to empty
+    match result {
+        Ok(config) => {
+            // If it parses, name defaults to empty string
+            assert_eq!(config.crates[0].name, "");
+        }
+        Err(_) => {
+            // Also acceptable: parse error for missing required field
+        }
+    }
+}

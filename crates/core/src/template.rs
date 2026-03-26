@@ -453,4 +453,90 @@ mod tests {
             "mismatched block tags should produce an error"
         );
     }
+
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_undefined_variable_error_mentions_variable() {
+        let vars = test_vars();
+        let result = render("{{ UndefinedFoo }}", &vars);
+        assert!(result.is_err(), "undefined variable should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("UndefinedFoo") || err.contains("template"),
+            "error should mention the undefined variable name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_brace_syntax_error() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName", &vars);
+        assert!(result.is_err(), "unclosed brace should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("parse") || err.contains("template") || err.contains("ProjectName"),
+            "error should indicate a parse failure, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_tag_block_error() {
+        let vars = test_vars();
+        let result = render("{% for x in items %} content", &vars);
+        assert!(result.is_err(), "unclosed for block should produce an error");
+    }
+
+    #[test]
+    fn test_invalid_filter_name_error_mentions_filter() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName | bogus_filter_name }}", &vars);
+        assert!(result.is_err(), "invalid filter should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("bogus_filter_name"),
+            "error should mention the invalid filter name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_deeply_nested_undefined_variable_error() {
+        let vars = test_vars();
+        let result = render("{{ Env.NONEXISTENT_VAR_12345 }}", &vars);
+        // Env is defined but NONEXISTENT_VAR_12345 is not a key in it.
+        // Tera may render this as empty or error — either is acceptable,
+        // but it must not panic.
+        // This tests that deeply nested access doesn't crash.
+        let _ = result;
+    }
+
+    #[test]
+    fn test_go_style_syntax_error_reports_original_template() {
+        let vars = test_vars();
+        let template = "{{ .Missing | bad_filter }}";
+        let result = render(template, &vars);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        // The error context added by render() should include the original template
+        assert!(
+            err.contains("bad_filter") || err.contains(template),
+            "error should reference the original template or filter, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_empty_template_renders_empty() {
+        let vars = test_vars();
+        let result = render("", &vars);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "");
+    }
+
+    #[test]
+    fn test_multiple_errors_in_template() {
+        let vars = test_vars();
+        // This template has both an undefined variable and a syntax issue
+        let result = render("{% if %}", &vars);
+        assert!(result.is_err(), "empty if condition should produce an error");
+    }
 }

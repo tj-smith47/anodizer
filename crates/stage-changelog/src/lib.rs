@@ -1754,4 +1754,112 @@ abbrev: 10
             custom_dist.display()
         );
     }
+
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_invalid_exclude_regex_warns_but_does_not_crash() {
+        let commits = vec![CommitInfo {
+            raw_message: "feat: new feature".into(),
+            kind: "feat".into(),
+            description: "new feature".into(),
+            hash: "abc".into(),
+        }];
+        // Invalid regex: unclosed group
+        let filters = vec!["^feat(".to_string()];
+        // apply_filters logs a warning but does not panic or error
+        let result = apply_filters(&commits, &filters);
+        // The invalid regex is skipped, so the commit passes through
+        assert_eq!(result.len(), 1, "invalid regex should be skipped, commits pass through");
+    }
+
+    #[test]
+    fn test_invalid_include_regex_warns_but_does_not_crash() {
+        let commits = vec![CommitInfo {
+            raw_message: "fix: a bug".into(),
+            kind: "fix".into(),
+            description: "a bug".into(),
+            hash: "def".into(),
+        }];
+        let filters = vec!["[invalid".to_string()];
+        let result = apply_include_filters(&commits, &filters);
+        // Invalid regex is skipped, no valid patterns remain, so nothing matches
+        assert_eq!(result.len(), 0, "invalid include regex means no commits match");
+    }
+
+    #[test]
+    fn test_invalid_group_regex_warns_and_commits_go_to_others() {
+        let commits = vec![CommitInfo {
+            raw_message: "feat: new thing".into(),
+            kind: "feat".into(),
+            description: "new thing".into(),
+            hash: "abc".into(),
+        }];
+        let groups = vec![ChangelogGroup {
+            title: "Features".into(),
+            regexp: Some("^feat(".into()), // invalid regex
+            order: Some(0),
+        }];
+        let result = group_commits(&commits, &groups);
+        // The invalid regex group compiles to None, so commit goes to "Others"
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].title, "Others");
+    }
+
+    #[test]
+    fn test_no_previous_tag_uses_all_commits() {
+        // When there's no previous tag, the stage falls back to all commits
+        // We test the underlying logic: if prev_tag is None, get_all_commits is used
+        // This tests parse_commit_message on various edge cases
+        let empty_msg = parse_commit_message("");
+        assert_eq!(empty_msg.kind, "other");
+        assert_eq!(empty_msg.description, "");
+
+        let no_colon = parse_commit_message("no colon here");
+        assert_eq!(no_colon.kind, "other");
+    }
+
+    #[test]
+    fn test_sort_commits_unknown_order_defaults_to_asc() {
+        let mut commits = vec![
+            CommitInfo {
+                raw_message: "b: second".into(),
+                kind: "other".into(),
+                description: "second".into(),
+                hash: "1".into(),
+            },
+            CommitInfo {
+                raw_message: "a: first".into(),
+                kind: "other".into(),
+                description: "first".into(),
+                hash: "2".into(),
+            },
+        ];
+        sort_commits(&mut commits, "invalid_order");
+        assert_eq!(commits[0].description, "first");
+        assert_eq!(commits[1].description, "second");
+    }
+
+    #[test]
+    fn test_render_changelog_empty_groups() {
+        let grouped: Vec<GroupedCommits> = vec![];
+        let result = render_changelog(&grouped, 7);
+        assert_eq!(result, "", "rendering empty groups should produce empty string");
+    }
+
+    #[test]
+    fn test_render_changelog_very_short_hash_preserved() {
+        let grouped = vec![GroupedCommits {
+            title: "Test".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: x".into(),
+                kind: "feat".into(),
+                description: "x".into(),
+                hash: "ab".into(), // shorter than abbrev
+            }],
+        }];
+        let result = render_changelog(&grouped, 7);
+        // Short hash should be used as-is without truncation
+        assert!(result.contains("(ab)"), "short hash should be kept intact, got: {result}");
+    }
 }

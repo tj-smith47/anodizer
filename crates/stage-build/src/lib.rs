@@ -514,6 +514,93 @@ mod tests {
         assert!(binaries.is_empty());
     }
 
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_copy_from_nonexistent_binary_errors_with_paths() {
+        use anodize_core::config::{BuildConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp_dir = std::env::temp_dir().join("anodize_build_test_copy_from");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "myapp".to_string(),
+            path: tmp_dir.to_string_lossy().into_owned(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: "myapp".to_string(),
+                targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                copy_from: Some("nonexistent-binary".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        let stage = BuildStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "copy_from with nonexistent source should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("copy_from") || err.contains("copy"),
+            "error should mention copy_from, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_build_failure_nonzero_exit_produces_clear_error() {
+        use anodize_core::config::{BuildConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp_dir = std::env::temp_dir().join("anodize_build_test_nonzero");
+        let _ = std::fs::create_dir_all(&tmp_dir);
+        // Create a minimal project so cargo can find Cargo.toml but fail on build
+        std::fs::write(
+            tmp_dir.join("Cargo.toml"),
+            "[package]\nname = \"no-such-bin\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp_dir.join("src")).unwrap();
+        std::fs::write(tmp_dir.join("src/lib.rs"), "").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "no-such-bin".to_string(),
+            path: tmp_dir.to_string_lossy().into_owned(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: "this-binary-does-not-exist".to_string(),
+                targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        let stage = BuildStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "build with nonexistent binary should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("build failed") || err.contains("this-binary-does-not-exist"),
+            "error should mention the build failure or binary name, got: {err}"
+        );
+    }
+
     #[test]
     fn test_build_command_with_env_vars() {
         let mut env = HashMap::new();

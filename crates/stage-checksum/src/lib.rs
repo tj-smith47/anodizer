@@ -1473,4 +1473,84 @@ ids:
             "windows should be excluded by ids filter"
         );
     }
+
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_hash_file_missing_file_errors_with_path() {
+        let result = hash_file(Path::new("/nonexistent/file.tar.gz"), "sha256");
+        assert!(result.is_err(), "hashing a missing file should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("/nonexistent/file.tar.gz") || err.contains("sha256"),
+            "error should mention the file path or algorithm, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_unsupported_algorithm_errors_with_name() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello").unwrap();
+
+        let result = hash_file(&f, "md5");
+        assert!(result.is_err(), "unsupported algorithm should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported checksum algorithm") && err.contains("md5"),
+            "error should mention 'unsupported checksum algorithm' and 'md5', got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_unsupported_algorithm_crc32() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello").unwrap();
+
+        let result = hash_file(&f, "crc32");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported") && err.contains("crc32"),
+            "error should name the unsupported algorithm, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_checksum_sidecar_write_to_nonexistent_dir_fails() {
+        // Attempting to create a sidecar file in a directory that doesn't exist
+        // should fail with a descriptive error.
+        let sidecar = Path::new("/nonexistent_dir_12345/test.tar.gz.sha256");
+        let write_result = File::create(sidecar);
+        assert!(
+            write_result.is_err(),
+            "creating sidecar in nonexistent dir should fail"
+        );
+        let err = write_result.unwrap_err().to_string();
+        assert!(
+            err.contains("No such file or directory") || err.contains("not found"),
+            "error should mention missing directory, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_each_sha_algorithm_on_missing_file() {
+        let missing = Path::new("/nonexistent/checksum_test_file");
+        for algo in &["sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "blake2s"] {
+            let result = hash_file(missing, algo);
+            assert!(
+                result.is_err(),
+                "algorithm {} should fail on missing file",
+                algo
+            );
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains(algo) || err.contains("nonexistent"),
+                "error for {} should mention algo or path, got: {}",
+                algo,
+                err
+            );
+        }
+    }
 }

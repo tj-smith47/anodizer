@@ -1849,4 +1849,152 @@ crates:
             found.keys().collect::<Vec<_>>()
         );
     }
+
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_missing_binary_artifact_errors_with_path() {
+        use anodize_core::config::{ArchiveConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: anodize_core::config::ArchivesConfig::Configs(vec![ArchiveConfig::default()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        // Register a binary artifact that doesn't exist on disk
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: PathBuf::from("/nonexistent/path/to/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+        });
+
+        let result = ArchiveStage.run(&mut ctx);
+        assert!(result.is_err(), "archive with missing binary should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("binary artifact missing") || err.contains("/nonexistent/path/to/myapp"),
+            "error should mention the missing binary path, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_empty_file_list_creates_empty_tar_gz() {
+        let tmp = TempDir::new().unwrap();
+        let archive_path = tmp.path().join("empty.tar.gz");
+
+        // Create an archive with empty file list
+        let result = create_tar_gz(&[], &archive_path, None, None);
+        assert!(result.is_ok(), "creating archive with empty file list should succeed");
+        assert!(archive_path.exists(), "archive file should be created");
+    }
+
+    #[test]
+    fn test_empty_file_list_creates_empty_zip() {
+        let tmp = TempDir::new().unwrap();
+        let archive_path = tmp.path().join("empty.zip");
+
+        let result = create_zip(&[], &archive_path, None);
+        assert!(result.is_ok(), "creating zip with empty file list should succeed");
+        assert!(archive_path.exists(), "zip file should be created");
+    }
+
+    #[test]
+    fn test_copy_binary_source_missing_errors_with_path() {
+        let tmp = TempDir::new().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let output = tmp.path().join("output");
+
+        let result = copy_binary(&[missing.as_path()], &output);
+        assert!(result.is_err(), "copy_binary with missing source should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("does not exist") || err.contains("does-not-exist"),
+            "error should mention the missing file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_archive_unsupported_format_falls_back_to_tar_gz() {
+        // The archive stage treats unknown formats as tar.gz (the default branch)
+        // This tests that an unusual format string doesn't crash but falls back.
+        use anodize_core::config::{ArchiveConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"fake binary").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: anodize_core::config::ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("unsupported_format".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("binary".to_string(), "mybin".to_string());
+                m
+            },
+        });
+
+        // Should succeed because unknown format falls back to tar.gz
+        let result = ArchiveStage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "unknown format should fall back to tar.gz, got: {:?}",
+            result.err()
+        );
+    }
 }

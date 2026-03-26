@@ -686,4 +686,123 @@ mod tests {
         // "none" filter should skip without executing any command
         assert!(stage.run(&mut ctx).is_ok());
     }
+
+    // ---- Error path tests (Task 4D) ----
+
+    #[test]
+    fn test_missing_signing_binary_errors_with_command_name() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let signs = vec![SignConfig {
+            id: Some("test".to_string()),
+            cmd: Some("/nonexistent/path/to/gpg-that-does-not-exist".to_string()),
+            args: Some(vec![
+                "--output".to_string(),
+                "{{ .Signature }}".to_string(),
+                "--detach-sig".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(signs)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "missing signing binary should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("gpg-that-does-not-exist") || err.contains("spawn"),
+            "error should mention the missing command, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_signing_command_nonzero_exit_errors_with_details() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let signs = vec![SignConfig {
+            id: Some("test".to_string()),
+            cmd: Some("false".to_string()), // always exits with code 1
+            args: Some(vec![]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(signs)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/test.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "signing command returning non-zero should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("non-zero") || err.contains("false"),
+            "error should mention non-zero exit or command name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_sign_args_no_placeholders() {
+        let args = vec!["--armor".to_string(), "--verbose".to_string()];
+        let resolved = resolve_sign_args(&args, "/tmp/file", "/tmp/file.sig");
+        assert_eq!(resolved, args, "args without placeholders should be unchanged");
+    }
+
+    #[test]
+    fn test_resolve_sign_args_both_placeholders_in_single_arg() {
+        let args = vec!["{{ .Artifact }}:{{ .Signature }}".to_string()];
+        let resolved = resolve_sign_args(&args, "/tmp/f", "/tmp/f.sig");
+        assert_eq!(resolved[0], "/tmp/f:/tmp/f.sig");
+    }
+
+    #[test]
+    fn test_stdin_file_missing_errors_with_path() {
+        let sign_cfg = SignConfig {
+            id: None,
+            cmd: None,
+            args: None,
+            artifacts: None,
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: Some("/nonexistent/stdin_file.txt".to_string()),
+        };
+
+        let result = prepare_stdin(&sign_cfg);
+        assert!(result.is_err(), "missing stdin_file should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("/nonexistent/stdin_file.txt") || err.contains("stdin_file"),
+            "error should mention the missing stdin_file path, got: {err}"
+        );
+    }
 }
