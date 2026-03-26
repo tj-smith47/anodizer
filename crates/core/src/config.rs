@@ -516,12 +516,38 @@ pub struct NfpmConfig {
     pub dependencies: Option<HashMap<String, Vec<String>>>,
     pub overrides: Option<HashMap<String, serde_json::Value>>,
     pub file_name_template: Option<String>,
+    pub scripts: Option<NfpmScripts>,
+    pub recommends: Option<Vec<String>>,
+    pub suggests: Option<Vec<String>>,
+    pub conflicts: Option<Vec<String>>,
+    pub replaces: Option<Vec<String>>,
+    pub provides: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct NfpmScripts {
+    pub preinstall: Option<String>,
+    pub postinstall: Option<String>,
+    pub preremove: Option<String>,
+    pub postremove: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct NfpmFileInfo {
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NfpmContent {
     pub src: String,
     pub dst: String,
+    #[serde(rename = "type")]
+    pub content_type: Option<String>,
+    pub file_info: Option<NfpmFileInfo>,
 }
 
 // ---------------------------------------------------------------------------

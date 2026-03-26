@@ -41,6 +41,49 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
         lines.push(format!("license: {license}"));
     }
 
+    // Scripts section
+    if let Some(scripts) = &config.scripts {
+        let mut has_script = false;
+        let mut script_lines: Vec<String> = Vec::new();
+        if let Some(pre) = &scripts.preinstall {
+            script_lines.push(format!("  preinstall: {pre}"));
+            has_script = true;
+        }
+        if let Some(post) = &scripts.postinstall {
+            script_lines.push(format!("  postinstall: {post}"));
+            has_script = true;
+        }
+        if let Some(pre) = &scripts.preremove {
+            script_lines.push(format!("  preremove: {pre}"));
+            has_script = true;
+        }
+        if let Some(post) = &scripts.postremove {
+            script_lines.push(format!("  postremove: {post}"));
+            has_script = true;
+        }
+        if has_script {
+            lines.push("scripts:".to_string());
+            lines.extend(script_lines);
+        }
+    }
+
+    // Package relationship metadata
+    fn push_string_list(lines: &mut Vec<String>, key: &str, items: &Option<Vec<String>>) {
+        if let Some(list) = items
+            && !list.is_empty()
+        {
+            lines.push(format!("{key}:"));
+            for item in list {
+                lines.push(format!("  - {item}"));
+            }
+        }
+    }
+    push_string_list(&mut lines, "recommends", &config.recommends);
+    push_string_list(&mut lines, "suggests", &config.suggests);
+    push_string_list(&mut lines, "conflicts", &config.conflicts);
+    push_string_list(&mut lines, "replaces", &config.replaces);
+    push_string_list(&mut lines, "provides", &config.provides);
+
     // Contents section — always include the binary
     lines.push("contents:".to_string());
     let bindir = config
@@ -60,6 +103,21 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
         for entry in contents {
             lines.push(format!("  - src: {}", entry.src));
             lines.push(format!("    dst: {}", entry.dst));
+            if let Some(ct) = &entry.content_type {
+                lines.push(format!("    type: {ct}"));
+            }
+            if let Some(fi) = &entry.file_info {
+                lines.push("    file_info:".to_string());
+                if let Some(owner) = &fi.owner {
+                    lines.push(format!("      owner: {owner}"));
+                }
+                if let Some(group) = &fi.group {
+                    lines.push(format!("      group: {group}"));
+                }
+                if let Some(mode) = &fi.mode {
+                    lines.push(format!("      mode: \"{mode}\""));
+                }
+            }
         }
     }
 
@@ -331,10 +389,7 @@ mod tests {
             description: Some("A test app".to_string()),
             license: Some("MIT".to_string()),
             bindir: Some("/usr/bin".to_string()),
-            contents: None,
-            dependencies: None,
-            overrides: None,
-            file_name_template: None,
+            ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/path/to/binary");
         assert!(yaml.contains("name: myapp"));
@@ -370,19 +425,14 @@ mod tests {
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["rpm".to_string()],
-            vendor: None,
-            homepage: None,
-            maintainer: None,
             description: Some("desc".to_string()),
-            license: None,
-            bindir: None,
             contents: Some(vec![NfpmContent {
                 src: "/src/config".to_string(),
                 dst: "/etc/myapp/config".to_string(),
+                content_type: None,
+                file_info: None,
             }]),
-            dependencies: None,
-            overrides: None,
-            file_name_template: None,
+            ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp");
         assert!(yaml.contains("version: 2.0.0"));
@@ -415,16 +465,7 @@ mod tests {
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string(), "rpm".to_string()],
-            vendor: None,
-            homepage: None,
-            maintainer: None,
-            description: None,
-            license: None,
-            bindir: None,
-            contents: None,
-            dependencies: None,
-            overrides: None,
-            file_name_template: None,
+            ..Default::default()
         };
 
         let crate_cfg = CrateConfig {
@@ -471,5 +512,197 @@ mod tests {
         let _path = _tmp.path().join("test.yaml");
         fs::write(&_path, "test").unwrap();
         assert!(_path.exists());
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_with_scripts() {
+        use anodize_core::config::NfpmScripts;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            scripts: Some(NfpmScripts {
+                preinstall: Some("/scripts/preinstall.sh".to_string()),
+                postinstall: Some("/scripts/postinstall.sh".to_string()),
+                preremove: Some("/scripts/preremove.sh".to_string()),
+                postremove: None,
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        assert!(yaml.contains("scripts:"));
+        assert!(yaml.contains("  preinstall: /scripts/preinstall.sh"));
+        assert!(yaml.contains("  postinstall: /scripts/postinstall.sh"));
+        assert!(yaml.contains("  preremove: /scripts/preremove.sh"));
+        assert!(!yaml.contains("postremove"));
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_with_package_metadata() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            recommends: Some(vec!["libfoo".to_string(), "libbar".to_string()]),
+            suggests: Some(vec!["optional-pkg".to_string()]),
+            conflicts: Some(vec!["old-myapp".to_string()]),
+            replaces: Some(vec!["old-myapp".to_string()]),
+            provides: Some(vec!["myapp-bin".to_string()]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        assert!(yaml.contains("recommends:"));
+        assert!(yaml.contains("  - libfoo"));
+        assert!(yaml.contains("  - libbar"));
+        assert!(yaml.contains("suggests:"));
+        assert!(yaml.contains("  - optional-pkg"));
+        assert!(yaml.contains("conflicts:"));
+        assert!(yaml.contains("  - old-myapp"));
+        assert!(yaml.contains("replaces:"));
+        assert!(yaml.contains("provides:"));
+        assert!(yaml.contains("  - myapp-bin"));
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_with_contents_type_and_file_info() {
+        use anodize_core::config::{NfpmContent, NfpmFileInfo};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            contents: Some(vec![NfpmContent {
+                src: "/src/myapp.conf".to_string(),
+                dst: "/etc/myapp/myapp.conf".to_string(),
+                content_type: Some("config".to_string()),
+                file_info: Some(NfpmFileInfo {
+                    owner: Some("root".to_string()),
+                    group: Some("root".to_string()),
+                    mode: Some("0644".to_string()),
+                }),
+            }]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        assert!(yaml.contains("    type: config"));
+        assert!(yaml.contains("    file_info:"));
+        assert!(yaml.contains("      owner: root"));
+        assert!(yaml.contains("      group: root"));
+        assert!(yaml.contains("      mode: \"0644\""));
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_contents_without_file_info() {
+        use anodize_core::config::NfpmContent;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            contents: Some(vec![NfpmContent {
+                src: "/src/data".to_string(),
+                dst: "/var/lib/myapp/data".to_string(),
+                content_type: Some("dir".to_string()),
+                file_info: None,
+            }]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        assert!(yaml.contains("    type: dir"));
+        assert!(!yaml.contains("file_info"));
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_scripts() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        scripts:
+          preinstall: /scripts/pre.sh
+          postinstall: /scripts/post.sh
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        let scripts = nfpm[0].scripts.as_ref().unwrap();
+        assert_eq!(scripts.preinstall.as_deref(), Some("/scripts/pre.sh"));
+        assert_eq!(scripts.postinstall.as_deref(), Some("/scripts/post.sh"));
+        assert!(scripts.preremove.is_none());
+        assert!(scripts.postremove.is_none());
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_package_relationships() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        recommends:
+          - libfoo
+        suggests:
+          - libbar
+        conflicts:
+          - old-test
+        replaces:
+          - old-test
+        provides:
+          - test-bin
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        assert_eq!(nfpm[0].recommends.as_ref().unwrap(), &["libfoo"]);
+        assert_eq!(nfpm[0].suggests.as_ref().unwrap(), &["libbar"]);
+        assert_eq!(nfpm[0].conflicts.as_ref().unwrap(), &["old-test"]);
+        assert_eq!(nfpm[0].replaces.as_ref().unwrap(), &["old-test"]);
+        assert_eq!(nfpm[0].provides.as_ref().unwrap(), &["test-bin"]);
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_contents_with_type_and_file_info() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        contents:
+          - src: /src/conf
+            dst: /etc/test/conf
+            type: config
+            file_info:
+              owner: root
+              group: wheel
+              mode: "0755"
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        let contents = nfpm[0].contents.as_ref().unwrap();
+        assert_eq!(contents[0].content_type.as_deref(), Some("config"));
+        let fi = contents[0].file_info.as_ref().unwrap();
+        assert_eq!(fi.owner.as_deref(), Some("root"));
+        assert_eq!(fi.group.as_deref(), Some("wheel"));
+        assert_eq!(fi.mode.as_deref(), Some("0755"));
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_empty_lists_omitted() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            recommends: Some(vec![]),
+            suggests: None,
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        // Empty lists should not produce a section
+        assert!(!yaml.contains("recommends:"));
+        assert!(!yaml.contains("suggests:"));
     }
 }
