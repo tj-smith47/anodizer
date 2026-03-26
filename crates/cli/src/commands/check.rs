@@ -22,6 +22,13 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
 
     let crate_names: HashSet<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
 
+    // 0. Crate names must not be empty
+    for (i, c) in config.crates.iter().enumerate() {
+        if c.name.trim().is_empty() {
+            errors.push(format!("crate at index {}: name must not be empty", i));
+        }
+    }
+
     // 1. depends_on references exist
     for c in &config.crates {
         if let Some(deps) = &c.depends_on {
@@ -572,6 +579,57 @@ mod tests {
         });
         // Should pass (warnings only, not errors)
         assert!(run_checks(&config, false).is_ok());
+    }
+
+    // ---- Empty crate name validation tests ----
+
+    #[test]
+    fn test_empty_crate_name_fails() {
+        let config = make_config(vec![make_crate("", "v{{ .Version }}", None)]);
+        let result = run_checks(&config, false);
+        assert!(result.is_err(), "empty crate name should fail validation");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("validation failed"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_whitespace_only_crate_name_fails() {
+        let config = make_config(vec![make_crate("  ", "v{{ .Version }}", None)]);
+        let result = run_checks(&config, false);
+        assert!(result.is_err(), "whitespace-only crate name should fail validation");
+    }
+
+    // ---- tag_template compact spacing variant tests ----
+
+    #[test]
+    fn test_tag_template_compact_version_accepted() {
+        // {{.Version}} without spaces should also be accepted
+        let config = make_config(vec![make_crate("a", "v{{.Version}}", None)]);
+        assert!(run_checks(&config, false).is_ok());
+    }
+
+    #[test]
+    fn test_tag_template_missing_version_with_other_placeholder() {
+        // Has a placeholder but not {{ .Version }}
+        let config = make_config(vec![make_crate("a", "{{ .Tag }}-release", None)]);
+        let result = run_checks(&config, false);
+        assert!(result.is_err(), "tag_template without Version placeholder should fail");
+    }
+
+    // ---- Multiple validation errors test ----
+
+    #[test]
+    fn test_multiple_validation_errors_reported() {
+        let crates = vec![
+            make_crate("", "v{{ .Version }}", None),  // empty name
+            make_crate("b", "bad-tag", Some(vec!["nonexistent"])),  // missing dep + bad template
+        ];
+        let config = make_config(crates);
+        let result = run_checks(&config, false);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        // Should report multiple errors
+        assert!(msg.contains("3 error(s)") || msg.contains("error"), "should report multiple errors, got: {}", msg);
     }
 
     #[test]

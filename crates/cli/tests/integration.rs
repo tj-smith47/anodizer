@@ -1363,3 +1363,270 @@ crates:
         stderr
     );
 }
+
+// ============================================================================
+// Error Path Tests
+// ============================================================================
+
+/// Check command should reject a config with an empty crate name.
+#[test]
+fn test_check_empty_crate_name_rejected() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+crates:
+  - name: ""
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "check should fail for empty crate name"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("name must not be empty"),
+        "stderr should mention empty name error, got:\n{}",
+        stderr
+    );
+}
+
+/// Check command should reject a tag_template that lacks {{ .Version }}.
+#[test]
+fn test_check_tag_template_missing_version_rejected() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "release-{{ .Tag }}"
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "check should fail for tag_template without Version"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must contain") && stderr.contains("Version"),
+        "stderr should explain the Version requirement, got:\n{}",
+        stderr
+    );
+}
+
+/// Build stage should fail when the project has invalid Rust code.
+#[test]
+fn test_failed_compilation_snapshot() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    // Create a Cargo project with invalid Rust code
+    fs::write(tmp.path().join("Cargo.toml"), r#"
+[package]
+name = "bad-project"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "bad-project"
+path = "src/main.rs"
+"#).unwrap();
+
+    fs::create_dir_all(tmp.path().join("src")).unwrap();
+    fs::write(
+        tmp.path().join("src/main.rs"),
+        r#"fn main() { let x: i32 = "not a number"; }"#,
+    ).unwrap();
+
+    init_git_repo(tmp.path());
+
+    let config = format!(
+        r#"project_name: bad-project
+crates:
+  - name: bad-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: bad-project
+        targets:
+          - {host}
+"#,
+        host = host
+    );
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args([
+            "release",
+            "--snapshot",
+            "--single-target",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout", "2m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release should fail when Rust code doesn't compile.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Unknown YAML fields should be silently ignored (not cause parse errors).
+#[test]
+fn test_check_unknown_yaml_fields_ignored() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+future_feature: "this field does not exist yet"
+experimental_mode: true
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    unknown_crate_field: 42
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "check should succeed even with unknown YAML fields.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Per-crate checksum disable via the check command should pass validation.
+#[test]
+fn test_check_per_crate_checksum_disable_valid() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    checksum:
+      disable: true
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "check should succeed with per-crate checksum disable.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Archive disable via `archives: false` should pass validation.
+#[test]
+fn test_check_archives_disabled_valid() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives: false
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "check should succeed with archives: false.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Global checksum disable via defaults should pass validation.
+#[test]
+fn test_check_global_checksum_disable_valid() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+defaults:
+  checksum:
+    disable: true
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "check should succeed with global checksum disable.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Changelog disable should pass validation.
+#[test]
+fn test_check_changelog_disabled_valid() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+changelog:
+  disable: true
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("check")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "check should succeed with changelog disabled.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

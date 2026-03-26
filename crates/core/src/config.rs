@@ -1640,4 +1640,66 @@ crates:
             assert!(!e.to_string().is_empty(), "error message should not be empty");
         }
     }
+
+    // ---- Unknown fields tests ----
+
+    #[test]
+    fn test_unknown_top_level_fields_ignored() {
+        // serde(default) without deny_unknown_fields should silently ignore extras
+        let yaml = r#"
+project_name: test
+unknown_top_level_field: "this should be ignored"
+another_mystery: 42
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.project_name, "test");
+        assert_eq!(config.crates.len(), 1);
+    }
+
+    #[test]
+    fn test_unknown_crate_level_fields_ignored() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nonexistent_field: true
+    something_else: "hello"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.crates[0].name, "a");
+    }
+
+    #[test]
+    fn test_unknown_nested_fields_ignored() {
+        let yaml = r#"
+project_name: test
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+  unknown_default_field: "ignored"
+changelog:
+  sort: asc
+  mystery_option: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    checksum:
+      algorithm: sha256
+      future_field: "ignored"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.defaults.as_ref().unwrap().targets.as_ref().unwrap().len(), 1);
+        assert_eq!(config.changelog.as_ref().unwrap().sort, Some("asc".to_string()));
+        assert_eq!(
+            config.crates[0].checksum.as_ref().unwrap().algorithm,
+            Some("sha256".to_string())
+        );
+    }
 }
