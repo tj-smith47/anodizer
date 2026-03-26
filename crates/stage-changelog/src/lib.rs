@@ -1862,4 +1862,186 @@ abbrev: 10
         // Short hash should be used as-is without truncation
         assert!(result.contains("(ab)"), "short hash should be kept intact, got: {result}");
     }
+
+    #[test]
+    fn test_changelog_create_dist_dir_failure() {
+        use anodize_core::config::{Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Set up a minimal git repo so the stage gets past git operations
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+
+        git(&["init"]);
+        std::fs::write(repo.join("file.txt"), b"content").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feat: initial"]);
+
+        // Use an impossible path for dist to trigger create_dir_all failure
+        let config = Config {
+            project_name: "test".to_string(),
+            dist: std::path::PathBuf::from("/dev/null/impossible/dist"),
+            crates: vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo).unwrap();
+        let result = ChangelogStage.run(&mut ctx);
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        assert!(
+            result.is_err(),
+            "creating dist dir under /dev/null should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("changelog") || err.contains("dist") || err.contains("create"),
+            "error should mention directory creation context, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_changelog_write_failure_on_readonly_path() {
+        use anodize_core::config::{Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+
+        git(&["init"]);
+        std::fs::write(repo.join("file.txt"), b"content").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feat: initial"]);
+
+        // Create the dist dir, then place a directory where RELEASE_NOTES.md
+        // would go, so fs::write fails (can't write to a directory path).
+        let dist = repo.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let notes_blocker = dist.join("RELEASE_NOTES.md");
+        std::fs::create_dir_all(&notes_blocker).unwrap();
+
+        let config = Config {
+            project_name: "test".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo).unwrap();
+        let result = ChangelogStage.run(&mut ctx);
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        assert!(
+            result.is_err(),
+            "writing RELEASE_NOTES.md where a directory exists should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("RELEASE_NOTES") || err.contains("changelog") || err.contains("write"),
+            "error should mention the write failure context, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_changelog_dry_run_skips_write_no_error() {
+        use anodize_core::config::{Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+
+        git(&["init"]);
+        std::fs::write(repo.join("file.txt"), b"content").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feat: initial"]);
+
+        // Use an impossible dist path, but dry-run should skip the write
+        let config = Config {
+            project_name: "test".to_string(),
+            dist: std::path::PathBuf::from("/dev/null/impossible/dist"),
+            crates: vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo).unwrap();
+        let result = ChangelogStage.run(&mut ctx);
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "dry-run should skip fs write and succeed even with bad dist path"
+        );
+    }
 }

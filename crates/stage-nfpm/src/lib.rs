@@ -1055,4 +1055,95 @@ crates:
         assert!(yaml.contains("  - src: /bin/test"));
         assert!(yaml.contains("    dst: /usr/local/bin/test"));
     }
+
+    #[test]
+    fn test_invalid_file_name_template_errors() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            // Invalid Tera template — unclosed tag
+            file_name_template: Some("{{ bad_template".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true, // dry-run still renders the template
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let result = NfpmStage.run(&mut ctx);
+        assert!(
+            result.is_err(),
+            "invalid file_name_template should cause a render error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("template") || err.contains("render"),
+            "error should mention template rendering, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_create_output_dir_failure_errors() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        // Use an impossible path that create_dir_all will fail on
+        config.dist = std::path::PathBuf::from("/dev/null/impossible/dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false, // live mode triggers create_dir_all
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let result = NfpmStage.run(&mut ctx);
+        assert!(
+            result.is_err(),
+            "creating output dir under /dev/null should fail"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("nfpm") || err.contains("dir") || err.contains("create"),
+            "error should mention directory creation context, got: {err}"
+        );
+    }
 }

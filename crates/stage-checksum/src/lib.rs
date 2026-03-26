@@ -1333,6 +1333,11 @@ ids:
             result.is_err(),
             "checksumming a nonexistent file should error"
         );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("does-not-exist.tar.gz"),
+            "error should contain the missing file path, got: {err}"
+        );
     }
 
     #[test]
