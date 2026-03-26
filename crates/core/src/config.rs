@@ -25,6 +25,7 @@ pub struct Config {
     pub announce: Option<AnnounceConfig>,
     pub report_sizes: Option<bool>,
     pub env: Option<HashMap<String, String>>,
+    pub publishers: Option<Vec<PublisherConfig>>,
 }
 
 fn default_dist() -> PathBuf {
@@ -47,6 +48,7 @@ impl Default for Config {
             announce: None,
             report_sizes: None,
             env: None,
+            publishers: None,
         }
     }
 }
@@ -653,6 +655,21 @@ pub struct WebhookConfig {
     pub headers: Option<HashMap<String, String>>,
     pub content_type: Option<String>,
     pub message_template: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// PublisherConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PublisherConfig {
+    pub name: Option<String>,
+    pub cmd: String,
+    pub args: Option<Vec<String>>,
+    pub ids: Option<Vec<String>>,
+    pub artifact_types: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
 }
 
 // ---------------------------------------------------------------------------

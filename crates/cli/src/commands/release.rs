@@ -115,6 +115,20 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         eprintln!("  wrote {}", metadata_path.display());
     }
 
+    // Run custom publishers (only if pipeline succeeded)
+    if result.is_ok()
+        && let Some(ref publishers) = config.publishers
+        && !publishers.is_empty()
+    {
+        eprintln!("  running custom publishers...");
+        super::publisher::run_publishers(
+            publishers,
+            ctx.artifacts.all(),
+            ctx.template_vars(),
+            opts.dry_run,
+        )?;
+    }
+
     // Run hooks after pipeline (only if pipeline succeeded)
     if result.is_ok()
         && let Some(after) = &config.after {

@@ -14,6 +14,20 @@ pub enum ArtifactKind {
     Metadata,
 }
 
+impl ArtifactKind {
+    /// Return the snake_case string representation (matching serde serialization).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ArtifactKind::Binary => "binary",
+            ArtifactKind::Archive => "archive",
+            ArtifactKind::Checksum => "checksum",
+            ArtifactKind::DockerImage => "docker_image",
+            ArtifactKind::LinuxPackage => "linux_package",
+            ArtifactKind::Metadata => "metadata",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Artifact {
     pub kind: ArtifactKind,

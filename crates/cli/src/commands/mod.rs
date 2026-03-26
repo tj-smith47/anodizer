@@ -4,4 +4,5 @@ pub mod check;
 pub mod completion;
 pub mod healthcheck;
 pub mod init;
+pub mod publisher;
 pub mod release;
