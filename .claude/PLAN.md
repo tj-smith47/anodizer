@@ -1,6 +1,8 @@
 # Anodize — Unified Plan
 
-> **For agentic workers:** Use superpowers:subagent-driven-development to implement each session's tasks in parallel where possible. Each session is designed for one conversation. Sessions are sequential — complete Session N before starting Session N+1. **Run a superpowers:code-reviewer agent between each task** to verify the work before moving on.
+> **For agentic workers:** Use superpowers:subagent-driven-development to implement each session's tasks. Each session is designed for one conversation. Sessions are sequential — complete Session N before starting Session N+1.
+>
+> **Review protocol:** After every task, run both a spec compliance review and a code quality review in parallel. No finding is too small — every issue must be fixed before moving to the next task. If the task spec is not detailed enough to review against, expand the spec first, then review against the expanded version. This is non-negotiable.
 
 **Status:** Core implementation complete (138 tests, 0 clippy warnings, ~8k LOC). Gap analysis done. Ready for parity push.
 
