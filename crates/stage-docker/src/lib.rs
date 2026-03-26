@@ -33,14 +33,16 @@ pub fn platform_to_arch(platform: &str) -> &str {
 ///   context (already contains the Dockerfile and binaries).
 /// * `platforms` – Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
 /// * `tags` – fully-qualified image tags.
-/// * `dry_run` – when `true`, uses `--load` (single-platform, local) instead
-///   of `--push`.
+/// * `extra_flags` – rendered `build_flag_templates`.
+/// * `push` – when `true`, adds `--push` to the command.
+/// * `push_flags` – additional flags added to the command when pushing.
 pub fn build_docker_command(
     staging_dir: &str,
     platforms: &[&str],
     tags: &[&str],
     extra_flags: &[String],
-    dry_run: bool,
+    push: bool,
+    push_flags: &[String],
 ) -> Vec<String> {
     let mut cmd: Vec<String> = vec![
         "docker".to_string(),
@@ -63,10 +65,14 @@ pub fn build_docker_command(
         cmd.push(flag.clone());
     }
 
-    // --push in live mode; omit both --push and --load in dry-run
-    // (--load is incompatible with multi-platform builds)
-    if !dry_run {
+    // --push in live mode (unless skip_push); omit both --push and --load in
+    // dry-run (--load is incompatible with multi-platform builds)
+    if push {
         cmd.push("--push".to_string());
+        // Additional push flags
+        for flag in push_flags {
+            cmd.push(flag.clone());
+        }
     }
 
     // Build context directory (positional, last argument)
@@ -250,6 +256,40 @@ impl Stage for DockerStage {
                 }
 
                 // ------------------------------------------------------------------
+                // Copy extra_files into staging directory
+                // ------------------------------------------------------------------
+                if let Some(ref extra_files) = docker_cfg.extra_files {
+                    for file_path in extra_files {
+                        let src = PathBuf::from(file_path);
+                        let file_name = src
+                            .file_name()
+                            .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
+                        let dest = staging_dir.join(file_name);
+
+                        if dry_run {
+                            eprintln!(
+                                "[docker] (dry-run) would copy extra file {} → {}",
+                                src.display(),
+                                dest.display()
+                            );
+                        } else {
+                            eprintln!(
+                                "[docker] copying extra file {} → {}",
+                                src.display(),
+                                dest.display()
+                            );
+                            fs::copy(&src, &dest).with_context(|| {
+                                format!(
+                                    "docker: copy extra file {} to {}",
+                                    src.display(),
+                                    dest.display()
+                                )
+                            })?;
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------------------
                 // Render image tag templates
                 // ------------------------------------------------------------------
                 let mut rendered_tags: Vec<String> = Vec::new();
@@ -283,12 +323,20 @@ impl Stage for DockerStage {
                     }
                 }
 
+                // Determine whether to push
+                let skip_push = docker_cfg.skip_push.unwrap_or(false);
+                let should_push = !dry_run && !skip_push;
+
+                // Collect push_flags
+                let push_flags = docker_cfg.push_flags.clone().unwrap_or_default();
+
                 let cmd_args = build_docker_command(
                     &staging_str,
                     &platform_refs,
                     &tag_refs,
                     &extra_flags,
-                    dry_run,
+                    should_push,
+                    &push_flags,
                 );
 
                 if dry_run {
@@ -366,7 +414,8 @@ mod tests {
             &["linux/amd64", "linux/arm64"],
             &["ghcr.io/owner/app:v1.0.0", "ghcr.io/owner/app:latest"],
             &[],
-            false,
+            true,
+            &[],
         );
         assert!(cmd.contains(&"buildx".to_string()));
         assert!(cmd.contains(&"build".to_string()));
@@ -382,9 +431,10 @@ mod tests {
             &["linux/amd64"],
             &["ghcr.io/owner/app:v1.0.0"],
             &[],
-            true,
+            false,
+            &[],
         );
-        // In dry-run, neither --push nor --load (--load incompatible with multi-platform)
+        // When push=false, neither --push nor --load
         assert!(!cmd.contains(&"--push".to_string()));
     }
 
@@ -412,7 +462,8 @@ mod tests {
             &["linux/amd64"],
             &["my-image:latest"],
             &[],
-            false,
+            true,
+            &[],
         );
         assert_eq!(cmd[0], "docker");
         assert_eq!(cmd[1], "buildx");
@@ -428,7 +479,8 @@ mod tests {
             &["linux/amd64", "linux/arm64"],
             &["repo/img:v1.0.0", "repo/img:latest"],
             &[],
-            false,
+            true,
+            &[],
         );
         // Both tags should appear after --tag flags
         let tag_positions: Vec<usize> = cmd
@@ -471,6 +523,9 @@ mod tests {
             ]),
             binaries: None,
             build_flag_templates: None,
+            skip_push: None,
+            extra_files: None,
+            push_flags: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -530,5 +585,247 @@ mod tests {
             .collect();
         assert!(tags.contains(&"ghcr.io/owner/myapp:v1.0.0"));
         assert!(tags.contains(&"ghcr.io/owner/myapp:latest"));
+    }
+
+    // ------------------------------------------------------------------
+    // New tests for skip_push, extra_files, push_flags
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_docker_config_parses_new_fields() {
+        let yaml = r#"
+image_templates:
+  - "ghcr.io/owner/app:latest"
+dockerfile: Dockerfile
+skip_push: true
+extra_files:
+  - "config.yaml"
+  - "scripts/init.sh"
+push_flags:
+  - "--cache-to=type=registry,ref=ghcr.io/owner/app:cache"
+  - "--provenance=true"
+"#;
+        let cfg: anodize_core::config::DockerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.skip_push, Some(true));
+        let extra = cfg.extra_files.unwrap();
+        assert_eq!(extra.len(), 2);
+        assert_eq!(extra[0], "config.yaml");
+        assert_eq!(extra[1], "scripts/init.sh");
+        let pf = cfg.push_flags.unwrap();
+        assert_eq!(pf.len(), 2);
+        assert_eq!(pf[0], "--cache-to=type=registry,ref=ghcr.io/owner/app:cache");
+        assert_eq!(pf[1], "--provenance=true");
+    }
+
+    #[test]
+    fn test_build_docker_command_skip_push() {
+        // When push=false (i.e. skip_push is true or dry_run), --push should not appear
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            false,
+            &[],
+        );
+        assert!(!cmd.contains(&"--push".to_string()));
+
+        // When push=true, --push should appear
+        let cmd_push = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true,
+            &[],
+        );
+        assert!(cmd_push.contains(&"--push".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_command_push_flags() {
+        let push_flags = vec![
+            "--cache-to=type=registry,ref=ghcr.io/owner/app:cache".to_string(),
+            "--provenance=true".to_string(),
+        ];
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true,
+            &push_flags,
+        );
+        assert!(cmd.contains(&"--push".to_string()));
+        assert!(cmd.contains(&"--cache-to=type=registry,ref=ghcr.io/owner/app:cache".to_string()));
+        assert!(cmd.contains(&"--provenance=true".to_string()));
+
+        // push_flags should NOT appear when push=false
+        let cmd_no_push = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            false,
+            &push_flags,
+        );
+        assert!(!cmd_no_push.contains(&"--push".to_string()));
+        assert!(!cmd_no_push.contains(&"--provenance=true".to_string()));
+    }
+
+    #[test]
+    fn test_extra_files_copied_to_staging_dry_run() {
+        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::artifact::ArtifactKind;
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create fake Dockerfile
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\nCOPY . /\n").unwrap();
+
+        // Create fake extra files
+        let extra1 = tmp.path().join("config.yaml");
+        let extra2 = tmp.path().join("init.sh");
+        fs::write(&extra1, b"key: value").unwrap();
+        fs::write(&extra2, b"#!/bin/bash\necho hello").unwrap();
+
+        let docker_cfg = DockerConfig {
+            image_templates: vec!["ghcr.io/owner/myapp:latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            binaries: None,
+            build_flag_templates: None,
+            skip_push: Some(true),
+            extra_files: Some(vec![
+                extra1.to_string_lossy().into_owned(),
+                extra2.to_string_lossy().into_owned(),
+            ]),
+            push_flags: None,
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![docker_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let stage = DockerStage;
+        // dry-run should succeed without actually copying files
+        stage.run(&mut ctx).unwrap();
+
+        // In dry-run mode, files are not actually copied, but the stage should
+        // complete successfully and register artifacts
+        let docker_images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        assert_eq!(docker_images.len(), 1);
+    }
+
+    #[test]
+    fn test_extra_files_copied_to_staging_live() {
+        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create fake Dockerfile
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\nCOPY . /\n").unwrap();
+
+        // Create fake extra files
+        let extra1 = tmp.path().join("config.yaml");
+        let extra2 = tmp.path().join("init.sh");
+        fs::write(&extra1, b"key: value").unwrap();
+        fs::write(&extra2, b"#!/bin/bash\necho hello").unwrap();
+
+        let docker_cfg = DockerConfig {
+            image_templates: vec!["ghcr.io/owner/myapp:latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            binaries: None,
+            build_flag_templates: None,
+            skip_push: Some(true), // skip push so we don't actually run docker
+            extra_files: Some(vec![
+                extra1.to_string_lossy().into_owned(),
+                extra2.to_string_lossy().into_owned(),
+            ]),
+            push_flags: None,
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![docker_cfg]),
+            ..Default::default()
+        };
+
+        let dist = tmp.path().join("dist");
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        // The stage will fail at the docker buildx command (docker not available),
+        // but we can verify the staging directory was set up correctly.
+        let _result = stage_setup_only(&mut ctx);
+
+        // Verify the staging directory was created with extra files
+        let staging_dir = dist.join("docker").join("myapp").join("0");
+        // The Dockerfile should be copied
+        assert!(staging_dir.join("Dockerfile").exists());
+        // Extra files should be copied
+        assert!(staging_dir.join("config.yaml").exists());
+        assert!(staging_dir.join("init.sh").exists());
+        // Verify content
+        assert_eq!(fs::read_to_string(staging_dir.join("config.yaml")).unwrap(), "key: value");
+        assert_eq!(fs::read_to_string(staging_dir.join("init.sh")).unwrap(), "#!/bin/bash\necho hello");
+    }
+
+    /// Helper: runs the docker stage but catches the expected docker-not-found error.
+    /// This lets us verify the staging directory setup without requiring docker.
+    fn stage_setup_only(ctx: &mut Context) -> Result<()> {
+        let stage = DockerStage;
+        stage.run(ctx)
+    }
+
+    #[test]
+    fn test_docker_config_new_fields_default_to_none() {
+        let yaml = r#"
+image_templates:
+  - "ghcr.io/owner/app:latest"
+dockerfile: Dockerfile
+"#;
+        let cfg: anodize_core::config::DockerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.skip_push, None);
+        assert_eq!(cfg.extra_files, None);
+        assert_eq!(cfg.push_flags, None);
     }
 }

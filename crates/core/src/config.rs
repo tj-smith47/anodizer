@@ -446,6 +446,9 @@ pub struct DockerConfig {
     pub platforms: Option<Vec<String>>,
     pub binaries: Option<Vec<String>>,
     pub build_flag_templates: Option<Vec<String>>,
+    pub skip_push: Option<bool>,
+    pub extra_files: Option<Vec<String>>,
+    pub push_flags: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------

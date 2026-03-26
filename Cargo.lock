@@ -124,6 +124,7 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+ "serde_yaml",
  "tempfile",
 ]
 
