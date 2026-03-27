@@ -21,6 +21,7 @@ fn create_source_archive(
     format: &str,
     prefix: &str,
     extra_files: &[String],
+    repo_root: &Path,
 ) -> Result<PathBuf> {
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
@@ -32,19 +33,21 @@ fn create_source_archive(
     let output_path = dist.join(&filename);
 
     let mut cmd = Command::new("git");
+    cmd.current_dir(repo_root);
     cmd.arg("archive")
         .arg("--format")
         .arg(git_format)
         .arg(format!("--prefix={}/", prefix))
         .arg("--output")
-        .arg(&output_path)
-        .arg("HEAD");
+        .arg(&output_path);
 
-    // Add extra files if specified
+    // Add extra files if specified (must come before HEAD)
     // Note: git archive --add-file is available in Git 2.25+
     for file in extra_files {
         cmd.arg("--add-file").arg(file);
     }
+
+    cmd.arg("HEAD");
 
     let output = cmd
         .output()
@@ -56,6 +59,22 @@ fn create_source_archive(
     }
 
     Ok(output_path)
+}
+
+/// Determine the repository root via `git rev-parse --show-toplevel`.
+fn get_repo_root() -> Result<PathBuf> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("source: failed to run 'git rev-parse --show-toplevel'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("source: failed to determine repo root: {}", stderr.trim());
+    }
+
+    let root = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok(PathBuf::from(root))
 }
 
 // ---------------------------------------------------------------------------
@@ -144,12 +163,15 @@ pub fn generate_cyclonedx(
                 "name": project_name,
                 "version": version,
             },
-            "tools": [
-                {
-                    "vendor": "anodize",
-                    "name": "anodize",
-                }
-            ]
+            "tools": {
+                "components": [
+                    {
+                        "type": "application",
+                        "name": "anodize",
+                        "publisher": "anodize",
+                    }
+                ]
+            }
         },
         "components": components,
     });
@@ -242,12 +264,19 @@ pub fn generate_spdx(
     Ok(sbom)
 }
 
-/// Simple UUID v4 generation without pulling in a uuid crate.
-/// Uses random data from the timestamp and process ID for uniqueness.
+/// Simple UUID v4-shaped generation without pulling in a uuid crate.
+///
+/// Produces a deterministic hash-based identifier derived from the current
+/// timestamp, process ID, and a monotonic counter. The counter ensures that
+/// consecutive calls within the same nanosecond produce different values.
+/// **Not cryptographically random** — suitable only for document namespaces.
 fn uuid_v4_simple() -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::SystemTime;
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
 
     let mut hasher = DefaultHasher::new();
     SystemTime::now()
@@ -256,6 +285,7 @@ fn uuid_v4_simple() -> String {
         .as_nanos()
         .hash(&mut hasher);
     std::process::id().hash(&mut hasher);
+    COUNTER.fetch_add(1, Ordering::Relaxed).hash(&mut hasher);
     let h1 = hasher.finish();
 
     // Hash again with a different seed for more bits
@@ -340,7 +370,7 @@ impl SourceStage {
 
         let prefix = if let Some(ref tpl) = source_cfg.name_template {
             ctx.render_template(tpl)
-                .unwrap_or_else(|_| format!("{}-{}", project_name, version))
+                .with_context(|| format!("source: failed to render name_template '{}'", tpl))?
         } else {
             format!("{}-{}", project_name, version)
         };
@@ -357,7 +387,8 @@ impl SourceStage {
 
         eprintln!("  source: creating {}.{} archive...", prefix, format);
 
-        let output_path = create_source_archive(dist, &format, &prefix, &extra_files)?;
+        let repo_root = get_repo_root()?;
+        let output_path = create_source_archive(dist, &format, &prefix, &extra_files, &repo_root)?;
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format);
@@ -392,8 +423,10 @@ impl SourceStage {
             return Ok(());
         }
 
-        // Find Cargo.lock
-        let cargo_lock_path = find_cargo_lock()?;
+        // Find Cargo.lock starting from repo root (or CWD as fallback)
+        let search_dir = get_repo_root()
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let cargo_lock_path = find_cargo_lock(&search_dir)?;
         let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path)
             .with_context(|| {
                 format!(
@@ -448,9 +481,9 @@ impl SourceStage {
     }
 }
 
-/// Search for Cargo.lock in the current directory and parent directories.
-fn find_cargo_lock() -> Result<PathBuf> {
-    let mut dir = std::env::current_dir().context("sbom: failed to get current directory")?;
+/// Search for Cargo.lock starting from `start_dir` and walking up parent directories.
+fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
+    let mut dir = start_dir.to_path_buf();
     loop {
         let candidate = dir.join("Cargo.lock");
         if candidate.exists() {
@@ -460,7 +493,10 @@ fn find_cargo_lock() -> Result<PathBuf> {
             break;
         }
     }
-    bail!("sbom: Cargo.lock not found in current directory or any parent directory")
+    bail!(
+        "sbom: Cargo.lock not found starting from '{}' or any parent directory",
+        start_dir.display()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,6 +1188,77 @@ dependencies = [
         assert!(
             pkg.get("externalRefs").is_some(),
             "missing package externalRefs"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SourceStage integration test (runs through the Stage interface)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_source_stage_run_creates_archive_in_git_repo() {
+        use anodize_core::config::SourceConfig;
+        use anodize_core::stage::Stage;
+        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        // Create a test project and git repo
+        create_test_project(tmp.path());
+        // Write a Cargo.lock so SBOM can also find it (not needed for this test
+        // but keeps the fixture realistic)
+        std::fs::write(
+            tmp.path().join("Cargo.lock"),
+            "version = 4\n",
+        )
+        .unwrap();
+        init_git_repo(tmp.path());
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test-project")
+            .source(SourceConfig {
+                enabled: Some(true),
+                format: Some("tar.gz".to_string()),
+                name_template: None,
+                files: None,
+            })
+            .dist(dist.clone())
+            .build();
+
+        // Run from the temp dir so git commands find the repo
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let stage = SourceStage;
+        let result = stage.run(&mut ctx);
+
+        // Restore CWD before asserting (so failures don't leave CWD wrong)
+        std::env::set_current_dir(&orig_dir).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "SourceStage.run() should succeed: {:?}",
+            result.err()
+        );
+
+        // Should have produced exactly one source archive artifact
+        let artifacts = ctx.artifacts.all();
+        assert_eq!(
+            artifacts.len(),
+            1,
+            "expected 1 artifact, got {}",
+            artifacts.len()
+        );
+        assert_eq!(artifacts[0].kind, ArtifactKind::SourceArchive);
+        assert!(
+            artifacts[0].path.exists(),
+            "archive file should exist at {:?}",
+            artifacts[0].path
+        );
+        assert!(
+            std::fs::metadata(&artifacts[0].path).unwrap().len() > 0,
+            "archive file should not be empty"
         );
     }
 }

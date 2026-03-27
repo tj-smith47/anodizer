@@ -318,6 +318,34 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         }
     }
 
+    // 12. Validate source.format
+    if let Some(ref source) = config.source
+        && let Some(ref fmt) = source.format
+    {
+        let valid_source_formats = ["tar.gz", "zip"];
+        if !valid_source_formats.contains(&fmt.as_str()) {
+            errors.push(format!(
+                "source: unrecognized format '{}' (valid: {})",
+                fmt,
+                valid_source_formats.join(", ")
+            ));
+        }
+    }
+
+    // 13. Validate sbom.format
+    if let Some(ref sbom) = config.sbom
+        && let Some(ref fmt) = sbom.format
+    {
+        let valid_sbom_formats = ["cyclonedx", "spdx"];
+        if !valid_sbom_formats.contains(&fmt.as_str()) {
+            errors.push(format!(
+                "sbom: unrecognized format '{}' (valid: {})",
+                fmt,
+                valid_sbom_formats.join(", ")
+            ));
+        }
+    }
+
     // ------------------------------------------------------------------
     // Environment checks (warnings only)
     // ------------------------------------------------------------------
@@ -969,5 +997,73 @@ mod tests {
             run_checks(&config, false).is_ok(),
             "valid depends_on within workspace should pass"
         );
+    }
+
+    // ---- Source/SBOM format validation tests ----
+
+    #[test]
+    fn test_invalid_source_format_fails() {
+        use anodize_core::config::SourceConfig;
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.source = Some(SourceConfig {
+            enabled: Some(true),
+            format: Some("tar.bz2".to_string()),
+            name_template: None,
+            files: None,
+        });
+        let result = run_checks(&config, false);
+        assert!(result.is_err(), "invalid source format should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("validation failed"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_valid_source_formats_pass() {
+        use anodize_core::config::SourceConfig;
+        for fmt in &["tar.gz", "zip"] {
+            let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+            config.source = Some(SourceConfig {
+                enabled: Some(true),
+                format: Some(fmt.to_string()),
+                name_template: None,
+                files: None,
+            });
+            assert!(
+                run_checks(&config, false).is_ok(),
+                "source format '{}' should pass",
+                fmt
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_sbom_format_fails() {
+        use anodize_core::config::SbomConfig;
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.sbom = Some(SbomConfig {
+            enabled: Some(true),
+            format: Some("invalid".to_string()),
+        });
+        let result = run_checks(&config, false);
+        assert!(result.is_err(), "invalid sbom format should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("validation failed"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_valid_sbom_formats_pass() {
+        use anodize_core::config::SbomConfig;
+        for fmt in &["cyclonedx", "spdx"] {
+            let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+            config.sbom = Some(SbomConfig {
+                enabled: Some(true),
+                format: Some(fmt.to_string()),
+            });
+            assert!(
+                run_checks(&config, false).is_ok(),
+                "sbom format '{}' should pass",
+                fmt
+            );
+        }
     }
 }

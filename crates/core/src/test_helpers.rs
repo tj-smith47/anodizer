@@ -69,6 +69,8 @@ pub struct TestContextBuilder {
     dist: Option<PathBuf>,
     signs: Vec<SignConfig>,
     defaults: Option<Defaults>,
+    source: Option<crate::config::SourceConfig>,
+    sbom: Option<crate::config::SbomConfig>,
 }
 
 impl Default for TestContextBuilder {
@@ -103,6 +105,8 @@ impl Default for TestContextBuilder {
             dist: None,
             signs: Vec::new(),
             defaults: None,
+            source: None,
+            sbom: None,
         }
     }
 }
@@ -245,6 +249,18 @@ impl TestContextBuilder {
         self
     }
 
+    /// Set source archive configuration.
+    pub fn source(mut self, source: crate::config::SourceConfig) -> Self {
+        self.source = Some(source);
+        self
+    }
+
+    /// Set SBOM configuration.
+    pub fn sbom(mut self, sbom: crate::config::SbomConfig) -> Self {
+        self.sbom = Some(sbom);
+        self
+    }
+
     /// Build the [`Context`] with the configured values.
     #[allow(clippy::field_reassign_with_default)]
     pub fn build(self) -> Context {
@@ -253,6 +269,8 @@ impl TestContextBuilder {
         config.crates = self.crates;
         config.signs = self.signs;
         config.defaults = self.defaults;
+        config.source = self.source;
+        config.sbom = self.sbom;
         if let Some(dist) = self.dist {
             config.dist = dist;
         }
