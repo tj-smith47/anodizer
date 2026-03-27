@@ -6,7 +6,6 @@ publish = false
 
 [dependencies]
 anodize = { path = "../cli" }
-anodize-core = { path = "../core" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 tera.workspace = true

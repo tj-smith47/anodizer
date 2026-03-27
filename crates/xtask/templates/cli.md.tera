@@ -18,17 +18,17 @@ template = "docs.html"
 {% endfor %}
 
 ## Commands
-
 {% for cmd in commands %}
+
 ### `anodize {{ cmd.name }}`
 
 {{ cmd.about }}
+{% if cmd.args | length > 0 %}
 
-{% if cmd.args | length > 0 -%}
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 {% for arg in cmd.args -%}
 | {{ arg.long }} | {{ arg.short }} | {{ arg.default }} | {{ arg.help }} |
-{% endfor %}
-{% endif %}
+{% endfor -%}
+{% endif -%}
 {% endfor %}

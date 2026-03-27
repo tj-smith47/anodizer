@@ -25,6 +25,7 @@ Release Rust projects with ease
 
 Run the full release pipeline
 
+
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — |  |
@@ -44,10 +45,10 @@ Run the full release pipeline
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
 
 
-
 ### `anodize build`
 
 Build binaries only
+
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
@@ -58,15 +59,14 @@ Build binaries only
 | `--workspace` | — | — | Build a specific workspace in a monorepo config |
 
 
-
 ### `anodize check`
 
 Validate configuration
 
+
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--workspace` | — | — | Validate a specific workspace in a monorepo config |
-
 
 
 ### `anodize init`
@@ -74,25 +74,24 @@ Validate configuration
 Generate starter config
 
 
-
 ### `anodize changelog`
 
 Generate changelog only
+
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — |  |
 
 
-
 ### `anodize completion`
 
 Generate shell completions
 
+
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `<shell>` | — | — | Shell to generate completions for |
-
 
 
 ### `anodize healthcheck`
@@ -100,10 +99,10 @@ Generate shell completions
 Check availability of required external tools
 
 
-
 ### `anodize tag`
 
 Auto-tag based on commit message directives
+
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
@@ -111,6 +110,4 @@ Auto-tag based on commit message directives
 | `--custom-tag` | — | — | Override bump logic with a specific tag value |
 | `--default-bump` | — | — | Override default bump type (patch/minor/major) |
 | `--crate` | — | — | Tag a specific crate in a workspace |
-
-
 

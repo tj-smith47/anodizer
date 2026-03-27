@@ -17,7 +17,7 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `dist` | string | `./dist` | Output directory for artifacts |
 | `includes` | list | none | Config files to merge (coming soon) |
 | `env` | map | none | Environment variables for templates and commands |
-| `report_sizes` | bool | `false` | Print artifact sizes after build |
+| `report_sizes` | bool | none | Print artifact sizes after build |
 | `crates` | list | `[]` | Crate configurations (see below) |
 | `defaults` | object | none | Default build/archive/checksum settings |
 | `changelog` | object | none | Changelog generation settings |
@@ -30,6 +30,7 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `tag` | object | none | Auto-tagging configuration |
 | `before` | object | none | Pre-pipeline hooks |
 | `after` | object | none | Post-pipeline hooks |
+| `workspaces` | list | none | Monorepo workspace definitions |
 
 
 For detailed field documentation, see the individual section pages:

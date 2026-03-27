@@ -83,14 +83,21 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
     let global_args: Vec<ArgInfo> = cmd
         .get_arguments()
         .filter(|a| a.is_global_set())
-        .map(|a| ArgInfo {
-            long: a.get_long().map(|l| format!("`--{l}`")).unwrap_or_default(),
-            short: a
-                .get_short()
-                .map(|s| format!("`-{s}`"))
-                .unwrap_or_else(|| "\u{2014}".into()),
-            default: "\u{2014}".into(),
-            help: a.get_help().map(|h| h.to_string()).unwrap_or_default(),
+        .map(|a| {
+            if a.get_help().is_none() {
+                if let Some(long) = a.get_long() {
+                    eprintln!("warning: global flag --{long} has no help text");
+                }
+            }
+            ArgInfo {
+                long: a.get_long().map(|l| format!("`--{l}`")).unwrap_or_default(),
+                short: a
+                    .get_short()
+                    .map(|s| format!("`-{s}`"))
+                    .unwrap_or_else(|| "\u{2014}".into()),
+                default: "\u{2014}".into(),
+                help: a.get_help().map(|h| h.to_string()).unwrap_or_default(),
+            }
         })
         .collect();
 
@@ -102,21 +109,27 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
                 .filter(|a| {
                     !a.is_global_set() && a.get_id() != "help" && a.get_id() != "version"
                 })
-                .map(|a| ArgInfo {
-                    long: a
-                        .get_long()
-                        .map(|l| format!("`--{l}`"))
-                        .unwrap_or_else(|| format!("`<{}>`", a.get_id())),
-                    short: a
-                        .get_short()
-                        .map(|s| format!("`-{s}`"))
-                        .unwrap_or_else(|| "\u{2014}".into()),
-                    default: a
-                        .get_default_values()
-                        .first()
-                        .map(|d| format!("`{}`", d.to_string_lossy()))
-                        .unwrap_or_else(|| "\u{2014}".into()),
-                    help: a.get_help().map(|h| h.to_string()).unwrap_or_default(),
+                .map(|a| {
+                    if a.get_help().is_none() {
+                        let flag = a.get_long().unwrap_or_else(|| a.get_id().as_str());
+                        eprintln!("warning: {}.--{flag} has no help text", sub.get_name());
+                    }
+                    ArgInfo {
+                        long: a
+                            .get_long()
+                            .map(|l| format!("`--{l}`"))
+                            .unwrap_or_else(|| format!("`<{}>`", a.get_id())),
+                        short: a
+                            .get_short()
+                            .map(|s| format!("`-{s}`"))
+                            .unwrap_or_else(|| "\u{2014}".into()),
+                        default: a
+                            .get_default_values()
+                            .first()
+                            .map(|d| format!("`{}`", d.to_string_lossy()))
+                            .unwrap_or_else(|| "\u{2014}".into()),
+                        help: a.get_help().map(|h| h.to_string()).unwrap_or_default(),
+                    }
                 })
                 .collect();
             CmdInfo {
@@ -165,7 +178,7 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
         ConfigField { name: "dist".into(), field_type: "string".into(), default: "`./dist`".into(), description: "Output directory for artifacts".into() },
         ConfigField { name: "includes".into(), field_type: "list".into(), default: "none".into(), description: "Config files to merge (coming soon)".into() },
         ConfigField { name: "env".into(), field_type: "map".into(), default: "none".into(), description: "Environment variables for templates and commands".into() },
-        ConfigField { name: "report_sizes".into(), field_type: "bool".into(), default: "`false`".into(), description: "Print artifact sizes after build".into() },
+        ConfigField { name: "report_sizes".into(), field_type: "bool".into(), default: "none".into(), description: "Print artifact sizes after build".into() },
         ConfigField { name: "crates".into(), field_type: "list".into(), default: "`[]`".into(), description: "Crate configurations (see below)".into() },
         ConfigField { name: "defaults".into(), field_type: "object".into(), default: "none".into(), description: "Default build/archive/checksum settings".into() },
         ConfigField { name: "changelog".into(), field_type: "object".into(), default: "none".into(), description: "Changelog generation settings".into() },
@@ -178,6 +191,7 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
         ConfigField { name: "tag".into(), field_type: "object".into(), default: "none".into(), description: "Auto-tagging configuration".into() },
         ConfigField { name: "before".into(), field_type: "object".into(), default: "none".into(), description: "Pre-pipeline hooks".into() },
         ConfigField { name: "after".into(), field_type: "object".into(), default: "none".into(), description: "Post-pipeline hooks".into() },
+        ConfigField { name: "workspaces".into(), field_type: "list".into(), default: "none".into(), description: "Monorepo workspace definitions".into() },
     ];
 
     let section_links = vec![
