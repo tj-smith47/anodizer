@@ -64,6 +64,8 @@ enum Commands {
             help = "Path to a custom release notes file (overrides changelog)"
         )]
         release_notes: Option<PathBuf>,
+        #[arg(long, help = "Release a specific workspace in a monorepo config")]
+        workspace: Option<String>,
     },
     /// Build binaries only
     Build {
@@ -187,6 +189,7 @@ fn main() {
             auto_snapshot,
             single_target,
             release_notes,
+            workspace,
         } => {
             let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
                 eprintln!(
@@ -228,6 +231,7 @@ fn main() {
                     parallelism,
                     single_target: resolved_single_target,
                     release_notes,
+                    workspace,
                 })
             })
         }
@@ -557,6 +561,50 @@ mod tests {
         assert!(
             release_help.contains("--nightly"),
             "release help should mention --nightly flag, got: {}",
+            release_help
+        );
+    }
+
+    #[test]
+    fn test_cli_parses_release_workspace_flag() {
+        let cli =
+            Cli::try_parse_from(["anodize", "release", "--workspace", "frontend"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse release --workspace: {:?}",
+            cli.err()
+        );
+        if let Commands::Release { workspace, .. } = cli.unwrap().command {
+            assert_eq!(workspace, Some("frontend".to_string()));
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_release_workspace_defaults_none() {
+        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        if let Commands::Release { workspace, .. } = cli.command {
+            assert!(
+                workspace.is_none(),
+                "--workspace should default to None"
+            );
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_help_output_contains_workspace_flag() {
+        let mut cmd = Cli::command();
+        let release_help = cmd
+            .find_subcommand_mut("release")
+            .expect("release subcommand should exist")
+            .render_help()
+            .to_string();
+        assert!(
+            release_help.contains("--workspace"),
+            "release help should mention --workspace flag, got: {}",
             release_help
         );
     }

@@ -22,6 +22,44 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
 
     let crate_names: HashSet<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
 
+    // 0a. Workspace names must be unique and non-empty
+    if let Some(ref workspaces) = config.workspaces {
+        let mut seen_names: HashSet<&str> = HashSet::new();
+        for (i, ws) in workspaces.iter().enumerate() {
+            if ws.name.trim().is_empty() {
+                errors.push(format!("workspace at index {}: name must not be empty", i));
+            } else if !seen_names.insert(ws.name.as_str()) {
+                errors.push(format!("duplicate workspace name '{}'", ws.name));
+            }
+        }
+
+        // Validate workspace crate names are non-empty
+        for ws in workspaces {
+            for (i, c) in ws.crates.iter().enumerate() {
+                if c.name.trim().is_empty() {
+                    errors.push(format!(
+                        "workspace '{}': crate at index {}: name must not be empty",
+                        ws.name, i
+                    ));
+                }
+            }
+            // Validate tag_template in workspace crates
+            for c in &ws.crates {
+                if !c.tag_template.is_empty()
+                    && !c.tag_template.contains("{{ .Version }}")
+                    && !c.tag_template.contains("{{.Version}}")
+                    && !c.tag_template.contains("{{ Version }}")
+                    && !c.tag_template.contains("{{Version}}")
+                {
+                    errors.push(format!(
+                        "workspace '{}': crate '{}': tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}'",
+                        ws.name, c.name, c.tag_template
+                    ));
+                }
+            }
+        }
+    }
+
     // 0. Crate names must not be empty
     for (i, c) in config.crates.iter().enumerate() {
         if c.name.trim().is_empty() {
@@ -730,6 +768,98 @@ mod tests {
         });
         let config = make_config(vec![c]);
         // Should pass (warnings only, not errors)
+        assert!(run_checks(&config, false).is_ok());
+    }
+
+    // ---- Workspace validation tests ----
+
+    #[test]
+    fn test_workspace_names_unique_passes() {
+        use anodize_core::config::WorkspaceConfig;
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![
+            WorkspaceConfig {
+                name: "frontend".to_string(),
+                crates: vec![make_crate("fe", "fe-v{{ .Version }}", None)],
+                ..Default::default()
+            },
+            WorkspaceConfig {
+                name: "backend".to_string(),
+                crates: vec![make_crate("be", "be-v{{ .Version }}", None)],
+                ..Default::default()
+            },
+        ]);
+        assert!(run_checks(&config, false).is_ok());
+    }
+
+    #[test]
+    fn test_workspace_duplicate_name_fails() {
+        use anodize_core::config::WorkspaceConfig;
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![
+            WorkspaceConfig {
+                name: "dup".to_string(),
+                crates: vec![make_crate("x", "x-v{{ .Version }}", None)],
+                ..Default::default()
+            },
+            WorkspaceConfig {
+                name: "dup".to_string(),
+                crates: vec![make_crate("y", "y-v{{ .Version }}", None)],
+                ..Default::default()
+            },
+        ]);
+        let result = run_checks(&config, false);
+        assert!(result.is_err(), "duplicate workspace names should fail");
+    }
+
+    #[test]
+    fn test_workspace_empty_name_fails() {
+        use anodize_core::config::WorkspaceConfig;
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "".to_string(),
+            crates: vec![make_crate("x", "x-v{{ .Version }}", None)],
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false);
+        assert!(result.is_err(), "empty workspace name should fail");
+    }
+
+    #[test]
+    fn test_workspace_crate_empty_name_fails() {
+        use anodize_core::config::WorkspaceConfig;
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws1".to_string(),
+            crates: vec![make_crate("", "v{{ .Version }}", None)],
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false);
+        assert!(
+            result.is_err(),
+            "empty crate name in workspace should fail"
+        );
+    }
+
+    #[test]
+    fn test_workspace_crate_bad_tag_template_fails() {
+        use anodize_core::config::WorkspaceConfig;
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws1".to_string(),
+            crates: vec![make_crate("x", "no-version-here", None)],
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false);
+        assert!(
+            result.is_err(),
+            "bad tag_template in workspace crate should fail"
+        );
+    }
+
+    #[test]
+    fn test_no_workspaces_passes() {
+        let config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         assert!(run_checks(&config, false).is_ok());
     }
 }

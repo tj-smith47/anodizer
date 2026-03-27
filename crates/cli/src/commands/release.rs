@@ -1,11 +1,12 @@
 use crate::pipeline;
 use anodize_core::artifact;
-use anodize_core::config::{CrateConfig, GitHubConfig};
+use anodize_core::config::{Config, CrateConfig, GitHubConfig, WorkspaceConfig};
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::git;
 use anodize_core::template;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub struct ReleaseOpts {
@@ -24,6 +25,7 @@ pub struct ReleaseOpts {
     pub parallelism: usize,
     pub single_target: Option<String>,
     pub release_notes: Option<PathBuf>,
+    pub workspace: Option<String>,
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
@@ -33,6 +35,31 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     let mut config =
         pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
+
+    // If --workspace is specified, resolve the workspace and overlay its config
+    // onto the top-level config (replacing crates, changelog, signs, etc.).
+    if let Some(ref ws_name) = opts.workspace {
+        let ws = resolve_workspace(&config, ws_name)?.clone();
+        config.crates = ws.crates;
+        if ws.changelog.is_some() {
+            config.changelog = ws.changelog;
+        }
+        if !ws.signs.is_empty() {
+            config.signs = ws.signs;
+        }
+        if ws.before.is_some() {
+            config.before = ws.before;
+        }
+        if ws.after.is_some() {
+            config.after = ws.after;
+        }
+        if let Some(env_map) = ws.env {
+            let merged = config.env.get_or_insert_with(HashMap::new);
+            for (k, v) in env_map {
+                merged.insert(k, v);
+            }
+        }
+    }
 
     // Auto-detect GitHub owner/name from git remote when release config is
     // present but the `github` section is omitted. Detect once and reuse.
@@ -310,6 +337,27 @@ fn check_workspace_files_changed(tag: &str) -> Result<bool> {
     }
 }
 
+/// Resolve a workspace by name from the config. Returns an error if
+/// `workspaces` is not configured or the given name is not found.
+fn resolve_workspace<'a>(config: &'a Config, name: &str) -> Result<&'a WorkspaceConfig> {
+    let workspaces = config
+        .workspaces
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--workspace specified but no workspaces defined in config"))?;
+
+    workspaces
+        .iter()
+        .find(|ws| ws.name == name)
+        .ok_or_else(|| {
+            let available: Vec<&str> = workspaces.iter().map(|ws| ws.name.as_str()).collect();
+            anyhow::anyhow!(
+                "workspace '{}' not found (available: {})",
+                name,
+                available.join(", ")
+            )
+        })
+}
+
 /// Topologically sort the selected crates respecting depends_on order.
 fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<String> {
     use std::collections::{HashMap, VecDeque};
@@ -375,7 +423,7 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::CrateConfig;
+    use anodize_core::config::{CrateConfig, WorkspaceConfig};
 
     fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {
@@ -385,6 +433,72 @@ mod tests {
             depends_on: deps.map(|d| d.iter().map(|s| s.to_string()).collect()),
             ..Default::default()
         }
+    }
+
+    fn make_config_with_workspaces(workspaces: Vec<WorkspaceConfig>) -> Config {
+        Config {
+            project_name: "test".to_string(),
+            workspaces: Some(workspaces),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_resolve_workspace_found() {
+        let config = make_config_with_workspaces(vec![
+            WorkspaceConfig {
+                name: "frontend".to_string(),
+                crates: vec![make_crate("fe-app", None)],
+                ..Default::default()
+            },
+            WorkspaceConfig {
+                name: "backend".to_string(),
+                crates: vec![make_crate("be-api", None)],
+                ..Default::default()
+            },
+        ]);
+        let ws = resolve_workspace(&config, "backend").unwrap();
+        assert_eq!(ws.name, "backend");
+        assert_eq!(ws.crates.len(), 1);
+        assert_eq!(ws.crates[0].name, "be-api");
+    }
+
+    #[test]
+    fn test_resolve_workspace_not_found() {
+        let config = make_config_with_workspaces(vec![WorkspaceConfig {
+            name: "frontend".to_string(),
+            crates: vec![make_crate("fe-app", None)],
+            ..Default::default()
+        }]);
+        let result = resolve_workspace(&config, "nonexistent");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("nonexistent"),
+            "error should mention the workspace name: {}",
+            msg
+        );
+        assert!(
+            msg.contains("frontend"),
+            "error should list available workspaces: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_resolve_workspace_no_workspaces_defined() {
+        let config = Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        };
+        let result = resolve_workspace(&config, "anything");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("no workspaces defined"),
+            "error should say no workspaces defined: {}",
+            msg
+        );
     }
 
     #[test]

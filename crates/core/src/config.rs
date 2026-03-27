@@ -29,6 +29,7 @@ pub struct Config {
     pub env: Option<HashMap<String, String>>,
     pub publishers: Option<Vec<PublisherConfig>>,
     pub tag: Option<TagConfig>,
+    pub workspaces: Option<Vec<WorkspaceConfig>>,
 }
 
 fn default_dist() -> PathBuf {
@@ -55,6 +56,7 @@ impl Default for Config {
             env: None,
             publishers: None,
             tag: None,
+            workspaces: None,
         }
     }
 }
@@ -795,6 +797,40 @@ pub struct TagConfig {
     pub none_string_token: Option<String>,
     pub git_api_tagging: Option<bool>,
     pub verbose: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// WorkspaceConfig
+// ---------------------------------------------------------------------------
+
+/// A workspace represents an independent project root within a monorepo.
+/// Each workspace has its own crates, changelog, and release configuration,
+/// allowing independently-versioned components that aren't Cargo workspace members.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceConfig {
+    pub name: String,
+    pub crates: Vec<CrateConfig>,
+    pub changelog: Option<ChangelogConfig>,
+    #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
+    pub signs: Vec<SignConfig>,
+    pub before: Option<HooksConfig>,
+    pub after: Option<HooksConfig>,
+    pub env: Option<HashMap<String, String>>,
+}
+
+impl Default for WorkspaceConfig {
+    fn default() -> Self {
+        WorkspaceConfig {
+            name: String::new(),
+            crates: Vec::new(),
+            changelog: None,
+            signs: Vec::new(),
+            before: None,
+            after: None,
+            env: None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2083,6 +2119,98 @@ crates:
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         let build = &config.crates[0].builds.as_ref().unwrap()[0];
         assert_eq!(build.reproducible, None);
+    }
+
+    // ---- WorkspaceConfig tests ----
+
+    #[test]
+    fn test_workspace_config_parses() {
+        let yaml = r#"
+project_name: monorepo
+crates: []
+workspaces:
+  - name: frontend
+    crates:
+      - name: frontend-app
+        path: "apps/frontend"
+        tag_template: "frontend-v{{ .Version }}"
+    changelog:
+      sort: asc
+  - name: backend
+    crates:
+      - name: backend-api
+        path: "apps/backend"
+        tag_template: "backend-v{{ .Version }}"
+      - name: backend-worker
+        path: "apps/worker"
+        tag_template: "worker-v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let workspaces = config.workspaces.as_ref().unwrap();
+        assert_eq!(workspaces.len(), 2);
+        assert_eq!(workspaces[0].name, "frontend");
+        assert_eq!(workspaces[0].crates.len(), 1);
+        assert_eq!(workspaces[0].crates[0].name, "frontend-app");
+        assert!(workspaces[0].changelog.is_some());
+        assert_eq!(workspaces[1].name, "backend");
+        assert_eq!(workspaces[1].crates.len(), 2);
+    }
+
+    #[test]
+    fn test_workspace_config_with_signs_and_hooks() {
+        let yaml = r#"
+project_name: monorepo
+crates: []
+workspaces:
+  - name: myws
+    crates:
+      - name: mylib
+        path: "."
+        tag_template: "v{{ .Version }}"
+    signs:
+      - artifacts: all
+        cmd: gpg
+    before:
+      hooks:
+        - echo before
+    after:
+      hooks:
+        - echo after
+    env:
+      MY_VAR: hello
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let ws = &config.workspaces.as_ref().unwrap()[0];
+        assert_eq!(ws.name, "myws");
+        assert_eq!(ws.signs.len(), 1);
+        assert!(ws.before.is_some());
+        assert!(ws.after.is_some());
+        assert_eq!(ws.env.as_ref().unwrap().get("MY_VAR").unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_workspace_config_omitted() {
+        let yaml = r#"
+project_name: simple
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.workspaces.is_none());
+    }
+
+    #[test]
+    fn test_workspace_config_empty_array() {
+        let yaml = r#"
+project_name: test
+crates: []
+workspaces: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let workspaces = config.workspaces.as_ref().unwrap();
+        assert!(workspaces.is_empty());
     }
 
 }
