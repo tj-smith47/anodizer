@@ -299,23 +299,6 @@ pre {
   &.active { color: var(--color-primary); font-weight: 600; }
 }
 
-.sidebar-subsection-title {
-  color: var(--color-text);
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 20px 2px 24px;
-}
-
-.sidebar-sublink {
-  display: block;
-  padding: 3px 20px 3px 36px;
-  color: var(--color-text-muted);
-  font-size: 13px;
-
-  &:hover { color: var(--color-text); }
-  &.active { color: var(--color-primary); font-weight: 600; }
-}
-
 // ---------- Docs Content ----------
 .docs-content {
   flex: 1;
@@ -346,6 +329,12 @@ pre {
   }
 
   p { margin-bottom: 12px; }
+
+  .docs-description {
+    color: var(--color-text-muted);
+    font-size: 1.05rem;
+    margin-bottom: 20px;
+  }
 
   ul, ol {
     margin-bottom: 12px;
