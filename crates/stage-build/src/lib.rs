@@ -231,7 +231,8 @@ impl Stage for BuildStage {
         // --- Version sync: update Cargo.toml versions before building ---
         let version = ctx
             .template_vars()
-            .get("Version")
+            .get("RawVersion")
+            .or_else(|| ctx.template_vars().get("Version"))
             .cloned()
             .unwrap_or_default();
         for crate_cfg in &crates {
@@ -264,6 +265,13 @@ impl Stage for BuildStage {
                     }]
                 }
             };
+
+            // Detect crate type for cdylib/wasm awareness (once per crate)
+            let crate_type = detect_crate_type(&crate_cfg.path);
+            let is_wasm_crate = crate_type.as_deref() == Some("cdylib");
+            let is_library = crate_type.as_deref() == Some("cdylib")
+                || crate_type.as_deref() == Some("staticlib")
+                || crate_type.as_deref() == Some("dylib");
 
             for build in &builds {
                 // Targets: per-build override, else global defaults, else host only
@@ -301,14 +309,6 @@ impl Stage for BuildStage {
                 // Features and no_default_features
                 let features: Vec<String> = build.features.clone().unwrap_or_default();
                 let no_default_features: bool = build.no_default_features.unwrap_or(false);
-
-                // Detect crate type for cdylib/wasm awareness
-                let crate_type = detect_crate_type(&crate_cfg.path);
-                let is_wasm_crate = crate_type.as_deref() == Some("cdylib")
-                    || crate_type.as_deref() == Some("wasm");
-                let is_library = crate_type.as_deref() == Some("cdylib")
-                    || crate_type.as_deref() == Some("staticlib")
-                    || crate_type.as_deref() == Some("dylib");
 
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {
