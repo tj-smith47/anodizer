@@ -289,8 +289,8 @@ fn branch_matches(branch: &str, patterns: &[String]) -> bool {
         if branch == pattern {
             return true;
         }
-        // Try regex match
-        if let Ok(re) = Regex::new(pattern)
+        // Try regex match (anchored to prevent partial matches)
+        if let Ok(re) = Regex::new(&format!("^{}$", pattern))
             && re.is_match(branch)
         {
             return true;

@@ -214,14 +214,25 @@ pub fn get_branch_semver_tags(prefix: &str) -> Result<Vec<String>> {
     Ok(matching.into_iter().map(|(_, tag)| tag).collect())
 }
 
-/// Create an annotated tag and optionally push it.
+/// Create an annotated tag and push it if an `origin` remote exists.
 pub fn create_and_push_tag(tag: &str, message: &str, dry_run: bool) -> Result<()> {
     if dry_run {
         eprintln!("  [dry-run] would create tag: {} (\"{}\")", tag, message);
         return Ok(());
     }
     git_output(&["tag", "-a", tag, "-m", message])?;
-    git_output(&["push", "origin", tag])?;
+
+    let has_remote = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if has_remote {
+        git_output(&["push", "origin", tag])?;
+    } else {
+        eprintln!("[tag] no 'origin' remote found, skipping push");
+    }
     Ok(())
 }
 
