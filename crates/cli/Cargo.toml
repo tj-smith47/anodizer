@@ -25,6 +25,7 @@ anodize-stage-publish.workspace = true
 anodize-stage-docker.workspace = true
 anodize-stage-sign.workspace = true
 anodize-stage-announce.workspace = true
+anodize-stage-source.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 serde_json.workspace = true

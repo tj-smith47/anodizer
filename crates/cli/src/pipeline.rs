@@ -186,11 +186,13 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
     use anodize_stage_sign::SignStage;
+    use anodize_stage_source::SourceStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));
     p.add(Box::new(ArchiveStage));
     p.add(Box::new(NfpmStage));
+    p.add(Box::new(SourceStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(ChangelogStage));
     p.add(Box::new(ReleaseStage));

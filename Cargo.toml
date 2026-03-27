@@ -12,6 +12,7 @@ members = [
     "crates/stage-docker",
     "crates/stage-sign",
     "crates/stage-announce",
+    "crates/stage-source",
     "crates/cli",
 ]
 
@@ -36,6 +37,7 @@ anodize-stage-publish = { path = "crates/stage-publish", version = "0.1.0" }
 anodize-stage-docker = { path = "crates/stage-docker", version = "0.1.0" }
 anodize-stage-sign = { path = "crates/stage-sign", version = "0.1.0" }
 anodize-stage-announce = { path = "crates/stage-announce", version = "0.1.0" }
+anodize-stage-source = { path = "crates/stage-source", version = "0.1.0" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

@@ -14,6 +14,8 @@ pub enum ArtifactKind {
     Metadata,
     Library,
     Wasm,
+    SourceArchive,
+    Sbom,
 }
 
 impl ArtifactKind {
@@ -28,6 +30,8 @@ impl ArtifactKind {
             ArtifactKind::Metadata => "metadata",
             ArtifactKind::Library => "library",
             ArtifactKind::Wasm => "wasm",
+            ArtifactKind::SourceArchive => "source_archive",
+            ArtifactKind::Sbom => "sbom",
         }
     }
 }

@@ -1,0 +1,23 @@
+[package]
+name = "anodize-stage-source"
+description = "Source archive and SBOM generation stage for the anodize release tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+anodize-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+anodize-core = { workspace = true, features = ["test-helpers"] }
+tempfile.workspace = true
+serde_yaml.workspace = true

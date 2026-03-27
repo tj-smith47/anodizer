@@ -30,6 +30,8 @@ pub struct Config {
     pub publishers: Option<Vec<PublisherConfig>>,
     pub tag: Option<TagConfig>,
     pub workspaces: Option<Vec<WorkspaceConfig>>,
+    pub source: Option<SourceConfig>,
+    pub sbom: Option<SbomConfig>,
 }
 
 fn default_dist() -> PathBuf {
@@ -57,6 +59,8 @@ impl Default for Config {
             publishers: None,
             tag: None,
             workspaces: None,
+            source: None,
+            sbom: None,
         }
     }
 }
@@ -745,6 +749,54 @@ pub struct BinstallConfig {
     pub pkg_url: Option<String>,
     pub bin_dir: Option<String>,
     pub pkg_fmt: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// SourceConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SourceConfig {
+    pub enabled: Option<bool>,
+    pub format: Option<String>,
+    pub name_template: Option<String>,
+    pub files: Option<Vec<String>>,
+}
+
+impl SourceConfig {
+    /// Whether source archive generation is enabled (default: false).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    /// The archive format to use (default: "tar.gz").
+    pub fn archive_format(&self) -> &str {
+        self.format.as_deref().unwrap_or("tar.gz")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SbomConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SbomConfig {
+    pub enabled: Option<bool>,
+    pub format: Option<String>,
+}
+
+impl SbomConfig {
+    /// Whether SBOM generation is enabled (default: false).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(false)
+    }
+
+    /// The SBOM format to use (default: "cyclonedx"). Also supports "spdx".
+    pub fn sbom_format(&self) -> &str {
+        self.format.as_deref().unwrap_or("cyclonedx")
+    }
 }
 
 // ---------------------------------------------------------------------------

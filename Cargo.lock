@@ -41,6 +41,7 @@ dependencies = [
  "anodize-stage-publish",
  "anodize-stage-release",
  "anodize-stage-sign",
+ "anodize-stage-source",
  "anyhow",
  "chrono",
  "clap",
@@ -181,6 +182,20 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+]
+
+[[package]]
+name = "anodize-stage-source"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
