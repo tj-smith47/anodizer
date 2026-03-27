@@ -648,6 +648,52 @@ These cannot start until anodize is published and installable:
 - Add cfgd as showcase in README
 
 ### Community Adoption — Popular Repo PRs
-Target repos: ripgrep, bat, starship, nushell, zoxide, tokio, serde, clap
+
+> **Before starting:** Do a fresh web search for popular Rust CLI projects with complex release workflows. The candidate table below was compiled in March 2026 — projects may have adopted cargo-dist, release-plz, or other tools since then. Verify each candidate is still rolling their own GitHub Actions YAML before writing a PR. Also search for any new high-star Rust CLI tools not in this list.
+
+**Candidate Table (surveyed 2026-03-27):**
+
+| Project | Stars | Workflow Complexity | Release Tool | Pitch |
+|---------|-------|-------------------|--------------|-------|
+| **BurntSushi/ripgrep** | 61.5k | 12.4KB release.yml (~415 lines) | None (hand-rolled) | Most-starred Rust CLI. Had broken release workflow. Homebrew, Scoop, deb, rpm. |
+| **sharkdp/bat** | 57.8k | 20KB monolithic CICD.yml (~670 lines) | None | Single giant file for CI+CD+release+packaging. Homebrew, deb, rpm. |
+| **starship/starship** | 55.4k | 8 files, ~960 lines total | None | Cross-shell prompt. Homebrew, Scoop, deb, MSI. Wide install base. |
+| **astral-sh/ruff** | 46.7k | 19 files, ~4,600 lines total | **cargo-dist** | Already using cargo-dist — harder sell. Skip unless they're unhappy with it. |
+| **helix-editor/helix** | 43.7k | 9.8KB release.yml | None | Post-modern editor. Cross-platform with AppImage. |
+| **sharkdp/fd** | 42.2k | 10.5KB monolithic CICD.yml | None | Same author as bat — converting one proves concept for both. |
+| **nushell/nushell** | 38.9k | 12 files, ~1,050 lines total | None | Most complex Rust release pipeline. MSI, Winget, nightly, beta builds. |
+| **sxyazi/yazi** | 35.4k | 8 files | None | Fast-growing terminal file manager. |
+| **ajeetdsouza/zoxide** | 35.0k | 4 files + winget.yml | None | Separate winget workflow — anodize handles natively. |
+| **casey/just** | 32.4k | Hand-rolled | None | Command runner. Cross-platform binary releases. |
+| **dandavison/delta** | 29.7k | cd.yml + ci.yml | None | Git pager. Cross-platform. |
+| **sharkdp/hyperfine** | 27.8k | 14.8KB monolithic CICD.yml (~493 lines) | None | Same author as bat/fd — three conversions from one relationship. |
+| **Wilfred/difftastic** | 24.8k | Hand-rolled | None | Structural diff tool. Cross-platform binary releases. |
+| **biomejs/biome** | 24.2k | 10.8KB release_cli.yml | None | JS/TS toolchain in Rust. Multi-platform binary releases. |
+| **extrawurst/gitui** | 21.6k | brew.yml + cd.yml + nightly.yml | None | Separate Homebrew + nightly workflows — both native anodize features. |
+| **eza-community/eza** | 20.8k | apt.yml + winget.yml | None | Modern ls. Separate apt and winget workflows. |
+| **Orange-OpenSource/hurl** | 18.7k | 11 files, ~3,400 lines total | None | HTTP testing tool. Largest raw workflow complexity after ruff. |
+| **XAMPPRocky/tokei** | 14.1k | 5.6KB CI workflow | None | Code statistics. Simple release flow. |
+| **orhun/git-cliff** | 11.6k | Hand-rolled | None | Changelog generator. Ironic candidate — generates changelogs but hand-rolls releases. |
+| **orf/gping** | 12.4k | Hand-rolled | None | Ping with graph. Cross-platform. |
+| **prefix-dev/pixi** | 6.7k | Uses dist-workspace.toml | **cargo-dist** | Already using cargo-dist — skip. |
+
+**Ruled out from original plan:**
+- **tokio**, **serde**, **clap** — these are libraries, not CLI tools. They publish to crates.io only (no binary releases, no archives, no Homebrew). anodize adds nothing over `cargo publish`.
+
+**Feature gap analysis:** `.claude/specs/community-adoption-feature-gaps.md` — comprehensive analysis of what these 21 projects do in their release workflows that anodize doesn't yet support. Must be reviewed and actioned before starting PR work.
+
+**Before submitting any community PRs, this session must:**
+1. Re-read `.claude/specs/community-adoption-feature-gaps.md` and do a fresh web search to verify currency
+2. Determine which gap features are in scope vs out of scope, producing a final prioritized list
+3. Implement the must-have features (shell completions, man pages, binary stripping, prerelease auto-detection — see spec Section C)
+4. Evaluate the "high value" features (macOS notarization, AppImage, NPM/PyPI, multi-arch Docker, attestation) and implement any that are feasible
+5. Only then begin writing `.anodize.yaml` configs and PRs for target repos
+
+**Recommended PR approach:**
+1. Start with **sharkdp trio** (bat, fd, hyperfine) — same author, same monolithic CICD.yml pattern, converting one proves concept for all three. Combined 128k stars.
+2. Then **ripgrep** — maximum visibility, known workflow pain (issue #2285).
+3. Then **nushell** — showcases anodize's full feature set (MSI, Winget, nightly, beta).
+4. Then **starship**, **zoxide**, **delta** for breadth.
+
 - Survey release workflows, identify pain points
 - Submit PRs converting workflows to `.anodize.yaml`

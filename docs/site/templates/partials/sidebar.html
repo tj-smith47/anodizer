@@ -1,0 +1,90 @@
+<aside class="docs-sidebar" aria-label="Documentation navigation">
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Getting Started</div>
+    <a href="{{ get_url(path='@/docs/getting-started/introduction.md') }}" class="sidebar-link{% if current_path == '/docs/getting-started/introduction/' %} active{% endif %}">Introduction</a>
+    <a href="{{ get_url(path='@/docs/getting-started/install.md') }}" class="sidebar-link{% if current_path == '/docs/getting-started/install/' %} active{% endif %}">Install</a>
+    <a href="{{ get_url(path='@/docs/getting-started/quick-start.md') }}" class="sidebar-link{% if current_path == '/docs/getting-started/quick-start/' %} active{% endif %}">Quick Start</a>
+    <a href="{{ get_url(path='@/docs/getting-started/how-it-works.md') }}" class="sidebar-link{% if current_path == '/docs/getting-started/how-it-works/' %} active{% endif %}">How It Works</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">General</div>
+    <a href="{{ get_url(path='@/docs/general/project-name.md') }}" class="sidebar-link{% if current_path == '/docs/general/project-name/' %} active{% endif %}">Project Name</a>
+    <a href="{{ get_url(path='@/docs/general/templates.md') }}" class="sidebar-link{% if current_path == '/docs/general/templates/' %} active{% endif %}">Templates</a>
+    <a href="{{ get_url(path='@/docs/general/environment.md') }}" class="sidebar-link{% if current_path == '/docs/general/environment/' %} active{% endif %}">Environment</a>
+    <a href="{{ get_url(path='@/docs/general/hooks.md') }}" class="sidebar-link{% if current_path == '/docs/general/hooks/' %} active{% endif %}">Hooks</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Build</div>
+    <a href="{{ get_url(path='@/docs/builds/rust.md') }}" class="sidebar-link{% if current_path == '/docs/builds/rust/' %} active{% endif %}">Rust</a>
+    <a href="{{ get_url(path='@/docs/builds/cross-compilation.md') }}" class="sidebar-link{% if current_path == '/docs/builds/cross-compilation/' %} active{% endif %}">Cross-Compilation</a>
+    <a href="{{ get_url(path='@/docs/builds/universal-binaries.md') }}" class="sidebar-link{% if current_path == '/docs/builds/universal-binaries/' %} active{% endif %}">Universal Binaries</a>
+    <a href="{{ get_url(path='@/docs/builds/upx.md') }}" class="sidebar-link{% if current_path == '/docs/builds/upx/' %} active{% endif %}">UPX</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Package &amp; Archive</div>
+    <a href="{{ get_url(path='@/docs/packages/archives.md') }}" class="sidebar-link{% if current_path == '/docs/packages/archives/' %} active{% endif %}">Archives</a>
+    <a href="{{ get_url(path='@/docs/packages/checksums.md') }}" class="sidebar-link{% if current_path == '/docs/packages/checksums/' %} active{% endif %}">Checksums</a>
+    <a href="{{ get_url(path='@/docs/packages/nfpm.md') }}" class="sidebar-link{% if current_path == '/docs/packages/nfpm/' %} active{% endif %}">nFPM</a>
+    <a href="{{ get_url(path='@/docs/packages/docker.md') }}" class="sidebar-link{% if current_path == '/docs/packages/docker/' %} active{% endif %}">Docker</a>
+    <a href="{{ get_url(path='@/docs/packages/source-sbom.md') }}" class="sidebar-link{% if current_path == '/docs/packages/source-sbom/' %} active{% endif %}">Source &amp; SBOM</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Sign</div>
+    <a href="{{ get_url(path='@/docs/sign/binaries-archives.md') }}" class="sidebar-link{% if current_path == '/docs/sign/binaries-archives/' %} active{% endif %}">Binaries &amp; Archives</a>
+    <a href="{{ get_url(path='@/docs/sign/docker.md') }}" class="sidebar-link{% if current_path == '/docs/sign/docker/' %} active{% endif %}">Docker</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Publish</div>
+    <a href="{{ get_url(path='@/docs/publish/github.md') }}" class="sidebar-link{% if current_path == '/docs/publish/github/' %} active{% endif %}">GitHub</a>
+    <a href="{{ get_url(path='@/docs/publish/crates-io.md') }}" class="sidebar-link{% if current_path == '/docs/publish/crates-io/' %} active{% endif %}">Crates.io</a>
+    <a href="{{ get_url(path='@/docs/publish/homebrew.md') }}" class="sidebar-link{% if current_path == '/docs/publish/homebrew/' %} active{% endif %}">Homebrew</a>
+    <a href="{{ get_url(path='@/docs/publish/scoop.md') }}" class="sidebar-link{% if current_path == '/docs/publish/scoop/' %} active{% endif %}">Scoop</a>
+    <a href="{{ get_url(path='@/docs/publish/chocolatey.md') }}" class="sidebar-link{% if current_path == '/docs/publish/chocolatey/' %} active{% endif %}">Chocolatey</a>
+    <a href="{{ get_url(path='@/docs/publish/winget.md') }}" class="sidebar-link{% if current_path == '/docs/publish/winget/' %} active{% endif %}">Winget</a>
+    <a href="{{ get_url(path='@/docs/publish/aur.md') }}" class="sidebar-link{% if current_path == '/docs/publish/aur/' %} active{% endif %}">AUR</a>
+    <a href="{{ get_url(path='@/docs/publish/krew.md') }}" class="sidebar-link{% if current_path == '/docs/publish/krew/' %} active{% endif %}">Krew</a>
+    <a href="{{ get_url(path='@/docs/publish/snapshots.md') }}" class="sidebar-link{% if current_path == '/docs/publish/snapshots/' %} active{% endif %}">Snapshots</a>
+    <a href="{{ get_url(path='@/docs/publish/nightlies.md') }}" class="sidebar-link{% if current_path == '/docs/publish/nightlies/' %} active{% endif %}">Nightlies</a>
+    <a href="{{ get_url(path='@/docs/publish/custom-publishers.md') }}" class="sidebar-link{% if current_path == '/docs/publish/custom-publishers/' %} active{% endif %}">Custom Publishers</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Announce</div>
+    <a href="{{ get_url(path='@/docs/announce/discord.md') }}" class="sidebar-link{% if current_path == '/docs/announce/discord/' %} active{% endif %}">Discord</a>
+    <a href="{{ get_url(path='@/docs/announce/slack.md') }}" class="sidebar-link{% if current_path == '/docs/announce/slack/' %} active{% endif %}">Slack</a>
+    <a href="{{ get_url(path='@/docs/announce/webhooks.md') }}" class="sidebar-link{% if current_path == '/docs/announce/webhooks/' %} active{% endif %}">Webhooks</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">More</div>
+    <a href="{{ get_url(path='@/docs/more/changelog.md') }}" class="sidebar-link{% if current_path == '/docs/more/changelog/' %} active{% endif %}">Changelog</a>
+    <a href="{{ get_url(path='@/docs/ci/github-actions.md') }}" class="sidebar-link{% if current_path == '/docs/ci/github-actions/' %} active{% endif %}">GitHub Actions</a>
+    <a href="{{ get_url(path='@/docs/ci/gitlab-ci.md') }}" class="sidebar-link{% if current_path == '/docs/ci/gitlab-ci/' %} active{% endif %}">GitLab CI</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Advanced</div>
+    <a href="{{ get_url(path='@/docs/advanced/auto-tagging.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/auto-tagging/' %} active{% endif %}">Auto-Tagging</a>
+    <a href="{{ get_url(path='@/docs/advanced/monorepo.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/monorepo/' %} active{% endif %}">Monorepo</a>
+    <a href="{{ get_url(path='@/docs/advanced/config-includes.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/config-includes/' %} active{% endif %}">Config Includes</a>
+    <a href="{{ get_url(path='@/docs/advanced/nightly-builds.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/nightly-builds/' %} active{% endif %}">Nightly Builds</a>
+    <a href="{{ get_url(path='@/docs/advanced/reproducible-builds.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/reproducible-builds/' %} active{% endif %}">Reproducible Builds</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Reference</div>
+    <a href="{{ get_url(path='@/docs/reference/cli.md') }}" class="sidebar-link{% if current_path == '/docs/reference/cli/' %} active{% endif %}">CLI</a>
+    <a href="{{ get_url(path='@/docs/reference/configuration.md') }}" class="sidebar-link{% if current_path == '/docs/reference/configuration/' %} active{% endif %}">Configuration</a>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-title">Migration</div>
+    <a href="{{ get_url(path='@/migration/goreleaser.md') }}" class="sidebar-link{% if current_path == '/migration/goreleaser/' %} active{% endif %}">GoReleaser</a>
+    <a href="{{ get_url(path='@/migration/cargo-dist.md') }}" class="sidebar-link{% if current_path == '/migration/cargo-dist/' %} active{% endif %}">cargo-dist</a>
+  </div>
+</aside>

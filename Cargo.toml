@@ -15,6 +15,7 @@ members = [
     "crates/stage-source",
     "crates/stage-upx",
     "crates/cli",
+    "crates/xtask",
 ]
 
 [workspace.package]
@@ -66,3 +67,4 @@ zstd = "0.13"
 glob = "0.3"
 serial_test = "3"
 schemars = "0.8"
+tera = "1.20.1"
