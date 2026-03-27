@@ -9,6 +9,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+name = "anodize_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "anodize"
 path = "src/main.rs"
