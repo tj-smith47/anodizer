@@ -2,8 +2,10 @@ pub mod chocolatey;
 pub mod crates_io;
 pub mod homebrew;
 pub mod scoop;
+pub(crate) mod util;
 pub mod winget;
 
+use anodize_core::config::PublishConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anyhow::Result;
@@ -13,6 +15,21 @@ use crates_io::publish_to_crates_io;
 use homebrew::publish_to_homebrew;
 use scoop::publish_to_scoop;
 use winget::publish_to_winget;
+
+/// Collect crate names that match the selection filter and have a specific
+/// publisher configured (as determined by the predicate `has_config`).
+fn crates_with_publisher<F>(ctx: &Context, selected: &[String], has_config: F) -> Vec<String>
+where
+    F: Fn(&PublishConfig) -> bool,
+{
+    ctx.config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter(|c| c.publish.as_ref().is_some_and(&has_config))
+        .map(|c| c.name.clone())
+        .collect()
+}
 
 pub struct PublishStage;
 
@@ -28,73 +45,22 @@ impl Stage for PublishStage {
         publish_to_crates_io(ctx, &selected)?;
 
         // 2. Homebrew — one call per crate that has a homebrew config.
-        let homebrew_crates: Vec<String> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| {
-                c.publish
-                    .as_ref()
-                    .and_then(|p| p.homebrew.as_ref())
-                    .is_some()
-            })
-            .map(|c| c.name.clone())
-            .collect();
-
-        for crate_name in &homebrew_crates {
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.homebrew.is_some()) {
             publish_to_homebrew(ctx, crate_name)?;
         }
 
         // 3. Scoop — one call per crate that has a scoop config.
-        let scoop_crates: Vec<String> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| c.publish.as_ref().and_then(|p| p.scoop.as_ref()).is_some())
-            .map(|c| c.name.clone())
-            .collect();
-
-        for crate_name in &scoop_crates {
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.scoop.is_some()) {
             publish_to_scoop(ctx, crate_name)?;
         }
 
         // 4. Chocolatey — one call per crate that has a chocolatey config.
-        let chocolatey_crates: Vec<String> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| {
-                c.publish
-                    .as_ref()
-                    .and_then(|p| p.chocolatey.as_ref())
-                    .is_some()
-            })
-            .map(|c| c.name.clone())
-            .collect();
-
-        for crate_name in &chocolatey_crates {
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.chocolatey.is_some()) {
             publish_to_chocolatey(ctx, crate_name)?;
         }
 
         // 5. WinGet — one call per crate that has a winget config.
-        let winget_crates: Vec<String> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| {
-                c.publish
-                    .as_ref()
-                    .and_then(|p| p.winget.as_ref())
-                    .is_some()
-            })
-            .map(|c| c.name.clone())
-            .collect();
-
-        for crate_name in &winget_crates {
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.winget.is_some()) {
             publish_to_winget(ctx, crate_name)?;
         }
 
@@ -430,7 +396,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
-                    source_repo: Some(ChocolateyRepoConfig {
+                    project_repo: Some(ChocolateyRepoConfig {
                         owner: "myorg".to_string(),
                         name: "mytool".to_string(),
                     }),
@@ -502,7 +468,7 @@ mod tests {
                     ..Default::default()
                 }),
                 chocolatey: Some(ChocolateyConfig {
-                    source_repo: Some(ChocolateyRepoConfig {
+                    project_repo: Some(ChocolateyRepoConfig {
                         owner: "org".to_string(),
                         name: "allpub5".to_string(),
                     }),
@@ -534,7 +500,7 @@ mod tests {
                 tag_template: "v{{ .Version }}".to_string(),
                 publish: Some(PublishConfig {
                     chocolatey: Some(ChocolateyConfig {
-                        source_repo: Some(ChocolateyRepoConfig {
+                        project_repo: Some(ChocolateyRepoConfig {
                             owner: "org".to_string(),
                             name: "included".to_string(),
                         }),
@@ -558,7 +524,7 @@ mod tests {
                 tag_template: "v{{ .Version }}".to_string(),
                 publish: Some(PublishConfig {
                     chocolatey: Some(ChocolateyConfig {
-                        source_repo: Some(ChocolateyRepoConfig {
+                        project_repo: Some(ChocolateyRepoConfig {
                             owner: "org".to_string(),
                             name: "excluded".to_string(),
                         }),

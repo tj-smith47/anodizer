@@ -551,13 +551,22 @@ pub struct BucketConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ChocolateyConfig {
-    pub source_repo: Option<ChocolateyRepoConfig>,
+    /// The GitHub project repo (owner/name). Used to derive download URLs
+    /// and project metadata.
+    #[serde(alias = "source_repo")]
+    pub project_repo: Option<ChocolateyRepoConfig>,
     pub description: Option<String>,
     pub license: Option<String>,
+    /// Optional explicit license URL. Falls back to
+    /// `https://opensource.org/licenses/<license>` when not set.
+    pub license_url: Option<String>,
     pub tags: Option<Vec<String>>,
     pub authors: Option<String>,
     pub project_url: Option<String>,
     pub icon_url: Option<String>,
+    /// Chocolatey API key for `choco push`. If not set, falls back to the
+    /// `CHOCOLATEY_API_KEY` environment variable.
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2277,7 +2286,7 @@ crates:
             .as_ref()
             .unwrap();
 
-        let repo = choco.source_repo.as_ref().unwrap();
+        let repo = choco.project_repo.as_ref().unwrap();
         assert_eq!(repo.owner, "myorg");
         assert_eq!(repo.name, "mytool");
         assert_eq!(choco.description, Some("A great tool".to_string()));
@@ -2320,7 +2329,7 @@ crates:
             .as_ref()
             .unwrap();
 
-        let repo = choco.source_repo.as_ref().unwrap();
+        let repo = choco.project_repo.as_ref().unwrap();
         assert_eq!(repo.owner, "myorg");
         assert_eq!(repo.name, "mytool");
         assert!(choco.description.is_none());
@@ -2361,7 +2370,7 @@ name = "tool"
             .unwrap();
 
         assert_eq!(choco.description, Some("A tool".to_string()));
-        let repo = choco.source_repo.as_ref().unwrap();
+        let repo = choco.project_repo.as_ref().unwrap();
         assert_eq!(repo.owner, "org");
     }
 

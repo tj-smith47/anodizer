@@ -1,27 +1,35 @@
 use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
-use std::process::Command;
+
+use crate::util::{find_windows_artifact, run_cmd_in};
+
+// ---------------------------------------------------------------------------
+// NuspecParams
+// ---------------------------------------------------------------------------
+
+/// Parameters for generating a Chocolatey `.nuspec` XML manifest.
+pub struct NuspecParams<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+    pub description: &'a str,
+    pub license: &'a str,
+    pub license_url: Option<&'a str>,
+    pub authors: &'a str,
+    pub project_url: &'a str,
+    pub icon_url: &'a str,
+    pub tags: &'a [String],
+}
 
 // ---------------------------------------------------------------------------
 // generate_nuspec
 // ---------------------------------------------------------------------------
 
 /// Generate a Chocolatey `.nuspec` XML manifest string.
-#[allow(clippy::too_many_arguments)]
-pub fn generate_nuspec(
-    name: &str,
-    version: &str,
-    description: &str,
-    license: &str,
-    authors: &str,
-    project_url: &str,
-    icon_url: &str,
-    tags: &[String],
-) -> String {
-    let tags_str = if tags.is_empty() {
-        name.to_string()
+pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
+    let tags_str = if params.tags.is_empty() {
+        params.name.to_string()
     } else {
-        tags.join(" ")
+        params.tags.join(" ")
     };
 
     // Escape XML special characters in user-provided strings.
@@ -33,35 +41,41 @@ pub fn generate_nuspec(
             .replace('\'', "&apos;")
     };
 
+    let license_url = match params.license_url {
+        Some(url) if !url.is_empty() => url.to_string(),
+        _ => format!("https://opensource.org/licenses/{}", params.license),
+    };
+
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     xml.push_str("<package xmlns=\"http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd\">\n");
     xml.push_str("  <metadata>\n");
-    xml.push_str(&format!("    <id>{}</id>\n", esc(name)));
-    xml.push_str(&format!("    <version>{}</version>\n", esc(version)));
-    xml.push_str(&format!("    <title>{}</title>\n", esc(name)));
-    xml.push_str(&format!("    <authors>{}</authors>\n", esc(authors)));
+    xml.push_str(&format!("    <id>{}</id>\n", esc(params.name)));
+    xml.push_str(&format!("    <version>{}</version>\n", esc(params.version)));
+    xml.push_str(&format!("    <title>{}</title>\n", esc(params.name)));
+    xml.push_str(&format!("    <authors>{}</authors>\n", esc(params.authors)));
     xml.push_str(&format!(
         "    <description>{}</description>\n",
-        esc(description)
+        esc(params.description)
     ));
     xml.push_str(&format!(
         "    <projectUrl>{}</projectUrl>\n",
-        esc(project_url)
+        esc(params.project_url)
     ));
-    if !icon_url.is_empty() {
-        xml.push_str(&format!("    <iconUrl>{}</iconUrl>\n", esc(icon_url)));
+    if !params.icon_url.is_empty() {
+        xml.push_str(&format!(
+            "    <iconUrl>{}</iconUrl>\n",
+            esc(params.icon_url)
+        ));
     }
     xml.push_str(&format!(
-        "    <licenseUrl>https://opensource.org/licenses/{}</licenseUrl>\n",
-        esc(license)
+        "    <licenseUrl>{}</licenseUrl>\n",
+        esc(&license_url)
     ));
     xml.push_str(&format!("    <tags>{}</tags>\n", esc(&tags_str)));
     xml.push_str("  </metadata>\n");
     xml.push_str("  <files>\n");
-    xml.push_str(
-        "    <file src=\"tools\\**\" target=\"tools\" />\n",
-    );
+    xml.push_str("    <file src=\"tools\\**\" target=\"tools\" />\n");
     xml.push_str("  </files>\n");
     xml.push_str("</package>\n");
 
@@ -76,6 +90,10 @@ pub fn generate_nuspec(
 ///
 /// The `_version` parameter is accepted for API symmetry with other manifest
 /// generators and may be used in future for version-specific install logic.
+///
+/// NOTE: This currently only generates a 64-bit download URL (`url64bit`).
+/// This is acceptable because Rust primarily targets x86_64 on Windows;
+/// 32-bit Windows support is uncommon for modern Rust CLI tools.
 pub fn generate_install_script(name: &str, _version: &str, url: &str, hash: &str) -> String {
     let mut ps = String::new();
     ps.push_str("$ErrorActionPreference = 'Stop'\n\n");
@@ -117,9 +135,9 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
-    let source_repo = choco_cfg.source_repo.as_ref().ok_or_else(|| {
+    let project_repo = choco_cfg.project_repo.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
-            "chocolatey: no source_repo config for '{}'",
+            "chocolatey: no project_repo config for '{}'",
             crate_name
         )
     })?;
@@ -127,7 +145,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
     if ctx.is_dry_run() {
         eprintln!(
             "[publish] (dry-run) would push Chocolatey package for '{}' to {}/{}",
-            crate_name, source_repo.owner, source_repo.name
+            crate_name, project_repo.owner, project_repo.name
         );
         return Ok(());
     }
@@ -151,37 +169,18 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         .authors
         .clone()
         .unwrap_or_else(|| crate_name.to_string());
-    let project_url = choco_cfg
-        .project_url
-        .clone()
-        .unwrap_or_else(|| format!("https://github.com/{}/{}", source_repo.owner, source_repo.name));
+    let project_url = choco_cfg.project_url.clone().unwrap_or_else(|| {
+        format!(
+            "https://github.com/{}/{}",
+            project_repo.owner, project_repo.name
+        )
+    });
     let icon_url = choco_cfg.icon_url.clone().unwrap_or_default();
     let tags = choco_cfg.tags.clone().unwrap_or_default();
 
     // Find the windows Archive artifact.
-    let windows_artifact = ctx
-        .artifacts
-        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
-        .into_iter()
-        .find(|a| {
-            a.target
-                .as_deref()
-                .map(|t| t.contains("windows") || t.contains("pc-windows"))
-                .unwrap_or(false)
-                || a.path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("windows")
-        });
-
-    let (url, hash) = if let Some(art) = windows_artifact {
-        let url = art
-            .metadata
-            .get("url")
-            .cloned()
-            .unwrap_or_else(|| art.path.to_string_lossy().into_owned());
-        let hash = art.metadata.get("sha256").cloned().unwrap_or_default();
-        (url, hash)
+    let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
+        found
     } else {
         eprintln!(
             "[publish] chocolatey: no windows artifact found for '{}', using placeholder URL",
@@ -190,22 +189,23 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         (
             format!(
                 "https://github.com/{0}/{1}/releases/download/v{2}/{1}-{2}-windows-amd64.zip",
-                source_repo.owner, crate_name, version
+                project_repo.owner, crate_name, version
             ),
             String::new(),
         )
     };
 
-    let nuspec = generate_nuspec(
-        crate_name,
-        &version,
-        &description,
-        &license,
-        &authors,
-        &project_url,
-        &icon_url,
-        &tags,
-    );
+    let nuspec = generate_nuspec(&NuspecParams {
+        name: crate_name,
+        version: &version,
+        description: &description,
+        license: &license,
+        license_url: choco_cfg.license_url.as_deref(),
+        authors: &authors,
+        project_url: &project_url,
+        icon_url: &icon_url,
+        tags: &tags,
+    });
     let install_script = generate_install_script(crate_name, &version, &url, &hash);
 
     // Create temp directory, write files, run choco pack + push.
@@ -240,12 +240,26 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         "chocolatey: choco pack",
     )?;
 
+    // Resolve the API key from config or environment.
+    let api_key = choco_cfg
+        .api_key
+        .clone()
+        .or_else(|| std::env::var("CHOCOLATEY_API_KEY").ok())
+        .unwrap_or_default();
+
     // choco push
     let nupkg = pkg_dir.join(format!("{}.{}.nupkg", crate_name, version));
     run_cmd_in(
         pkg_dir,
         "choco",
-        &["push", &nupkg.to_string_lossy(), "--source", "https://push.chocolatey.org/"],
+        &[
+            "push",
+            &nupkg.to_string_lossy(),
+            "--source",
+            "https://push.chocolatey.org/",
+            "--api-key",
+            &api_key,
+        ],
         "chocolatey: choco push",
     )?;
 
@@ -254,27 +268,6 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         crate_name
     );
 
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn run_cmd_in(
-    dir: &std::path::Path,
-    program: &str,
-    args: &[&str],
-    context_msg: &str,
-) -> Result<()> {
-    let status = Command::new(program)
-        .current_dir(dir)
-        .args(args)
-        .status()
-        .with_context(|| format!("{}: spawn", context_msg))?;
-    if !status.success() {
-        anyhow::bail!("{}: exited with {}", context_msg, status);
-    }
     Ok(())
 }
 
@@ -293,16 +286,17 @@ mod tests {
 
     #[test]
     fn test_generate_nuspec_basic() {
-        let nuspec = generate_nuspec(
-            "mytool",
-            "1.0.0",
-            "A great tool",
-            "MIT",
-            "Test Author",
-            "https://github.com/org/mytool",
-            "https://example.com/icon.png",
-            &["cli".to_string(), "tool".to_string()],
-        );
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "A great tool",
+            license: "MIT",
+            license_url: None,
+            authors: "Test Author",
+            project_url: "https://github.com/org/mytool",
+            icon_url: "https://example.com/icon.png",
+            tags: &["cli".to_string(), "tool".to_string()],
+        });
 
         assert!(nuspec.contains("<?xml version=\"1.0\""));
         assert!(nuspec.contains("<id>mytool</id>"));
@@ -318,48 +312,51 @@ mod tests {
 
     #[test]
     fn test_generate_nuspec_no_icon() {
-        let nuspec = generate_nuspec(
-            "mytool",
-            "1.0.0",
-            "A tool",
-            "MIT",
-            "Author",
-            "https://example.com",
-            "",
-            &[],
-        );
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "A tool",
+            license: "MIT",
+            license_url: None,
+            authors: "Author",
+            project_url: "https://example.com",
+            icon_url: "",
+            tags: &[],
+        });
 
         assert!(!nuspec.contains("<iconUrl>"));
     }
 
     #[test]
     fn test_generate_nuspec_empty_tags_uses_name() {
-        let nuspec = generate_nuspec(
-            "mytool",
-            "1.0.0",
-            "A tool",
-            "MIT",
-            "Author",
-            "https://example.com",
-            "",
-            &[],
-        );
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "A tool",
+            license: "MIT",
+            license_url: None,
+            authors: "Author",
+            project_url: "https://example.com",
+            icon_url: "",
+            tags: &[],
+        });
 
         assert!(nuspec.contains("<tags>mytool</tags>"));
     }
 
     #[test]
     fn test_generate_nuspec_xml_escaping() {
-        let nuspec = generate_nuspec(
-            "my-tool",
-            "1.0.0",
-            "A tool for <things> & \"stuff\"",
-            "MIT",
-            "Author",
-            "https://example.com",
-            "",
-            &[],
-        );
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "my-tool",
+            version: "1.0.0",
+            description: "A tool for <things> & \"stuff\"",
+            license: "MIT",
+            license_url: None,
+            authors: "Author",
+            project_url: "https://example.com",
+            icon_url: "",
+            tags: &[],
+        });
 
         assert!(nuspec.contains("&lt;things&gt;"));
         assert!(nuspec.contains("&amp;"));
@@ -370,33 +367,58 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_nuspec_has_license_url() {
-        let nuspec = generate_nuspec(
-            "tool",
-            "2.0.0",
-            "desc",
-            "Apache-2.0",
-            "Author",
-            "https://example.com",
-            "",
-            &[],
-        );
+    fn test_generate_nuspec_has_license_url_default() {
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "tool",
+            version: "2.0.0",
+            description: "desc",
+            license: "Apache-2.0",
+            license_url: None,
+            authors: "Author",
+            project_url: "https://example.com",
+            icon_url: "",
+            tags: &[],
+        });
 
-        assert!(nuspec.contains("<licenseUrl>https://opensource.org/licenses/Apache-2.0</licenseUrl>"));
+        assert!(nuspec
+            .contains("<licenseUrl>https://opensource.org/licenses/Apache-2.0</licenseUrl>"));
+    }
+
+    #[test]
+    fn test_generate_nuspec_custom_license_url() {
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "tool",
+            version: "2.0.0",
+            description: "desc",
+            license: "Proprietary",
+            license_url: Some("https://example.com/license"),
+            authors: "Author",
+            project_url: "https://example.com",
+            icon_url: "",
+            tags: &[],
+        });
+
+        assert!(nuspec.contains("<licenseUrl>https://example.com/license</licenseUrl>"));
+        assert!(!nuspec.contains("opensource.org"));
     }
 
     #[test]
     fn test_generate_nuspec_complete_xml_structure() {
-        let nuspec = generate_nuspec(
-            "release-tool",
-            "3.2.1",
-            "Release automation",
-            "MIT",
-            "Jane Doe",
-            "https://github.com/org/release-tool",
-            "https://example.com/icon.png",
-            &["release".to_string(), "automation".to_string(), "ci".to_string()],
-        );
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "release-tool",
+            version: "3.2.1",
+            description: "Release automation",
+            license: "MIT",
+            license_url: None,
+            authors: "Jane Doe",
+            project_url: "https://github.com/org/release-tool",
+            icon_url: "https://example.com/icon.png",
+            tags: &[
+                "release".to_string(),
+                "automation".to_string(),
+                "ci".to_string(),
+            ],
+        });
 
         // Verify the XML starts and ends correctly
         assert!(nuspec.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
@@ -426,7 +448,9 @@ mod tests {
 
         assert!(script.contains("$ErrorActionPreference = 'Stop'"));
         assert!(script.contains("packageName    = 'mytool'"));
-        assert!(script.contains("url64bit       = 'https://example.com/mytool-1.0.0-windows-amd64.zip'"));
+        assert!(script.contains(
+            "url64bit       = 'https://example.com/mytool-1.0.0-windows-amd64.zip'"
+        ));
         assert!(script.contains("checksum64     = 'deadbeef'"));
         assert!(script.contains("checksumType64 = 'sha256'"));
         assert!(script.contains("Install-ChocolateyZipPackage @packageArgs"));
@@ -461,7 +485,9 @@ mod tests {
         assert_eq!(lines[1], "");
         assert_eq!(lines[2], "$packageArgs = @{");
         // Script should end with the Install command
-        assert!(script.trim_end().ends_with("Install-ChocolateyZipPackage @packageArgs"));
+        assert!(script
+            .trim_end()
+            .ends_with("Install-ChocolateyZipPackage @packageArgs"));
     }
 
     // -----------------------------------------------------------------------
@@ -482,7 +508,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
-                    source_repo: Some(ChocolateyRepoConfig {
+                    project_repo: Some(ChocolateyRepoConfig {
                         owner: "myorg".to_string(),
                         name: "mytool".to_string(),
                     }),
@@ -533,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_to_chocolatey_missing_source_repo() {
+    fn test_publish_to_chocolatey_missing_project_repo() {
         use anodize_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
 
@@ -544,7 +570,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
-                    source_repo: None, // Missing
+                    project_repo: None, // Missing
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -560,7 +586,7 @@ mod tests {
             },
         );
 
-        // Should fail because source_repo is missing
+        // Should fail because project_repo is missing
         assert!(publish_to_chocolatey(&ctx, "mytool").is_err());
     }
 }

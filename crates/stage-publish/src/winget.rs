@@ -2,40 +2,73 @@ use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
 use std::process::Command;
 
+use crate::util::{find_windows_artifact, run_cmd_in};
+
+// ---------------------------------------------------------------------------
+// WingetManifestParams
+// ---------------------------------------------------------------------------
+
+/// Parameters for generating a WinGet YAML manifest.
+pub struct WingetManifestParams<'a> {
+    pub package_id: &'a str,
+    pub name: &'a str,
+    pub version: &'a str,
+    pub description: &'a str,
+    pub license: &'a str,
+    pub publisher: &'a str,
+    pub publisher_url: &'a str,
+    pub url: &'a str,
+    pub hash: &'a str,
+}
+
 // ---------------------------------------------------------------------------
 // generate_manifest
 // ---------------------------------------------------------------------------
 
+/// Quote a YAML string value if it contains special characters, or always
+/// wrap in double quotes for safety.
+fn yaml_quote(value: &str) -> String {
+    // Always double-quote string values to avoid issues with colons, hashes,
+    // brackets, and other YAML-special characters.
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{}\"", escaped)
+}
+
 /// Generate a WinGet YAML manifest string.
 ///
 /// Produces a singleton-style manifest with the minimum required fields for
-/// winget-pkgs submission.
-#[allow(clippy::too_many_arguments)]
-pub fn generate_manifest(
-    package_id: &str,
-    name: &str,
-    version: &str,
-    description: &str,
-    license: &str,
-    publisher: &str,
-    publisher_url: &str,
-    url: &str,
-    hash: &str,
-) -> String {
+/// winget-pkgs submission. All string values are quoted to avoid YAML
+/// parsing issues with special characters.
+pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
     let mut yaml = String::new();
-    yaml.push_str(&format!("PackageIdentifier: {}\n", package_id));
-    yaml.push_str(&format!("PackageVersion: {}\n", version));
-    yaml.push_str(&format!("PackageName: {}\n", name));
-    yaml.push_str(&format!("Publisher: {}\n", publisher));
-    if !publisher_url.is_empty() {
-        yaml.push_str(&format!("PublisherUrl: {}\n", publisher_url));
+    yaml.push_str(&format!(
+        "PackageIdentifier: {}\n",
+        yaml_quote(params.package_id)
+    ));
+    yaml.push_str(&format!(
+        "PackageVersion: {}\n",
+        yaml_quote(params.version)
+    ));
+    yaml.push_str(&format!("PackageName: {}\n", yaml_quote(params.name)));
+    yaml.push_str(&format!("Publisher: {}\n", yaml_quote(params.publisher)));
+    if !params.publisher_url.is_empty() {
+        yaml.push_str(&format!(
+            "PublisherUrl: {}\n",
+            yaml_quote(params.publisher_url)
+        ));
     }
-    yaml.push_str(&format!("License: {}\n", license));
-    yaml.push_str(&format!("ShortDescription: {}\n", description));
+    yaml.push_str(&format!("License: {}\n", yaml_quote(params.license)));
+    yaml.push_str(&format!(
+        "ShortDescription: {}\n",
+        yaml_quote(params.description)
+    ));
     yaml.push_str("Installers:\n");
     yaml.push_str("  - Architecture: x64\n");
-    yaml.push_str(&format!("    InstallerUrl: {}\n", url));
-    yaml.push_str(&format!("    InstallerSha256: {}\n", hash));
+    yaml.push_str(&format!("    InstallerUrl: {}\n", yaml_quote(params.url)));
+    yaml.push_str(&format!(
+        "    InstallerSha256: {}\n",
+        yaml_quote(params.hash)
+    ));
     yaml.push_str("    InstallerType: zip\n");
     yaml.push_str("ManifestType: singleton\nManifestVersion: 1.6.0\n");
 
@@ -108,29 +141,8 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
     let publisher_url = winget_cfg.publisher_url.clone().unwrap_or_default();
 
     // Find the windows Archive artifact.
-    let windows_artifact = ctx
-        .artifacts
-        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
-        .into_iter()
-        .find(|a| {
-            a.target
-                .as_deref()
-                .map(|t| t.contains("windows") || t.contains("pc-windows"))
-                .unwrap_or(false)
-                || a.path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("windows")
-        });
-
-    let (url, hash) = if let Some(art) = windows_artifact {
-        let url = art
-            .metadata
-            .get("url")
-            .cloned()
-            .unwrap_or_else(|| art.path.to_string_lossy().into_owned());
-        let hash = art.metadata.get("sha256").cloned().unwrap_or_default();
-        (url, hash)
+    let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
+        found
     } else {
         eprintln!(
             "[publish] winget: no windows artifact found for '{}', using placeholder URL",
@@ -145,50 +157,72 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
         )
     };
 
-    let manifest = generate_manifest(
+    let manifest = generate_manifest(&WingetManifestParams {
         package_id,
-        crate_name,
-        &version,
-        &description,
-        &license,
-        &publisher_name,
-        &publisher_url,
-        &url,
-        &hash,
-    );
+        name: crate_name,
+        version: &version,
+        description: &description,
+        license: &license,
+        publisher: &publisher_name,
+        publisher_url: &publisher_url,
+        url: &url,
+        hash: &hash,
+    });
 
-    // Clone the winget-pkgs fork, write manifest, commit, push, submit PR.
+    // Clone the winget-pkgs fork using http.extraheader for auth instead of
+    // embedding the token in the URL (avoids leaking secrets in process lists
+    // and logs).
     let token = ctx
         .options
         .token
         .clone()
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
-    let clone_url = if let Some(ref tok) = token {
-        format!(
-            "https://{}@github.com/{}/{}.git",
-            tok, manifests_repo.owner, manifests_repo.name
-        )
-    } else {
-        format!(
-            "https://github.com/{}/{}.git",
-            manifests_repo.owner, manifests_repo.name
-        )
-    };
+    let repo_url = format!(
+        "https://github.com/{}/{}.git",
+        manifests_repo.owner, manifests_repo.name
+    );
 
     let tmp_dir = tempfile::tempdir().context("winget: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    run_cmd(
-        "git",
-        &[
-            "clone",
-            "--depth=1",
-            &clone_url,
-            &repo_path.to_string_lossy(),
-        ],
-        "winget: git clone",
-    )?;
+    // Build git clone command with optional auth header.
+    let auth_header;
+    let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
+    if let Some(ref tok) = token {
+        auth_header = format!(
+            "http.extraheader=Authorization: bearer {}",
+            tok
+        );
+        clone_args.extend_from_slice(&["-c", &auth_header]);
+    }
+    clone_args.push(&repo_url);
+    let repo_path_str = repo_path.to_string_lossy();
+    clone_args.push(&repo_path_str);
+
+    // We need to use run_cmd without a working dir (not run_cmd_in) for clone.
+    let status = Command::new("git")
+        .args(&clone_args)
+        .status()
+        .context("winget: git clone: spawn")?;
+    if !status.success() {
+        anyhow::bail!("winget: git clone: exited with {}", status);
+    }
+
+    // If we used a token, also configure it for subsequent push operations
+    // in this repo clone so that push uses the same auth mechanism.
+    if let Some(ref tok) = token {
+        run_cmd_in(
+            repo_path,
+            "git",
+            &[
+                "config",
+                "http.extraheader",
+                &format!("Authorization: bearer {}", tok),
+            ],
+            "winget: git config auth",
+        )?;
+    }
 
     // Build the manifest path: manifests/<first_char>/<Publisher>/<PackageName>/<version>/
     let first_char = package_id
@@ -293,38 +327,6 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn run_cmd(program: &str, args: &[&str], context_msg: &str) -> Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .with_context(|| format!("{}: spawn", context_msg))?;
-    if !status.success() {
-        anyhow::bail!("{}: exited with {}", context_msg, status);
-    }
-    Ok(())
-}
-
-fn run_cmd_in(
-    dir: &std::path::Path,
-    program: &str,
-    args: &[&str],
-    context_msg: &str,
-) -> Result<()> {
-    let status = Command::new(program)
-        .current_dir(dir)
-        .args(args)
-        .status()
-        .with_context(|| format!("{}: spawn", context_msg))?;
-    if !status.success() {
-        anyhow::bail!("{}: exited with {}", context_msg, status);
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -339,29 +341,31 @@ mod tests {
 
     #[test]
     fn test_generate_manifest_basic() {
-        let manifest = generate_manifest(
-            "Org.MyTool",
-            "mytool",
-            "1.0.0",
-            "A great tool",
-            "MIT",
-            "My Org",
-            "https://example.com",
-            "https://example.com/mytool-1.0.0-windows-amd64.zip",
-            "deadbeef1234567890abcdef",
-        );
+        let manifest = generate_manifest(&WingetManifestParams {
+            package_id: "Org.MyTool",
+            name: "mytool",
+            version: "1.0.0",
+            description: "A great tool",
+            license: "MIT",
+            publisher: "My Org",
+            publisher_url: "https://example.com",
+            url: "https://example.com/mytool-1.0.0-windows-amd64.zip",
+            hash: "deadbeef1234567890abcdef",
+        });
 
-        assert!(manifest.contains("PackageIdentifier: Org.MyTool"));
-        assert!(manifest.contains("PackageVersion: 1.0.0"));
-        assert!(manifest.contains("PackageName: mytool"));
-        assert!(manifest.contains("Publisher: My Org"));
-        assert!(manifest.contains("PublisherUrl: https://example.com"));
-        assert!(manifest.contains("License: MIT"));
-        assert!(manifest.contains("ShortDescription: A great tool"));
+        assert!(manifest.contains("PackageIdentifier: \"Org.MyTool\""));
+        assert!(manifest.contains("PackageVersion: \"1.0.0\""));
+        assert!(manifest.contains("PackageName: \"mytool\""));
+        assert!(manifest.contains("Publisher: \"My Org\""));
+        assert!(manifest.contains("PublisherUrl: \"https://example.com\""));
+        assert!(manifest.contains("License: \"MIT\""));
+        assert!(manifest.contains("ShortDescription: \"A great tool\""));
         assert!(manifest.contains("Installers:"));
         assert!(manifest.contains("  - Architecture: x64"));
-        assert!(manifest.contains("    InstallerUrl: https://example.com/mytool-1.0.0-windows-amd64.zip"));
-        assert!(manifest.contains("    InstallerSha256: deadbeef1234567890abcdef"));
+        assert!(manifest.contains(
+            "    InstallerUrl: \"https://example.com/mytool-1.0.0-windows-amd64.zip\""
+        ));
+        assert!(manifest.contains("    InstallerSha256: \"deadbeef1234567890abcdef\""));
         assert!(manifest.contains("    InstallerType: zip"));
         assert!(manifest.contains("ManifestType: singleton"));
         assert!(manifest.contains("ManifestVersion: 1.6.0"));
@@ -369,35 +373,35 @@ mod tests {
 
     #[test]
     fn test_generate_manifest_no_publisher_url() {
-        let manifest = generate_manifest(
-            "Org.Tool",
-            "tool",
-            "2.0.0",
-            "A tool",
-            "Apache-2.0",
-            "My Org",
-            "",
-            "https://example.com/tool.zip",
-            "hash",
-        );
+        let manifest = generate_manifest(&WingetManifestParams {
+            package_id: "Org.Tool",
+            name: "tool",
+            version: "2.0.0",
+            description: "A tool",
+            license: "Apache-2.0",
+            publisher: "My Org",
+            publisher_url: "",
+            url: "https://example.com/tool.zip",
+            hash: "hash",
+        });
 
         assert!(!manifest.contains("PublisherUrl:"));
-        assert!(manifest.contains("Publisher: My Org"));
+        assert!(manifest.contains("Publisher: \"My Org\""));
     }
 
     #[test]
     fn test_generate_manifest_complete_structure() {
-        let manifest = generate_manifest(
-            "TjSmith.Anodize",
-            "anodize",
-            "3.2.1",
-            "Release automation for Rust projects",
-            "Apache-2.0",
-            "TJ Smith",
-            "https://github.com/tj-smith47",
-            "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip",
-            "aabbccdd11223344",
-        );
+        let manifest = generate_manifest(&WingetManifestParams {
+            package_id: "TjSmith.Anodize",
+            name: "anodize",
+            version: "3.2.1",
+            description: "Release automation for Rust projects",
+            license: "Apache-2.0",
+            publisher: "TJ Smith",
+            publisher_url: "https://github.com/tj-smith47",
+            url: "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip",
+            hash: "aabbccdd11223344",
+        });
 
         // Verify the manifest is well-formed YAML-like text
         let lines: Vec<&str> = manifest.lines().collect();
@@ -415,17 +419,17 @@ mod tests {
 
     #[test]
     fn test_generate_manifest_installer_section() {
-        let manifest = generate_manifest(
-            "Org.App",
-            "app",
-            "1.5.0",
-            "An app",
-            "MIT",
-            "Publisher",
-            "https://example.com",
-            "https://example.com/app-1.5.0.zip",
-            "sha256hash",
-        );
+        let manifest = generate_manifest(&WingetManifestParams {
+            package_id: "Org.App",
+            name: "app",
+            version: "1.5.0",
+            description: "An app",
+            license: "MIT",
+            publisher: "Publisher",
+            publisher_url: "https://example.com",
+            url: "https://example.com/app-1.5.0.zip",
+            hash: "sha256hash",
+        });
 
         // The Installers section should have proper YAML list format
         assert!(manifest.contains("Installers:\n  - Architecture: x64"));
@@ -434,6 +438,26 @@ mod tests {
         assert!(manifest.contains("    InstallerUrl:"));
         assert!(manifest.contains("    InstallerSha256:"));
         assert!(manifest.contains("    InstallerType: zip"));
+    }
+
+    #[test]
+    fn test_generate_manifest_yaml_quoting_special_chars() {
+        let manifest = generate_manifest(&WingetManifestParams {
+            package_id: "Org.Tool",
+            name: "tool: the best",
+            version: "1.0.0",
+            description: "A tool with #special: characters & more",
+            license: "MIT",
+            publisher: "Publisher",
+            publisher_url: "",
+            url: "https://example.com/tool.zip",
+            hash: "hash",
+        });
+
+        // Values with special YAML characters should be quoted
+        assert!(manifest.contains("PackageName: \"tool: the best\""));
+        assert!(manifest
+            .contains("ShortDescription: \"A tool with #special: characters & more\""));
     }
 
     // -----------------------------------------------------------------------

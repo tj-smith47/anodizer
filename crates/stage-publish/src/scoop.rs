@@ -1,6 +1,7 @@
 use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
-use std::process::Command;
+
+use crate::util::{find_windows_artifact, run_cmd, run_cmd_in};
 
 // ---------------------------------------------------------------------------
 // generate_manifest
@@ -96,29 +97,8 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
         .unwrap_or_else(|| "MIT".to_string());
 
     // Find the windows-amd64 Archive artifact.
-    let windows_artifact = ctx
-        .artifacts
-        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
-        .into_iter()
-        .find(|a| {
-            a.target
-                .as_deref()
-                .map(|t| t.contains("windows") || t.contains("pc-windows"))
-                .unwrap_or(false)
-                || a.path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("windows")
-        });
-
-    let (url, hash) = if let Some(art) = windows_artifact {
-        let url = art
-            .metadata
-            .get("url")
-            .cloned()
-            .unwrap_or_else(|| art.path.to_string_lossy().into_owned());
-        let hash = art.metadata.get("sha256").cloned().unwrap_or_default();
-        (url, hash)
+    let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
+        found
     } else {
         eprintln!(
             "[publish] scoop: no windows artifact found for '{}', using placeholder URL",
@@ -198,38 +178,6 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
         bucket.owner, bucket.name, crate_name
     );
 
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn run_cmd(program: &str, args: &[&str], context_msg: &str) -> Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .with_context(|| format!("{}: spawn", context_msg))?;
-    if !status.success() {
-        anyhow::bail!("{}: exited with {}", context_msg, status);
-    }
-    Ok(())
-}
-
-fn run_cmd_in(
-    dir: &std::path::Path,
-    program: &str,
-    args: &[&str],
-    context_msg: &str,
-) -> Result<()> {
-    let status = Command::new(program)
-        .current_dir(dir)
-        .args(args)
-        .status()
-        .with_context(|| format!("{}: spawn", context_msg))?;
-    if !status.success() {
-        anyhow::bail!("{}: exited with {}", context_msg, status);
-    }
     Ok(())
 }
 
