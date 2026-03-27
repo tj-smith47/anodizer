@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+
+{% block title %}Anodize — Release engineering for Rust, simplified.{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-inner">
+    <h1>Release engineering for Rust, simplified.</h1>
+    <p class="hero-subtitle">The declarative release pipeline GoReleaser users wish existed for Rust.</p>
+    <div class="hero-buttons">
+      <a href="{{ get_url(path='@/docs/getting-started/quick-start.md') }}" class="btn btn-primary">Get Started</a>
+      <a href="{{ config.extra.github_url }}" class="btn btn-secondary" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <div class="terminal-demo">
+      <div class="terminal-header">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+      </div>
+      <pre class="terminal-body"><span class="terminal-prompt">$</span> <span class="terminal-cmd">cargo install anodize</span>
+<span class="terminal-prompt">$</span> <span class="terminal-cmd">anodize init</span>          <span class="terminal-comment"># generates .anodize.yaml from Cargo.toml</span>
+<span class="terminal-prompt">$</span> <span class="terminal-cmd">anodize release</span>       <span class="terminal-comment"># build → archive → checksum → release → publish</span></pre>
+    </div>
+  </div>
+</section>
+
+<section class="features">
+  <div class="features-grid">
+    <div class="feature-card">
+      <h3>Full Pipeline</h3>
+      <p>Build → Archive → Checksum → Changelog → Release → Publish → Announce. One command.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Cargo-Native</h3>
+      <p>Workspace-aware, cross-compilation via cargo-zigbuild, cargo-binstall metadata generation.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Familiar Config</h3>
+      <p>Same YAML structure GoReleaser users already know. Migrate in minutes.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Tera Templates</h3>
+      <p>Conditionals, pipes, filters — a real template engine, not regex substitution.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Package Managers</h3>
+      <p>Homebrew, Scoop, crates.io, nFPM, Docker — publish everywhere from one config.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Single Binary</h3>
+      <p><code>cargo install anodize</code>. No runtime dependencies. Fast startup.</p>
+    </div>
+  </div>
+</section>
+{% endblock %}

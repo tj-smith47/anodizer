@@ -1,0 +1,14 @@
+title = "Anodize"
+description = "Release engineering for Rust, simplified."
+base_url = "https://tj-smith47.github.io/anodize"
+compile_sass = true
+minify_html = false
+generate_feeds = false
+
+[markdown]
+highlight_code = true
+highlight_theme = "base16-ocean-dark"
+extra_syntaxes_and_themes = []
+
+[extra]
+github_url = "https://github.com/tj-smith47/anodize"

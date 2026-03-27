@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }}{% endblock %}</title>
+  <meta name="description" content="{{ config.description }}">
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+  <link rel="icon" href="{{ get_url(path='favicon.ico') }}">
+</head>
+<body>
+  <nav class="top-nav">
+    <div class="nav-inner">
+      <a href="{{ config.base_url }}" class="nav-brand">anodize</a>
+      <div class="nav-links">
+        <a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
+        <a href="{{ get_url(path='@/migration/_index.md') }}">Migration</a>
+        <a href="{{ config.extra.github_url }}" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <p>&copy; 2026 Anodize Contributors. MIT License.</p>
+      <p>Built with <a href="https://www.getzola.org/" target="_blank" rel="noopener">Zola</a>.</p>
+    </div>
+  </footer>
+</body>
+</html>
