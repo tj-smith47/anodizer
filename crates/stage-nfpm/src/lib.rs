@@ -618,7 +618,7 @@ crates:
           preinstall: /scripts/pre.sh
           postinstall: /scripts/post.sh
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = config.crates[0].nfpm.as_ref().unwrap();
         let scripts = nfpm[0].scripts.as_ref().unwrap();
         assert_eq!(scripts.preinstall.as_deref(), Some("/scripts/pre.sh"));
@@ -649,7 +649,7 @@ crates:
         provides:
           - test-bin
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = config.crates[0].nfpm.as_ref().unwrap();
         assert_eq!(nfpm[0].recommends.as_ref().unwrap(), &["libfoo"]);
         assert_eq!(nfpm[0].suggests.as_ref().unwrap(), &["libbar"]);
@@ -678,7 +678,7 @@ crates:
               group: wheel
               mode: "0755"
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = config.crates[0].nfpm.as_ref().unwrap();
         let contents = nfpm[0].contents.as_ref().unwrap();
         assert_eq!(contents[0].content_type.as_deref(), Some("config"));

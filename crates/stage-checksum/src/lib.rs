@@ -530,7 +530,7 @@ extra_files:
   - "dist/*.bin"
   - "README.md"
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.extra_files,
             Some(vec!["dist/*.bin".to_string(), "README.md".to_string()])
@@ -545,7 +545,7 @@ ids:
   - "linux-amd64"
   - "darwin-arm64"
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.ids,
             Some(vec!["linux-amd64".to_string(), "darwin-arm64".to_string()])

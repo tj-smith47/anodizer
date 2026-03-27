@@ -22,4 +22,4 @@ glob.workspace = true
 [dev-dependencies]
 anodize-core = { workspace = true, features = ["test-helpers"] }
 tempfile.workspace = true
-serde_yaml.workspace = true
+serde_yaml_ng.workspace = true

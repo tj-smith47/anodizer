@@ -37,9 +37,9 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
 
 /// Deep-merge `overlay` into `base`. Mappings are merged recursively,
 /// sequences are concatenated, and scalars/other values are replaced.
-fn merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value) {
+fn merge_yaml(base: &mut serde_yaml_ng::Value, overlay: &serde_yaml_ng::Value) {
     match (base, overlay) {
-        (serde_yaml::Value::Mapping(base_map), serde_yaml::Value::Mapping(overlay_map)) => {
+        (serde_yaml_ng::Value::Mapping(base_map), serde_yaml_ng::Value::Mapping(overlay_map)) => {
             for (key, value) in overlay_map {
                 match base_map.get_mut(key) {
                     Some(existing) => merge_yaml(existing, value),
@@ -49,7 +49,7 @@ fn merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value) {
                 }
             }
         }
-        (serde_yaml::Value::Sequence(base_seq), serde_yaml::Value::Sequence(overlay_seq)) => {
+        (serde_yaml_ng::Value::Sequence(base_seq), serde_yaml_ng::Value::Sequence(overlay_seq)) => {
             base_seq.extend(overlay_seq.iter().cloned());
         }
         (base_val, overlay_val) => {
@@ -70,7 +70,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let config = match ext {
         "yaml" | "yml" => {
-            let base: serde_yaml::Value = serde_yaml::from_str(&content)
+            let base: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)
                 .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
 
             // Extract include paths before merging
@@ -88,7 +88,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
             // The base config is then merged on top so its values always win.
             let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
             let mut merged =
-                serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+                serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
             for include in &include_paths {
                 let include_path = base_dir.join(include);
                 let include_content = std::fs::read_to_string(&include_path).with_context(|| {
@@ -98,8 +98,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
                         path.display()
                     )
                 })?;
-                let overlay: serde_yaml::Value =
-                    serde_yaml::from_str(&include_content).with_context(|| {
+                let overlay: serde_yaml_ng::Value =
+                    serde_yaml_ng::from_str(&include_content).with_context(|| {
                         format!("failed to parse include file: {}", include_path.display())
                     })?;
                 merge_yaml(&mut merged, &overlay);
@@ -107,7 +107,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
             // Merge base config on top of the accumulated defaults (base wins).
             merge_yaml(&mut merged, &base);
 
-            serde_yaml::from_value(merged)
+            serde_yaml_ng::from_value(merged)
                 .with_context(|| format!("failed to deserialize config: {}", path.display()))?
         }
         "toml" => toml::from_str(&content)?,
@@ -266,30 +266,30 @@ mod tests {
 
     #[test]
     fn test_merge_yaml_mappings_recursive() {
-        let mut base: serde_yaml::Value = serde_yaml::from_str("a: 1\nb: 2").unwrap();
-        let overlay: serde_yaml::Value = serde_yaml::from_str("b: 99\nc: 3").unwrap();
+        let mut base: serde_yaml_ng::Value = serde_yaml_ng::from_str("a: 1\nb: 2").unwrap();
+        let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str("b: 99\nc: 3").unwrap();
         merge_yaml(&mut base, &overlay);
-        assert_eq!(base["a"], serde_yaml::Value::Number(1.into()));
-        assert_eq!(base["b"], serde_yaml::Value::Number(99.into()));
-        assert_eq!(base["c"], serde_yaml::Value::Number(3.into()));
+        assert_eq!(base["a"], serde_yaml_ng::Value::Number(1.into()));
+        assert_eq!(base["b"], serde_yaml_ng::Value::Number(99.into()));
+        assert_eq!(base["c"], serde_yaml_ng::Value::Number(3.into()));
     }
 
     #[test]
     fn test_merge_yaml_nested_mappings() {
-        let mut base: serde_yaml::Value =
-            serde_yaml::from_str("outer:\n  x: 1\n  y: 2").unwrap();
-        let overlay: serde_yaml::Value =
-            serde_yaml::from_str("outer:\n  y: 99\n  z: 3").unwrap();
+        let mut base: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("outer:\n  x: 1\n  y: 2").unwrap();
+        let overlay: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("outer:\n  y: 99\n  z: 3").unwrap();
         merge_yaml(&mut base, &overlay);
-        assert_eq!(base["outer"]["x"], serde_yaml::Value::Number(1.into()));
-        assert_eq!(base["outer"]["y"], serde_yaml::Value::Number(99.into()));
-        assert_eq!(base["outer"]["z"], serde_yaml::Value::Number(3.into()));
+        assert_eq!(base["outer"]["x"], serde_yaml_ng::Value::Number(1.into()));
+        assert_eq!(base["outer"]["y"], serde_yaml_ng::Value::Number(99.into()));
+        assert_eq!(base["outer"]["z"], serde_yaml_ng::Value::Number(3.into()));
     }
 
     #[test]
     fn test_merge_yaml_sequences_concatenate() {
-        let mut base: serde_yaml::Value = serde_yaml::from_str("items:\n  - a\n  - b").unwrap();
-        let overlay: serde_yaml::Value = serde_yaml::from_str("items:\n  - c\n  - d").unwrap();
+        let mut base: serde_yaml_ng::Value = serde_yaml_ng::from_str("items:\n  - a\n  - b").unwrap();
+        let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str("items:\n  - c\n  - d").unwrap();
         merge_yaml(&mut base, &overlay);
         let items = base["items"].as_sequence().unwrap();
         assert_eq!(items.len(), 4);
@@ -301,8 +301,8 @@ mod tests {
 
     #[test]
     fn test_merge_yaml_scalar_override() {
-        let mut base: serde_yaml::Value = serde_yaml::from_str("name: base").unwrap();
-        let overlay: serde_yaml::Value = serde_yaml::from_str("name: overlay").unwrap();
+        let mut base: serde_yaml_ng::Value = serde_yaml_ng::from_str("name: base").unwrap();
+        let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str("name: overlay").unwrap();
         merge_yaml(&mut base, &overlay);
         assert_eq!(base["name"].as_str().unwrap(), "overlay");
     }

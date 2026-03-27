@@ -6,9 +6,19 @@
 # Templates use Tera syntax with Go-style compat. Tera features used below:
 #   - Pipe filters: {{ Tag | trimprefix(prefix='v') }}
 #   - New variables: {{ RawVersion }}, {{ Branch }}, {{ CommitDate }}, etc.
+#
+# Session 5 features exercised:
+#   - version: 2 (schema version)
+#   - source: archive generation
+#   - sbom: software bill of materials
+#   - upx: binary compression
+#   - env_files: environment file loading
 
+version: 2
 project_name: anodize
 dist: ./dist
+env_files:
+  - .env
 
 defaults:
   targets:
@@ -141,6 +151,29 @@ signs:
       - "{{ Signature }}"
       - "--detach-sig"
       - "{{ Artifact }}"
+
+source:
+  enabled: true
+  format: tar.gz
+  name_template: "{{ ProjectName }}-{{ Version }}-source"
+  files:
+    - "crates/**/*.rs"
+    - "Cargo.toml"
+    - "Cargo.lock"
+    - "LICENSE"
+    - "README.md"
+
+sbom:
+  enabled: true
+  format: cyclonedx
+
+upx:
+  - id: default
+    enabled: false
+    binary: upx
+    args:
+      - "--best"
+      - "--lzma"
 
 snapshot:
   name_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"

@@ -1,7 +1,7 @@
 //! Config parsing depth tests — every field, every variation.
 //!
 //! Tests extracted from config.rs to keep file sizes manageable.
-//! All tests use the public API (serde_yaml::from_str / toml::from_str).
+//! All tests use the public API (serde_yaml_ng::from_str / toml::from_str).
 
 use std::path::PathBuf;
 
@@ -16,35 +16,35 @@ use anodize_core::config::*;
 #[test]
 fn test_parse_project_name_valid() {
     let yaml = "project_name: my-cool-project\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.project_name, "my-cool-project");
 }
 
 #[test]
 fn test_parse_project_name_empty_string() {
     let yaml = "project_name: \"\"\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.project_name, "");
 }
 
 #[test]
 fn test_parse_project_name_default_omitted() {
     let yaml = "crates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.project_name, "");
 }
 
 #[test]
 fn test_parse_project_name_special_characters() {
     let yaml = "project_name: \"my project @v2.0 (beta)\"\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.project_name, "my project @v2.0 (beta)");
 }
 
 #[test]
 fn test_parse_project_name_unicode() {
     let yaml = "project_name: \"projet-\u{00e9}t\u{00e9}\"\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.project_name, "projet-\u{00e9}t\u{00e9}");
 }
 
@@ -52,7 +52,7 @@ fn test_parse_project_name_unicode() {
 fn test_parse_project_name_number_coerced() {
     // YAML coerces bare numbers to strings for serde string fields
     let yaml = "project_name: 12345\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.project_name, "12345");
 }
 
@@ -61,35 +61,35 @@ fn test_parse_project_name_number_coerced() {
 #[test]
 fn test_parse_dist_valid() {
     let yaml = "project_name: test\ndist: ./output\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.dist, PathBuf::from("./output"));
 }
 
 #[test]
 fn test_parse_dist_default_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.dist, PathBuf::from("./dist"));
 }
 
 #[test]
 fn test_parse_dist_custom_absolute_path() {
     let yaml = "project_name: test\ndist: /tmp/my-release\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.dist, PathBuf::from("/tmp/my-release"));
 }
 
 #[test]
 fn test_parse_dist_path_with_spaces() {
     let yaml = "project_name: test\ndist: \"./my dist folder\"\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.dist, PathBuf::from("./my dist folder"));
 }
 
 #[test]
 fn test_parse_dist_empty_string() {
     let yaml = "project_name: test\ndist: \"\"\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.dist, PathBuf::from(""));
 }
 
@@ -106,7 +106,7 @@ defaults:
     - x86_64-pc-windows-msvc
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let targets = config.defaults.unwrap().targets.unwrap();
     assert_eq!(targets.len(), 3);
     assert_eq!(targets[0], "x86_64-unknown-linux-gnu");
@@ -122,7 +122,7 @@ defaults:
   targets: []
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let targets = config.defaults.unwrap().targets.unwrap();
     assert!(targets.is_empty());
 }
@@ -135,7 +135,7 @@ defaults:
   cross: auto
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().targets, None);
 }
 
@@ -147,7 +147,7 @@ defaults:
   targets: "not-an-array"
 crates: []
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -160,7 +160,7 @@ defaults:
     - x86_64-unknown-linux-musl
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let targets = config.defaults.unwrap().targets.unwrap();
     assert_eq!(targets.len(), 1);
     assert_eq!(targets[0], "x86_64-unknown-linux-musl");
@@ -177,7 +177,7 @@ defaults:
     - ""
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let targets = config.defaults.unwrap().targets.unwrap();
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0], "completely-invalid-triple");
@@ -189,14 +189,14 @@ crates: []
 #[test]
 fn test_parse_defaults_cross_auto() {
     let yaml = "project_name: test\ndefaults:\n  cross: auto\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().cross, Some(CrossStrategy::Auto));
 }
 
 #[test]
 fn test_parse_defaults_cross_zigbuild() {
     let yaml = "project_name: test\ndefaults:\n  cross: zigbuild\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.defaults.unwrap().cross,
         Some(CrossStrategy::Zigbuild)
@@ -206,28 +206,28 @@ fn test_parse_defaults_cross_zigbuild() {
 #[test]
 fn test_parse_defaults_cross_cross() {
     let yaml = "project_name: test\ndefaults:\n  cross: cross\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().cross, Some(CrossStrategy::Cross));
 }
 
 #[test]
 fn test_parse_defaults_cross_cargo() {
     let yaml = "project_name: test\ndefaults:\n  cross: cargo\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().cross, Some(CrossStrategy::Cargo));
 }
 
 #[test]
 fn test_parse_defaults_cross_omitted() {
     let yaml = "project_name: test\ndefaults:\n  targets: []\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().cross, None);
 }
 
 #[test]
 fn test_parse_defaults_cross_invalid_value() {
     let yaml = "project_name: test\ndefaults:\n  cross: docker\ncrates: []";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("unknown variant") || err.contains("docker"));
@@ -237,7 +237,7 @@ fn test_parse_defaults_cross_invalid_value() {
 fn test_parse_defaults_cross_case_sensitive() {
     // CrossStrategy uses rename_all = "lowercase" so "Auto" should fail
     let yaml = "project_name: test\ndefaults:\n  cross: Auto\ncrates: []";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -251,7 +251,7 @@ defaults:
   flags: "--release --locked"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.defaults.unwrap().flags,
         Some("--release --locked".to_string())
@@ -261,14 +261,14 @@ crates: []
 #[test]
 fn test_parse_defaults_flags_omitted() {
     let yaml = "project_name: test\ndefaults:\n  cross: auto\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().flags, None);
 }
 
 #[test]
 fn test_parse_defaults_flags_empty_string() {
     let yaml = "project_name: test\ndefaults:\n  flags: \"\"\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().flags, Some(String::new()));
 }
 
@@ -283,7 +283,7 @@ defaults:
     format: zip
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let archives = config.defaults.unwrap().archives.unwrap();
     assert_eq!(archives.format, Some("zip".to_string()));
 }
@@ -302,7 +302,7 @@ defaults:
         format: tar.xz
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let archives = config.defaults.unwrap().archives.unwrap();
     let overrides = archives.format_overrides.unwrap();
     assert_eq!(overrides.len(), 2);
@@ -315,7 +315,7 @@ crates: []
 #[test]
 fn test_parse_defaults_archives_omitted() {
     let yaml = "project_name: test\ndefaults:\n  cross: auto\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.defaults.unwrap().archives.is_none());
 }
 
@@ -330,7 +330,7 @@ defaults:
     algorithm: sha256
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.defaults.unwrap().checksum.unwrap();
     assert_eq!(checksum.algorithm, Some("sha256".to_string()));
 }
@@ -344,7 +344,7 @@ defaults:
     algorithm: sha512
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.defaults.unwrap().checksum.unwrap();
     assert_eq!(checksum.algorithm, Some("sha512".to_string()));
 }
@@ -358,7 +358,7 @@ defaults:
     algorithm: blake2b
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.defaults.unwrap().checksum.unwrap();
     assert_eq!(checksum.algorithm, Some("blake2b".to_string()));
 }
@@ -378,7 +378,7 @@ defaults:
       - my-archive
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.defaults.unwrap().checksum.unwrap();
     assert_eq!(
         checksum.name_template,
@@ -393,7 +393,7 @@ crates: []
 #[test]
 fn test_parse_defaults_checksum_omitted() {
     let yaml = "project_name: test\ndefaults:\n  cross: auto\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.defaults.unwrap().checksum.is_none());
 }
 
@@ -413,7 +413,7 @@ crates:
     depends_on:
       - lib-a
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let deps = config.crates[1].depends_on.as_ref().unwrap();
     assert_eq!(deps, &["lib-a"]);
 }
@@ -431,7 +431,7 @@ crates:
       - utils
       - macros
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let deps = config.crates[0].depends_on.as_ref().unwrap();
     assert_eq!(deps.len(), 3);
     assert_eq!(deps[0], "core");
@@ -448,7 +448,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates[0].depends_on, None);
 }
 
@@ -462,7 +462,7 @@ crates:
     tag_template: "v{{ version }}"
     depends_on: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let deps = config.crates[0].depends_on.as_ref().unwrap();
     assert!(deps.is_empty());
 }
@@ -477,7 +477,7 @@ crates:
     tag_template: "v{{ version }}"
     depends_on: "not-an-array"
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -492,7 +492,7 @@ crates:
     path: "."
     tag_template: "{{ crate_name }}/v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.crates[0].tag_template,
         "{{ crate_name }}/v{{ version }}"
@@ -508,7 +508,7 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates[0].tag_template, "v{{ .Version }}");
 }
 
@@ -521,7 +521,7 @@ crates:
     path: "."
     tag_template: ""
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates[0].tag_template, "");
 }
 
@@ -533,7 +533,7 @@ crates:
   - name: my-crate
     path: "."
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     // Default is empty string per CrateConfig::default()
     assert_eq!(config.crates[0].tag_template, "");
 }
@@ -547,7 +547,7 @@ crates:
     path: "."
     tag_template: "my-crate/v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates[0].tag_template, "my-crate/v{{ version }}");
 }
 
@@ -565,7 +565,7 @@ crates:
       - binary: app
         copy_from: other-crate
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.copy_from, Some("other-crate".to_string()));
 }
@@ -581,7 +581,7 @@ crates:
     builds:
       - binary: app
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.copy_from, None);
 }
@@ -598,7 +598,7 @@ crates:
       - binary: app
         copy_from: ""
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.copy_from, Some(String::new()));
 }
@@ -622,7 +622,7 @@ crates:
           aarch64-unknown-linux-gnu:
             CC: aarch64-linux-gnu-gcc
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     let env = build.env.as_ref().unwrap();
     assert_eq!(env.len(), 2);
@@ -644,7 +644,7 @@ crates:
     builds:
       - binary: app
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.env, None);
 }
@@ -661,7 +661,7 @@ crates:
       - binary: app
         env: {}
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     let env = build.env.as_ref().unwrap();
     assert!(env.is_empty());
@@ -681,7 +681,7 @@ crates:
       - binary: app
         flags: "--release --locked"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.flags, Some("--release --locked".to_string()));
 }
@@ -697,7 +697,7 @@ crates:
     builds:
       - binary: app
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.flags, None);
 }
@@ -719,7 +719,7 @@ crates:
           - json
         no_default_features: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.features.as_ref().unwrap(), &["tls", "json"]);
     assert_eq!(build.no_default_features, Some(true));
@@ -737,7 +737,7 @@ crates:
       - binary: app
         features: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert!(build.features.as_ref().unwrap().is_empty());
 }
@@ -754,7 +754,7 @@ crates:
       - binary: app
         no_default_features: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.no_default_features, Some(false));
 }
@@ -779,7 +779,7 @@ crates:
         targets:
           - x86_64-unknown-linux-gnu
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let builds = config.crates[0].builds.as_ref().unwrap();
     assert_eq!(builds.len(), 2);
     assert_eq!(builds[0].binary, "app-cli");
@@ -799,7 +799,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.crates[0].builds.is_none());
 }
 
@@ -818,7 +818,7 @@ crates:
           - app-cli
           - app-server
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         let binaries = configs[0].binaries.as_ref().unwrap();
         assert_eq!(binaries, &["app-cli", "app-server"]);
@@ -838,7 +838,7 @@ crates:
     archives:
       - format: tar.gz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].binaries, None);
     } else {
@@ -857,7 +857,7 @@ crates:
     archives:
       - binaries: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert!(configs[0].binaries.as_ref().unwrap().is_empty());
     } else {
@@ -878,7 +878,7 @@ crates:
     archives:
       - format: tar.gz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].format, Some("tar.gz".to_string()));
     } else {
@@ -897,7 +897,7 @@ crates:
     archives:
       - format: zip
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].format, Some("zip".to_string()));
     } else {
@@ -916,7 +916,7 @@ crates:
     archives:
       - format: tar.xz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].format, Some("tar.xz".to_string()));
     } else {
@@ -936,7 +936,7 @@ crates:
     archives:
       - format: not-a-real-format
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].format, Some("not-a-real-format".to_string()));
     } else {
@@ -964,7 +964,7 @@ crates:
           - os: linux
             format: tar.zst
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         let overrides = configs[0].format_overrides.as_ref().unwrap();
         assert_eq!(overrides.len(), 3);
@@ -990,7 +990,7 @@ crates:
           - os: freebsd
             format: tar.gz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         let overrides = configs[0].format_overrides.as_ref().unwrap();
         assert_eq!(overrides[0].os, "freebsd");
@@ -1010,7 +1010,7 @@ crates:
     archives:
       - format: tar.gz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert!(configs[0].format_overrides.is_none());
     } else {
@@ -1034,7 +1034,7 @@ crates:
           - "README.md"
           - "docs/**/*.md"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         let files = configs[0].files.as_ref().unwrap();
         assert_eq!(files.len(), 3);
@@ -1056,7 +1056,7 @@ crates:
     archives:
       - files: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert!(configs[0].files.as_ref().unwrap().is_empty());
     } else {
@@ -1075,7 +1075,7 @@ crates:
     archives:
       - format: tar.gz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].files, None);
     } else {
@@ -1096,7 +1096,7 @@ crates:
     archives:
       - wrap_in_directory: "my-app-{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(
             configs[0].wrap_in_directory,
@@ -1118,7 +1118,7 @@ crates:
     archives:
       - format: tar.gz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].wrap_in_directory, None);
     } else {
@@ -1142,7 +1142,7 @@ crates:
       - format: zip
         name_template: "{{ project_name }}-{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs.len(), 2);
         assert_eq!(configs[0].format, Some("tar.gz".to_string()));
@@ -1161,7 +1161,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert!(configs.is_empty());
     } else {
@@ -1179,7 +1179,7 @@ crates:
     tag_template: "v{{ version }}"
     archives: null
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert!(configs.is_empty());
     } else {
@@ -1203,7 +1203,7 @@ crates:
       algorithm: {algo}
 "#
         );
-        let config: Config = serde_yaml::from_str(&yaml).unwrap();
+        let config: Config = serde_yaml_ng::from_str(&yaml).unwrap();
         let checksum = config.crates[0].checksum.as_ref().unwrap();
         assert_eq!(checksum.algorithm, Some(algo.to_string()));
     }
@@ -1220,7 +1220,7 @@ crates:
     checksum:
       name_template: "{{ project_name }}-checksums.txt"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.crates[0].checksum.as_ref().unwrap();
     assert_eq!(
         checksum.name_template,
@@ -1241,7 +1241,7 @@ crates:
         - "dist/*.sig"
         - "dist/*.asc"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.crates[0].checksum.as_ref().unwrap();
     let files = checksum.extra_files.as_ref().unwrap();
     assert_eq!(files.len(), 2);
@@ -1260,7 +1260,7 @@ crates:
         - my-archive
         - my-binary
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.crates[0].checksum.as_ref().unwrap();
     assert_eq!(
         checksum.ids.as_ref().unwrap(),
@@ -1281,7 +1281,7 @@ crates:
       algorithm: sha512
       name_template: "ignored.txt"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.crates[0].checksum.as_ref().unwrap();
     assert_eq!(checksum.disable, Some(true));
     // Other fields are still parsed even when disabled
@@ -1309,7 +1309,7 @@ crates:
         description: "A test application"
         license: MIT
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert_eq!(nfpm.package_name, Some("my-app".to_string()));
     assert_eq!(nfpm.formats, vec!["deb", "rpm"]);
@@ -1333,7 +1333,7 @@ crates:
           - deb
         file_name_template: "{{ package_name }}_{{ version }}_{{ arch }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert_eq!(
         nfpm.file_name_template,
@@ -1353,7 +1353,7 @@ crates:
       - formats:
           - deb
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert_eq!(nfpm.file_name_template, None);
 }
@@ -1378,7 +1378,7 @@ crates:
             depends:
               - glibc
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     let overrides = nfpm.overrides.as_ref().unwrap();
     assert!(overrides.contains_key("deb"));
@@ -1397,7 +1397,7 @@ crates:
       - formats:
           - deb
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert_eq!(nfpm.overrides, None);
 }
@@ -1417,7 +1417,7 @@ crates:
           - apk
           - archlinux
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert_eq!(nfpm.formats.len(), 4);
     assert_eq!(nfpm.formats[3], "archlinux");
@@ -1434,7 +1434,7 @@ crates:
     nfpm:
       - formats: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert!(nfpm.formats.is_empty());
 }
@@ -1457,7 +1457,7 @@ crates:
             dst: "/etc/app/config.toml"
             type: config
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     let contents = nfpm.contents.as_ref().unwrap();
     assert_eq!(contents.len(), 2);
@@ -1484,7 +1484,7 @@ crates:
           preremove: ./scripts/preremove.sh
           postremove: ./scripts/postremove.sh
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     let scripts = nfpm.scripts.as_ref().unwrap();
     assert_eq!(
@@ -1523,7 +1523,7 @@ crates:
           rpm:
             - glibc
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     let deps = nfpm.dependencies.as_ref().unwrap();
     assert_eq!(deps.get("deb").unwrap().len(), 2);
@@ -1552,7 +1552,7 @@ crates:
         provides:
           - app-service
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert_eq!(
         nfpm.recommends.as_ref().unwrap(),
@@ -1577,7 +1577,7 @@ crates:
           - deb
         bindir: /usr/local/bin
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
     assert_eq!(nfpm.bindir, Some("/usr/local/bin".to_string()));
 }
@@ -1591,7 +1591,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.crates[0].nfpm.is_none());
 }
 
@@ -1618,7 +1618,7 @@ crates:
         test: |
           system "#{bin}/app", "--version"
 "##;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let homebrew = config.crates[0]
         .publish
         .as_ref()
@@ -1650,7 +1650,7 @@ crates:
           owner: myorg
           name: homebrew-tap
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let homebrew = config.crates[0]
         .publish
         .as_ref()
@@ -1676,7 +1676,7 @@ crates:
     publish:
       crates: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.crates[0]
         .publish
         .as_ref()
@@ -1703,7 +1703,7 @@ crates:
         description: "A CLI tool"
         license: "Apache-2.0"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let scoop = config.crates[0]
         .publish
         .as_ref()
@@ -1732,7 +1732,7 @@ crates:
           owner: myorg
           name: scoop-bucket
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let scoop = config.crates[0]
         .publish
         .as_ref()
@@ -1754,7 +1754,7 @@ crates:
     tag_template: "v{{ version }}"
     publish: {}
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.crates[0].publish.as_ref().unwrap().scoop.is_none());
 }
 
@@ -1771,7 +1771,7 @@ crates:
     publish:
       crates: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let settings = config.crates[0]
         .publish
         .as_ref()
@@ -1793,7 +1793,7 @@ crates:
       crates:
         enabled: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let settings = config.crates[0]
         .publish
         .as_ref()
@@ -1813,7 +1813,7 @@ crates:
     tag_template: "v{{ version }}"
     publish: {}
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let settings = config.crates[0]
         .publish
         .as_ref()
@@ -1832,7 +1832,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.crates[0].publish.is_none());
 }
 
@@ -1865,7 +1865,7 @@ crates:
         push_flags:
           - "--all-tags"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     assert_eq!(docker.dockerfile, "Dockerfile");
     assert_eq!(docker.image_templates.len(), 2);
@@ -1894,7 +1894,7 @@ crates:
         image_templates:
           - "myapp:latest"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     assert_eq!(docker.dockerfile, "docker/Dockerfile.release");
 }
@@ -1911,7 +1911,7 @@ crates:
       - image_templates:
           - "myapp:latest"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     // Default for String is empty
     assert_eq!(docker.dockerfile, "");
@@ -1933,7 +1933,7 @@ crates:
           - "--build-arg=FEATURES=full"
           - "--no-cache"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     let flags = docker.build_flag_templates.as_ref().unwrap();
     assert_eq!(flags.len(), 3);
@@ -1952,7 +1952,7 @@ crates:
       - image_templates:
           - "myapp:latest"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     assert_eq!(docker.build_flag_templates, None);
 }
@@ -1973,7 +1973,7 @@ crates:
           - linux/arm64
           - linux/arm/v7
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     let platforms = docker.platforms.as_ref().unwrap();
     assert_eq!(platforms.len(), 3);
@@ -1992,7 +1992,7 @@ crates:
       - image_templates:
           - "myapp:latest"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     assert_eq!(docker.platforms, None);
 }
@@ -2011,7 +2011,7 @@ crates:
           - "ghcr.io/org/app:latest"
           - "docker.io/org/app:{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     assert_eq!(docker.image_templates.len(), 3);
 }
@@ -2029,7 +2029,7 @@ crates:
           - "myapp:latest"
         skip_push: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     assert_eq!(docker.skip_push, Some(true));
 }
@@ -2043,7 +2043,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.crates[0].docker.is_none());
 }
 
@@ -2063,7 +2063,7 @@ crates:
         image_templates:
           - "myapp:debian"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let dockers = config.crates[0].docker.as_ref().unwrap();
     assert_eq!(dockers.len(), 2);
     assert_eq!(dockers[0].dockerfile, "Dockerfile.alpine");
@@ -2092,7 +2092,7 @@ publishers:
       S3_BUCKET: my-releases
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let pub_cfg = &config.publishers.as_ref().unwrap()[0];
     assert_eq!(pub_cfg.name, Some("s3-upload".to_string()));
     assert_eq!(pub_cfg.cmd, "aws");
@@ -2114,7 +2114,7 @@ publishers:
   - cmd: publish.sh
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let pub_cfg = &config.publishers.as_ref().unwrap()[0];
     assert_eq!(pub_cfg.name, None);
     assert_eq!(pub_cfg.cmd, "publish.sh");
@@ -2137,21 +2137,21 @@ publishers:
     cmd: ./scripts/publish.sh
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.publishers.as_ref().unwrap().len(), 3);
 }
 
 #[test]
 fn test_parse_publishers_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.publishers.is_none());
 }
 
 #[test]
 fn test_parse_publishers_empty_array() {
     let yaml = "project_name: test\npublishers: []\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let publishers = config.publishers.as_ref().unwrap();
     assert!(publishers.is_empty());
 }
@@ -2168,7 +2168,7 @@ before:
     - "make generate"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let hooks = config.before.as_ref().unwrap();
     assert_eq!(hooks.hooks.len(), 2);
     assert_eq!(hooks.hooks[0], "go mod tidy");
@@ -2185,7 +2185,7 @@ after:
     - "./scripts/post-release.sh"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let hooks = config.after.as_ref().unwrap();
     assert_eq!(hooks.hooks.len(), 2);
     assert_eq!(hooks.hooks[0], "echo done");
@@ -2203,7 +2203,7 @@ after:
     - "post-step"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.before.as_ref().unwrap().hooks.len(), 1);
     assert_eq!(config.after.as_ref().unwrap().hooks.len(), 1);
 }
@@ -2211,7 +2211,7 @@ crates: []
 #[test]
 fn test_parse_hooks_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.before.is_none());
     assert!(config.after.is_none());
 }
@@ -2224,7 +2224,7 @@ before:
   hooks: []
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.before.as_ref().unwrap().hooks.is_empty());
 }
 
@@ -2241,7 +2241,7 @@ crates:
     release:
       name_template: "Release {{ tag }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(
         release.name_template,
@@ -2260,7 +2260,7 @@ crates:
     release:
       draft: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(release.name_template, None);
 }
@@ -2278,7 +2278,7 @@ crates:
     release:
       prerelease: auto
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(release.prerelease, Some(PrereleaseConfig::Auto));
 }
@@ -2294,7 +2294,7 @@ crates:
     release:
       prerelease: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(release.prerelease, Some(PrereleaseConfig::Bool(true)));
 }
@@ -2310,7 +2310,7 @@ crates:
     release:
       prerelease: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(release.prerelease, Some(PrereleaseConfig::Bool(false)));
 }
@@ -2326,7 +2326,7 @@ crates:
     release:
       draft: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(release.prerelease, None);
 }
@@ -2363,7 +2363,7 @@ crates:
         owner: my-org
         name: my-repo
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let github = config.crates[0]
         .release
         .as_ref()
@@ -2386,7 +2386,7 @@ crates:
     release:
       draft: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.crates[0].release.as_ref().unwrap().github.is_none());
 }
 
@@ -2402,7 +2402,7 @@ signs:
     signature: "{{ .Artifact }}.custom.sig"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.signs[0].signature,
         Some("{{ .Artifact }}.custom.sig".to_string())
@@ -2418,7 +2418,7 @@ signs:
     cmd: gpg
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.signs[0].signature, None);
 }
 
@@ -2432,7 +2432,7 @@ signs:
     signature: ""
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.signs[0].signature, Some(String::new()));
 }
 
@@ -2450,7 +2450,7 @@ docker_signs:
       - --yes
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let ds = &config.docker_signs.as_ref().unwrap()[0];
     assert_eq!(ds.artifacts, Some("all".to_string()));
     assert_eq!(ds.cmd, Some("cosign".to_string()));
@@ -2460,14 +2460,14 @@ crates: []
 #[test]
 fn test_parse_docker_signs_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.docker_signs.is_none());
 }
 
 #[test]
 fn test_parse_docker_signs_empty_array() {
     let yaml = "project_name: test\ndocker_signs: []\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.docker_signs.as_ref().unwrap().is_empty());
 }
 
@@ -2481,7 +2481,7 @@ snapshot:
   name_template: "{{ version }}-next"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.snapshot.as_ref().unwrap().name_template,
         "{{ version }}-next"
@@ -2491,7 +2491,7 @@ crates: []
 #[test]
 fn test_parse_snapshot_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.snapshot.is_none());
 }
 
@@ -2508,7 +2508,7 @@ announce:
     message_template: "New release: {{ version }}"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let discord = config
         .announce
         .as_ref()
@@ -2537,7 +2537,7 @@ announce:
     webhook_url: "https://hooks.slack.com/services/T00/B00/XXX"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let slack = config
         .announce
         .as_ref()
@@ -2562,7 +2562,7 @@ announce:
     message_template: '{"version": "{{ version }}"}'
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let webhook = config
         .announce
         .as_ref()
@@ -2586,14 +2586,14 @@ crates: []
 #[test]
 fn test_parse_announce_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.announce.is_none());
 }
 
 #[test]
 fn test_parse_announce_empty() {
     let yaml = "project_name: test\nannounce: {}\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let announce = config.announce.as_ref().unwrap();
     assert!(announce.discord.is_none());
     assert!(announce.slack.is_none());
@@ -2610,7 +2610,7 @@ changelog:
   sort: asc
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.changelog.as_ref().unwrap().sort,
         Some("asc".to_string())
@@ -2625,7 +2625,7 @@ changelog:
   sort: desc
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.changelog.as_ref().unwrap().sort,
         Some("desc".to_string())
@@ -2646,7 +2646,7 @@ changelog:
       - "^fix:"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let filters = config
         .changelog
         .as_ref()
@@ -2675,7 +2675,7 @@ changelog:
       order: 999
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let groups = config
         .changelog
         .as_ref()
@@ -2698,7 +2698,7 @@ changelog:
   use: github-native
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.changelog.as_ref().unwrap().use_source,
         Some("github-native".to_string())
@@ -2713,7 +2713,7 @@ changelog:
   abbrev: 12
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.changelog.as_ref().unwrap().abbrev, Some(12));
 }
 
@@ -2728,7 +2728,7 @@ changelog:
       regexp: "^feat"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
     assert_eq!(cl.disable, Some(true));
     // Groups are still parsed even when disabled
@@ -2738,7 +2738,7 @@ crates: []
 #[test]
 fn test_parse_changelog_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.changelog.is_none());
 }
 
@@ -2747,14 +2747,14 @@ fn test_parse_changelog_omitted() {
 #[test]
 fn test_parse_defaults_omitted() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.defaults.is_none());
 }
 
 #[test]
 fn test_parse_defaults_empty_object() {
     let yaml = "project_name: test\ndefaults: {}\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let defaults = config.defaults.as_ref().unwrap();
     assert!(defaults.targets.is_none());
     assert!(defaults.cross.is_none());
@@ -2777,7 +2777,7 @@ crates:
     tag_template: "v{{ version }}"
     cross: zigbuild
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().cross, Some(CrossStrategy::Auto));
     assert_eq!(
         config.crates[0].cross,
@@ -2794,7 +2794,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates[0].cross, None);
 }
 
@@ -2819,7 +2819,7 @@ crates:
     depends_on:
       - core
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates.len(), 3);
     assert_eq!(config.crates[0].name, "core");
     assert_eq!(config.crates[1].name, "cli");
@@ -3026,14 +3026,14 @@ name = "scoop-bucket"
 #[test]
 fn test_parse_invalid_type_dist_array() {
     let yaml = "project_name: test\ndist:\n  - a\n  - b\ncrates: []";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_parse_invalid_type_crates_string() {
     let yaml = "project_name: test\ncrates: not-an-array";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -3047,7 +3047,7 @@ crates:
     tag_template: "v{{ version }}"
     builds: "not an array"
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -3061,7 +3061,7 @@ crates:
     tag_template: "v{{ version }}"
     docker: "not an array"
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -3075,28 +3075,28 @@ crates:
     tag_template: "v{{ version }}"
     nfpm: "not an array"
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_parse_invalid_type_publishers_string() {
     let yaml = "project_name: test\npublishers: not-an-array\ncrates: []";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_parse_invalid_type_env_array() {
     let yaml = "project_name: test\nenv:\n  - item\ncrates: []";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
 #[test]
 fn test_parse_invalid_type_report_sizes_string() {
     let yaml = "project_name: test\nreport_sizes: maybe\ncrates: []";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -3108,7 +3108,7 @@ changelog:
   abbrev: "not-a-number"
 crates: []
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -3121,7 +3121,7 @@ defaults:
     disable: "yes"
 crates: []
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err());
 }
 
@@ -3146,7 +3146,7 @@ changelog:
       regexp: "^feat"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
     assert_eq!(cl.disable, Some(true));
     assert_eq!(cl.sort, Some("asc".to_string()));
@@ -3169,7 +3169,7 @@ crates:
       skip_upload: true
       replace_existing_draft: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(release.draft, Some(true));
     assert_eq!(release.skip_upload, Some(true));
@@ -3189,7 +3189,7 @@ crates:
     release:
       draft: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(matches!(
         config.crates[0].archives,
         ArchivesConfig::Disabled
@@ -3216,7 +3216,7 @@ crates:
             OPENSSL_DIR: /usr/local
         copy_from: shared-build
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
     assert_eq!(build.flags, Some("--release".to_string()));
     assert_eq!(build.features.as_ref().unwrap(), &["tls"]);
@@ -3356,7 +3356,7 @@ crates:
         scripts:
           postinstall: ./scripts/post.sh
 "###;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
 
     // Top-level
     assert_eq!(config.project_name, "comprehensive-test");
@@ -3448,7 +3448,7 @@ crates:
               group: root
               mode: "0755"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let content = &config.crates[0].nfpm.as_ref().unwrap()[0]
         .contents
         .as_ref()
@@ -3633,7 +3633,7 @@ crates:
     archives:
       - name_template: "{{ project_name }}-{{ version }}-{{ os }}-{{ arch }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(
             configs[0].name_template,
@@ -3657,7 +3657,7 @@ crates:
     archives:
       - format: tar.gz
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs[0].name_template, None);
     } else {
@@ -3690,7 +3690,7 @@ crates:
           name: scoop-bucket
         description: desc
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let publish = config.crates[0].publish.as_ref().unwrap();
     assert!(publish.crates_config().enabled);
     assert_eq!(publish.crates_config().index_timeout, 600);
@@ -3709,7 +3709,7 @@ announce:
     enabled: false
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let discord = config
         .announce
         .as_ref()
@@ -3735,7 +3735,7 @@ docker_signs:
       - cosign.key
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let ds = &config.docker_signs.as_ref().unwrap()[0];
     assert_eq!(ds.artifacts, Some("all".to_string()));
     assert_eq!(ds.cmd, Some("cosign".to_string()));
@@ -3763,7 +3763,7 @@ announce:
     endpoint_url: "https://example.com"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let webhook = config
         .announce
         .as_ref()
@@ -3793,7 +3793,7 @@ crates:
     path: "./other"
     tag_template: "v{{ .Version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates.len(), 2);
     assert_eq!(config.crates[0].name, "myapp");
     assert_eq!(config.crates[1].name, "myapp");
@@ -3812,7 +3812,7 @@ crates:
     path: "."
     tag_template: "{{ unclosed"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates[0].tag_template, "{{ unclosed");
     // Config parses but rendering would fail
 }
@@ -3826,7 +3826,7 @@ crates:
     path: "."
     tag_template: ""
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates[0].tag_template, "");
 }
 
@@ -3843,7 +3843,7 @@ crates:
     depends_on:
       - nonexistent-crate
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let deps = config.crates[0].depends_on.as_ref().unwrap();
     assert_eq!(deps, &["nonexistent-crate"]);
 }
@@ -3865,7 +3865,7 @@ crates:
     tag_template: "v{{ .Version }}"
     depends_on: [a]
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.crates.len(), 2);
     let deps_a = config.crates[0].depends_on.as_ref().unwrap();
     assert_eq!(deps_a, &["b"]);
@@ -3883,7 +3883,7 @@ crates:
     tag_template: "v{{ .Version }}"
     depends_on: [myapp]
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let deps = config.crates[0].depends_on.as_ref().unwrap();
     assert_eq!(deps, &["myapp"]);
 }
@@ -3893,14 +3893,14 @@ crates:
 #[test]
 fn test_invalid_yaml_syntax_produces_parse_error() {
     let yaml = "project_name: test\ncrates:\n  - name: [invalid yaml structure";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err(), "invalid YAML should produce a parse error");
 }
 
 #[test]
 fn test_wrong_type_for_crates_field() {
     let yaml = "project_name: test\ncrates: not_a_list";
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_err(), "crates should be a list, not a string");
 }
 
@@ -3917,7 +3917,7 @@ crates:
 "#;
     // CrateConfig uses #[serde(default)] without deny_unknown_fields,
     // so unknown fields are silently ignored.
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_ok(), "unknown fields should be silently ignored");
     let config = result.unwrap();
     assert_eq!(config.crates[0].name, "myapp");
@@ -3935,7 +3935,7 @@ crates:
     tag_template: "v{{ .Version }}"
     archives: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(matches!(config.crates[0].archives, ArchivesConfig::Disabled));
 }
 
@@ -3950,7 +3950,7 @@ crates:
   - path: "."
     tag_template: "v{{ .Version }}"
 "#;
-    let result: Result<Config, _> = serde_yaml::from_str(yaml);
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
     assert!(result.is_ok(), "missing name should parse due to #[serde(default)]");
     let config = result.unwrap();
     assert_eq!(config.crates[0].name, "");
@@ -3961,7 +3961,7 @@ crates:
 #[test]
 fn test_parse_nightly_omitted_defaults_to_none() {
     let yaml = "project_name: test\ncrates: []";
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(config.nightly.is_none());
 }
 
@@ -3972,7 +3972,7 @@ project_name: test
 nightly: {}
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nightly = config.nightly.expect("nightly block should be present");
     assert!(nightly.name_template.is_none());
     assert!(nightly.tag_name.is_none());
@@ -3986,7 +3986,7 @@ nightly:
   name_template: "{{ .ProjectName }}-nightly"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nightly = config.nightly.expect("nightly block should be present");
     assert_eq!(
         nightly.name_template,
@@ -4003,7 +4003,7 @@ nightly:
   tag_name: "nightly"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nightly = config.nightly.expect("nightly block should be present");
     assert!(nightly.name_template.is_none());
     assert_eq!(nightly.tag_name, Some("nightly".to_string()));
@@ -4018,7 +4018,7 @@ nightly:
   tag_name: "rolling-nightly"
 crates: []
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nightly = config.nightly.expect("nightly block should be present");
     assert_eq!(
         nightly.name_template,
@@ -4050,7 +4050,7 @@ crates:
       - name_template: "myapp-universal"
         replace: true
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let ub = config.crates[0]
         .universal_binaries
         .as_ref()
@@ -4074,7 +4074,7 @@ crates:
           - build1
           - build2
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let ub = config.crates[0]
         .universal_binaries
         .as_ref()
@@ -4095,7 +4095,7 @@ crates:
     path: .
     tag_template: "v{{ .Version }}"
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(
         config.crates[0].universal_binaries.is_none(),
         "universal_binaries should be None when omitted"
@@ -4113,7 +4113,7 @@ crates:
     universal_binaries:
       - replace: false
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let ub = &config.crates[0].universal_binaries.as_ref().unwrap()[0];
     assert_eq!(ub.replace, Some(false));
 }
@@ -4133,7 +4133,7 @@ crates:
         ids:
           - extra
 "#;
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let ub = config.crates[0].universal_binaries.as_ref().unwrap();
     assert_eq!(ub.len(), 2);
     assert_eq!(ub[0].name_template, Some("myapp-universal".to_string()));

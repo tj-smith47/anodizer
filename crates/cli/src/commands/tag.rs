@@ -738,7 +738,7 @@ none_string_token: "#none"
 git_api_tagging: true
 verbose: false
 "##;
-        let cfg: TagConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: TagConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.default_bump, Some("patch".to_string()));
         assert_eq!(cfg.tag_prefix, Some("v".to_string()));
         assert_eq!(
@@ -759,7 +759,7 @@ verbose: false
     #[test]
     fn test_tag_config_from_yaml_minimal() {
         let yaml = "{}";
-        let cfg: TagConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: TagConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.default_bump, None);
         assert_eq!(cfg.tag_prefix, None);
         assert_eq!(cfg.release_branches, None);
@@ -768,7 +768,7 @@ verbose: false
     #[test]
     fn test_tag_config_from_yaml_defaults() {
         let yaml = "default_bump: major";
-        let cfg: TagConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: TagConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.default_bump, Some("major".to_string()));
         assert_eq!(cfg.tag_prefix, None); // not set, will use default when resolved
     }
@@ -786,7 +786,7 @@ tag:
   tag_prefix: "v"
   branch_history: last
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let tag = config.tag.unwrap();
         assert_eq!(tag.default_bump, Some("patch".to_string()));
         assert_eq!(tag.branch_history, Some("last".to_string()));

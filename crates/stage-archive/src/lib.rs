@@ -902,7 +902,7 @@ crates:
         files:
           - LICENSE
 "#;
-        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         match &config.crates[0].archives {
             ArchivesConfig::Configs(cfgs) => {
                 assert_eq!(cfgs.len(), 1);

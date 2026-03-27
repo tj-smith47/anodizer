@@ -601,7 +601,7 @@ push_flags:
   - "--cache-to=type=registry,ref=ghcr.io/owner/app:cache"
   - "--provenance=true"
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip_push, Some(true));
         let extra = cfg.extra_files.unwrap();
         assert_eq!(extra.len(), 2);
@@ -828,7 +828,7 @@ image_templates:
   - "ghcr.io/owner/app:latest"
 dockerfile: Dockerfile
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip_push, None);
         assert_eq!(cfg.extra_files, None);
         assert_eq!(cfg.push_flags, None);

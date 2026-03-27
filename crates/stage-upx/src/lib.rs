@@ -367,7 +367,7 @@ upx:
     - "--lzma"
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
         assert_eq!(config.upx[0].binary, "/usr/bin/upx");
         assert_eq!(config.upx[0].args, vec!["--best", "--lzma"]);
@@ -388,7 +388,7 @@ upx:
     targets: ["*-windows-*"]
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 2);
         assert_eq!(config.upx[0].id, Some("linux".to_string()));
         assert_eq!(config.upx[0].targets.as_ref().unwrap().len(), 2);
@@ -403,7 +403,7 @@ upx:
   - {}
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
         assert!(config.upx[0].enabled);
         assert_eq!(config.upx[0].binary, "upx");
@@ -419,7 +419,7 @@ crates: []
 project_name: test
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.upx.is_empty());
     }
 
@@ -432,7 +432,7 @@ upx:
   args: ["--best"]
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
         let ids = config.upx[0].ids.as_ref().unwrap();
         assert_eq!(ids, &["myapp", "helper"]);
@@ -447,7 +447,7 @@ upx:
   args: ["--best"]
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.upx[0].required);
     }
 
@@ -459,7 +459,7 @@ upx:
   enabled: false
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(!config.upx[0].enabled);
     }
 

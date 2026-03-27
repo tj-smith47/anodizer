@@ -919,7 +919,7 @@ filters:
   exclude:
     - "^chore"
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let include = cfg.filters.as_ref().unwrap().include.as_ref().unwrap();
         assert_eq!(include.len(), 2);
         assert_eq!(include[0], "^feat");
@@ -933,7 +933,7 @@ filters:
         let yaml = r#"
 use: github-native
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_source.as_deref(), Some("github-native"));
     }
 
@@ -942,7 +942,7 @@ use: github-native
         let yaml = r#"
 abbrev: 10
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.abbrev, Some(10));
     }
 

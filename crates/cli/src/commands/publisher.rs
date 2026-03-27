@@ -441,7 +441,7 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
 "#;
-        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let publishers = config.publishers.as_ref().unwrap();
         assert_eq!(publishers.len(), 2);
 
@@ -504,7 +504,7 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
 "#;
-        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.publishers.is_none());
     }
 }

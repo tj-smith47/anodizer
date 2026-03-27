@@ -819,7 +819,7 @@ sbom:
   enabled: true
   format: cyclonedx
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.source.is_some());
         let source = config.source.as_ref().unwrap();
         assert!(source.is_enabled());
@@ -838,7 +838,7 @@ sbom:
 project_name: minimal
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.source.is_none());
         assert!(config.sbom.is_none());
     }

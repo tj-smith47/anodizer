@@ -16,4 +16,4 @@ tempfile.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-serde_yaml.workspace = true
+serde_yaml_ng.workspace = true

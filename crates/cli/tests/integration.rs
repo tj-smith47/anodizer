@@ -885,7 +885,7 @@ fn test_e2e_init_generates_parseable_yaml() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Verify the output is valid YAML by parsing it
-    let parsed: serde_yaml::Value = serde_yaml::from_str(&stdout).unwrap_or_else(|e| {
+    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
             "init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
             e, stdout
@@ -897,21 +897,21 @@ fn test_e2e_init_generates_parseable_yaml() {
         .as_mapping()
         .expect("parsed YAML should be a mapping");
     assert!(
-        map.contains_key(serde_yaml::Value::String("project_name".to_string())),
+        map.contains_key(serde_yaml_ng::Value::String("project_name".to_string())),
         "YAML should contain project_name"
     );
     assert!(
-        map.contains_key(serde_yaml::Value::String("crates".to_string())),
+        map.contains_key(serde_yaml_ng::Value::String("crates".to_string())),
         "YAML should contain crates"
     );
     assert!(
-        map.contains_key(serde_yaml::Value::String("defaults".to_string())),
+        map.contains_key(serde_yaml_ng::Value::String("defaults".to_string())),
         "YAML should contain defaults"
     );
 
     // Verify the project name matches
     let project_name = map
-        .get(serde_yaml::Value::String("project_name".to_string()))
+        .get(serde_yaml_ng::Value::String("project_name".to_string()))
         .and_then(|v| v.as_str())
         .unwrap_or("");
     assert_eq!(
@@ -921,7 +921,7 @@ fn test_e2e_init_generates_parseable_yaml() {
 
     // Verify crates section is an array
     let crates = map
-        .get(serde_yaml::Value::String("crates".to_string()))
+        .get(serde_yaml_ng::Value::String("crates".to_string()))
         .and_then(|v| v.as_sequence())
         .expect("crates should be an array");
     assert!(!crates.is_empty(), "crates array should not be empty");
@@ -1141,7 +1141,7 @@ fn test_e2e_init_workspace_generates_depends_on() {
     );
 
     // Verify the generated YAML is parseable
-    let _parsed: serde_yaml::Value = serde_yaml::from_str(&stdout).unwrap_or_else(|e| {
+    let _parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&stdout).unwrap_or_else(|e| {
         panic!(
             "workspace init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
             e, stdout
@@ -2111,34 +2111,34 @@ fn test_e2e_config_validation_round_trip() {
     // Step 2: Parse the generated config, replace targets with only the host
     // target to avoid cross-compilation failures, then write back.
     let host = detect_host_target();
-    let mut parsed: serde_yaml::Value = serde_yaml::from_str(&generated_config).unwrap();
+    let mut parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&generated_config).unwrap();
     // Replace defaults.targets with just the host target
     if let Some(mapping) = parsed.as_mapping_mut() {
         if let Some(defaults) = mapping
-            .get_mut(serde_yaml::Value::String("defaults".to_string()))
+            .get_mut(serde_yaml_ng::Value::String("defaults".to_string()))
             .and_then(|d| d.as_mapping_mut())
         {
             defaults.insert(
-                serde_yaml::Value::String("targets".to_string()),
-                serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(host.clone())]),
+                serde_yaml_ng::Value::String("targets".to_string()),
+                serde_yaml_ng::Value::Sequence(vec![serde_yaml_ng::Value::String(host.clone())]),
             );
         }
         // Also replace per-crate targets
         if let Some(crates) = mapping
-            .get_mut(serde_yaml::Value::String("crates".to_string()))
+            .get_mut(serde_yaml_ng::Value::String("crates".to_string()))
             .and_then(|c| c.as_sequence_mut())
         {
             for krate in crates.iter_mut() {
                 if let Some(builds) = krate
                     .as_mapping_mut()
-                    .and_then(|m| m.get_mut(serde_yaml::Value::String("builds".to_string())))
+                    .and_then(|m| m.get_mut(serde_yaml_ng::Value::String("builds".to_string())))
                     .and_then(|b| b.as_sequence_mut())
                 {
                     for build in builds.iter_mut() {
                         if let Some(m) = build.as_mapping_mut() {
                             m.insert(
-                                serde_yaml::Value::String("targets".to_string()),
-                                serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(
+                                serde_yaml_ng::Value::String("targets".to_string()),
+                                serde_yaml_ng::Value::Sequence(vec![serde_yaml_ng::Value::String(
                                     host.clone(),
                                 )]),
                             );
@@ -2148,7 +2148,7 @@ fn test_e2e_config_validation_round_trip() {
             }
         }
     }
-    let modified_config = serde_yaml::to_string(&parsed).unwrap();
+    let modified_config = serde_yaml_ng::to_string(&parsed).unwrap();
     create_config(tmp.path(), &modified_config);
 
     // Step 3: Validate with `check`
@@ -2813,14 +2813,14 @@ fn test_e2e_init_yaml_structural_round_trip() {
     let yaml_str = String::from_utf8_lossy(&output.stdout).to_string();
 
     // Parse as generic YAML
-    let value: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap_or_else(|e| {
+    let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml_str).unwrap_or_else(|e| {
         panic!("init output should be valid YAML: {}\nOutput:\n{}", e, yaml_str);
     });
     let map = value.as_mapping().expect("top-level should be a mapping");
 
     // Re-serialize the parsed value back to YAML and verify it's still valid
-    let re_serialized = serde_yaml::to_string(&value).unwrap();
-    let re_parsed: serde_yaml::Value = serde_yaml::from_str(&re_serialized).unwrap_or_else(|e| {
+    let re_serialized = serde_yaml_ng::to_string(&value).unwrap();
+    let re_parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&re_serialized).unwrap_or_else(|e| {
         panic!(
             "re-serialized YAML should parse: {}\nOutput:\n{}",
             e, re_serialized
@@ -2836,7 +2836,7 @@ fn test_e2e_init_yaml_structural_round_trip() {
 
     // Verify essential keys survived the round-trip
     let has_key = |key: &str| {
-        map.contains_key(serde_yaml::Value::String(key.to_string()))
+        map.contains_key(serde_yaml_ng::Value::String(key.to_string()))
     };
     assert!(has_key("project_name"), "should have project_name after round-trip");
     assert!(has_key("crates"), "should have crates after round-trip");
