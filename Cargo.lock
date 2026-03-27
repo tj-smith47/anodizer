@@ -3119,7 +3119,6 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anodize",
- "anodize-core",
  "clap",
  "serde",
  "tera",

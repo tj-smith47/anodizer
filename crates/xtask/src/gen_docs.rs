@@ -84,10 +84,8 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
         .get_arguments()
         .filter(|a| a.is_global_set())
         .map(|a| {
-            if a.get_help().is_none() {
-                if let Some(long) = a.get_long() {
-                    eprintln!("warning: global flag --{long} has no help text");
-                }
+            if a.get_help().is_none() && let Some(long) = a.get_long() {
+                eprintln!("warning: global flag --{long} has no help text");
             }
             ArgInfo {
                 long: a.get_long().map(|l| format!("`--{l}`")).unwrap_or_default(),
