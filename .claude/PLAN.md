@@ -325,51 +325,128 @@ Expand E2E coverage beyond the current 6 tests:
 
 **Why before audit:** These are features that round out anodize as a complete release tool. Implementing them before the audit means the audit catches quality issues across the full feature set, not just a subset.
 
-### Rust-Specific First-Class Features (brainstorm — scope TBD)
-Evaluate which of these are must-have vs nice-to-have based on what popular Rust projects actually need. Ideas to explore:
-- `cargo-binstall` metadata generation
-- `rust-toolchain.toml` awareness / MSRV checking
-- Workspace dependency version sync
-- `cargo-dist` migration path
-- Conditional compilation features (release builds with specific feature flag combos)
-- `cdylib` / `staticlib` / `wasm32` target support
-- Crate documentation builds (docs.rs-compatible)
+### Task 5A: Rust-Specific First-Class Features
+Features that make anodize feel native to the Rust ecosystem, not a GoReleaser port:
+- **cargo-binstall metadata:** Generate `[package.metadata.binstall]` config and/or standalone binstall manifests so users can `cargo binstall <crate>` to get pre-built binaries
+- **Workspace version sync (`version_from: tag`):** Auto-update `version` in Cargo.toml files to match the release tag before build. Essential for workspace releases where crate versions must match the tag.
+- **cdylib / staticlib / wasm32 target support:** Recognize non-binary crate types in build config. `cargo build --lib` for cdylib/staticlib targets, `wasm32-unknown-unknown` / `wasm32-wasi` as valid cross-compilation targets with appropriate artifact handling.
 
-### Built-in Auto-Tagging (brainstorm — semantics TBD)
-Eliminate the need for a separate tagging action (like `anothrNick/github-tag-action`). No other release tool does this natively. Semantics to be designed in a dedicated session.
+### Task 5B: Built-in Auto-Tagging (`anodize tag` command)
+Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native command, eliminating the need for a separate GitHub Action.
 
-### GoReleaser Pro Features (free in anodize)
-- Monorepo support (multiple independent workspaces)
-- Nightly builds (`--nightly`)
-- Config includes/templates
-- Split/merge (fan out builds in CI)
-- Snapcraft, dmg, msi, pkg packaging
-- Chocolatey, Winget
-- Reproducible builds (`SOURCE_DATE_EPOCH`)
-- macOS Universal Binaries
+**Core behavior:**
+- `anodize tag` reads commit messages for bump directives, finds the latest semver tag, bumps accordingly, creates and pushes the new tag
+- Commit message scanning respects `branch_history` mode to determine which commits to inspect
 
-### New Capabilities and Tracked P2 Gaps
-- Blob storage upload (S3/GCS/Azure)
-- AUR, Krew, source archives, SBOM generation
-- Additional announce providers (Telegram, Teams, Mattermost, etc.)
-- `jsonschema` command (output JSON schema for IDE support)
-- `.env` file loading / `env_files` for token paths
-- Config schema versioning (`version: 2`)
-- Build `ignore` list (exclude specific target combos)
-- Build per-target overrides
-- UPX binary compression
+**Config fields (mirroring every GHA env var):**
+- `default_bump`: `patch` | `minor` | `major` (default: `minor`, matching GHA)
+- `tag_prefix`: string (default: `"v"`). Replaces the deprecated `with_v` bool — prefix added to all tags
+- `release_branches`: list of branch patterns (regex). Non-matching branches produce hash-postfixed versions without creating a tag
+- `custom_tag`: string — override all bump logic and use this exact tag value
+- `tag_context`: `repo` | `branch` (default: `repo`) — scope for previous tag lookup
+- `branch_history`: `compare` | `last` | `full` (default: `compare`) — how many commits to scan for bump directives
+- `initial_version`: string (default: `"0.0.0"`) — starting version when no previous tag exists
+- `prerelease`: bool (default: false) — enable prerelease mode
+- `prerelease_suffix`: string (default: `"beta"`) — suffix for prerelease versions (e.g., `1.0.0-beta.1`)
+- `force_without_changes`: bool (default: false) — create tag even if no commits since last tag
+- `force_without_changes_pre`: bool — same but specifically for prereleases
+- `major_string_token`: string (default: `"#major"`) — custom commit message trigger for major bump
+- `minor_string_token`: string (default: `"#minor"`) — custom trigger for minor bump
+- `patch_string_token`: string (default: `"#patch"`) — custom trigger for patch bump
+- `none_string_token`: string (default: `"#none"`) — custom trigger to skip tagging
+- `git_api_tagging`: bool (default: true) — use GitHub API (`true`) or git CLI (`false`) for tag push
+- `verbose`: bool (default: true) — print git log during tagging
 
-### Maintenance
+**CLI flags:**
+- `anodize tag --dry-run` — show what tag would be created without pushing
+- `anodize tag --custom-tag <tag>` — override from CLI (same as `custom_tag` config)
+- `anodize tag --default-bump <type>` — override from CLI
+
+**Workspace-aware:**
+- In multi-crate repos, tag per crate using `tag_template` (e.g., `crate-v{{ Version }}`)
+- `anodize tag --crate <name>` to tag a specific crate
+
+**Outputs (for CI integration):**
+- Print `new_tag`, `old_tag`, and `part` (major/minor/patch/none) to stdout in a machine-parseable format
+- Exit code 0 on success, non-zero on skip (`#none`) or error
+
+**Reference implementation:** `anothrNick/github-tag-action@1.71.0` as used in `/opt/repos/cfgd/.github/workflows/auto-tag.yml`
+
+### Task 5C: Nightly Builds (`--nightly`)
+- Add `--nightly` flag to `release` command
+- Behavior: uses date-based version (`0.1.0-nightly.20260327`), always creates/replaces a `nightly` release on GitHub
+- Distinct from `--snapshot` (local dev builds) — nightly is for publishing automated rolling releases
+- Config: `nightly.name_template`, `nightly.tag_name` (default: `nightly`)
+
+### Task 5D: Config Includes and Templates
+- Add `includes` top-level field: list of YAML file paths merged into the main config
+- Merge strategy: deep merge, arrays concatenate, later values override
+- Template expansion in included paths: `includes: ["configs/{{ Os }}.yaml"]`
+- Use case: shared base config across multiple crates/repos
+
+### Task 5E: Reproducible Builds (`SOURCE_DATE_EPOCH`)
+- When `reproducible: true` is set in build config, set `SOURCE_DATE_EPOCH` env var from commit timestamp
+- Strip non-deterministic metadata from archives (file timestamps set to commit date)
+- Pass `--remap-path-prefix` to rustc to strip local paths from binaries
+
+### Task 5F: macOS Universal Binaries
+- Add `universal_binaries` config section
+- After building `aarch64-apple-darwin` and `x86_64-apple-darwin`, run `lipo -create -output` to produce a universal binary
+- Register the universal binary as its own artifact for archiving
+- Requires both macOS targets in the build matrix
+
+### Task 5G: Monorepo Support
+- Add `workspaces` top-level config for multiple independent project roots (distinct from Cargo workspace `crates`)
+- Each workspace has its own `crates`, `changelog`, `release` config
+- `anodize release --workspace <name>` to release a specific workspace
+- Use case: repos with multiple independently-versioned components that aren't Cargo workspace members
+
+### Task 5H: New Publishers — Chocolatey + Winget
+- **Chocolatey:** Generate `.nuspec` manifest and `chocolateyInstall.ps1`, publish via `choco push`
+- **Winget:** Generate YAML manifest for `winget-pkgs` repo, submit PR via GitHub API
+- Both gated behind `publish.chocolatey` / `publish.winget` config sections
+- Dry-run generates manifests without publishing
+
+### Task 5I: New Publishers — AUR + Krew
+- **AUR:** Generate PKGBUILD, publish to AUR via `makepkg` + SSH
+- **Krew:** Generate kubectl plugin manifest YAML with version, download URIs, SHA256 checksums
+- Both gated behind `publish.aur` / `publish.krew` config sections
+
+### Task 5J: Source Archives + SBOM Generation
+- **Source archives:** Create `.tar.gz` / `.zip` of the source tree (respecting `.gitignore`), register as artifacts
+- **SBOM:** Generate CycloneDX or SPDX SBOM from `Cargo.lock` dependencies, attach as release asset
+- Config: `source.enabled`, `source.format`, `sbom.enabled`, `sbom.format` (cyclonedx/spdx)
+
+### Task 5K: UPX Binary Compression
+- Add `upx[]` config section (array, like `signs[]`)
+- After build, run `upx` on matching binaries with configurable flags (`--best`, `--lzma`, etc.)
+- Artifact filter by `ids` and `goos`/`goarch` (maps to target triple components)
+- Skip if `upx` binary not found (with warning, not error — unless `upx[].required: true`)
+
+### Task 5L: Additional Announce Providers
+- Add: Telegram, Microsoft Teams, Mattermost, email (SMTP)
+- Each follows existing announce pattern: `enabled`, `message_template`, provider-specific fields (bot token, channel ID, etc.)
+- All share the same Tera template variable context
+
+### Task 5M: CLI + Config Additions
+- `jsonschema` command: output JSON Schema for `.anodize.yaml` for IDE autocompletion
+- `.env` file loading: `env_files: [".env", ".release.env"]` top-level config, loaded before template expansion
+- Config schema versioning: `version: 2` field (current schema is implicitly v1, accept both)
+- Build `ignore` list: exclude specific `os/arch` combos (e.g., `ignore: [{os: windows, arch: arm64}]`)
+- Build per-target `overrides`: per-target env, flags, features (e.g., `overrides: [{targets: [x86_64-*], features: [simd]}]`)
+
+### Task 5N: Maintenance
 - Migrate from `serde_yaml` (deprecated) to `serde_yml` or alternative
-- Keep dependencies updated (octocrab, reqwest, clap)
-- Dogfood: CI pipeline for anodize itself using anodize
+- Update dependencies to latest compatible versions
+- Dogfood: ensure `.anodize.yaml` exercises new features where applicable
 
-### Documentation Site
-- Set up docs site with mdBook or Zola
-- Getting started guide, per-stage documentation, CI/CD integration guides, FAQ
-- Deploy to GitHub Pages
+### Task 5O: Documentation Site
+- Set up docs site with mdBook
+- Structure: getting started, configuration reference (per-stage), template reference, CLI reference, CI/CD integration guides (GitHub Actions, GitLab CI), migration from GoReleaser, FAQ
+- Auto-generate configuration reference from JSON schema (Task 5M)
+- Deploy configuration for GitHub Pages
 
-**Done when:** Docs site builds and deploys. All major features have a dedicated page. Scope of other tasks TBD after Session 4 fresh evaluation.
+**Session 5 exit criteria:** All listed features implemented with tests. `anodize tag` command functional. cargo-binstall metadata generated. New publishers (Chocolatey, Winget, AUR, Krew) generate correct manifests. Nightly builds work. Config includes merge correctly. Docs site builds locally. `cargo test --workspace` and `cargo clippy` pass.
 
 ---
 
@@ -497,6 +574,58 @@ Eliminate the need for a separate tagging action (like `anothrNick/github-tag-ac
 **Done when:** Full audit returns zero findings. All automated checks pass. No dead code, no duplication, no design inconsistencies across crates.
 
 **Session 8 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
+
+---
+
+## Session 9: Platform-Specific Packaging — Snapcraft, dmg, msi, pkg
+
+**Depends on:** Session 8 complete (full audit passed).
+
+**Why separate:** Each format requires platform-specific tooling (macOS for dmg/pkg, Windows for msi, Linux for Snapcraft). Testing requires either CI runners on those platforms or careful mock-based validation. Grouping them together lets the session focus on platform abstraction patterns.
+
+### Task 9A: Snapcraft stage
+- Add `snapcrafts[]` config section
+- Generate `snapcraft.yaml` from config (name, version, summary, description, confinement, apps, plugs)
+- Shell out to `snapcraft pack` for building
+- Register `.snap` as artifact for upload
+
+### Task 9B: macOS dmg stage
+- Add `dmg[]` config section
+- Generate DMG disk image containing the binary and optional extras (README, LICENSE)
+- Use `hdiutil` (macOS-only) or cross-platform alternative
+- Register `.dmg` as artifact
+
+### Task 9C: Windows msi stage
+- Add `msi[]` config section
+- Generate WiX XML manifest, build with `wix`/`light`/`candle` toolchain
+- Register `.msi` as artifact
+
+### Task 9D: macOS pkg stage
+- Add `pkg[]` config section
+- Generate macOS `.pkg` installer using `pkgbuild`/`productbuild`
+- Register `.pkg` as artifact
+
+**Session 9 exit criteria:** Each packaging format has config parsing, manifest generation, and artifact registration tests. Formats that require platform-specific tools gracefully skip with a clear message when the tool isn't available.
+
+---
+
+## Session 10: Cloud Storage + CI Fan-Out
+
+**Depends on:** Session 8 complete.
+
+### Task 10A: Blob storage upload (S3/GCS/Azure)
+- Add `blobs[]` config section with `provider` (s3/gcs/azure), `bucket`, `folder`, credentials config
+- Implement upload for each provider using their respective SDK crates
+- Support templated paths: `folder: "releases/{{ Tag }}"`
+- Dry-run logs the upload plan without executing
+
+### Task 10B: Split/merge CI fan-out
+- Add `--split` flag: serialize build plan to JSON, output per-target job definitions
+- Add `--merge` flag: collect artifacts from split jobs, resume pipeline from archive stage
+- Designed for CI matrix strategies where each target builds in its own job
+- Generate GitHub Actions matrix YAML from split output
+
+**Session 10 exit criteria:** Blob upload works with mocked cloud APIs. Split/merge round-trips correctly in tests.
 
 ---
 

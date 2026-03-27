@@ -199,7 +199,8 @@ fn build_universal_binary(
     dry_run: bool,
 ) -> anyhow::Result<()> {
     // Collect arm64 and x86_64 macOS binary artifacts for this crate.
-    // When `ids` is set, only consider artifacts whose metadata "id" is in the list.
+    // When `ids` is set, only consider artifacts whose "binary" metadata key (the binary name)
+    // is in the list. Build artifacts use "binary" as their identifier, not "id".
     let binaries = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Binary, crate_name);
@@ -209,9 +210,8 @@ fn build_universal_binary(
             .into_iter()
             .filter(|a| {
                 a.metadata
-                    .get("id")
-                    .map(|id| ids.contains(id))
-                    .unwrap_or(false)
+                    .get("binary")
+                    .is_some_and(|name| ids.contains(name))
             })
             .collect()
     } else {
