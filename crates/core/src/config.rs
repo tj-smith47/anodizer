@@ -1,30 +1,37 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 // ---------------------------------------------------------------------------
 // Top-level config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct Config {
+    /// Schema version. Currently supports 1 (implicit default) and 2.
+    pub version: Option<u32>,
     pub project_name: String,
     #[serde(default = "default_dist")]
     pub dist: PathBuf,
     pub includes: Option<Vec<String>>,
+    /// List of .env files to load before template expansion.
+    pub env_files: Option<Vec<String>>,
     pub defaults: Option<Defaults>,
     pub before: Option<HooksConfig>,
     pub after: Option<HooksConfig>,
     pub crates: Vec<CrateConfig>,
     pub changelog: Option<ChangelogConfig>,
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
+    #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
     pub docker_signs: Option<Vec<DockerSignConfig>>,
     // No `alias` attribute needed: unlike `signs`/`sign`, "upx" is already
     // both singular and plural, so a separate alias adds no value.
     #[serde(default, deserialize_with = "deserialize_upx")]
+    #[schemars(schema_with = "upx_schema")]
     pub upx: Vec<UpxConfig>,
     pub snapshot: Option<SnapshotConfig>,
     pub nightly: Option<NightlyConfig>,
@@ -38,6 +45,16 @@ pub struct Config {
     pub sbom: Option<SbomConfig>,
 }
 
+/// Helper schema function for the signs field (accepts object or array).
+fn signs_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    generator.subschema_for::<Vec<SignConfig>>()
+}
+
+/// Helper schema function for the upx field (accepts object or array).
+fn upx_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    generator.subschema_for::<Vec<UpxConfig>>()
+}
+
 fn default_dist() -> PathBuf {
     PathBuf::from("./dist")
 }
@@ -45,9 +62,11 @@ fn default_dist() -> PathBuf {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            version: None,
             project_name: String::new(),
             dist: default_dist(),
             includes: None,
+            env_files: None,
             defaults: None,
             before: None,
             after: None,
@@ -70,11 +89,56 @@ impl Default for Config {
     }
 }
 
+/// Validate the config schema version. Accepts version 1 (default) and 2.
+/// Returns an error for unknown versions.
+pub fn validate_version(config: &Config) -> Result<(), String> {
+    match config.version {
+        None | Some(1) | Some(2) => Ok(()),
+        Some(v) => Err(format!(
+            "unsupported config version: {}. Supported versions are 1 and 2.",
+            v
+        )),
+    }
+}
+
+/// Load environment variables from .env-style files.
+/// Each file is read as KEY=VALUE lines. Lines starting with # and empty lines are skipped.
+pub fn load_env_files(files: &[String]) -> Result<(), String> {
+    for file_path in files {
+        let content = std::fs::read_to_string(file_path)
+            .map_err(|e| format!("failed to read env file '{}': {}", file_path, e))?;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = trimmed.split_once('=') {
+                let key = key.trim();
+                let value = value.trim();
+                // Strip surrounding quotes from value if present
+                let value = if (value.starts_with('"') && value.ends_with('"'))
+                    || (value.starts_with('\'') && value.ends_with('\''))
+                {
+                    &value[1..value.len() - 1]
+                } else {
+                    value
+                };
+                // SAFETY: set_var is unsafe since Rust 1.66 in multi-threaded contexts,
+                // but we call this early before spawning threads.
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
     pub targets: Option<Vec<String>>,
@@ -82,9 +146,13 @@ pub struct Defaults {
     pub flags: Option<String>,
     pub archives: Option<DefaultArchiveConfig>,
     pub checksum: Option<ChecksumConfig>,
+    /// Exclude specific os/arch combinations from builds.
+    pub ignore: Option<Vec<BuildIgnore>>,
+    /// Per-target overrides for env, flags, and features.
+    pub overrides: Option<Vec<BuildOverride>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DefaultArchiveConfig {
     pub format: Option<String>,
@@ -92,10 +160,39 @@ pub struct DefaultArchiveConfig {
 }
 
 // ---------------------------------------------------------------------------
+// BuildIgnore — exclude specific os/arch combos from builds
+// ---------------------------------------------------------------------------
+
+/// Exclude a specific os/arch combination from the build matrix.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct BuildIgnore {
+    pub os: String,
+    pub arch: String,
+}
+
+// ---------------------------------------------------------------------------
+// BuildOverride — per-target env, flags, features
+// ---------------------------------------------------------------------------
+
+/// Override env, flags, or features for targets matching glob patterns.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct BuildOverride {
+    /// Glob patterns to match against target triples (e.g., `["x86_64-*", "*-linux-*"]`).
+    pub targets: Vec<String>,
+    /// Extra environment variables to set for matching targets.
+    pub env: Option<HashMap<String, String>>,
+    /// Extra flags to append for matching targets.
+    pub flags: Option<String>,
+    /// Extra features to enable for matching targets.
+    pub features: Option<Vec<String>>,
+}
+
+// ---------------------------------------------------------------------------
 // CrossStrategy
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CrossStrategy {
     Auto,
@@ -108,7 +205,7 @@ pub enum CrossStrategy {
 // CrateConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct CrateConfig {
     pub name: String,
@@ -118,6 +215,7 @@ pub struct CrateConfig {
     pub builds: Option<Vec<BuildConfig>>,
     pub cross: Option<CrossStrategy>,
     #[serde(default, deserialize_with = "deserialize_archives_config")]
+    #[schemars(schema_with = "archives_schema")]
     pub archives: ArchivesConfig,
     pub checksum: Option<ChecksumConfig>,
     pub release: Option<ReleaseConfig>,
@@ -127,6 +225,11 @@ pub struct CrateConfig {
     pub binstall: Option<BinstallConfig>,
     pub version_sync: Option<VersionSyncConfig>,
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
+}
+
+/// Helper schema function for archives (accepts false or array).
+fn archives_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    generator.subschema_for::<Option<Vec<ArchiveConfig>>>()
 }
 
 impl Default for CrateConfig {
@@ -155,7 +258,7 @@ impl Default for CrateConfig {
 // UniversalBinaryConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct UniversalBinaryConfig {
     pub name_template: Option<String>,
@@ -167,7 +270,7 @@ pub struct UniversalBinaryConfig {
 // BuildConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BuildConfig {
     pub binary: String,
@@ -184,7 +287,7 @@ pub struct BuildConfig {
 // ArchivesConfig — untagged enum: false => Disabled, array => Configs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub enum ArchivesConfig {
     Disabled,
     Configs(Vec<ArchiveConfig>),
@@ -296,7 +399,7 @@ where
 // ArchiveConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ArchiveConfig {
     pub name_template: Option<String>,
@@ -307,7 +410,7 @@ pub struct ArchiveConfig {
     pub wrap_in_directory: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FormatOverride {
     pub os: String,
     pub format: String,
@@ -317,7 +420,7 @@ pub struct FormatOverride {
 // ChecksumConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChecksumConfig {
     pub name_template: Option<String>,
@@ -331,12 +434,14 @@ pub struct ChecksumConfig {
 // ReleaseConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ReleaseConfig {
     pub github: Option<GitHubConfig>,
     pub draft: Option<bool>,
+    #[schemars(schema_with = "prerelease_schema")]
     pub prerelease: Option<PrereleaseConfig>,
+    #[schemars(schema_with = "make_latest_schema")]
     pub make_latest: Option<MakeLatestConfig>,
     pub name_template: Option<String>,
     pub header: Option<String>,
@@ -347,7 +452,17 @@ pub struct ReleaseConfig {
     pub replace_existing_artifacts: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Schema for prerelease: "auto" or boolean.
+fn prerelease_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    schemars::schema::Schema::Bool(true)
+}
+
+/// Schema for make_latest: "auto" or boolean.
+fn make_latest_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    schemars::schema::Schema::Bool(true)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GitHubConfig {
     pub owner: String,
     pub name: String,
@@ -457,9 +572,10 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
 // PublishConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct PublishConfig {
+    #[schemars(schema_with = "crates_publish_schema")]
     pub crates: Option<CratesPublishConfig>,
     pub homebrew: Option<HomebrewConfig>,
     pub scoop: Option<ScoopConfig>,
@@ -467,6 +583,11 @@ pub struct PublishConfig {
     pub winget: Option<WingetConfig>,
     pub aur: Option<AurConfig>,
     pub krew: Option<KrewConfig>,
+}
+
+/// Schema for crates publish config (bool or object).
+fn crates_publish_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    schemars::schema::Schema::Bool(true)
 }
 
 impl PublishConfig {
@@ -489,7 +610,7 @@ impl PublishConfig {
 }
 
 /// The `crates` field inside `publish` accepts either a bool or an object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum CratesPublishConfig {
     Bool(bool),
@@ -524,7 +645,7 @@ impl Default for CratesPublishSettings {
 // HomebrewConfig / ScoopConfig / TapConfig / BucketConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct HomebrewConfig {
     pub tap: Option<TapConfig>,
@@ -535,7 +656,7 @@ pub struct HomebrewConfig {
     pub test: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ScoopConfig {
     pub bucket: Option<BucketConfig>,
@@ -543,13 +664,13 @@ pub struct ScoopConfig {
     pub license: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TapConfig {
     pub owner: String,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BucketConfig {
     pub owner: String,
     pub name: String,
@@ -559,7 +680,7 @@ pub struct BucketConfig {
 // ChocolateyConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChocolateyConfig {
     /// The GitHub project repo (owner/name). Used to derive download URLs
@@ -580,7 +701,7 @@ pub struct ChocolateyConfig {
     pub api_key: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChocolateyRepoConfig {
     pub owner: String,
     pub name: String,
@@ -590,7 +711,7 @@ pub struct ChocolateyRepoConfig {
 // WingetConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct WingetConfig {
     pub manifests_repo: Option<WingetManifestsRepoConfig>,
@@ -601,7 +722,7 @@ pub struct WingetConfig {
     pub publisher_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WingetManifestsRepoConfig {
     pub owner: String,
     pub name: String,
@@ -611,7 +732,7 @@ pub struct WingetManifestsRepoConfig {
 // AurConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct AurConfig {
     /// AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).
@@ -650,7 +771,7 @@ pub struct AurConfig {
 // KrewConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct KrewConfig {
     /// The krew-index fork repo (owner/name) to which the plugin manifest is
@@ -667,7 +788,7 @@ pub struct KrewConfig {
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct KrewManifestsRepoConfig {
     pub owner: String,
     pub name: String,
@@ -677,7 +798,7 @@ pub struct KrewManifestsRepoConfig {
 // DockerConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerConfig {
     pub image_templates: Vec<String>,
@@ -694,7 +815,7 @@ pub struct DockerConfig {
 // NfpmConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmConfig {
     pub package_name: Option<String>,
@@ -717,7 +838,7 @@ pub struct NfpmConfig {
     pub provides: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmScripts {
     pub preinstall: Option<String>,
@@ -726,7 +847,7 @@ pub struct NfpmScripts {
     pub postremove: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmFileInfo {
     pub owner: Option<String>,
@@ -734,7 +855,7 @@ pub struct NfpmFileInfo {
     pub mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NfpmContent {
     pub src: String,
     pub dst: String,
@@ -747,7 +868,7 @@ pub struct NfpmContent {
 // BinstallConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BinstallConfig {
     pub enabled: Option<bool>,
@@ -760,7 +881,7 @@ pub struct BinstallConfig {
 // SourceConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SourceConfig {
     pub enabled: Option<bool>,
@@ -785,7 +906,7 @@ impl SourceConfig {
 // SbomConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SbomConfig {
     pub enabled: Option<bool>,
@@ -808,7 +929,7 @@ impl SbomConfig {
 // VersionSyncConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct VersionSyncConfig {
     pub enabled: Option<bool>,
@@ -819,7 +940,7 @@ pub struct VersionSyncConfig {
 // ChangelogConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChangelogConfig {
     pub sort: Option<String>,
@@ -835,14 +956,14 @@ pub struct ChangelogConfig {
     pub abbrev: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChangelogFilters {
     pub exclude: Option<Vec<String>>,
     pub include: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChangelogGroup {
     pub title: String,
@@ -854,7 +975,7 @@ pub struct ChangelogGroup {
 // SignConfig / DockerSignConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SignConfig {
     pub id: Option<String>,
@@ -867,7 +988,7 @@ pub struct SignConfig {
     pub ids: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerSignConfig {
     pub artifacts: Option<String>,
@@ -879,7 +1000,7 @@ pub struct DockerSignConfig {
 // UpxConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct UpxConfig {
     pub id: Option<String>,
@@ -954,7 +1075,7 @@ where
 // SnapshotConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotConfig {
     pub name_template: String,
 }
@@ -963,7 +1084,7 @@ pub struct SnapshotConfig {
 // NightlyConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NightlyConfig {
     /// Template for the release name. Default: "{{ .ProjectName }}-nightly"
@@ -976,7 +1097,7 @@ pub struct NightlyConfig {
 // AnnounceConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct AnnounceConfig {
     pub discord: Option<AnnounceProviderConfig>,
@@ -988,7 +1109,7 @@ pub struct AnnounceConfig {
     pub email: Option<EmailAnnounce>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct AnnounceProviderConfig {
     pub enabled: Option<bool>,
@@ -996,7 +1117,7 @@ pub struct AnnounceProviderConfig {
     pub message_template: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct WebhookConfig {
     pub enabled: Option<bool>,
@@ -1006,7 +1127,7 @@ pub struct WebhookConfig {
     pub message_template: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TelegramAnnounce {
     pub enabled: Option<bool>,
@@ -1017,7 +1138,7 @@ pub struct TelegramAnnounce {
     pub parse_mode: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TeamsAnnounce {
     pub enabled: Option<bool>,
@@ -1025,7 +1146,7 @@ pub struct TeamsAnnounce {
     pub message_template: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MattermostAnnounce {
     pub enabled: Option<bool>,
@@ -1039,7 +1160,7 @@ pub struct MattermostAnnounce {
     pub message_template: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct EmailAnnounce {
     pub enabled: Option<bool>,
@@ -1054,7 +1175,7 @@ pub struct EmailAnnounce {
 // PublisherConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct PublisherConfig {
     pub name: Option<String>,
@@ -1069,7 +1190,7 @@ pub struct PublisherConfig {
 // HooksConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct HooksConfig {
     pub hooks: Vec<String>,
@@ -1079,7 +1200,7 @@ pub struct HooksConfig {
 // TagConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TagConfig {
     pub default_bump: Option<String>,
@@ -1108,13 +1229,14 @@ pub struct TagConfig {
 /// A workspace represents an independent project root within a monorepo.
 /// Each workspace has its own crates, changelog, and release configuration,
 /// allowing independently-versioned components that aren't Cargo workspace members.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkspaceConfig {
     pub name: String,
     pub crates: Vec<CrateConfig>,
     pub changelog: Option<ChangelogConfig>,
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
+    #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
     pub before: Option<HooksConfig>,
     pub after: Option<HooksConfig>,
@@ -3050,5 +3172,211 @@ crates:
         assert!(publish.winget.is_some());
         assert!(publish.aur.is_some());
         assert!(publish.krew.is_some());
+    }
+
+    // ---- Config version tests ----
+
+    #[test]
+    fn test_version_field_none_is_valid() {
+        let config = Config::default();
+        assert!(validate_version(&config).is_ok());
+    }
+
+    #[test]
+    fn test_version_field_1_is_valid() {
+        let yaml = r#"
+project_name: test
+version: 1
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.version, Some(1));
+        assert!(validate_version(&config).is_ok());
+    }
+
+    #[test]
+    fn test_version_field_2_is_valid() {
+        let yaml = r#"
+project_name: test
+version: 2
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.version, Some(2));
+        assert!(validate_version(&config).is_ok());
+    }
+
+    #[test]
+    fn test_version_field_99_is_rejected() {
+        let config = Config {
+            version: Some(99),
+            ..Default::default()
+        };
+        let result = validate_version(&config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unsupported config version: 99"));
+    }
+
+    // ---- env_files tests ----
+
+    #[test]
+    fn test_env_files_field_parses() {
+        let yaml = r#"
+project_name: test
+env_files:
+  - ".env"
+  - ".release.env"
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let files = config.env_files.unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], ".env");
+        assert_eq!(files[1], ".release.env");
+    }
+
+    #[test]
+    fn test_env_files_field_omitted() {
+        let yaml = r#"
+project_name: test
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.env_files.is_none());
+    }
+
+    #[test]
+    fn test_load_env_files_sets_vars() {
+        use std::io::Write;
+        let dir = tempfile::TempDir::new().unwrap();
+        let env_path = dir.path().join(".env");
+        let mut f = std::fs::File::create(&env_path).unwrap();
+        writeln!(f, "# comment line").unwrap();
+        writeln!(f, "").unwrap();
+        writeln!(f, "TEST_ANODIZE_KEY=hello_world").unwrap();
+        writeln!(f, "TEST_ANODIZE_QUOTED=\"with quotes\"").unwrap();
+        drop(f);
+
+        load_env_files(&[env_path.to_string_lossy().to_string()]).unwrap();
+        assert_eq!(std::env::var("TEST_ANODIZE_KEY").unwrap(), "hello_world");
+        assert_eq!(std::env::var("TEST_ANODIZE_QUOTED").unwrap(), "with quotes");
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("TEST_ANODIZE_KEY");
+            std::env::remove_var("TEST_ANODIZE_QUOTED");
+        }
+    }
+
+    #[test]
+    fn test_load_env_files_nonexistent_returns_error() {
+        let result = load_env_files(&["/tmp/nonexistent_anodize_env_file_12345".to_string()]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("failed to read env file"));
+    }
+
+    // ---- BuildIgnore tests ----
+
+    #[test]
+    fn test_build_ignore_parses() {
+        let yaml = r#"
+project_name: test
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+    - aarch64-unknown-linux-gnu
+  ignore:
+    - os: windows
+      arch: arm64
+    - os: linux
+      arch: "386"
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let defaults = config.defaults.unwrap();
+        let ignores = defaults.ignore.unwrap();
+        assert_eq!(ignores.len(), 2);
+        assert_eq!(ignores[0].os, "windows");
+        assert_eq!(ignores[0].arch, "arm64");
+        assert_eq!(ignores[1].os, "linux");
+        assert_eq!(ignores[1].arch, "386");
+    }
+
+    #[test]
+    fn test_build_ignore_omitted() {
+        let yaml = r#"
+project_name: test
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let defaults = config.defaults.unwrap();
+        assert!(defaults.ignore.is_none());
+    }
+
+    // ---- BuildOverride tests ----
+
+    #[test]
+    fn test_build_override_parses() {
+        let yaml = r#"
+project_name: test
+defaults:
+  overrides:
+    - targets:
+        - "x86_64-*"
+      features:
+        - simd
+      flags: "--release"
+      env:
+        CC: gcc
+    - targets:
+        - "*-apple-darwin"
+      features:
+        - metal
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let defaults = config.defaults.unwrap();
+        let overrides = defaults.overrides.unwrap();
+        assert_eq!(overrides.len(), 2);
+        assert_eq!(overrides[0].targets, vec!["x86_64-*"]);
+        assert_eq!(overrides[0].features, Some(vec!["simd".to_string()]));
+        assert_eq!(overrides[0].flags, Some("--release".to_string()));
+        assert_eq!(
+            overrides[0].env.as_ref().unwrap().get("CC").unwrap(),
+            "gcc"
+        );
+        assert_eq!(overrides[1].targets, vec!["*-apple-darwin"]);
+        assert_eq!(overrides[1].features, Some(vec!["metal".to_string()]));
+        assert!(overrides[1].env.is_none());
+    }
+
+    #[test]
+    fn test_build_override_omitted() {
+        let yaml = r#"
+project_name: test
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+crates: []
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let defaults = config.defaults.unwrap();
+        assert!(defaults.overrides.is_none());
+    }
+
+    // ---- JSON Schema generation test ----
+
+    #[test]
+    fn test_json_schema_generation() {
+        let schema = schemars::schema_for!(Config);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+        assert!(json.contains("project_name"));
+        assert!(json.contains("env_files"));
+        assert!(json.contains("version"));
+        assert!(json.contains("BuildIgnore"));
+        assert!(json.contains("BuildOverride"));
     }
 }

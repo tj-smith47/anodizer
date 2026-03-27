@@ -35,6 +35,7 @@ clap_complete.workspace = true
 colored.workspace = true
 regex.workspace = true
 serde.workspace = true
+schemars.workspace = true
 serde_yaml.workspace = true
 toml.workspace = true
 

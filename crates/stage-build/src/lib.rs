@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{BuildConfig, CrossStrategy, UniversalBinaryConfig};
+use anodize_core::config::{BuildConfig, BuildIgnore, BuildOverride, CrossStrategy, UniversalBinaryConfig};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
@@ -314,6 +314,35 @@ fn build_universal_binary(
 }
 
 // ---------------------------------------------------------------------------
+// Build ignore/override helpers
+// ---------------------------------------------------------------------------
+
+/// Check if a target triple matches any entry in the ignore list.
+/// Matching is done by comparing the os and arch components of the target triple.
+pub fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
+    if ignores.is_empty() {
+        return false;
+    }
+    let (os, arch) = map_target(target);
+    ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
+}
+
+/// Find the first matching override for a target triple.
+/// Override `targets` are glob patterns matched against the full triple string.
+pub fn find_matching_override<'a>(target: &str, overrides: &'a [BuildOverride]) -> Option<&'a BuildOverride> {
+    for ov in overrides {
+        for pat_str in &ov.targets {
+            if let Ok(pat) = glob::Pattern::new(pat_str)
+                && pat.matches(target)
+            {
+                return Some(ov);
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // BuildStage
 // ---------------------------------------------------------------------------
 
@@ -343,6 +372,18 @@ impl Stage for BuildStage {
             .unwrap_or(CrossStrategy::Auto);
         let default_flags: Option<String> =
             ctx.config.defaults.as_ref().and_then(|d| d.flags.clone());
+        let build_ignores: Vec<BuildIgnore> = ctx
+            .config
+            .defaults
+            .as_ref()
+            .and_then(|d| d.ignore.clone())
+            .unwrap_or_default();
+        let build_overrides: Vec<BuildOverride> = ctx
+            .config
+            .defaults
+            .as_ref()
+            .and_then(|d| d.overrides.clone())
+            .unwrap_or_default();
 
         // Collect crates to process (cloned to avoid borrow conflict with ctx.artifacts)
         let crates: Vec<_> = ctx
@@ -437,9 +478,41 @@ impl Stage for BuildStage {
 
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {
+                    // Check ignore list
+                    if is_target_ignored(target, &build_ignores) {
+                        eprintln!(
+                            "[build] ignoring target {} (matched ignore rule)",
+                            target
+                        );
+                        continue;
+                    }
+
+                    // Apply overrides: merge env, append flags, extend features
+                    let matched_override = find_matching_override(target, &build_overrides);
+                    let effective_flags: Option<String> = if let Some(ov) = matched_override {
+                        match (&flags, &ov.flags) {
+                            (Some(base), Some(extra)) => Some(format!("{} {}", base, extra)),
+                            (None, Some(extra)) => Some(extra.clone()),
+                            (Some(base), None) => Some(base.to_string()),
+                            (None, None) => None,
+                        }
+                    } else {
+                        flags.map(|f| f.to_string())
+                    };
+                    let effective_features: Vec<String> = if let Some(ov) = matched_override {
+                        let mut f = features.clone();
+                        if let Some(ref extra) = ov.features {
+                            f.extend(extra.iter().cloned());
+                        }
+                        f
+                    } else {
+                        features.clone()
+                    };
+
                     // Determine the binary path
                     // Flags may contain --release; check for it
-                    let profile = if flags.map(|f| f.contains("--release")).unwrap_or(false) {
+                    let effective_flags_ref = effective_flags.as_deref();
+                    let profile = if effective_flags_ref.map(|f| f.contains("--release")).unwrap_or(false) {
                         "release"
                     } else {
                         "debug"
@@ -535,6 +608,15 @@ impl Stage for BuildStage {
                             .cloned()
                             .unwrap_or_default();
 
+                        // Merge override env if matched
+                        if let Some(ov) = matched_override
+                            && let Some(ref ov_env) = ov.env
+                        {
+                            for (k, v) in ov_env {
+                                target_env.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
+
                         // Reproducible builds: inject SOURCE_DATE_EPOCH and RUSTFLAGS
                         if build.reproducible.unwrap_or(false) {
                             let epoch = ctx
@@ -569,8 +651,8 @@ impl Stage for BuildStage {
                                 &crate_cfg.path,
                                 target,
                                 &strategy,
-                                flags,
-                                &features,
+                                effective_flags_ref,
+                                &effective_features,
                                 no_default_features,
                                 &target_env,
                             )
@@ -580,8 +662,8 @@ impl Stage for BuildStage {
                                 &crate_cfg.path,
                                 target,
                                 &strategy,
-                                flags,
-                                &features,
+                                effective_flags_ref,
+                                &effective_features,
                                 no_default_features,
                                 &target_env,
                             )
@@ -1474,5 +1556,120 @@ crate_type = ["dylib"]
         assert_eq!(art.crate_name, "myapp");
         assert_eq!(art.metadata.get("universal").map(|s| s.as_str()), Some("true"));
         assert_eq!(art.metadata.get("binary").map(|s| s.as_str()), Some("myapp"));
+    }
+
+    // ---- Build ignore tests ----
+
+    #[test]
+    fn test_is_target_ignored_matches() {
+        let ignores = vec![
+            BuildIgnore {
+                os: "windows".to_string(),
+                arch: "arm64".to_string(),
+            },
+        ];
+        // aarch64-pc-windows-msvc maps to os=windows, arch=arm64
+        assert!(is_target_ignored("aarch64-pc-windows-msvc", &ignores));
+    }
+
+    #[test]
+    fn test_is_target_ignored_no_match() {
+        let ignores = vec![
+            BuildIgnore {
+                os: "windows".to_string(),
+                arch: "arm64".to_string(),
+            },
+        ];
+        // x86_64-unknown-linux-gnu maps to os=linux, arch=amd64
+        assert!(!is_target_ignored("x86_64-unknown-linux-gnu", &ignores));
+    }
+
+    #[test]
+    fn test_is_target_ignored_empty_list() {
+        assert!(!is_target_ignored("x86_64-unknown-linux-gnu", &[]));
+    }
+
+    #[test]
+    fn test_is_target_ignored_multiple_rules() {
+        let ignores = vec![
+            BuildIgnore {
+                os: "windows".to_string(),
+                arch: "arm64".to_string(),
+            },
+            BuildIgnore {
+                os: "linux".to_string(),
+                arch: "arm64".to_string(),
+            },
+        ];
+        assert!(is_target_ignored("aarch64-unknown-linux-gnu", &ignores));
+        assert!(!is_target_ignored("x86_64-unknown-linux-gnu", &ignores));
+    }
+
+    // ---- Build override tests ----
+
+    #[test]
+    fn test_find_matching_override_glob_match() {
+        let overrides = vec![
+            BuildOverride {
+                targets: vec!["x86_64-*".to_string()],
+                features: Some(vec!["simd".to_string()]),
+                ..Default::default()
+            },
+        ];
+        let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().features, Some(vec!["simd".to_string()]));
+    }
+
+    #[test]
+    fn test_find_matching_override_no_match() {
+        let overrides = vec![
+            BuildOverride {
+                targets: vec!["x86_64-*".to_string()],
+                features: Some(vec!["simd".to_string()]),
+                ..Default::default()
+            },
+        ];
+        let result = find_matching_override("aarch64-apple-darwin", &overrides);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_matching_override_wildcard_in_middle() {
+        let overrides = vec![
+            BuildOverride {
+                targets: vec!["*-apple-darwin".to_string()],
+                features: Some(vec!["metal".to_string()]),
+                ..Default::default()
+            },
+        ];
+        let result = find_matching_override("aarch64-apple-darwin", &overrides);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().features, Some(vec!["metal".to_string()]));
+    }
+
+    #[test]
+    fn test_find_matching_override_empty_list() {
+        let result = find_matching_override("x86_64-unknown-linux-gnu", &[]);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_matching_override_returns_first_match() {
+        let overrides = vec![
+            BuildOverride {
+                targets: vec!["x86_64-*".to_string()],
+                flags: Some("--release".to_string()),
+                ..Default::default()
+            },
+            BuildOverride {
+                targets: vec!["*-linux-*".to_string()],
+                flags: Some("--opt-level=3".to_string()),
+                ..Default::default()
+            },
+        ];
+        let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().flags, Some("--release".to_string()));
     }
 }

@@ -103,6 +103,8 @@ enum Commands {
     },
     /// Check availability of required external tools
     Healthcheck,
+    /// Output JSON Schema for .anodize.yaml
+    Jsonschema,
     /// Auto-tag based on commit message directives
     Tag {
         #[arg(long)]
@@ -278,6 +280,7 @@ fn main() {
         }
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
+        Commands::Jsonschema => commands::jsonschema::run(),
         Commands::Tag {
             dry_run,
             custom_tag,
@@ -450,6 +453,20 @@ mod tests {
         assert!(
             help.contains("tag"),
             "help should mention tag command"
+        );
+        assert!(
+            help.contains("jsonschema"),
+            "help should mention jsonschema command"
+        );
+    }
+
+    #[test]
+    fn test_cli_parses_jsonschema() {
+        let cli = Cli::try_parse_from(["anodize", "jsonschema"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse jsonschema command: {:?}",
+            cli.err()
         );
     }
 

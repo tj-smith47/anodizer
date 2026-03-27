@@ -12,6 +12,7 @@ categories.workspace = true
 [dependencies]
 anodize-core.workspace = true
 anyhow.workspace = true
+glob.workspace = true
 toml_edit.workspace = true
 
 [dev-dependencies]

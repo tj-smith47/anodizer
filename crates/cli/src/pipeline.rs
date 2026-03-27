@@ -68,7 +68,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    match ext {
+    let config = match ext {
         "yaml" | "yml" => {
             let base: serde_yaml::Value = serde_yaml::from_str(&content)
                 .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
@@ -107,12 +107,18 @@ pub fn load_config(path: &Path) -> Result<Config> {
             // Merge base config on top of the accumulated defaults (base wins).
             merge_yaml(&mut merged, &base);
 
-            Ok(serde_yaml::from_value(merged)
-                .with_context(|| format!("failed to deserialize config: {}", path.display()))?)
+            serde_yaml::from_value(merged)
+                .with_context(|| format!("failed to deserialize config: {}", path.display()))?
         }
-        "toml" => Ok(toml::from_str(&content)?),
+        "toml" => toml::from_str(&content)?,
         _ => bail!("unsupported config format: {}", ext),
-    }
+    };
+
+    // Validate config schema version
+    anodize_core::config::validate_version(&config)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    Ok(config)
 }
 
 /// Execute a list of shell hook commands.
@@ -429,5 +435,93 @@ mod tests {
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.project_name, "simple");
         assert!(config.includes.is_none());
+    }
+
+    // ---- Version validation in load_config ----
+
+    #[test]
+    fn test_load_config_version_1_accepted() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nversion: 1\ncrates: []\n",
+        )
+        .unwrap();
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.version, Some(1));
+    }
+
+    #[test]
+    fn test_load_config_version_2_accepted() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nversion: 2\ncrates: []\n",
+        )
+        .unwrap();
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.version, Some(2));
+    }
+
+    #[test]
+    fn test_load_config_version_99_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nversion: 99\ncrates: []\n",
+        )
+        .unwrap();
+        let result = load_config(&cfg_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("unsupported config version"),
+            "error should mention unsupported version: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_load_config_env_files_field_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nenv_files:\n  - .env\n  - .release.env\ncrates: []\n",
+        )
+        .unwrap();
+        let config = load_config(&cfg_path).unwrap();
+        let files = config.env_files.unwrap();
+        assert_eq!(files, vec![".env", ".release.env"]);
+    }
+
+    #[test]
+    fn test_load_config_with_ignore_and_overrides() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            r#"
+project_name: test
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+  ignore:
+    - os: windows
+      arch: arm64
+  overrides:
+    - targets: ["x86_64-*"]
+      features: [simd]
+crates: []
+"#,
+        )
+        .unwrap();
+        let config = load_config(&cfg_path).unwrap();
+        let defaults = config.defaults.unwrap();
+        assert_eq!(defaults.ignore.unwrap().len(), 1);
+        assert_eq!(defaults.overrides.unwrap().len(), 1);
     }
 }

@@ -36,6 +36,16 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     let mut config =
         pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
 
+    // Validate config schema version
+    anodize_core::config::validate_version(&config)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    // Load .env files early (before template expansion)
+    if let Some(ref env_files) = config.env_files {
+        anodize_core::config::load_env_files(env_files)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+
     // If --workspace is specified, resolve the workspace and overlay its config
     // onto the top-level config (replacing crates, changelog, signs, etc.).
     if let Some(ref ws_name) = opts.workspace {
