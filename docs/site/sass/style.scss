@@ -11,6 +11,11 @@
   --color-accent-subtle: rgba(232, 89, 12, 0.08);
   --color-accent-border: rgba(232, 89, 12, 0.2);
   --color-code-bg: #0d0d0d;
+  --color-surface-alt: #111;
+  --color-terminal-header: #333;
+  --color-terminal-dot: #555;
+  --color-terminal-text: #e0e0e0;
+  --color-terminal-comment: #555;
   --color-hero-gradient-start: #1b1b1b;
   --color-hero-gradient-end: #2d1b00;
 }
@@ -28,6 +33,21 @@ body {
 }
 
 main { flex: 1; }
+
+.skip-to-content {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 999;
+  padding: 8px 16px;
+  background: var(--color-primary);
+  color: #fff;
+
+  &:focus {
+    left: 8px;
+    top: 8px;
+  }
+}
 
 a { color: var(--color-primary); text-decoration: none; }
 a:hover { color: var(--color-primary-hover); }
@@ -57,7 +77,7 @@ pre {
 
 // ---------- Top Nav ----------
 .top-nav {
-  background: #111;
+  background: var(--color-surface-alt);
   border-bottom: 1px solid var(--color-bg-tertiary);
   position: sticky;
   top: 0;
@@ -76,7 +96,7 @@ pre {
 .nav-brand {
   font-size: 18px;
   font-weight: 700;
-  color: var(--color-primary) !important;
+  color: var(--color-primary);
 }
 
 .nav-links {
@@ -85,6 +105,8 @@ pre {
 
   a { color: var(--color-text-muted); font-size: 14px; }
   a:hover { color: var(--color-text); }
+
+  @media (max-width: 768px) { gap: 16px; font-size: 12px; }
 }
 
 // ---------- Hero ----------
@@ -114,6 +136,7 @@ pre {
 
 .hero-buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: center;
   margin-bottom: 36px;
@@ -154,7 +177,7 @@ pre {
 }
 
 .terminal-header {
-  background: #333;
+  background: var(--color-terminal-header);
   padding: 8px 12px;
   display: flex;
   gap: 6px;
@@ -164,7 +187,7 @@ pre {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #555;
+  background: var(--color-terminal-dot);
 }
 
 .terminal-body {
@@ -178,8 +201,8 @@ pre {
 }
 
 .terminal-prompt { color: var(--color-primary); }
-.terminal-cmd { color: #e0e0e0; }
-.terminal-comment { color: #555; }
+.terminal-cmd { color: var(--color-terminal-text); }
+.terminal-comment { color: var(--color-terminal-comment); }
 
 // ---------- Features Grid ----------
 .features {
@@ -241,7 +264,7 @@ pre {
 .docs-sidebar {
   width: 260px;
   flex-shrink: 0;
-  background: #111;
+  background: var(--color-surface-alt);
   border-right: 1px solid var(--color-bg-tertiary);
   padding: 20px 0;
   overflow-y: auto;

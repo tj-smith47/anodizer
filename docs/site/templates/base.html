@@ -9,6 +9,7 @@
   <link rel="icon" href="{{ get_url(path='favicon.ico') }}">
 </head>
 <body>
+  <a href="#main-content" class="skip-to-content">Skip to main content</a>
   <nav class="top-nav">
     <div class="nav-inner">
       <a href="{{ config.base_url }}" class="nav-brand">anodize</a>
@@ -19,7 +20,7 @@
       </div>
     </div>
   </nav>
-  <main>
+  <main id="main-content">
     {% block content %}{% endblock %}
   </main>
   <footer class="site-footer">
