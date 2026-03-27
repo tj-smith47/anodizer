@@ -94,6 +94,17 @@ enum Commands {
     },
     /// Check availability of required external tools
     Healthcheck,
+    /// Auto-tag based on commit message directives
+    Tag {
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, help = "Override bump logic with a specific tag value")]
+        custom_tag: Option<String>,
+        #[arg(long, help = "Override default bump type (patch/minor/major)")]
+        default_bump: Option<String>,
+        #[arg(long = "crate", help = "Tag a specific crate in a workspace")]
+        crate_name: Option<String>,
+    },
 }
 
 /// Return a sensible default parallelism value (number of logical CPUs, minimum 1).
@@ -250,6 +261,19 @@ fn main() {
         }
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
+        Commands::Tag {
+            dry_run,
+            custom_tag,
+            default_bump,
+            crate_name,
+        } => commands::tag::run(commands::tag::TagOpts {
+            dry_run,
+            custom_tag,
+            default_bump,
+            crate_name,
+            config_override: cli.config.clone(),
+            verbose: cli.verbose,
+        }),
     };
     if let Err(e) = result {
         eprintln!("{} {}", "Error:".red().bold(), e);
@@ -405,6 +429,90 @@ mod tests {
         assert!(
             help.contains("healthcheck"),
             "help should mention healthcheck command"
+        );
+        assert!(
+            help.contains("tag"),
+            "help should mention tag command"
+        );
+    }
+
+    #[test]
+    fn test_cli_parses_tag_dry_run() {
+        let cli = Cli::try_parse_from(["anodize", "tag", "--dry-run"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag --dry-run: {:?}",
+            cli.err()
+        );
+        if let Commands::Tag { dry_run, .. } = cli.unwrap().command {
+            assert!(dry_run);
+        } else {
+            panic!("expected Tag command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_tag_custom_tag() {
+        let cli = Cli::try_parse_from(["anodize", "tag", "--custom-tag", "v5.0.0"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag --custom-tag: {:?}",
+            cli.err()
+        );
+        if let Commands::Tag { custom_tag, .. } = cli.unwrap().command {
+            assert_eq!(custom_tag, Some("v5.0.0".to_string()));
+        } else {
+            panic!("expected Tag command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_tag_default_bump() {
+        let cli = Cli::try_parse_from(["anodize", "tag", "--default-bump", "major"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag --default-bump: {:?}",
+            cli.err()
+        );
+        if let Commands::Tag { default_bump, .. } = cli.unwrap().command {
+            assert_eq!(default_bump, Some("major".to_string()));
+        } else {
+            panic!("expected Tag command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_tag_crate_flag() {
+        let cli = Cli::try_parse_from(["anodize", "tag", "--crate", "my-lib"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag --crate: {:?}",
+            cli.err()
+        );
+        if let Commands::Tag { crate_name, .. } = cli.unwrap().command {
+            assert_eq!(crate_name, Some("my-lib".to_string()));
+        } else {
+            panic!("expected Tag command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_tag_all_flags() {
+        let cli = Cli::try_parse_from([
+            "anodize",
+            "tag",
+            "--dry-run",
+            "--custom-tag",
+            "v2.0.0",
+            "--default-bump",
+            "patch",
+            "--crate",
+            "core",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse tag with all flags: {:?}",
+            cli.err()
         );
     }
 }

@@ -174,6 +174,94 @@ pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
     Ok(commits)
 }
 
+/// Get all semver tags in the repo, sorted descending by version.
+pub fn get_all_semver_tags(prefix: &str) -> Result<Vec<String>> {
+    let tags_output = git_output(&["tag", "--list"])?;
+    if tags_output.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut matching: Vec<(SemVer, String)> = tags_output
+        .lines()
+        .filter(|t| t.starts_with(prefix))
+        .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
+        .collect();
+    matching.sort_by(|a, b| {
+        b.0.major
+            .cmp(&a.0.major)
+            .then(b.0.minor.cmp(&a.0.minor))
+            .then(b.0.patch.cmp(&a.0.patch))
+    });
+    Ok(matching.into_iter().map(|(_, tag)| tag).collect())
+}
+
+/// Get semver tags reachable from HEAD, sorted descending by version.
+pub fn get_branch_semver_tags(prefix: &str) -> Result<Vec<String>> {
+    let tags_output = git_output(&["tag", "--merged", "HEAD", "--list"])?;
+    if tags_output.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut matching: Vec<(SemVer, String)> = tags_output
+        .lines()
+        .filter(|t| t.starts_with(prefix))
+        .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
+        .collect();
+    matching.sort_by(|a, b| {
+        b.0.major
+            .cmp(&a.0.major)
+            .then(b.0.minor.cmp(&a.0.minor))
+            .then(b.0.patch.cmp(&a.0.patch))
+    });
+    Ok(matching.into_iter().map(|(_, tag)| tag).collect())
+}
+
+/// Create an annotated tag and optionally push it.
+pub fn create_and_push_tag(tag: &str, message: &str, dry_run: bool) -> Result<()> {
+    if dry_run {
+        eprintln!("  [dry-run] would create tag: {} (\"{}\")", tag, message);
+        return Ok(());
+    }
+    git_output(&["tag", "-a", tag, "-m", message])?;
+    git_output(&["push", "origin", tag])?;
+    Ok(())
+}
+
+/// Get last N commit subjects.
+pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
+    let n = format!("-{}", count);
+    let output = git_output(&["log", &n, "--pretty=format:%s"])?;
+    if output.is_empty() {
+        return Ok(vec![]);
+    }
+    Ok(output.lines().map(|l| l.to_string()).collect())
+}
+
+/// Get commit subjects between two refs.
+pub fn get_commit_messages_between(from: &str, to: &str) -> Result<Vec<String>> {
+    let range = format!("{}..{}", from, to);
+    let output = git_output(&["log", "--pretty=format:%s", &range])?;
+    if output.is_empty() {
+        return Ok(vec![]);
+    }
+    Ok(output.lines().map(|l| l.to_string()).collect())
+}
+
+/// Get the current branch name.
+pub fn get_current_branch() -> Result<String> {
+    git_output(&["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+/// Check if there are any commits since a given tag.
+pub fn has_commits_since_tag(tag: &str) -> Result<bool> {
+    let range = format!("{}..HEAD", tag);
+    let output = git_output(&["log", "--oneline", &range])?;
+    Ok(!output.is_empty())
+}
+
+/// Get the short commit hash of HEAD.
+pub fn get_short_commit() -> Result<String> {
+    git_output(&["rev-parse", "--short", "HEAD"])
+}
+
 /// Check if there are changes in a path since a given tag.
 pub fn has_changes_since(tag: &str, path: &str) -> Result<bool> {
     let output = git_output(&["diff", "--name-only", &format!("{}..HEAD", tag), "--", path])?;

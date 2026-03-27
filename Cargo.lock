@@ -45,6 +45,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "colored",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",

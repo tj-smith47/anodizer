@@ -26,6 +26,7 @@ pub struct Config {
     pub report_sizes: Option<bool>,
     pub env: Option<HashMap<String, String>>,
     pub publishers: Option<Vec<PublisherConfig>>,
+    pub tag: Option<TagConfig>,
 }
 
 fn default_dist() -> PathBuf {
@@ -49,6 +50,7 @@ impl Default for Config {
             report_sizes: None,
             env: None,
             publishers: None,
+            tag: None,
         }
     }
 }
@@ -735,6 +737,32 @@ pub struct PublisherConfig {
 #[serde(default)]
 pub struct HooksConfig {
     pub hooks: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// TagConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TagConfig {
+    pub default_bump: Option<String>,
+    pub tag_prefix: Option<String>,
+    pub release_branches: Option<Vec<String>>,
+    pub custom_tag: Option<String>,
+    pub tag_context: Option<String>,
+    pub branch_history: Option<String>,
+    pub initial_version: Option<String>,
+    pub prerelease: Option<bool>,
+    pub prerelease_suffix: Option<String>,
+    pub force_without_changes: Option<bool>,
+    pub force_without_changes_pre: Option<bool>,
+    pub major_string_token: Option<String>,
+    pub minor_string_token: Option<String>,
+    pub patch_string_token: Option<String>,
+    pub none_string_token: Option<String>,
+    pub git_api_tagging: Option<bool>,
+    pub verbose: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
