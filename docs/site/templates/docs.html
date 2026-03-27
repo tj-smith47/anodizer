@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — {{ config.title }}{% endblock %}
+
+{% block content %}
+<div class="docs-layout">
+  {% include "partials/sidebar.html" %}
+
+  <article class="docs-content">
+    <h1>{{ page.title }}</h1>
+    {% if page.description %}
+    <p class="docs-description">{{ page.description }}</p>
+    {% endif %}
+    {{ page.content | safe }}
+  </article>
+</div>
+{% endblock %}

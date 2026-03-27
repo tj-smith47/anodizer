@@ -1,5 +1,5 @@
 +++
-title = "Quick Start"
+title = "Environment"
 weight = 3
 template = "docs.html"
 +++
