@@ -127,12 +127,19 @@ impl Stage for SignStage {
                         return false;
                     }
                     // If `ids` filter is set, only sign artifacts whose metadata
-                    // contains a matching "id" entry.
+                    // contains a matching "id" or "name" entry.
                     if let Some(ref ids) = sign_cfg.ids {
-                        if let Some(artifact_id) = a.metadata.get("id") {
-                            return ids.contains(artifact_id);
-                        }
-                        return false;
+                        let matches_id = a
+                            .metadata
+                            .get("id")
+                            .map(|id| ids.contains(id))
+                            .unwrap_or(false);
+                        let matches_name = a
+                            .metadata
+                            .get("name")
+                            .map(|name| ids.contains(name))
+                            .unwrap_or(false);
+                        return matches_id || matches_name;
                     }
                     true
                 })
@@ -523,17 +530,24 @@ mod tests {
 
         // Replicate the stage's filtering logic:
         // 1. should_sign_artifact(kind, filter) must be true
-        // 2. If ids is set, artifact metadata["id"] must be in ids
+        // 2. If ids is set, artifact metadata "id" or "name" must match
         let ids = &sign_cfg.ids;
         let should_sign = |a: &Artifact| -> bool {
             if !should_sign_artifact(a.kind, filter) {
                 return false;
             }
             if let Some(id_list) = ids {
-                if let Some(artifact_id) = a.metadata.get("id") {
-                    return id_list.contains(artifact_id);
-                }
-                return false;
+                let matches_id = a
+                    .metadata
+                    .get("id")
+                    .map(|id| id_list.contains(id))
+                    .unwrap_or(false);
+                let matches_name = a
+                    .metadata
+                    .get("name")
+                    .map(|name| id_list.contains(name))
+                    .unwrap_or(false);
+                return matches_id || matches_name;
             }
             true
         };

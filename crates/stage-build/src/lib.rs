@@ -10,6 +10,7 @@ use anodize_core::config::{BuildConfig, CrossStrategy, UniversalBinaryConfig};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
+use anodize_core::util::find_binary;
 
 pub mod binstall;
 pub mod version_sync;
@@ -32,21 +33,13 @@ pub struct BuildCommand {
 // ---------------------------------------------------------------------------
 
 pub fn detect_cross_strategy() -> CrossStrategy {
-    if which("cargo-zigbuild") {
+    if find_binary("cargo-zigbuild") {
         return CrossStrategy::Zigbuild;
     }
-    if which("cross") {
+    if find_binary("cross") {
         return CrossStrategy::Cross;
     }
     CrossStrategy::Cargo
-}
-
-fn which(program: &str) -> bool {
-    Command::new("which")
-        .arg(program)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +256,7 @@ fn build_universal_binary(
         );
     } else {
         // Check lipo is available
-        if !which("lipo") {
+        if !find_binary("lipo") {
             eprintln!(
                 "[build] warning: lipo not found, skipping universal binary for {crate_name}"
             );

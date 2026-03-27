@@ -6,31 +6,15 @@ use anodize_core::artifact::ArtifactKind;
 use anodize_core::config::UpxConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
+use anodize_core::util::find_binary;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Check whether the UPX binary can be found on the system.
-/// For absolute paths, checks if the file exists. For bare names,
-/// uses `which` to search the PATH.
-fn find_upx_binary(binary: &str) -> bool {
-    if binary.contains('/') {
-        std::path::Path::new(binary).exists()
-    } else {
-        Command::new("which")
-            .arg(binary)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-}
-
 /// Match a target string against a glob-style pattern.
 /// Supports `*` as a wildcard that matches any sequence of characters.
-pub fn target_matches_pattern(target: &str, pattern: &str) -> bool {
+pub(crate) fn target_matches_pattern(target: &str, pattern: &str) -> bool {
     glob::Pattern::new(pattern)
         .map(|p| p.matches(target))
         .unwrap_or(false)
@@ -38,7 +22,7 @@ pub fn target_matches_pattern(target: &str, pattern: &str) -> bool {
 
 /// Check if an artifact should be compressed by this UPX config.
 /// Returns `true` if the artifact matches the ids and targets filters.
-pub fn should_compress(
+pub(crate) fn should_compress(
     upx_cfg: &UpxConfig,
     artifact_target: Option<&str>,
     artifact_metadata_id: Option<&str>,
@@ -98,7 +82,7 @@ impl Stage for UpxStage {
             let binary = &upx_cfg.binary;
 
             // Check if UPX binary exists
-            if !ctx.is_dry_run() && !find_upx_binary(binary) {
+            if !ctx.is_dry_run() && !find_binary(binary) {
                 if upx_cfg.required {
                     anyhow::bail!(
                         "upx: binary '{}' not found and this config is marked as required",
@@ -563,8 +547,13 @@ crates: []
 
     #[test]
     fn test_dry_run_logs_without_executing() {
+        // Use /usr/bin/env as the "upx binary" — it exists on the system and
+        // WOULD be found by find_binary(). The test verifies that dry-run mode
+        // skips both the binary check AND the actual execution. If the stage
+        // tried to run /usr/bin/env with UPX args, the command would fail on
+        // the artifact path. Success here proves the dry-run contract holds.
         let upx = vec![UpxConfig {
-            binary: "/nonexistent/upx-binary".to_string(),
+            binary: "/usr/bin/env".to_string(),
             args: vec!["--best".to_string(), "--lzma".to_string()],
             ..Default::default()
         }];

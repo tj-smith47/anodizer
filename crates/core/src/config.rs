@@ -22,6 +22,8 @@ pub struct Config {
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     pub signs: Vec<SignConfig>,
     pub docker_signs: Option<Vec<DockerSignConfig>>,
+    // No `alias` attribute needed: unlike `signs`/`sign`, "upx" is already
+    // both singular and plural, so a separate alias adds no value.
     #[serde(default, deserialize_with = "deserialize_upx")]
     pub upx: Vec<UpxConfig>,
     pub snapshot: Option<SnapshotConfig>,
@@ -905,9 +907,9 @@ impl Default for UpxConfig {
 
 /// Custom deserializer for the `upx` field.
 /// Accepts:
-///   - null/missing -> empty vec (via serde default)
-///   - a single object -> vec of one UpxConfig
-///   - an array -> vec of UpxConfig
+///   - null/missing → empty vec (via serde default)
+///   - a single object → vec of one UpxConfig
+///   - an array → vec of UpxConfig
 fn deserialize_upx<'de, D>(deserializer: D) -> Result<Vec<UpxConfig>, D::Error>
 where
     D: Deserializer<'de>,
@@ -920,7 +922,7 @@ where
         type Value = Vec<UpxConfig>;
 
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a upx config object or an array of upx config objects")
+            f.write_str("a UPX config object or an array of UPX config objects")
         }
 
         fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {

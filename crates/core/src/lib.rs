@@ -6,6 +6,7 @@ pub mod github_client;
 pub mod stage;
 pub mod target;
 pub mod template;
+pub mod util;
 
 #[cfg(feature = "test-helpers")]
 pub mod test_helpers;
