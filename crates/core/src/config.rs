@@ -13,6 +13,7 @@ pub struct Config {
     pub project_name: String,
     #[serde(default = "default_dist")]
     pub dist: PathBuf,
+    pub includes: Option<Vec<String>>,
     pub defaults: Option<Defaults>,
     pub before: Option<HooksConfig>,
     pub after: Option<HooksConfig>,
@@ -39,6 +40,7 @@ impl Default for Config {
         Config {
             project_name: String::new(),
             dist: default_dist(),
+            includes: None,
             defaults: None,
             before: None,
             after: None,

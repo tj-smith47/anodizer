@@ -35,12 +35,72 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
     )
 }
 
-/// Load config from a file, auto-detecting format by extension
+/// Deep-merge `overlay` into `base`. Mappings are merged recursively,
+/// sequences are concatenated, and scalars/other values are replaced.
+fn merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value) {
+    match (base, overlay) {
+        (serde_yaml::Value::Mapping(base_map), serde_yaml::Value::Mapping(overlay_map)) => {
+            for (key, value) in overlay_map {
+                match base_map.get_mut(key) {
+                    Some(existing) => merge_yaml(existing, value),
+                    None => {
+                        base_map.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        }
+        (serde_yaml::Value::Sequence(base_seq), serde_yaml::Value::Sequence(overlay_seq)) => {
+            base_seq.extend(overlay_seq.iter().cloned());
+        }
+        (base_val, overlay_val) => {
+            *base_val = overlay_val.clone();
+        }
+    }
+}
+
+/// Load config from a file, auto-detecting format by extension.
+/// For YAML files, processes `includes` by deep-merging included files into the base.
 pub fn load_config(path: &Path) -> Result<Config> {
-    let content = std::fs::read_to_string(path)?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
-        "yaml" | "yml" => Ok(serde_yaml::from_str(&content)?),
+        "yaml" | "yml" => {
+            let mut base: serde_yaml::Value = serde_yaml::from_str(&content)
+                .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
+
+            // Extract include paths before merging
+            let include_paths: Vec<String> = base
+                .get("includes")
+                .and_then(|v| v.as_sequence())
+                .map(|seq| {
+                    seq.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Resolve includes relative to the base config's parent directory
+            let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+            for include in &include_paths {
+                let include_path = base_dir.join(include);
+                let include_content = std::fs::read_to_string(&include_path).with_context(|| {
+                    format!(
+                        "failed to read include file '{}' (referenced from {})",
+                        include_path.display(),
+                        path.display()
+                    )
+                })?;
+                let overlay: serde_yaml::Value =
+                    serde_yaml::from_str(&include_content).with_context(|| {
+                        format!("failed to parse include file: {}", include_path.display())
+                    })?;
+                merge_yaml(&mut base, &overlay);
+            }
+
+            Ok(serde_yaml::from_value(base)
+                .with_context(|| format!("failed to deserialize config: {}", path.display()))?)
+        }
         "toml" => Ok(toml::from_str(&content)?),
         _ => bail!("unsupported config format: {}", ext),
     }
@@ -179,5 +239,156 @@ mod tests {
         let result = find_config(Some(cfg_path.as_path()));
         assert!(result.is_ok(), "expected Ok, got: {:?}", result);
         assert_eq!(result.unwrap(), cfg_path);
+    }
+
+    // -----------------------------------------------------------------------
+    // merge_yaml tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_merge_yaml_mappings_recursive() {
+        let mut base: serde_yaml::Value = serde_yaml::from_str("a: 1\nb: 2").unwrap();
+        let overlay: serde_yaml::Value = serde_yaml::from_str("b: 99\nc: 3").unwrap();
+        merge_yaml(&mut base, &overlay);
+        assert_eq!(base["a"], serde_yaml::Value::Number(1.into()));
+        assert_eq!(base["b"], serde_yaml::Value::Number(99.into()));
+        assert_eq!(base["c"], serde_yaml::Value::Number(3.into()));
+    }
+
+    #[test]
+    fn test_merge_yaml_nested_mappings() {
+        let mut base: serde_yaml::Value =
+            serde_yaml::from_str("outer:\n  x: 1\n  y: 2").unwrap();
+        let overlay: serde_yaml::Value =
+            serde_yaml::from_str("outer:\n  y: 99\n  z: 3").unwrap();
+        merge_yaml(&mut base, &overlay);
+        assert_eq!(base["outer"]["x"], serde_yaml::Value::Number(1.into()));
+        assert_eq!(base["outer"]["y"], serde_yaml::Value::Number(99.into()));
+        assert_eq!(base["outer"]["z"], serde_yaml::Value::Number(3.into()));
+    }
+
+    #[test]
+    fn test_merge_yaml_sequences_concatenate() {
+        let mut base: serde_yaml::Value = serde_yaml::from_str("items:\n  - a\n  - b").unwrap();
+        let overlay: serde_yaml::Value = serde_yaml::from_str("items:\n  - c\n  - d").unwrap();
+        merge_yaml(&mut base, &overlay);
+        let items = base["items"].as_sequence().unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(items[0].as_str().unwrap(), "a");
+        assert_eq!(items[1].as_str().unwrap(), "b");
+        assert_eq!(items[2].as_str().unwrap(), "c");
+        assert_eq!(items[3].as_str().unwrap(), "d");
+    }
+
+    #[test]
+    fn test_merge_yaml_scalar_override() {
+        let mut base: serde_yaml::Value = serde_yaml::from_str("name: base").unwrap();
+        let overlay: serde_yaml::Value = serde_yaml::from_str("name: overlay").unwrap();
+        merge_yaml(&mut base, &overlay);
+        assert_eq!(base["name"].as_str().unwrap(), "overlay");
+    }
+
+    // -----------------------------------------------------------------------
+    // load_config with includes tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_config_includes_field_parses() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: myproject\nincludes:\n  - extra.yaml\ncrates: []\n",
+        )
+        .unwrap();
+        let extra_path = tmp.path().join("extra.yaml");
+        fs::write(&extra_path, "report_sizes: true\n").unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "myproject");
+        assert_eq!(
+            config.includes,
+            Some(vec!["extra.yaml".to_string()])
+        );
+        assert_eq!(config.report_sizes, Some(true));
+    }
+
+    #[test]
+    fn test_load_config_includes_merges_base_and_include() {
+        let tmp = TempDir::new().unwrap();
+
+        // Include file defines a dist override
+        let include_path = tmp.path().join("overrides.yaml");
+        fs::write(&include_path, "dist: /custom/dist\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: merged\nincludes:\n  - overrides.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "merged");
+        assert_eq!(config.dist, std::path::PathBuf::from("/custom/dist"));
+    }
+
+    #[test]
+    fn test_load_config_includes_sequences_concatenated() {
+        let tmp = TempDir::new().unwrap();
+
+        let include_path = tmp.path().join("more-crates.yaml");
+        fs::write(
+            &include_path,
+            "crates:\n  - name: extra-crate\n    path: crates/extra\n",
+        )
+        .unwrap();
+
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: seq-test\nincludes:\n  - more-crates.yaml\ncrates:\n  - name: base-crate\n    path: crates/base\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.crates.len(), 2);
+        assert_eq!(config.crates[0].name, "base-crate");
+        assert_eq!(config.crates[1].name, "extra-crate");
+    }
+
+    #[test]
+    fn test_load_config_missing_include_file_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nincludes:\n  - nonexistent.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let result = load_config(&cfg_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("nonexistent.yaml") || msg.contains("include"),
+            "unexpected error message: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_load_config_no_includes_works_as_before() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: simple\ncrates: []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "simple");
+        assert!(config.includes.is_none());
     }
 }
