@@ -70,6 +70,11 @@ impl ArtifactRegistry {
         &self.artifacts
     }
 
+    /// Remove all artifacts whose path matches one of the given paths.
+    pub fn remove_by_paths(&mut self, paths: &[std::path::PathBuf]) {
+        self.artifacts.retain(|a| !paths.contains(&a.path));
+    }
+
     /// Serialize all artifacts to a JSON value suitable for writing to metadata.json.
     pub fn to_metadata_json(&self) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::to_value(&self.artifacts)?)

@@ -198,19 +198,34 @@ fn build_universal_binary(
     ctx: &mut Context,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    // Collect arm64 and x86_64 macOS binary artifacts for this crate
+    // Collect arm64 and x86_64 macOS binary artifacts for this crate.
+    // When `ids` is set, only consider artifacts whose metadata "id" is in the list.
     let binaries = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Binary, crate_name);
 
-    let arm64 = binaries.iter().find(|a| {
+    let filtered: Vec<_> = if let Some(ref ids) = ub.ids {
+        binaries
+            .into_iter()
+            .filter(|a| {
+                a.metadata
+                    .get("id")
+                    .map(|id| ids.contains(id))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        binaries
+    };
+
+    let arm64 = filtered.iter().find(|a| {
         a.target.as_deref() == Some("aarch64-apple-darwin")
     });
-    let x86_64 = binaries.iter().find(|a| {
+    let x86_64 = filtered.iter().find(|a| {
         a.target.as_deref() == Some("x86_64-apple-darwin")
     });
 
-    let (arm64, x86_64) = match (arm64, x86_64) {
+    let (arm64_path, x86_64_path) = match (arm64, x86_64) {
         (Some(a), Some(x)) => (a.path.clone(), x.path.clone()),
         _ => {
             eprintln!(
@@ -222,7 +237,7 @@ fn build_universal_binary(
     };
 
     // Determine output path / name
-    let binary_name = arm64
+    let binary_name = arm64_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| crate_name.to_string());
@@ -234,7 +249,7 @@ fn build_universal_binary(
     };
 
     // Place the universal binary in the same directory as the arm64 binary
-    let out_path = arm64
+    let out_path = arm64_path
         .parent()
         .map(|p| p.join(&out_name))
         .unwrap_or_else(|| PathBuf::from(&out_name));
@@ -243,8 +258,8 @@ fn build_universal_binary(
         eprintln!(
             "[build] (dry-run) lipo -create -output {} {} {}",
             out_path.display(),
-            arm64.display(),
-            x86_64.display()
+            arm64_path.display(),
+            x86_64_path.display()
         );
     } else {
         // Check lipo is available
@@ -258,8 +273,8 @@ fn build_universal_binary(
         eprintln!(
             "[build] lipo -create -output {} {} {}",
             out_path.display(),
-            arm64.display(),
-            x86_64.display()
+            arm64_path.display(),
+            x86_64_path.display()
         );
 
         let status = Command::new("lipo")
@@ -267,16 +282,17 @@ fn build_universal_binary(
                 "-create",
                 "-output",
                 &out_path.to_string_lossy(),
-                &arm64.to_string_lossy(),
-                &x86_64.to_string_lossy(),
+                &arm64_path.to_string_lossy(),
+                &x86_64_path.to_string_lossy(),
             ])
             .status()
             .with_context(|| format!("failed to spawn lipo for {crate_name}"))?;
 
         if !status.success() {
-            anyhow::bail!(
-                "lipo failed for {crate_name} universal binary (exit: {status})"
+            eprintln!(
+                "[build] warning: lipo failed for {crate_name}, skipping universal binary"
             );
+            return Ok(());
         }
     }
 
@@ -292,6 +308,14 @@ fn build_universal_binary(
         crate_name: crate_name.to_string(),
         metadata,
     });
+
+    // When `replace` is true, remove the source arm64/x86_64 artifacts from
+    // the registry so downstream stages do not publish them alongside the
+    // universal binary.
+    if ub.replace == Some(true) {
+        ctx.artifacts
+            .remove_by_paths(&[arm64_path, x86_64_path]);
+    }
 
     Ok(())
 }
