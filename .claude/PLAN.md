@@ -441,10 +441,10 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 - Dogfood: ensure `.anodize.yaml` exercises new features where applicable
 
 ### Task 5O: Documentation Site
-- Set up docs site with mdBook
-- Structure: getting started, configuration reference (per-stage), template reference, CLI reference, CI/CD integration guides (GitHub Actions, GitLab CI), migration from GoReleaser, FAQ
-- Auto-generate configuration reference from JSON schema (Task 5M)
-- Deploy configuration for GitHub Pages
+- ~~Set up docs site with mdBook~~ → **Done (Phase A): Zola site with custom theme, 45 content pages, xtask gen-docs, GitHub Actions deployment**
+- Spec: `docs/superpowers/specs/2026-03-27-docsite-design.md`
+- Phase A plan: `docs/superpowers/plans/2026-03-27-docsite.md` (completed)
+- **Phase B remaining:** `docs/superpowers/plans/2026-03-27-docsite-phase-b.md` — GoReleaser nav parity, Coming Soon pages need real content (now that Session 5 features are implemented), search, polish, content accuracy audit
 
 **Session 5 exit criteria:** All listed features implemented with tests. `anodize tag` command functional. cargo-binstall metadata generated. New publishers (Chocolatey, Winget, AUR, Krew) generate correct manifests. Nightly builds work. Config includes merge correctly. Docs site builds locally. `cargo test --workspace` and `cargo clippy` pass.
 
