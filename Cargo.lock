@@ -42,6 +42,7 @@ dependencies = [
  "anodize-stage-release",
  "anodize-stage-sign",
  "anyhow",
+ "chrono",
  "clap",
  "clap_complete",
  "colored",

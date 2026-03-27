@@ -3,6 +3,7 @@ use anodize_core::artifact;
 use anodize_core::config::{CrateConfig, GitHubConfig};
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::git;
+use anodize_core::template;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
 use std::path::PathBuf;
@@ -26,6 +27,10 @@ pub struct ReleaseOpts {
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
+    if opts.snapshot && opts.nightly {
+        anyhow::bail!("--snapshot and --nightly cannot be combined");
+    }
+
     let mut config =
         pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
 
@@ -169,10 +174,20 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         // but set it explicitly here too for clarity.
         ctx.template_vars_mut().set("IsNightly", "true");
 
-        eprintln!(
-            "[nightly] version={}, tag={}",
-            nightly_version, nightly_tag
-        );
+        // Render and set the release name from name_template.
+        let name_tmpl = nightly_cfg
+            .and_then(|c| c.name_template.as_deref())
+            .unwrap_or("{{ ProjectName }}-nightly");
+        let release_name = template::render(name_tmpl, ctx.template_vars())
+            .with_context(|| format!("failed to render nightly name_template: {name_tmpl}"))?;
+        ctx.template_vars_mut().set("ReleaseName", &release_name);
+
+        if opts.verbose {
+            eprintln!(
+                "[nightly] version={}, tag={}, name={}",
+                nightly_version, nightly_tag, release_name
+            );
+        }
     }
 
     let p = pipeline::build_release_pipeline();
