@@ -806,7 +806,7 @@ pub struct TagConfig {
 /// A workspace represents an independent project root within a monorepo.
 /// Each workspace has its own crates, changelog, and release configuration,
 /// allowing independently-versioned components that aren't Cargo workspace members.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
     pub name: String,
@@ -817,20 +817,6 @@ pub struct WorkspaceConfig {
     pub before: Option<HooksConfig>,
     pub after: Option<HooksConfig>,
     pub env: Option<HashMap<String, String>>,
-}
-
-impl Default for WorkspaceConfig {
-    fn default() -> Self {
-        WorkspaceConfig {
-            name: String::new(),
-            crates: Vec::new(),
-            changelog: None,
-            signs: Vec::new(),
-            before: None,
-            after: None,
-            env: None,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

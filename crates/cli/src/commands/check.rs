@@ -33,28 +33,37 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
             }
         }
 
-        // Validate workspace crate names are non-empty
+        // Validate workspace crate names are non-empty and unique within each workspace
         for ws in workspaces {
+            let mut ws_crate_names: HashSet<&str> = HashSet::new();
             for (i, c) in ws.crates.iter().enumerate() {
                 if c.name.trim().is_empty() {
                     errors.push(format!(
                         "workspace '{}': crate at index {}: name must not be empty",
                         ws.name, i
                     ));
+                } else if !ws_crate_names.insert(c.name.as_str()) {
+                    errors.push(format!(
+                        "workspace '{}': duplicate crate name '{}'",
+                        ws.name, c.name
+                    ));
                 }
             }
             // Validate tag_template in workspace crates
             for c in &ws.crates {
-                if !c.tag_template.is_empty()
-                    && !c.tag_template.contains("{{ .Version }}")
-                    && !c.tag_template.contains("{{.Version}}")
-                    && !c.tag_template.contains("{{ Version }}")
-                    && !c.tag_template.contains("{{Version}}")
-                {
-                    errors.push(format!(
-                        "workspace '{}': crate '{}': tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}'",
-                        ws.name, c.name, c.tag_template
-                    ));
+                validate_tag_template(&c.tag_template, &format!("workspace '{}': crate '{}'", ws.name, c.name), &mut errors);
+            }
+            // Validate depends_on references within workspace crates
+            for c in &ws.crates {
+                if let Some(deps) = &c.depends_on {
+                    for dep in deps {
+                        if !ws_crate_names.contains(dep.as_str()) {
+                            errors.push(format!(
+                                "workspace '{}': crate '{}': depends_on '{}' does not exist",
+                                ws.name, c.name, dep
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -88,17 +97,7 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
 
     // 3. tag_template must contain {{ .Version }} or {{ Version }} (Tera-native)
     for c in &config.crates {
-        if !c.tag_template.is_empty()
-            && !c.tag_template.contains("{{ .Version }}")
-            && !c.tag_template.contains("{{.Version}}")
-            && !c.tag_template.contains("{{ Version }}")
-            && !c.tag_template.contains("{{Version}}")
-        {
-            errors.push(format!(
-                "crate '{}': tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}'",
-                c.name, c.tag_template
-            ));
-        }
+        validate_tag_template(&c.tag_template, &format!("crate '{}'", c.name), &mut errors);
     }
 
     // 4. copy_from references a binary in the same crate's builds
@@ -467,6 +466,23 @@ pub fn find_cycle(crates: &[CrateConfig]) -> Option<Vec<String>> {
     None
 }
 
+/// Validate that a tag_template contains a Version placeholder.
+/// `context` is a human-readable prefix for the error message (e.g. "crate 'foo'" or
+/// "workspace 'ws': crate 'bar'").
+fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<String>) {
+    if !tag_template.is_empty()
+        && !tag_template.contains("{{ .Version }}")
+        && !tag_template.contains("{{.Version}}")
+        && !tag_template.contains("{{ Version }}")
+        && !tag_template.contains("{{Version}}")
+    {
+        errors.push(format!(
+            "{}: tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}'",
+            context, tag_template
+        ));
+    }
+}
+
 fn tool_available(name: &str) -> bool {
     std::process::Command::new("which")
         .arg(name)
@@ -482,7 +498,7 @@ fn tool_available(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{Config, CrateConfig};
+    use anodize_core::config::{Config, CrateConfig, WorkspaceConfig};
 
     fn make_crate(name: &str, tag_template: &str, depends_on: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {
@@ -775,7 +791,6 @@ mod tests {
 
     #[test]
     fn test_workspace_names_unique_passes() {
-        use anodize_core::config::WorkspaceConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.workspaces = Some(vec![
             WorkspaceConfig {
@@ -794,7 +809,6 @@ mod tests {
 
     #[test]
     fn test_workspace_duplicate_name_fails() {
-        use anodize_core::config::WorkspaceConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.workspaces = Some(vec![
             WorkspaceConfig {
@@ -814,7 +828,6 @@ mod tests {
 
     #[test]
     fn test_workspace_empty_name_fails() {
-        use anodize_core::config::WorkspaceConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.workspaces = Some(vec![WorkspaceConfig {
             name: "".to_string(),
@@ -827,7 +840,6 @@ mod tests {
 
     #[test]
     fn test_workspace_crate_empty_name_fails() {
-        use anodize_core::config::WorkspaceConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.workspaces = Some(vec![WorkspaceConfig {
             name: "ws1".to_string(),
@@ -843,7 +855,6 @@ mod tests {
 
     #[test]
     fn test_workspace_crate_bad_tag_template_fails() {
-        use anodize_core::config::WorkspaceConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.workspaces = Some(vec![WorkspaceConfig {
             name: "ws1".to_string(),
@@ -861,5 +872,71 @@ mod tests {
     fn test_no_workspaces_passes() {
         let config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         assert!(run_checks(&config, false).is_ok());
+    }
+
+    #[test]
+    fn test_workspace_duplicate_crate_name_fails() {
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws1".to_string(),
+            crates: vec![
+                make_crate("dup", "dup-v{{ .Version }}", None),
+                make_crate("dup", "dup-v{{ .Version }}", None),
+            ],
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false);
+        assert!(
+            result.is_err(),
+            "duplicate crate names within a workspace should fail"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("1 error(s)"),
+            "should report 1 validation error for duplicate crate name: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_workspace_depends_on_missing_fails() {
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws1".to_string(),
+            crates: vec![make_crate(
+                "x",
+                "x-v{{ .Version }}",
+                Some(vec!["nonexistent"]),
+            )],
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false);
+        assert!(
+            result.is_err(),
+            "workspace crate with missing depends_on should fail"
+        );
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("1 error(s)"),
+            "should report 1 validation error for missing depends_on: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_workspace_depends_on_valid_passes() {
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws1".to_string(),
+            crates: vec![
+                make_crate("lib", "lib-v{{ .Version }}", None),
+                make_crate("app", "app-v{{ .Version }}", Some(vec!["lib"])),
+            ],
+            ..Default::default()
+        }]);
+        assert!(
+            run_checks(&config, false).is_ok(),
+            "valid depends_on within workspace should pass"
+        );
     }
 }

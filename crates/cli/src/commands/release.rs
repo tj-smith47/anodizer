@@ -545,4 +545,91 @@ mod tests {
         assert!(core_pos < cli_pos);
         assert!(lib_pos < cli_pos);
     }
+
+    /// Verify workspace overlay semantics:
+    /// - `env` merges additively (workspace env adds to / overrides top-level env)
+    /// - `signs` replaces top-level signs when workspace has its own
+    /// - `changelog` replaces top-level changelog when workspace has its own
+    #[test]
+    fn test_workspace_overlay_semantics() {
+        use anodize_core::config::{ChangelogConfig, SignConfig};
+
+        // Build a top-level config with env, signs, and changelog
+        let mut config = Config {
+            project_name: "test".to_string(),
+            crates: vec![make_crate("top-crate", None)],
+            env: Some(HashMap::from([
+                ("SHARED".to_string(), "from-top".to_string()),
+                ("TOP_ONLY".to_string(), "top-value".to_string()),
+            ])),
+            signs: vec![SignConfig {
+                cmd: Some("gpg".to_string()),
+                ..Default::default()
+            }],
+            changelog: Some(ChangelogConfig {
+                sort: Some("asc".to_string()),
+                ..Default::default()
+            }),
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![make_crate("ws-crate", None)],
+                env: Some(HashMap::from([
+                    ("SHARED".to_string(), "from-ws".to_string()),
+                    ("WS_ONLY".to_string(), "ws-value".to_string()),
+                ])),
+                signs: vec![SignConfig {
+                    cmd: Some("cosign".to_string()),
+                    ..Default::default()
+                }],
+                changelog: Some(ChangelogConfig {
+                    sort: Some("desc".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        // Simulate the overlay logic from run() for --workspace=ws
+        let ws = config
+            .workspaces
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|w| w.name == "ws")
+            .unwrap()
+            .clone();
+
+        config.crates = ws.crates;
+        if ws.changelog.is_some() {
+            config.changelog = ws.changelog;
+        }
+        if !ws.signs.is_empty() {
+            config.signs = ws.signs;
+        }
+        if let Some(env_map) = ws.env {
+            let merged = config.env.get_or_insert_with(HashMap::new);
+            for (k, v) in env_map {
+                merged.insert(k, v);
+            }
+        }
+
+        // Verify crates were replaced
+        assert_eq!(config.crates.len(), 1);
+        assert_eq!(config.crates[0].name, "ws-crate");
+
+        // Verify env merged additively: TOP_ONLY preserved, SHARED overridden, WS_ONLY added
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(env.get("TOP_ONLY").unwrap(), "top-value", "top-level-only key should be preserved");
+        assert_eq!(env.get("SHARED").unwrap(), "from-ws", "shared key should be overridden by workspace");
+        assert_eq!(env.get("WS_ONLY").unwrap(), "ws-value", "workspace-only key should be added");
+
+        // Verify signs were replaced (not merged)
+        assert_eq!(config.signs.len(), 1);
+        assert_eq!(config.signs[0].cmd.as_deref(), Some("cosign"), "signs should be replaced by workspace");
+
+        // Verify changelog was replaced
+        let cl = config.changelog.as_ref().unwrap();
+        assert_eq!(cl.sort.as_deref(), Some("desc"), "changelog should be replaced by workspace");
+    }
 }
