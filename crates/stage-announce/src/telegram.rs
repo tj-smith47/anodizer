@@ -36,10 +36,9 @@ pub fn send_telegram(
         .body(payload)
         .send()?;
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "telegram sendMessage returned non-success status: {}",
-            resp.status()
-        );
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!("telegram sendMessage returned non-success status {status}: {body}");
     }
     Ok(())
 }

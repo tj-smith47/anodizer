@@ -41,10 +41,9 @@ pub fn send_teams(webhook_url: &str, message: &str) -> Result<()> {
         .body(payload)
         .send()?;
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "teams webhook returned non-success status: {}",
-            resp.status()
-        );
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!("teams webhook returned non-success status {status}: {body}");
     }
     Ok(())
 }

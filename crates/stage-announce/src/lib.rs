@@ -13,6 +13,53 @@ pub mod telegram;
 pub mod webhook;
 
 // ---------------------------------------------------------------------------
+// Shared helpers to reduce boilerplate across providers
+// ---------------------------------------------------------------------------
+
+const DEFAULT_MESSAGE_TEMPLATE: &str = "{{ .ProjectName }} {{ .Tag }} released!";
+
+/// Render a required config field through the template engine, bailing with
+/// `provider: missing <field>` when the value is `None`.
+fn require_rendered(
+    ctx: &mut Context,
+    raw: Option<&str>,
+    provider: &str,
+    field: &str,
+) -> Result<String> {
+    let value = raw.ok_or_else(|| anyhow::anyhow!("announce.{provider}: missing {field}"))?;
+    ctx.render_template(value)
+}
+
+/// Render an optional config field through the template engine.
+fn render_optional(ctx: &mut Context, raw: Option<&str>) -> Result<Option<String>> {
+    match raw {
+        Some(v) => Ok(Some(ctx.render_template(v)?)),
+        None => Ok(None),
+    }
+}
+
+/// Render a message template, falling back to the standard default.
+fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<String> {
+    ctx.render_template(tmpl.unwrap_or(DEFAULT_MESSAGE_TEMPLATE))
+}
+
+/// Log and optionally execute a provider send action, respecting dry-run mode.
+fn dispatch(
+    ctx: &Context,
+    provider: &str,
+    log_line: &str,
+    send: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if ctx.is_dry_run() {
+        eprintln!("[announce] (dry-run) {provider}: {log_line}");
+    } else {
+        eprintln!("[announce] {provider}: {log_line}");
+        send()?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // AnnounceStage
 // ---------------------------------------------------------------------------
 
@@ -35,232 +82,143 @@ impl Stage for AnnounceStage {
         // ----------------------------------------------------------------
         // Discord
         // ----------------------------------------------------------------
-        if let Some(discord_cfg) = &announce.discord
-            && discord_cfg.enabled.unwrap_or(false)
+        if let Some(cfg) = &announce.discord
+            && cfg.enabled.unwrap_or(false)
         {
-            let raw_url = discord_cfg
-                .webhook_url
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.discord: missing webhook_url"))?;
-            let url = ctx.render_template(raw_url)?;
-
-            let tmpl = discord_cfg
-                .message_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
-
-            let message = ctx.render_template(tmpl)?;
-
-            if ctx.is_dry_run() {
-                eprintln!("[announce] (dry-run) discord: {}", message);
-            } else {
-                eprintln!("[announce] discord: {}", message);
-                discord::send_discord(&url, &message)?;
-            }
+            let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "discord", "webhook_url")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            dispatch(ctx, "discord", &message, || {
+                discord::send_discord(&url, &message)
+            })?;
         }
 
         // ----------------------------------------------------------------
         // Slack
         // ----------------------------------------------------------------
-        if let Some(slack_cfg) = &announce.slack
-            && slack_cfg.enabled.unwrap_or(false)
+        if let Some(cfg) = &announce.slack
+            && cfg.enabled.unwrap_or(false)
         {
-            let raw_url = slack_cfg
-                .webhook_url
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.slack: missing webhook_url"))?;
-            let url = ctx.render_template(raw_url)?;
-
-            let tmpl = slack_cfg
-                .message_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
-
-            let message = ctx.render_template(tmpl)?;
-
-            if ctx.is_dry_run() {
-                eprintln!("[announce] (dry-run) slack: {}", message);
-            } else {
-                eprintln!("[announce] slack: {}", message);
-                slack::send_slack(&url, &message)?;
-            }
+            let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "slack", "webhook_url")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            dispatch(ctx, "slack", &message, || {
+                slack::send_slack(&url, &message)
+            })?;
         }
 
         // ----------------------------------------------------------------
         // Generic HTTP webhook
         // ----------------------------------------------------------------
-        if let Some(webhook_cfg) = &announce.webhook
-            && webhook_cfg.enabled.unwrap_or(false)
+        if let Some(cfg) = &announce.webhook
+            && cfg.enabled.unwrap_or(false)
         {
-            let raw_url = webhook_cfg
-                .endpoint_url
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.webhook: missing endpoint_url"))?;
-            let url = ctx.render_template(raw_url)?;
+            let url =
+                require_rendered(ctx, cfg.endpoint_url.as_deref(), "webhook", "endpoint_url")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
 
-            let tmpl = webhook_cfg
-                .message_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
-
-            let message = ctx.render_template(tmpl)?;
-
-            let raw_headers = webhook_cfg.headers.clone().unwrap_or_default();
+            let raw_headers = cfg.headers.clone().unwrap_or_default();
             let mut headers = HashMap::new();
             for (k, v) in &raw_headers {
                 headers.insert(k.clone(), ctx.render_template(v)?);
             }
-
-            let content_type = webhook_cfg
+            let content_type = cfg
                 .content_type
                 .clone()
                 .unwrap_or_else(|| "application/json".to_string());
 
-            if ctx.is_dry_run() {
-                eprintln!("[announce] (dry-run) webhook: {}", message);
-            } else {
-                eprintln!("[announce] webhook: {}", message);
-                webhook::send_webhook(&url, &message, &headers, &content_type)?;
-            }
+            dispatch(ctx, "webhook", &message, || {
+                webhook::send_webhook(&url, &message, &headers, &content_type)
+            })?;
         }
 
         // ----------------------------------------------------------------
         // Telegram
         // ----------------------------------------------------------------
-        if let Some(telegram_cfg) = &announce.telegram
-            && telegram_cfg.enabled.unwrap_or(false)
+        if let Some(cfg) = &announce.telegram
+            && cfg.enabled.unwrap_or(false)
         {
-            let raw_token = telegram_cfg
-                .bot_token
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.telegram: missing bot_token"))?;
-            let bot_token = ctx.render_template(raw_token)?;
+            let bot_token =
+                require_rendered(ctx, cfg.bot_token.as_deref(), "telegram", "bot_token")?;
+            let chat_id = require_rendered(ctx, cfg.chat_id.as_deref(), "telegram", "chat_id")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let parse_mode = render_optional(ctx, cfg.parse_mode.as_deref())?;
 
-            let raw_chat_id = telegram_cfg
-                .chat_id
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.telegram: missing chat_id"))?;
-            let chat_id = ctx.render_template(raw_chat_id)?;
-
-            let tmpl = telegram_cfg
-                .message_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
-            let message = ctx.render_template(tmpl)?;
-
-            let parse_mode = telegram_cfg.parse_mode.as_deref();
-
-            if ctx.is_dry_run() {
-                eprintln!("[announce] (dry-run) telegram: {}", message);
-            } else {
-                eprintln!("[announce] telegram: {}", message);
-                telegram::send_telegram(&bot_token, &chat_id, &message, parse_mode)?;
-            }
+            dispatch(ctx, "telegram", &message, || {
+                telegram::send_telegram(&bot_token, &chat_id, &message, parse_mode.as_deref())
+            })?;
         }
 
         // ----------------------------------------------------------------
         // Microsoft Teams
         // ----------------------------------------------------------------
-        if let Some(teams_cfg) = &announce.teams
-            && teams_cfg.enabled.unwrap_or(false)
+        if let Some(cfg) = &announce.teams
+            && cfg.enabled.unwrap_or(false)
         {
-            let raw_url = teams_cfg
-                .webhook_url
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.teams: missing webhook_url"))?;
-            let url = ctx.render_template(raw_url)?;
-
-            let tmpl = teams_cfg
-                .message_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
-            let message = ctx.render_template(tmpl)?;
-
-            if ctx.is_dry_run() {
-                eprintln!("[announce] (dry-run) teams: {}", message);
-            } else {
-                eprintln!("[announce] teams: {}", message);
-                teams::send_teams(&url, &message)?;
-            }
+            let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "teams", "webhook_url")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            dispatch(ctx, "teams", &message, || {
+                teams::send_teams(&url, &message)
+            })?;
         }
 
         // ----------------------------------------------------------------
         // Mattermost
         // ----------------------------------------------------------------
-        if let Some(mm_cfg) = &announce.mattermost
-            && mm_cfg.enabled.unwrap_or(false)
+        if let Some(cfg) = &announce.mattermost
+            && cfg.enabled.unwrap_or(false)
         {
-            let raw_url = mm_cfg
-                .webhook_url
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.mattermost: missing webhook_url"))?;
-            let url = ctx.render_template(raw_url)?;
+            let url =
+                require_rendered(ctx, cfg.webhook_url.as_deref(), "mattermost", "webhook_url")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let channel = render_optional(ctx, cfg.channel.as_deref())?;
+            let username = render_optional(ctx, cfg.username.as_deref())?;
+            let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
 
-            let tmpl = mm_cfg
-                .message_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
-            let message = ctx.render_template(tmpl)?;
-
-            let channel = mm_cfg.channel.as_deref();
-            let username = mm_cfg.username.as_deref();
-            let icon_url = mm_cfg.icon_url.as_deref();
-
-            if ctx.is_dry_run() {
-                eprintln!("[announce] (dry-run) mattermost: {}", message);
-            } else {
-                eprintln!("[announce] mattermost: {}", message);
-                mattermost::send_mattermost(&url, &message, channel, username, icon_url)?;
-            }
+            dispatch(ctx, "mattermost", &message, || {
+                mattermost::send_mattermost(
+                    &url,
+                    &message,
+                    channel.as_deref(),
+                    username.as_deref(),
+                    icon_url.as_deref(),
+                )
+            })?;
         }
 
         // ----------------------------------------------------------------
-        // Email (SMTP via sendmail/msmtp)
+        // Email (via sendmail/msmtp)
         // ----------------------------------------------------------------
-        if let Some(email_cfg) = &announce.email
-            && email_cfg.enabled.unwrap_or(false)
+        if let Some(cfg) = &announce.email
+            && cfg.enabled.unwrap_or(false)
         {
-            let from = email_cfg
-                .from
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("announce.email: missing from"))?;
-            let from = ctx.render_template(from)?;
+            let from = require_rendered(ctx, cfg.from.as_deref(), "email", "from")?;
 
-            if email_cfg.to.is_empty() {
+            if !from.contains('@') {
+                anyhow::bail!(
+                    "announce.email: 'from' address {:?} does not look like a valid email (missing @)",
+                    from
+                );
+            }
+
+            if cfg.to.is_empty() {
                 anyhow::bail!("announce.email: missing to (recipient list)");
             }
 
-            let subject_tmpl = email_cfg
-                .subject_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released");
-            let subject = ctx.render_template(subject_tmpl)?;
+            let subject = ctx.render_template(
+                cfg.subject_template
+                    .as_deref()
+                    .unwrap_or("{{ .ProjectName }} {{ .Tag }} released"),
+            )?;
+            let body = render_message(ctx, cfg.message_template.as_deref())?;
 
-            let body_tmpl = email_cfg
-                .message_template
-                .as_deref()
-                .unwrap_or("{{ .ProjectName }} {{ .Tag }} released!");
-            let body = ctx.render_template(body_tmpl)?;
-
-            if ctx.is_dry_run() {
-                eprintln!(
-                    "[announce] (dry-run) email to {}: {}",
-                    email_cfg.to.join(", "),
-                    subject
-                );
-            } else {
-                eprintln!(
-                    "[announce] email to {}: {}",
-                    email_cfg.to.join(", "),
-                    subject
-                );
+            let log_line = format!("to {}: {}", cfg.to.join(", "), subject);
+            dispatch(ctx, "email", &log_line, || {
                 email::send_email(&email::EmailParams {
                     from: &from,
-                    to: &email_cfg.to,
+                    to: &cfg.to,
                     subject: &subject,
                     body: &body,
-                })?;
-            }
+                })
+            })?;
         }
 
         Ok(())
@@ -731,5 +689,28 @@ mod tests {
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_err());
+    }
+
+    #[test]
+    fn test_invalid_email_from_returns_error() {
+        let announce = AnnounceConfig {
+            email: Some(EmailAnnounce {
+                enabled: Some(true),
+                from: Some("not-an-email".to_string()),
+                to: vec!["dev@example.com".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing @"),
+            "expected 'missing @' error, got: {err}"
+        );
     }
 }

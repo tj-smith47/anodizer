@@ -1043,26 +1043,11 @@ pub struct MattermostAnnounce {
 #[serde(default)]
 pub struct EmailAnnounce {
     pub enabled: Option<bool>,
-    pub smtp_host: Option<String>,
-    #[serde(default = "default_smtp_port")]
-    pub smtp_port: u16,
-    pub username: Option<String>,
-    pub password: Option<String>,
     pub from: Option<String>,
     #[serde(default)]
     pub to: Vec<String>,
     pub subject_template: Option<String>,
     pub message_template: Option<String>,
-    #[serde(default = "default_tls")]
-    pub tls: bool,
-}
-
-fn default_smtp_port() -> u16 {
-    587
-}
-
-fn default_tls() -> bool {
-    true
 }
 
 // ---------------------------------------------------------------------------
