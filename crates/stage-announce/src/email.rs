@@ -75,14 +75,9 @@ pub fn send_email(params: &EmailParams<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Check whether a program exists on PATH.
+/// Check whether a program exists on PATH using the shared `find_binary` helper.
 fn which_exists(program: &str) -> bool {
-    Command::new("which")
-        .arg(program)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    anodize_core::util::find_binary(program)
 }
 
 // ---------------------------------------------------------------------------

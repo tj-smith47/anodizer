@@ -13,6 +13,8 @@
 #   - sbom: software bill of materials
 #   - upx: binary compression
 #   - env_files: environment file loading
+#   - announce: telegram, teams, mattermost, email providers (disabled)
+#   - publish: chocolatey, winget, aur, krew publishers
 
 version: 2
 project_name: anodize
@@ -98,6 +100,37 @@ crates:
           name: scoop-bucket
         description: "A Rust-native release automation tool"
         license: MIT
+      chocolatey:
+        project_repo:
+          owner: tj-smith47
+          name: anodize
+        description: "A Rust-native release automation tool"
+        license: MIT
+        tags:
+          - release
+          - automation
+          - rust
+      winget:
+        manifests_repo:
+          owner: tj-smith47
+          name: winget-pkgs
+        description: "A Rust-native release automation tool"
+        license: MIT
+        package_identifier: "TJSmith.Anodize"
+        publisher: "TJ Smith"
+      aur:
+        git_url: "ssh://aur@aur.archlinux.org/anodize-bin.git"
+        package_name: anodize-bin
+        description: "A Rust-native release automation tool"
+        license: MIT
+        depends:
+          - glibc
+      krew:
+        manifests_repo:
+          owner: tj-smith47
+          name: krew-index
+        short_description: "A Rust-native release automation tool"
+        homepage: "https://github.com/tj-smith47/anodize"
     nfpm:
       - package_name: anodize
         formats:
@@ -194,3 +227,26 @@ announce:
       Authorization: "Bearer {{ Env.WEBHOOK_TOKEN }}"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
+  telegram:
+    enabled: false
+    bot_token: "{{ Env.TELEGRAM_BOT_TOKEN }}"
+    chat_id: "{{ Env.TELEGRAM_CHAT_ID }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
+    parse_mode: MarkdownV2
+  teams:
+    enabled: false
+    webhook_url: "{{ Env.TEAMS_WEBHOOK_URL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
+  mattermost:
+    enabled: false
+    webhook_url: "{{ Env.MATTERMOST_WEBHOOK_URL }}"
+    channel: releases
+    username: release-bot
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
+  email:
+    enabled: false
+    from: "release-bot@example.com"
+    to:
+      - "dev-team@example.com"
+    subject_template: "{{ ProjectName }} {{ Tag }} released"
+    message_template: "{{ ProjectName }} {{ Tag }} is now available at {{ ReleaseURL }}"

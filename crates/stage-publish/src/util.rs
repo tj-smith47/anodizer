@@ -76,14 +76,14 @@ pub(crate) fn yaml_quote(value: &str) -> String {
 /// `fallback` when the triple does not match any known pattern.
 pub(crate) fn infer_os<'a>(target: &str, fallback: &'a str) -> &'a str {
     if target.contains("linux") {
-        // SAFETY: returning a 'static str that trivially outlives 'a
-        return leak_static("linux");
+        // Returns a 'static str that trivially outlives 'a
+        return known_os_str("linux");
     }
     if target.contains("darwin") || target.contains("apple") {
-        return leak_static("darwin");
+        return known_os_str("darwin");
     }
     if target.contains("windows") {
-        return leak_static("windows");
+        return known_os_str("windows");
     }
     fallback
 }
@@ -101,9 +101,11 @@ pub(crate) fn infer_arch(target: &str) -> &'static str {
     }
 }
 
-/// Helper: leak a &'static str. Used only for a small fixed set of OS names
-/// so the leak is bounded and intentional.
-fn leak_static(s: &str) -> &'static str {
+/// Map a known OS name to a `&'static str` literal.
+///
+/// Only handles the fixed set `"linux"`, `"darwin"`, `"windows"`; anything
+/// else maps to `"unknown"`.
+fn known_os_str(s: &str) -> &'static str {
     match s {
         "linux" => "linux",
         "darwin" => "darwin",

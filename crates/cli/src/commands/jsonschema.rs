@@ -10,8 +10,6 @@ pub fn run() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_jsonschema_generates_valid_json() {
         let schema = schemars::schema_for!(anodize_core::config::Config);
