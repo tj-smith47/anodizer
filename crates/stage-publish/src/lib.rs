@@ -44,38 +44,39 @@ impl Stage for PublishStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let selected = ctx.options.selected_crates.clone();
+        let log = ctx.logger("publish");
 
         // 1. crates.io — publish all crates with `publish.crates` enabled.
-        publish_to_crates_io(ctx, &selected)?;
+        publish_to_crates_io(ctx, &selected, &log)?;
 
         // 2. Homebrew — one call per crate that has a homebrew config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.homebrew.is_some()) {
-            publish_to_homebrew(ctx, crate_name)?;
+            publish_to_homebrew(ctx, crate_name, &log)?;
         }
 
         // 3. Scoop — one call per crate that has a scoop config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.scoop.is_some()) {
-            publish_to_scoop(ctx, crate_name)?;
+            publish_to_scoop(ctx, crate_name, &log)?;
         }
 
         // 4. Chocolatey — one call per crate that has a chocolatey config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.chocolatey.is_some()) {
-            publish_to_chocolatey(ctx, crate_name)?;
+            publish_to_chocolatey(ctx, crate_name, &log)?;
         }
 
         // 5. WinGet — one call per crate that has a winget config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.winget.is_some()) {
-            publish_to_winget(ctx, crate_name)?;
+            publish_to_winget(ctx, crate_name, &log)?;
         }
 
         // 6. AUR — one call per crate that has an aur config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur.is_some()) {
-            publish_to_aur(ctx, crate_name)?;
+            publish_to_aur(ctx, crate_name, &log)?;
         }
 
         // 7. Krew — one call per crate that has a krew config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.krew.is_some()) {
-            publish_to_krew(ctx, crate_name)?;
+            publish_to_krew(ctx, crate_name, &log)?;
         }
 
         Ok(())

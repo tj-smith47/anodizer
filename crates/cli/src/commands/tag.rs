@@ -1,18 +1,19 @@
 use anodize_core::config::TagConfig;
 use anodize_core::git;
+use anodize_core::log::{StageLogger, Verbosity};
 use anyhow::{Result, bail};
-use colored::Colorize;
 use regex::Regex;
 
 pub struct TagOpts {
     pub dry_run: bool,
     pub custom_tag: Option<String>,
     pub default_bump: Option<String>,
-    /// Reserved for workspace/monorepo support (tag a specific crate).
-    #[allow(dead_code)]
+    /// When set, select a specific crate's tag_template for tagging.
     pub crate_name: Option<String>,
     pub config_override: Option<std::path::PathBuf>,
     pub verbose: bool,
+    pub debug: bool,
+    pub quiet: bool,
 }
 
 /// Resolved tag configuration with defaults applied.
@@ -32,7 +33,7 @@ struct ResolvedConfig {
     minor_string_token: String,
     patch_string_token: String,
     none_string_token: String,
-    verbose: bool,
+    git_api_tagging: bool,
 }
 
 impl ResolvedConfig {
@@ -43,15 +44,9 @@ impl ResolvedConfig {
                 .clone()
                 .or_else(|| cfg.default_bump.clone())
                 .unwrap_or_else(|| "minor".to_string()),
-            tag_prefix: cfg
-                .tag_prefix
-                .clone()
-                .unwrap_or_else(|| "v".to_string()),
+            tag_prefix: cfg.tag_prefix.clone().unwrap_or_else(|| "v".to_string()),
             release_branches: cfg.release_branches.clone().unwrap_or_default(),
-            custom_tag: opts
-                .custom_tag
-                .clone()
-                .or_else(|| cfg.custom_tag.clone()),
+            custom_tag: opts.custom_tag.clone().or_else(|| cfg.custom_tag.clone()),
             tag_context: cfg
                 .tag_context
                 .clone()
@@ -87,7 +82,7 @@ impl ResolvedConfig {
                 .none_string_token
                 .clone()
                 .unwrap_or_else(|| "#none".to_string()),
-            verbose: cfg.verbose.unwrap_or(true) || opts.verbose,
+            git_api_tagging: cfg.git_api_tagging.unwrap_or(false),
         }
     }
 }
@@ -96,15 +91,38 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Load config if available, but don't fail if there's no config file
     let tag_config = load_tag_config(&opts);
 
-    let cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
+    let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
-    if cfg.verbose {
-        eprintln!(
-            "{} running auto-tag{}",
-            "anodize tag:".cyan().bold(),
-            if opts.dry_run { " (dry-run)" } else { "" }
-        );
+    // When --crate is given, look up the crate in config and derive the tag
+    // prefix from its tag_template (the part before the version placeholder).
+    if let Some(ref crate_name) = opts.crate_name
+        && let Some(prefix) = load_crate_tag_prefix(&opts, crate_name)
+    {
+        cfg.tag_prefix = prefix;
     }
+
+    // Merge verbose from config: if config says verbose=true and CLI doesn't say quiet, enable verbose
+    let config_verbose = tag_config.verbose.unwrap_or(false);
+    let effective_verbose = opts.verbose || (config_verbose && !opts.quiet);
+    let log = StageLogger::new(
+        "tag",
+        Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
+    );
+
+    log.status(&format!(
+        "running auto-tag{}",
+        if opts.dry_run { " (dry-run)" } else { "" }
+    ));
+
+    // Helper closure to create a tag via the appropriate method.
+    let create_tag = |tag: &str, message: &str, dry_run: bool| -> Result<()> {
+        if cfg.git_api_tagging {
+            log.verbose("using GitHub API for tagging (git_api_tagging=true)");
+            git::create_tag_via_github_api(tag, message, dry_run)
+        } else {
+            git::create_and_push_tag(tag, message, dry_run)
+        }
+    };
 
     // If custom_tag is set, use it directly
     if let Some(ref custom) = cfg.custom_tag {
@@ -113,10 +131,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
         } else {
             format!("{}{}", cfg.tag_prefix, custom)
         };
-        if cfg.verbose {
-            eprintln!("  using custom tag: {}", new_tag);
-        }
-        git::create_and_push_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
+        log.verbose(&format!("using custom tag: {}", new_tag));
+        create_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
         println!("new_tag={}", new_tag);
         println!("old_tag=");
         println!("part=custom");
@@ -125,8 +141,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     // Check release branches
     let current_branch = git::get_current_branch()?;
-    if !cfg.release_branches.is_empty() && !branch_matches(&current_branch, &cfg.release_branches)
-    {
+    if !cfg.release_branches.is_empty() && !branch_matches(&current_branch, &cfg.release_branches) {
         // Non-release branch: produce a hash-postfixed version, don't tag
         let short_commit = git::get_short_commit()?;
         let prev_tag = find_previous_tag(&cfg)?;
@@ -138,12 +153,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
             None => cfg.initial_version.clone(),
         };
         let hash_tag = format!("{}{}-{}", cfg.tag_prefix, base_version, short_commit);
-        if cfg.verbose {
-            eprintln!(
-                "  branch '{}' is not a release branch, producing hash-postfixed version: {}",
-                current_branch, hash_tag
-            );
-        }
+        log.verbose(&format!(
+            "branch '{}' is not a release branch, producing hash-postfixed version: {}",
+            current_branch, hash_tag
+        ));
         println!("new_tag={}", hash_tag);
         println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("part=none");
@@ -153,12 +166,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Find previous tag
     let prev_tag = find_previous_tag(&cfg)?;
 
-    if cfg.verbose {
-        eprintln!(
-            "  previous tag: {}",
-            prev_tag.as_deref().unwrap_or("(none)")
-        );
-    }
+    log.verbose(&format!(
+        "previous tag: {}",
+        prev_tag.as_deref().unwrap_or("(none)")
+    ));
 
     // Check for changes since last tag
     if let Some(ref tag) = prev_tag {
@@ -170,37 +181,30 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 cfg.force_without_changes
             };
             if !force {
-                if cfg.verbose {
-                    eprintln!("  no changes since {} — skipping", tag);
-                }
+                log.verbose(&format!("no changes since {} -- skipping", tag));
                 println!("new_tag={}", tag);
                 println!("old_tag={}", tag);
                 println!("part=none");
                 return Ok(());
             }
-            if cfg.verbose {
-                eprintln!("  no changes since {}, but force_without_changes is enabled", tag);
-            }
+            log.verbose(&format!(
+                "no changes since {}, but force_without_changes is enabled",
+                tag
+            ));
         }
     }
 
     // Scan commit messages to determine bump
     let messages = get_messages_for_bump(&cfg, prev_tag.as_deref())?;
-    if cfg.verbose {
-        eprintln!("  scanned {} commit message(s)", messages.len());
-    }
+    log.verbose(&format!("scanned {} commit message(s)", messages.len()));
 
     // Detect bump
     let bump = detect_bump(&messages, &cfg);
-    if cfg.verbose {
-        eprintln!("  detected bump: {:?}", bump);
-    }
+    log.verbose(&format!("detected bump: {:?}", bump));
 
     // If #none token detected, skip tagging
     if bump == BumpKind::None {
-        if cfg.verbose {
-            eprintln!("  #none token found — skipping tag");
-        }
+        log.verbose("#none token found -- skipping tag");
         println!("new_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("part=none");
@@ -210,13 +214,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Determine base version
     let base = match &prev_tag {
         Some(tag) => git::parse_semver(tag)?,
-        None => git::parse_semver(&format!("{}{}", cfg.tag_prefix, cfg.initial_version))
-            .unwrap_or(git::SemVer {
+        None => git::parse_semver(&format!("{}{}", cfg.tag_prefix, cfg.initial_version)).unwrap_or(
+            git::SemVer {
                 major: 0,
                 minor: 0,
                 patch: 0,
                 prerelease: None,
-            }),
+            },
+        ),
     };
 
     // Apply bump
@@ -233,12 +238,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let new_tag = format!("{}{}", cfg.tag_prefix, new_version);
     let old_tag = prev_tag.as_deref().unwrap_or("");
 
-    if cfg.verbose {
-        eprintln!("  {} -> {}", old_tag, new_tag);
-    }
+    log.verbose(&format!("{} -> {}", old_tag, new_tag));
 
     // Create and push tag
-    git::create_and_push_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
+    create_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
 
     let part_str = match bump {
         BumpKind::Major => "major",
@@ -273,6 +276,41 @@ fn load_tag_config(opts: &TagOpts) -> TagConfig {
         return config.tag.unwrap_or_default();
     }
     TagConfig::default()
+}
+
+/// When `--crate` is specified, extract the tag prefix from the matching
+/// crate's `tag_template` by stripping the version placeholder suffix.
+/// E.g. `mylib-v{{ .Version }}` -> `mylib-v`.
+fn load_crate_tag_prefix(opts: &TagOpts, crate_name: &str) -> Option<String> {
+    let config_path = opts
+        .config_override
+        .as_deref()
+        .and_then(|p| {
+            if p.exists() {
+                Some(p.to_path_buf())
+            } else {
+                None
+            }
+        })
+        .or_else(|| crate::pipeline::find_config(None).ok());
+
+    let config_path = config_path?;
+    let config = crate::pipeline::load_config(&config_path).ok()?;
+    let crate_cfg = config.crates.iter().find(|c| c.name == crate_name)?;
+
+    // Extract the prefix by finding the version placeholder and taking everything before it.
+    let placeholders = [
+        "{{ .Version }}",
+        "{{.Version}}",
+        "{{ Version }}",
+        "{{Version}}",
+    ];
+    for ph in &placeholders {
+        if let Some(idx) = crate_cfg.tag_template.find(ph) {
+            return Some(crate_cfg.tag_template[..idx].to_string());
+        }
+    }
+    None
 }
 
 fn find_previous_tag(cfg: &ResolvedConfig) -> Result<Option<String>> {
@@ -364,7 +402,7 @@ pub fn detect_bump_from_tokens(
         }
     }
 
-    // #none takes priority — skip tagging entirely
+    // #none takes priority -- skip tagging entirely
     if has_none {
         return BumpKind::None;
     }
@@ -417,9 +455,8 @@ mod tests {
             "feat: big change #major".to_string(),
             "feat: small change #minor".to_string(),
         ];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "minor",
-        );
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "minor");
         assert_eq!(result, BumpKind::Major);
     }
 
@@ -429,18 +466,16 @@ mod tests {
             "fix: something #patch".to_string(),
             "feat: new feature #minor".to_string(),
         ];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "patch",
-        );
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "patch");
         assert_eq!(result, BumpKind::Minor);
     }
 
     #[test]
     fn test_detect_bump_patch_only() {
         let messages = vec!["fix: a bug #patch".to_string()];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "minor",
-        );
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "minor");
         assert_eq!(result, BumpKind::Patch);
     }
 
@@ -450,53 +485,49 @@ mod tests {
             "chore: update deps #none".to_string(),
             "feat: something #major".to_string(),
         ];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "minor",
-        );
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "minor");
         assert_eq!(result, BumpKind::None);
     }
 
     #[test]
     fn test_detect_bump_default_when_no_tokens() {
-        let messages = vec!["fix: something".to_string(), "docs: update readme".to_string()];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "minor",
-        );
+        let messages = vec![
+            "fix: something".to_string(),
+            "docs: update readme".to_string(),
+        ];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "minor");
         assert_eq!(result, BumpKind::Minor);
     }
 
     #[test]
     fn test_detect_bump_default_patch() {
         let messages = vec!["fix: something".to_string()];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "patch",
-        );
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "patch");
         assert_eq!(result, BumpKind::Patch);
     }
 
     #[test]
     fn test_detect_bump_default_major() {
         let messages = vec!["fix: something".to_string()];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "major",
-        );
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "major");
         assert_eq!(result, BumpKind::Major);
     }
 
     #[test]
     fn test_detect_bump_default_none() {
         let messages = vec!["fix: something".to_string()];
-        let result = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "none",
-        );
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
         assert_eq!(result, BumpKind::None);
     }
 
     #[test]
     fn test_detect_bump_empty_messages_uses_default() {
-        let result = detect_bump_from_tokens(
-            &[], "#major", "#minor", "#patch", "#none", "patch",
-        );
+        let result = detect_bump_from_tokens(&[], "#major", "#minor", "#patch", "#none", "patch");
         assert_eq!(result, BumpKind::Patch);
     }
 
@@ -553,10 +584,7 @@ mod tests {
 
     #[test]
     fn test_branch_matches_regex() {
-        assert!(branch_matches(
-            "release/1.0",
-            &["release/.*".to_string()]
-        ));
+        assert!(branch_matches("release/1.0", &["release/.*".to_string()]));
     }
 
     #[test]
@@ -630,6 +658,8 @@ mod tests {
             crate_name: None,
             config_override: None,
             verbose: false,
+            debug: false,
+            quiet: false,
         };
         let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
         assert_eq!(resolved.default_bump, "minor");
@@ -645,7 +675,6 @@ mod tests {
         assert_eq!(resolved.minor_string_token, "#minor");
         assert_eq!(resolved.patch_string_token, "#patch");
         assert_eq!(resolved.none_string_token, "#none");
-        assert!(resolved.verbose); // default is true
     }
 
     #[test]
@@ -661,6 +690,8 @@ mod tests {
             crate_name: None,
             config_override: None,
             verbose: false,
+            debug: false,
+            quiet: false,
         };
         let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
         assert_eq!(resolved.default_bump, "major");
@@ -695,6 +726,8 @@ mod tests {
             crate_name: None,
             config_override: None,
             verbose: false,
+            debug: false,
+            quiet: false,
         };
         let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
         assert_eq!(resolved.default_bump, "patch");
@@ -711,7 +744,6 @@ mod tests {
         assert_eq!(resolved.minor_string_token, "feat:");
         assert_eq!(resolved.patch_string_token, "fix:");
         assert_eq!(resolved.none_string_token, "skip");
-        assert!(!resolved.verbose);
     }
 
     // ---- Config parsing from YAML tests ----
@@ -797,9 +829,8 @@ tag:
     #[test]
     fn test_full_bump_flow_major() {
         let messages = vec!["feat: breaking change #major".to_string()];
-        let bump = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "patch",
-        );
+        let bump =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "patch");
         assert_eq!(bump, BumpKind::Major);
         let (maj, min, pat) = apply_bump(1, 5, 3, &bump);
         assert_eq!((maj, min, pat), (2, 0, 0));
@@ -810,9 +841,8 @@ tag:
     #[test]
     fn test_full_bump_flow_minor_default() {
         let messages = vec!["docs: update readme".to_string()];
-        let bump = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "minor",
-        );
+        let bump =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "minor");
         assert_eq!(bump, BumpKind::Minor);
         let (maj, min, pat) = apply_bump(1, 2, 3, &bump);
         assert_eq!((maj, min, pat), (1, 3, 0));
@@ -821,9 +851,8 @@ tag:
     #[test]
     fn test_full_bump_flow_prerelease() {
         let messages = vec!["feat: new thing #minor".to_string()];
-        let bump = detect_bump_from_tokens(
-            &messages, "#major", "#minor", "#patch", "#none", "patch",
-        );
+        let bump =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "patch");
         assert_eq!(bump, BumpKind::Minor);
         let (maj, min, pat) = apply_bump(1, 2, 3, &bump);
         let version = format!("{}.{}.{}-beta", maj, min, pat);

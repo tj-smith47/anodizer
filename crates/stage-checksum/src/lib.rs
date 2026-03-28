@@ -116,8 +116,9 @@ impl Stage for ChecksumStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("checksum");
         if ctx.is_dry_run() {
-            eprintln!("[checksum] (dry-run) skipping checksum generation");
+            log.status("(dry-run) skipping checksum generation");
             return Ok(());
         }
 
@@ -134,7 +135,7 @@ impl Stage for ChecksumStage {
             .unwrap_or(false);
 
         if global_disabled {
-            eprintln!("[checksum] globally disabled, skipping");
+            log.status("globally disabled, skipping");
             return Ok(());
         }
 
@@ -186,13 +187,15 @@ impl Stage for ChecksumStage {
                 .and_then(|c| c.disable)
                 .unwrap_or(false)
             {
-                eprintln!("[checksum] disabled for crate {crate_name}, skipping");
+                log.verbose(&format!("disabled for crate {crate_name}, skipping"));
                 continue;
             }
 
             // Skip crates that have archives explicitly disabled
             if matches!(crate_cfg.archives, ArchivesConfig::Disabled) {
-                eprintln!("[checksum] archives disabled for crate {crate_name}, skipping");
+                log.verbose(&format!(
+                    "archives disabled for crate {crate_name}, skipping"
+                ));
                 continue;
             }
 
@@ -275,9 +278,9 @@ impl Stage for ChecksumStage {
             }
 
             if source_artifacts.is_empty() {
-                eprintln!(
-                    "[checksum] no Archive/LinuxPackage artifacts for crate {crate_name}, skipping"
-                );
+                log.verbose(&format!(
+                    "no Archive/LinuxPackage artifacts for crate {crate_name}, skipping"
+                ));
                 continue;
             }
 
@@ -315,12 +318,12 @@ impl Stage for ChecksumStage {
                     format!("checksum: write sidecar {}", sidecar_path.display())
                 })?;
 
-                eprintln!(
-                    "[checksum] {} -> {} ({})",
+                log.verbose(&format!(
+                    "{} -> {} ({})",
                     artifact.path.display(),
                     sidecar_path.display(),
                     algorithm
-                );
+                ));
 
                 combined_lines.push(line);
 
@@ -363,10 +366,10 @@ impl Stage for ChecksumStage {
                 })?;
             }
 
-            eprintln!(
-                "[checksum] combined checksums -> {}",
+            log.status(&format!(
+                "combined checksums -> {}",
                 combined_path.display()
-            );
+            ));
 
             new_artifacts.push(Artifact {
                 kind: ArtifactKind::Checksum,
@@ -1213,7 +1216,10 @@ ids:
 
         // Verify sidecar was created with correct hash
         let sidecar = dist.join("myapp-linux.tar.gz.sha256");
-        assert!(sidecar.exists(), "sidecar should be created for fake binary");
+        assert!(
+            sidecar.exists(),
+            "sidecar should be created for fake binary"
+        );
         let sidecar_content = fs::read_to_string(&sidecar).unwrap();
         let expected_hash = sha256_file(&fake_bin).unwrap();
         assert!(sidecar_content.starts_with(&expected_hash));
@@ -1241,9 +1247,11 @@ ids:
             "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
         // SHA-512 prefix
-        assert!(hash_file(&f, "sha512")
-            .unwrap()
-            .starts_with("309ecc489c12d6eb4cc40f50c902f2b4"));
+        assert!(
+            hash_file(&f, "sha512")
+                .unwrap()
+                .starts_with("309ecc489c12d6eb4cc40f50c902f2b4")
+        );
     }
 
     #[test]
@@ -1293,7 +1301,10 @@ ids:
             .by_kind(ArtifactKind::Checksum)
             .into_iter()
             .find(|a| a.metadata.get("combined") == Some(&"true".to_string()));
-        assert!(combined.is_some(), "should have a combined checksum artifact");
+        assert!(
+            combined.is_some(),
+            "should have a combined checksum artifact"
+        );
     }
 
     #[test]
@@ -1542,7 +1553,9 @@ ids:
     #[test]
     fn test_each_sha_algorithm_on_missing_file() {
         let missing = Path::new("/nonexistent/checksum_test_file");
-        for algo in &["sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "blake2s"] {
+        for algo in &[
+            "sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "blake2s",
+        ] {
             let result = hash_file(missing, algo);
             assert!(
                 result.is_err(),

@@ -1,4 +1,5 @@
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::process::Command;
@@ -92,7 +93,12 @@ pub fn publish_command(crate_name: &str) -> Vec<String> {
 /// 5 s, capped at 60 s.
 ///
 /// Returns `Ok(())` when the version is confirmed, `Err` on timeout.
-fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> Result<()> {
+fn poll_crates_io_index(
+    crate_name: &str,
+    version: &str,
+    timeout_secs: u64,
+    log: &StageLogger,
+) -> Result<()> {
     use std::time::{Duration, Instant};
 
     let start = Instant::now();
@@ -131,25 +137,25 @@ fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> R
                         .and_then(|v| v.get("vers")?.as_str().map(|s| s == version))
                         .unwrap_or(false)
                 }) {
-                    eprintln!(
-                        "[publish] crates.io index confirmed {}-{}",
+                    log.status(&format!(
+                        "crates.io index confirmed {}-{}",
                         crate_name, version
-                    );
+                    ));
                     return Ok(());
                 }
             }
             Ok(resp) => {
-                eprintln!(
-                    "[publish] crates.io index returned {} for {}, retrying…",
+                log.warn(&format!(
+                    "crates.io index returned {} for {}, retrying…",
                     resp.status(),
                     crate_name
-                );
+                ));
             }
             Err(e) => {
-                eprintln!(
-                    "[publish] HTTP error polling index for {}: {}",
+                log.error(&format!(
+                    "HTTP error polling index for {}: {}",
                     crate_name, e
-                );
+                ));
             }
         }
 
@@ -172,7 +178,11 @@ fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> R
 // publish_to_crates_io
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()> {
+pub fn publish_to_crates_io(
+    ctx: &mut Context,
+    selected: &[String],
+    log: &StageLogger,
+) -> Result<()> {
     // Collect (name, depends_on) for all crates with crates.io publishing enabled,
     // filtered to `selected` when non-empty.
     let publishable: Vec<(String, Vec<String>)> = ctx
@@ -193,7 +203,7 @@ pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()
         .collect();
 
     if publishable.is_empty() {
-        eprintln!("[publish] no crates configured for crates.io publishing");
+        log.status("no crates configured for crates.io publishing");
         return Ok(());
     }
 
@@ -222,7 +232,7 @@ pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()
     if ctx.is_dry_run() {
         for name in &sorted_names {
             let cmd = publish_command(name);
-            eprintln!("[publish] (dry-run) would run: {}", cmd.join(" "));
+            log.status(&format!("(dry-run) would run: {}", cmd.join(" ")));
         }
         return Ok(());
     }
@@ -236,18 +246,16 @@ pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()
 
     for (i, name) in sorted_names.iter().enumerate() {
         let cmd = publish_command(name);
-        eprintln!("[publish] running: {}", cmd.join(" "));
+        log.status(&format!("running: {}", cmd.join(" ")));
 
-        let status = Command::new(&cmd[0])
+        let output = Command::new(&cmd[0])
             .args(&cmd[1..])
-            .status()
+            .output()
             .with_context(|| format!("publish: spawn `{}`", cmd.join(" ")))?;
 
-        if !status.success() {
-            anyhow::bail!("publish: `{}` exited with {}", cmd.join(" "), status);
-        }
+        log.check_output(output, &format!("cargo publish -p {}", name))?;
 
-        eprintln!("[publish] published crate '{}'", name);
+        log.status(&format!("published crate '{}'", name));
 
         // If there are later crates that depend on this one, wait for the index.
         let has_dependents = sorted_names[i + 1..].iter().any(|later| {
@@ -259,11 +267,11 @@ pub fn publish_to_crates_io(ctx: &mut Context, selected: &[String]) -> Result<()
 
         if has_dependents && !version.is_empty() {
             let timeout = timeout_map.get(name).copied().unwrap_or(300);
-            eprintln!(
-                "[publish] waiting for {}-{} in crates.io index (timeout={}s)…",
+            log.status(&format!(
+                "waiting for {}-{} in crates.io index (timeout={}s)…",
                 name, version, timeout
-            );
-            poll_crates_io_index(name, &version, timeout)
+            ));
+            poll_crates_io_index(name, &version, timeout, log)
                 .with_context(|| format!("publish: index poll for '{}'", name))?;
         }
     }

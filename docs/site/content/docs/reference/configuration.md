@@ -13,9 +13,11 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `version` | integer | none | Schema version (currently 1 or 2) |
 | `project_name` | string | `""` | Project name used in templates |
 | `dist` | string | `./dist` | Output directory for artifacts |
-| `includes` | list | none | Config files to merge (coming soon) |
+| `includes` | list | none | Config files to merge (deep merge, sequences concatenate) |
+| `env_files` | list | none | List of .env files to load before template expansion |
 | `env` | map | none | Environment variables for templates and commands |
 | `report_sizes` | bool | none | Print artifact sizes after build |
 | `crates` | list | `[]` | Crate configurations (see below) |
@@ -23,6 +25,7 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `changelog` | object | none | Changelog generation settings |
 | `signs` | list | `[]` | Signing configurations |
 | `docker_signs` | list | none | Docker image signing configs |
+| `upx` | list | `[]` | UPX binary compression configurations |
 | `snapshot` | object | none | Snapshot mode settings |
 | `nightly` | object | none | Nightly build settings |
 | `announce` | object | none | Announcement channels |
@@ -31,6 +34,8 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `before` | object | none | Pre-pipeline hooks |
 | `after` | object | none | Post-pipeline hooks |
 | `workspaces` | list | none | Monorepo workspace definitions |
+| `source` | object | none | Source archive generation settings |
+| `sbom` | object | none | Software Bill of Materials (SBOM) generation settings |
 
 
 For detailed field documentation, see the individual section pages:

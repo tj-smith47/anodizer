@@ -1,4 +1,5 @@
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use tera::Tera;
 
@@ -125,7 +126,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
 // publish_to_aur
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
+pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let crate_cfg = ctx
         .config
         .crates
@@ -143,15 +144,16 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
 
-    let git_url = aur_cfg.git_url.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("aur: no git_url config for '{}'", crate_name)
-    })?;
+    let git_url = aur_cfg
+        .git_url
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("aur: no git_url config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
-        eprintln!(
-            "[publish] (dry-run) would push AUR PKGBUILD for '{}' to {}",
+        log.status(&format!(
+            "(dry-run) would push AUR PKGBUILD for '{}' to {}",
             crate_name, git_url
-        );
+        ));
         return Ok(());
     }
 
@@ -170,10 +172,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
         .description
         .clone()
         .unwrap_or_else(|| crate_name.to_string());
-    let license = aur_cfg
-        .license
-        .clone()
-        .unwrap_or_else(|| "MIT".to_string());
+    let license = aur_cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
     let url = if let Some(ref u) = aur_cfg.url {
         u.clone()
     } else if let Some(gh) = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref()) {
@@ -197,20 +196,18 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
     let linux_artifacts = find_artifacts_by_os(ctx, crate_name, "linux");
 
     let sources: Vec<(String, String, String)> = if linux_artifacts.is_empty() {
-        eprintln!(
-            "[publish] aur: no linux artifacts found for '{}', using placeholder URLs",
+        log.warn(&format!(
+            "aur: no linux artifacts found for '{}', using placeholder URLs",
             crate_name
-        );
-        vec![
-            (
-                "x86_64".to_string(),
-                format!(
-                    "https://github.com/{0}/releases/download/v{1}/{0}-{1}-linux-amd64.tar.gz",
-                    crate_name, version
-                ),
-                String::new(),
+        ));
+        vec![(
+            "x86_64".to_string(),
+            format!(
+                "https://github.com/{0}/releases/download/v{1}/{0}-{1}-linux-amd64.tar.gz",
+                crate_name, version
             ),
-        ]
+            String::new(),
+        )]
     } else {
         // Deduplicate by architecture — AUR -bin packages expect one source per
         // architecture. When multiple artifacts share the same arch (e.g.
@@ -256,22 +253,17 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
     let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    let status = std::process::Command::new("git")
+    let output = std::process::Command::new("git")
         .args(["clone", "--depth=1", git_url, &repo_path.to_string_lossy()])
-        .status()
+        .output()
         .context("aur: git clone: spawn")?;
-    if !status.success() {
-        anyhow::bail!("aur: git clone: exited with {}", status);
-    }
+    log.check_output(output, "aur: git clone")?;
 
     let pkgbuild_path = repo_path.join("PKGBUILD");
     std::fs::write(&pkgbuild_path, &pkgbuild)
         .with_context(|| format!("aur: write PKGBUILD {}", pkgbuild_path.display()))?;
 
-    eprintln!(
-        "[publish] wrote AUR PKGBUILD: {}",
-        pkgbuild_path.display()
-    );
+    log.status(&format!("wrote AUR PKGBUILD: {}", pkgbuild_path.display()));
 
     // Generate .SRCINFO using makepkg.
     let srcinfo_result = std::process::Command::new("makepkg")
@@ -284,13 +276,10 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
         let srcinfo_path = repo_path.join(".SRCINFO");
         std::fs::write(&srcinfo_path, &srcinfo_result.stdout)
             .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
-        eprintln!(
-            "[publish] wrote AUR .SRCINFO: {}",
-            srcinfo_path.display()
-        );
+        log.status(&format!("wrote AUR .SRCINFO: {}", srcinfo_path.display()));
     } else {
-        eprintln!(
-            "[publish] aur: makepkg --printsrcinfo failed (may not be available); skipping .SRCINFO generation"
+        log.warn(
+            "aur: makepkg --printsrcinfo failed (may not be available); skipping .SRCINFO generation",
         );
     }
 
@@ -298,19 +287,15 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
     run_cmd_in(
         repo_path,
         "git",
-        &[
-            "commit",
-            "-m",
-            &format!("Update to version {}", version),
-        ],
+        &["commit", "-m", &format!("Update to version {}", version)],
         "aur: git commit",
     )?;
     run_cmd_in(repo_path, "git", &["push"], "aur: git push")?;
 
-    eprintln!(
-        "[publish] AUR package '{}' pushed to {}",
+    log.status(&format!(
+        "AUR package '{}' pushed to {}",
         package_name, git_url
-    );
+    ));
 
     Ok(())
 }
@@ -362,9 +347,11 @@ mod tests {
         assert!(pkgbuild.contains("url=\"https://github.com/org/mytool\""));
         assert!(pkgbuild.contains("license=('MIT')"));
         assert!(pkgbuild.contains("depends=()"));
-        assert!(pkgbuild.contains(
-            "source_x86_64=(\"https://example.com/mytool-1.0.0-linux-amd64.tar.gz\")"
-        ));
+        assert!(
+            pkgbuild.contains(
+                "source_x86_64=(\"https://example.com/mytool-1.0.0-linux-amd64.tar.gz\")"
+            )
+        );
         assert!(pkgbuild.contains("sha256sums_x86_64=('deadbeef1234')"));
         assert!(pkgbuild.contains("package()"));
         assert!(pkgbuild.contains("install -Dm755 \"$srcdir/mytool\" \"$pkgdir/usr/bin/mytool\""));
@@ -589,6 +576,7 @@ mod tests {
     fn test_publish_to_aur_dry_run() {
         use anodize_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -597,9 +585,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
-                    git_url: Some(
-                        "ssh://aur@aur.archlinux.org/mytool.git".to_string(),
-                    ),
+                    git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
                     description: Some("A great tool".to_string()),
                     ..Default::default()
                 }),
@@ -615,14 +601,16 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_aur(&ctx, "mytool").is_ok());
+        assert!(publish_to_aur(&ctx, "mytool", &log).is_ok());
     }
 
     #[test]
     fn test_publish_to_aur_missing_config() {
         use anodize_core::config::{Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -640,14 +628,16 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_aur(&ctx, "mytool").is_err());
+        assert!(publish_to_aur(&ctx, "mytool", &log).is_err());
     }
 
     #[test]
     fn test_publish_to_aur_missing_git_url() {
         use anodize_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -671,7 +661,8 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_aur(&ctx, "mytool").is_err());
+        assert!(publish_to_aur(&ctx, "mytool", &log).is_err());
     }
 }

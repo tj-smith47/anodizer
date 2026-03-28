@@ -1,6 +1,7 @@
 use anodize_core::artifact::ArtifactKind;
 use anodize_core::config::{MakeLatestConfig, PrereleaseConfig};
 use anodize_core::context::Context;
+use anodize_core::git;
 use anodize_core::stage::Stage;
 use anyhow::{Context as _, Result};
 
@@ -15,10 +16,9 @@ use anyhow::{Context as _, Result};
 /// - `None`     – default to `false`.
 pub fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &str) -> bool {
     match config {
-        Some(PrereleaseConfig::Auto) => {
-            let t = tag.to_ascii_lowercase();
-            t.contains("-rc") || t.contains("-beta") || t.contains("-alpha") || t.contains("-dev")
-        }
+        Some(PrereleaseConfig::Auto) => git::parse_semver(tag)
+            .map(|sv| sv.is_prerelease())
+            .unwrap_or(false),
         Some(PrereleaseConfig::Bool(b)) => *b,
         None => false,
     }
@@ -61,6 +61,7 @@ pub fn build_release_body(
 // ---------------------------------------------------------------------------
 
 /// Resolve `extra_files` glob patterns into concrete file paths.
+/// Invalid glob patterns are silently skipped (callers log through StageLogger).
 pub fn collect_extra_files(patterns: &[String]) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
     for pattern in patterns {
@@ -72,11 +73,8 @@ pub fn collect_extra_files(patterns: &[String]) -> Vec<std::path::PathBuf> {
                     }
                 }
             }
-            Err(e) => {
-                eprintln!(
-                    "[release] warning: invalid extra_files glob '{}': {}",
-                    pattern, e
-                );
+            Err(_) => {
+                // Invalid glob — skip silently; the release stage logs via StageLogger.
             }
         }
     }
@@ -112,6 +110,8 @@ impl Stage for ReleaseStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("release");
+
         // Resolve the GitHub token once (CLI flag > env var).
         let token = ctx
             .options
@@ -215,20 +215,18 @@ impl Stage for ReleaseStage {
             }
 
             if dry_run {
-                eprintln!(
-                    "[release] (dry-run) would create GitHub Release '{}' (tag={}, draft={}, prerelease={}) for crate '{}'",
+                log.status(&format!(
+                    "(dry-run) would create GitHub Release '{}' (tag={}, draft={}, prerelease={}) for crate '{}'",
                     release_name, tag, draft, prerelease, crate_cfg.name
-                );
+                ));
                 if skip_upload {
-                    eprintln!(
-                        "[release] (dry-run)   skip_upload is set, would skip artifact uploads"
-                    );
+                    log.status("(dry-run)   skip_upload is set, would skip artifact uploads");
                 } else {
                     for path in &artifact_paths {
-                        eprintln!(
-                            "[release] (dry-run)   would upload artifact: {}",
+                        log.status(&format!(
+                            "(dry-run)   would upload artifact: {}",
                             path.display()
-                        );
+                        ));
                     }
                 }
                 continue;
@@ -238,10 +236,10 @@ impl Stage for ReleaseStage {
             let github = match &release_cfg.github {
                 Some(g) => g.clone(),
                 None => {
-                    eprintln!(
-                        "[release] no github config for crate '{}', skipping",
+                    log.warn(&format!(
+                        "no github config for crate '{}', skipping",
                         crate_cfg.name
-                    );
+                    ));
                     continue;
                 }
             };
@@ -274,10 +272,10 @@ impl Stage for ReleaseStage {
                         .await
                     {
                         Ok(existing) if existing.draft => {
-                            eprintln!(
-                                "[release] replacing existing draft release '{}' (id={})",
+                            log.status(&format!(
+                                "replacing existing draft release '{}' (id={})",
                                 tag, existing.id
-                            );
+                            ));
                             octo.repos(&github.owner, &github.name)
                                 .releases()
                                 .delete(existing.id.into_inner())
@@ -352,23 +350,23 @@ impl Stage for ReleaseStage {
                         })?
                 };
 
-                eprintln!(
-                    "[release] created GitHub Release '{}' (id={}) on {}/{}",
+                log.status(&format!(
+                    "created GitHub Release '{}' (id={}) on {}/{}",
                     release_name, release.id, github.owner, github.name
-                );
+                ));
 
                 let html_url = release.html_url.to_string();
 
                 // Upload each artifact (unless skip_upload is set).
                 if skip_upload {
-                    eprintln!("[release] skip_upload is set, skipping artifact uploads");
+                    log.status("skip_upload is set, skipping artifact uploads");
                 } else {
                     for path in &artifact_paths {
                         if !path.exists() {
-                            eprintln!(
-                                "[release] warning: artifact not found, skipping upload: {}",
+                            log.warn(&format!(
+                                "artifact not found, skipping upload: {}",
                                 path.display()
-                            );
+                            ));
                             continue;
                         }
 
@@ -382,10 +380,10 @@ impl Stage for ReleaseStage {
                         if replace_existing_artifacts {
                             for existing_asset in &release.assets {
                                 if existing_asset.name == file_name {
-                                    eprintln!(
-                                        "[release] replacing existing artifact '{}'",
+                                    log.verbose(&format!(
+                                        "replacing existing artifact '{}'",
                                         file_name
-                                    );
+                                    ));
                                     octo.repos(&github.owner, &github.name)
                                         .release_assets()
                                         .delete(existing_asset.id.into_inner())
@@ -417,7 +415,7 @@ impl Stage for ReleaseStage {
                                 )
                             })?;
 
-                        eprintln!("[release] uploaded artifact: {}", file_name);
+                        log.verbose(&format!("uploaded artifact: {}", file_name));
                     }
                 }
 
@@ -818,8 +816,8 @@ mod tests {
     #[test]
     fn test_release_pipeline_with_mock_github_client() {
         use anodize_core::github_client::{
-            CreateReleaseParams, GitHubClient, MockGitHubClient, ReleaseInfo, UploadAssetParams,
-            AssetInfo,
+            AssetInfo, CreateReleaseParams, GitHubClient, MockGitHubClient, ReleaseInfo,
+            UploadAssetParams,
         };
 
         // Set up the mock to return a successful release creation
@@ -1129,7 +1127,10 @@ mod tests {
         // If GITHUB_TOKEN is in the environment, the stage proceeds past
         // token resolution and fails on the API call instead. Either way
         // the error should be informative.
-        assert!(result.is_err(), "release without explicit token should fail");
+        assert!(
+            result.is_err(),
+            "release without explicit token should fail"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("GITHUB_TOKEN")
@@ -1142,9 +1143,7 @@ mod tests {
 
     #[test]
     fn test_mock_github_api_401_error() {
-        use anodize_core::github_client::{
-            CreateReleaseParams, GitHubClient, MockGitHubClient,
-        };
+        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err("401 Unauthorized: Bad credentials".to_string()));
@@ -1172,9 +1171,7 @@ mod tests {
 
     #[test]
     fn test_mock_github_api_403_error() {
-        use anodize_core::github_client::{
-            CreateReleaseParams, GitHubClient, MockGitHubClient,
-        };
+        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err(
@@ -1200,9 +1197,7 @@ mod tests {
 
     #[test]
     fn test_mock_github_api_404_error() {
-        use anodize_core::github_client::{
-            CreateReleaseParams, GitHubClient, MockGitHubClient,
-        };
+        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err("404 Not Found: repository not found".to_string()));
@@ -1230,9 +1225,7 @@ mod tests {
 
     #[test]
     fn test_mock_github_api_422_error() {
-        use anodize_core::github_client::{
-            CreateReleaseParams, GitHubClient, MockGitHubClient,
-        };
+        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err(
@@ -1262,13 +1255,11 @@ mod tests {
 
     #[test]
     fn test_mock_upload_failure() {
-        use anodize_core::github_client::{
-            GitHubClient, MockGitHubClient, UploadAssetParams,
-        };
+        use anodize_core::github_client::{GitHubClient, MockGitHubClient, UploadAssetParams};
 
         let mock = MockGitHubClient::new();
         mock.set_upload_asset_response(Err(
-            "upload failed: connection timeout after 30s".to_string(),
+            "upload failed: connection timeout after 30s".to_string()
         ));
 
         let params = UploadAssetParams {

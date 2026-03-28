@@ -57,11 +57,13 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> 
     vars.set("from", &sanitize_header(params.from));
     vars.set("to", &to_header);
     vars.set("subject", &sanitize_header(params.subject));
-    vars.set("date", &Utc::now().format("%a, %d %b %Y %H:%M:%S +0000").to_string());
+    vars.set(
+        "date",
+        &Utc::now().format("%a, %d %b %Y %H:%M:%S +0000").to_string(),
+    );
     vars.set("body", params.body);
 
-    template::render(RFC2822_TEMPLATE, &vars)
-        .context("failed to render RFC 2822 email template")
+    template::render(RFC2822_TEMPLATE, &vars).context("failed to render RFC 2822 email template")
 }
 
 // ---------------------------------------------------------------------------

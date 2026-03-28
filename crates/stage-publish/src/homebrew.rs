@@ -1,4 +1,5 @@
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util::{run_cmd, run_cmd_in};
@@ -108,83 +109,84 @@ pub fn generate_formula(
 
     // Build per-OS entry lists only for multi-archive layout
     let empty_vec: Vec<std::collections::HashMap<&str, &str>> = Vec::new();
-    let (unknown_vals, macos_vals, linux_vals, macos_has_arch, linux_has_arch) =
-        if single_archive {
-            (empty_vec.clone(), empty_vec.clone(), empty_vec, false, false)
-        } else {
-            let has_arch = |entries: &[(&str, &str, &str)]| -> bool {
-                entries.iter().any(|(p, _, _)| {
-                    p.contains("arm64")
-                        || p.contains("aarch64")
-                        || p.contains("amd64")
-                        || p.contains("x86_64")
-                })
-            };
-
-            let unknown: Vec<_> = archives
-                .iter()
-                .filter(|(p, _, _)| {
-                    !p.contains("darwin")
-                        && !p.contains("macos")
-                        && !p.contains("linux")
-                })
-                .map(|(platform, url, sha256)| {
-                    let mut m = std::collections::HashMap::new();
-                    m.insert("platform", *platform);
-                    m.insert("url", *url);
-                    m.insert("sha256", *sha256);
-                    m
-                })
-                .collect();
-
-            let macos_archives: Vec<_> = archives
-                .iter()
-                .filter(|(p, _, _)| p.contains("darwin") || p.contains("macos"))
-                .copied()
-                .collect();
-            let macos_has = !macos_archives.is_empty() && has_arch(&macos_archives);
-            let macos: Vec<_> = macos_archives
-                .iter()
-                .map(|(platform, url, sha256)| {
-                    let arch_block =
-                        if platform.contains("arm64") || platform.contains("aarch64") {
-                            "on_arm"
-                        } else {
-                            "on_intel"
-                        };
-                    let mut m = std::collections::HashMap::new();
-                    m.insert("url", *url);
-                    m.insert("sha256", *sha256);
-                    m.insert("arch_block", arch_block);
-                    m
-                })
-                .collect();
-
-            let linux_archives: Vec<_> = archives
-                .iter()
-                .filter(|(p, _, _)| p.contains("linux"))
-                .copied()
-                .collect();
-            let linux_has = !linux_archives.is_empty() && has_arch(&linux_archives);
-            let linux: Vec<_> = linux_archives
-                .iter()
-                .map(|(platform, url, sha256)| {
-                    let arch_block =
-                        if platform.contains("arm64") || platform.contains("aarch64") {
-                            "on_arm"
-                        } else {
-                            "on_intel"
-                        };
-                    let mut m = std::collections::HashMap::new();
-                    m.insert("url", *url);
-                    m.insert("sha256", *sha256);
-                    m.insert("arch_block", arch_block);
-                    m
-                })
-                .collect();
-
-            (unknown, macos, linux, macos_has, linux_has)
+    let (unknown_vals, macos_vals, linux_vals, macos_has_arch, linux_has_arch) = if single_archive {
+        (
+            empty_vec.clone(),
+            empty_vec.clone(),
+            empty_vec,
+            false,
+            false,
+        )
+    } else {
+        let has_arch = |entries: &[(&str, &str, &str)]| -> bool {
+            entries.iter().any(|(p, _, _)| {
+                p.contains("arm64")
+                    || p.contains("aarch64")
+                    || p.contains("amd64")
+                    || p.contains("x86_64")
+            })
         };
+
+        let unknown: Vec<_> = archives
+            .iter()
+            .filter(|(p, _, _)| {
+                !p.contains("darwin") && !p.contains("macos") && !p.contains("linux")
+            })
+            .map(|(platform, url, sha256)| {
+                let mut m = std::collections::HashMap::new();
+                m.insert("platform", *platform);
+                m.insert("url", *url);
+                m.insert("sha256", *sha256);
+                m
+            })
+            .collect();
+
+        let macos_archives: Vec<_> = archives
+            .iter()
+            .filter(|(p, _, _)| p.contains("darwin") || p.contains("macos"))
+            .copied()
+            .collect();
+        let macos_has = !macos_archives.is_empty() && has_arch(&macos_archives);
+        let macos: Vec<_> = macos_archives
+            .iter()
+            .map(|(platform, url, sha256)| {
+                let arch_block = if platform.contains("arm64") || platform.contains("aarch64") {
+                    "on_arm"
+                } else {
+                    "on_intel"
+                };
+                let mut m = std::collections::HashMap::new();
+                m.insert("url", *url);
+                m.insert("sha256", *sha256);
+                m.insert("arch_block", arch_block);
+                m
+            })
+            .collect();
+
+        let linux_archives: Vec<_> = archives
+            .iter()
+            .filter(|(p, _, _)| p.contains("linux"))
+            .copied()
+            .collect();
+        let linux_has = !linux_archives.is_empty() && has_arch(&linux_archives);
+        let linux: Vec<_> = linux_archives
+            .iter()
+            .map(|(platform, url, sha256)| {
+                let arch_block = if platform.contains("arm64") || platform.contains("aarch64") {
+                    "on_arm"
+                } else {
+                    "on_intel"
+                };
+                let mut m = std::collections::HashMap::new();
+                m.insert("url", *url);
+                m.insert("sha256", *sha256);
+                m.insert("arch_block", arch_block);
+                m
+            })
+            .collect();
+
+        (unknown, macos, linux, macos_has, linux_has)
+    };
 
     ctx.insert("unknown_entries", &unknown_vals);
     ctx.insert("has_macos", &!macos_vals.is_empty());
@@ -207,7 +209,7 @@ pub fn generate_formula(
 // publish_to_homebrew
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
+pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let crate_cfg = ctx
         .config
         .crates
@@ -231,10 +233,10 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("homebrew: no tap config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
-        eprintln!(
-            "[publish] (dry-run) would update Homebrew tap {}/{} for '{}'",
+        log.status(&format!(
+            "(dry-run) would update Homebrew tap {}/{} for '{}'",
             tap.owner, tap.name, crate_name
-        );
+        ));
         return Ok(());
     }
 
@@ -325,10 +327,10 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
     std::fs::write(&formula_path, &formula)
         .with_context(|| format!("homebrew: write formula {}", formula_path.display()))?;
 
-    eprintln!(
-        "[publish] wrote Homebrew formula: {}",
+    log.status(&format!(
+        "wrote Homebrew formula: {}",
         formula_path.display()
-    );
+    ));
 
     // git add + commit + push
     run_cmd_in(
@@ -349,10 +351,10 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str) -> Result<()> {
     )?;
     run_cmd_in(repo_path, "git", &["push"], "homebrew: git push")?;
 
-    eprintln!(
-        "[publish] Homebrew tap {}/{} updated for '{}'",
+    log.status(&format!(
+        "Homebrew tap {}/{} updated for '{}'",
         tap.owner, tap.name, crate_name
-    );
+    ));
 
     Ok(())
 }
@@ -634,6 +636,7 @@ mod tests {
     fn test_publish_to_homebrew_dry_run() {
         use anodize_core::config::{Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let config = Config {
             crates: vec![CrateConfig {
@@ -663,9 +666,10 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // dry-run should succeed without any network/git calls
-        assert!(publish_to_homebrew(&ctx, "cfgd").is_ok());
+        assert!(publish_to_homebrew(&ctx, "cfgd", &log).is_ok());
     }
 
     #[test]
@@ -732,11 +736,7 @@ mod tests {
         let formula = generate_formula(
             "simple",
             "1.0.0",
-            &[(
-                "linux-amd64",
-                "https://example.com/simple.tar.gz",
-                "abc123",
-            )],
+            &[("linux-amd64", "https://example.com/simple.tar.gz", "abc123")],
             "Simple tool",
             "MIT",
             "bin.install \"simple\"",

@@ -473,22 +473,13 @@ mod tests {
             ctx.template_vars().get("ProjectName"),
             Some(&"test-project".to_string())
         );
-        assert_eq!(
-            ctx.template_vars().get("Tag"),
-            Some(&"v1.2.3".to_string())
-        );
+        assert_eq!(ctx.template_vars().get("Tag"), Some(&"v1.2.3".to_string()));
         assert_eq!(
             ctx.template_vars().get("Version"),
             Some(&"1.2.3".to_string())
         );
-        assert_eq!(
-            ctx.template_vars().get("Major"),
-            Some(&"1".to_string())
-        );
-        assert_eq!(
-            ctx.template_vars().get("Branch"),
-            Some(&"main".to_string())
-        );
+        assert_eq!(ctx.template_vars().get("Major"), Some(&"1".to_string()));
+        assert_eq!(ctx.template_vars().get("Branch"), Some(&"main".to_string()));
         assert!(!ctx.is_dry_run());
         assert!(!ctx.is_snapshot());
     }
@@ -509,10 +500,7 @@ mod tests {
             ctx.template_vars().get("Tag"),
             Some(&"v3.0.0-rc.1".to_string())
         );
-        assert_eq!(
-            ctx.template_vars().get("Major"),
-            Some(&"3".to_string())
-        );
+        assert_eq!(ctx.template_vars().get("Major"), Some(&"3".to_string()));
         assert_eq!(
             ctx.template_vars().get("Prerelease"),
             Some(&"rc.1".to_string())
@@ -560,9 +548,7 @@ mod tests {
 
     #[test]
     fn test_builder_no_populate_git_vars() {
-        let ctx = TestContextBuilder::new()
-            .populate_git_vars(false)
-            .build();
+        let ctx = TestContextBuilder::new().populate_git_vars(false).build();
         // ProjectName is set in Context::new, not populate_git_vars
         assert_eq!(
             ctx.template_vars().get("ProjectName"),
@@ -625,9 +611,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             ..Default::default()
         };
-        let ctx = TestContextBuilder::new()
-            .crates(vec![crate_cfg])
-            .build();
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
         assert_eq!(ctx.config.crates.len(), 1);
         assert_eq!(ctx.config.crates[0].name, "my-crate");
     }

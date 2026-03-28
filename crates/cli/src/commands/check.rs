@@ -1,15 +1,26 @@
 use crate::pipeline;
 use anodize_core::config::{Config, CrateConfig};
+use anodize_core::log::{StageLogger, Verbosity};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-pub fn run(config_override: Option<&Path>, workspace: Option<&str>) -> Result<()> {
+pub fn run(
+    config_override: Option<&Path>,
+    workspace: Option<&str>,
+    verbose: bool,
+    debug: bool,
+    quiet: bool,
+) -> Result<()> {
+    let log = StageLogger::new("check", Verbosity::from_flags(quiet, verbose, debug));
+
     let path = pipeline::find_config(config_override)?;
+    log.verbose(&format!("loading config from {}", path.display()));
     let config = pipeline::load_config(&path)?;
 
     // Always validate the raw config first
-    run_checks(&config, true)?;
+    log.status("validating configuration");
+    run_checks(&config, true, &log)?;
 
     // When --workspace is specified, also validate the resolved (overlaid) config
     if let Some(ws_name) = workspace {
@@ -34,8 +45,11 @@ pub fn run(config_override: Option<&Path>, workspace: Option<&str>) -> Result<()
                 merged.insert(k.clone(), v.clone());
             }
         }
-        eprintln!("  Validating resolved config for workspace '{}'...", ws_name);
-        run_checks(&resolved, true)?;
+        log.status(&format!(
+            "validating resolved config for workspace '{}'",
+            ws_name
+        ));
+        run_checks(&resolved, true, &log)?;
     }
 
     Ok(())
@@ -43,7 +57,7 @@ pub fn run(config_override: Option<&Path>, workspace: Option<&str>) -> Result<()
 
 /// Core validation logic. `check_env` controls whether env/tool checks are run
 /// (so tests can skip them).
-pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
+pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result<()> {
     let mut errors: Vec<String> = vec![];
     let mut warnings: Vec<String> = vec![];
 
@@ -82,7 +96,11 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
             }
             // Validate tag_template in workspace crates
             for c in &ws.crates {
-                validate_tag_template(&c.tag_template, &format!("workspace '{}': crate '{}'", ws.name, c.name), &mut errors);
+                validate_tag_template(
+                    &c.tag_template,
+                    &format!("workspace '{}': crate '{}'", ws.name, c.name),
+                    &mut errors,
+                );
             }
             // Validate depends_on references within workspace crates
             for c in &ws.crates {
@@ -439,15 +457,15 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
     // ------------------------------------------------------------------
 
     for w in &warnings {
-        eprintln!("  WARNING: {}", w);
+        log.warn(w);
     }
 
     if errors.is_empty() {
-        eprintln!("  Config is valid.");
+        log.status("Config is valid.");
         Ok(())
     } else {
         for e in &errors {
-            eprintln!("  ERROR: {}", e);
+            log.error(e);
         }
         bail!("config validation failed with {} error(s)", errors.len());
     }
@@ -529,12 +547,7 @@ pub fn find_cycle(crates: &[CrateConfig]) -> Option<Vec<String>> {
 /// `context` is a human-readable prefix for the error message (e.g. "crate 'foo'" or
 /// "workspace 'ws': crate 'bar'").
 fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<String>) {
-    if !tag_template.is_empty()
-        && !tag_template.contains("{{ .Version }}")
-        && !tag_template.contains("{{.Version}}")
-        && !tag_template.contains("{{ Version }}")
-        && !tag_template.contains("{{Version}}")
-    {
+    if !tag_template.is_empty() && !anodize_core::git::has_version_placeholder(tag_template) {
         errors.push(format!(
             "{}: tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}'",
             context, tag_template
@@ -543,11 +556,7 @@ fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<Str
 }
 
 fn tool_available(name: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(name)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    anodize_core::util::find_binary(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -575,6 +584,10 @@ mod tests {
             crates,
             ..Default::default()
         }
+    }
+
+    fn test_logger() -> StageLogger {
+        StageLogger::new("check", Verbosity::Quiet)
     }
 
     // ---- Cycle detection tests ----
@@ -626,13 +639,13 @@ mod tests {
     #[test]
     fn test_tag_template_valid() {
         let config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
     fn test_tag_template_missing_version() {
         let config = make_config(vec![make_crate("a", "release-tag", None)]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -642,7 +655,7 @@ mod tests {
     fn test_tag_template_empty_skipped() {
         // Empty tag_template should not trigger the error (it's just unconfigured)
         let config = make_config(vec![make_crate("a", "", None)]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     // ---- depends_on reference tests ----
@@ -654,7 +667,7 @@ mod tests {
             "a-v{{ .Version }}",
             Some(vec!["nonexistent"]),
         )]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -667,7 +680,7 @@ mod tests {
             make_crate("b", "b-v{{ .Version }}", Some(vec!["a"])),
         ];
         let config = make_config(crates);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err());
     }
 
@@ -689,7 +702,7 @@ mod tests {
             },
         ]);
         let config = make_config(vec![c]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
@@ -702,7 +715,7 @@ mod tests {
             ..Default::default()
         }]);
         let config = make_config(vec![c]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err());
     }
 
@@ -727,7 +740,7 @@ mod tests {
             abbrev: None,
         });
         // Should pass (warnings only, not errors)
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
@@ -743,7 +756,7 @@ mod tests {
             ..Default::default()
         });
         // Should pass (warnings only, not errors)
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     // ---- Empty crate name validation tests ----
@@ -751,7 +764,7 @@ mod tests {
     #[test]
     fn test_empty_crate_name_fails() {
         let config = make_config(vec![make_crate("", "v{{ .Version }}", None)]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err(), "empty crate name should fail validation");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -760,7 +773,7 @@ mod tests {
     #[test]
     fn test_whitespace_only_crate_name_fails() {
         let config = make_config(vec![make_crate("  ", "v{{ .Version }}", None)]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(
             result.is_err(),
             "whitespace-only crate name should fail validation"
@@ -778,28 +791,28 @@ mod tests {
     fn test_tag_template_compact_version_accepted() {
         // {{.Version}} without spaces should also be accepted
         let config = make_config(vec![make_crate("a", "v{{.Version}}", None)]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
     fn test_tag_template_tera_native_version_accepted() {
         // {{ Version }} (Tera-native, no dot) should also be accepted
         let config = make_config(vec![make_crate("a", "v{{ Version }}", None)]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
     fn test_tag_template_tera_native_compact_version_accepted() {
         // {{Version}} (Tera-native, no dot, no spaces) should also be accepted
         let config = make_config(vec![make_crate("a", "v{{Version}}", None)]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
     fn test_tag_template_missing_version_with_other_placeholder() {
         // Has a placeholder but not {{ .Version }}
         let config = make_config(vec![make_crate("a", "{{ .Tag }}-release", None)]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(
             result.is_err(),
             "tag_template without Version placeholder should fail"
@@ -820,7 +833,7 @@ mod tests {
             make_crate("b", "bad-tag", Some(vec!["nonexistent"])), // missing dep + bad template
         ];
         let config = make_config(crates);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         // Should report exactly 3 errors: empty name, missing dep, bad tag_template
@@ -843,7 +856,7 @@ mod tests {
         });
         let config = make_config(vec![c]);
         // Should pass (warnings only, not errors)
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     // ---- Workspace validation tests ----
@@ -863,7 +876,7 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
@@ -881,7 +894,7 @@ mod tests {
                 ..Default::default()
             },
         ]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err(), "duplicate workspace names should fail");
     }
 
@@ -893,7 +906,7 @@ mod tests {
             crates: vec![make_crate("x", "x-v{{ .Version }}", None)],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err(), "empty workspace name should fail");
     }
 
@@ -905,11 +918,8 @@ mod tests {
             crates: vec![make_crate("", "v{{ .Version }}", None)],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false);
-        assert!(
-            result.is_err(),
-            "empty crate name in workspace should fail"
-        );
+        let result = run_checks(&config, false, &test_logger());
+        assert!(result.is_err(), "empty crate name in workspace should fail");
     }
 
     #[test]
@@ -920,7 +930,7 @@ mod tests {
             crates: vec![make_crate("x", "no-version-here", None)],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(
             result.is_err(),
             "bad tag_template in workspace crate should fail"
@@ -930,7 +940,7 @@ mod tests {
     #[test]
     fn test_no_workspaces_passes() {
         let config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
-        assert!(run_checks(&config, false).is_ok());
+        assert!(run_checks(&config, false, &test_logger()).is_ok());
     }
 
     #[test]
@@ -944,7 +954,7 @@ mod tests {
             ],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(
             result.is_err(),
             "duplicate crate names within a workspace should fail"
@@ -969,7 +979,7 @@ mod tests {
             )],
             ..Default::default()
         }]);
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(
             result.is_err(),
             "workspace crate with missing depends_on should fail"
@@ -994,7 +1004,7 @@ mod tests {
             ..Default::default()
         }]);
         assert!(
-            run_checks(&config, false).is_ok(),
+            run_checks(&config, false, &test_logger()).is_ok(),
             "valid depends_on within workspace should pass"
         );
     }
@@ -1011,7 +1021,7 @@ mod tests {
             name_template: None,
             files: None,
         });
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err(), "invalid source format should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1029,7 +1039,7 @@ mod tests {
                 files: None,
             });
             assert!(
-                run_checks(&config, false).is_ok(),
+                run_checks(&config, false, &test_logger()).is_ok(),
                 "source format '{}' should pass",
                 fmt
             );
@@ -1044,7 +1054,7 @@ mod tests {
             enabled: Some(true),
             format: Some("invalid".to_string()),
         });
-        let result = run_checks(&config, false);
+        let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err(), "invalid sbom format should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
@@ -1060,7 +1070,7 @@ mod tests {
                 format: Some(fmt.to_string()),
             });
             assert!(
-                run_checks(&config, false).is_ok(),
+                run_checks(&config, false, &test_logger()).is_ok(),
                 "sbom format '{}' should pass",
                 fmt
             );

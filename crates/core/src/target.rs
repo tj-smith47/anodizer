@@ -1,4 +1,4 @@
-// Build target types — stub, to be implemented.
+// Build target mapping: triple → (OS, arch) for archive naming.
 
 pub fn map_target(triple: &str) -> (String, String) {
     let parts: Vec<&str> = triple.split('-').collect();

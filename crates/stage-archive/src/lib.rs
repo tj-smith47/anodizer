@@ -27,21 +27,20 @@ fn append_tar_entry<W: std::io::Write>(
     mtime: Option<u64>,
 ) -> Result<()> {
     if let Some(ts) = mtime {
-        let metadata = fs::metadata(src)
-            .with_context(|| format!("read metadata: {}", src.display()))?;
+        let metadata =
+            fs::metadata(src).with_context(|| format!("read metadata: {}", src.display()))?;
         let mut header = tar::Header::new_gnu();
-        header
-            .set_metadata(&metadata);
+        header.set_metadata(&metadata);
         header.set_mtime(ts);
         header.set_uid(0);
         header.set_gid(0);
         header.set_username("").ok();
         header.set_groupname("").ok();
-        header.set_path(archive_name)
+        header
+            .set_path(archive_name)
             .with_context(|| format!("set tar path: {}", archive_name.display()))?;
         header.set_cksum();
-        let mut file =
-            File::open(src).with_context(|| format!("open: {}", src.display()))?;
+        let mut file = File::open(src).with_context(|| format!("open: {}", src.display()))?;
         let mut data = Vec::new();
         file.read_to_end(&mut data)
             .with_context(|| format!("read: {}", src.display()))?;
@@ -325,6 +324,7 @@ impl Stage for ArchiveStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("archive");
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
 
@@ -388,7 +388,7 @@ impl Stage for ArchiveStage {
                 .collect();
 
             if binaries.is_empty() {
-                eprintln!("[archive] no binaries for crate {crate_name}, skipping");
+                log.warn(&format!("no binaries for crate {crate_name}, skipping"));
                 continue;
             }
 
@@ -520,43 +520,37 @@ impl Stage for ArchiveStage {
                     };
 
                     if ctx.options.dry_run {
-                        eprintln!(
-                            "[archive] (dry-run) would create {} with {} files",
+                        log.status(&format!(
+                            "(dry-run) would create {} with {} files",
                             archive_path.display(),
                             path_refs.len()
-                        );
+                        ));
                     } else {
-                        eprintln!("[archive] creating {}", archive_path.display());
+                        log.status(&format!("creating {}", archive_path.display()));
                         match format.as_str() {
                             "zip" => create_zip(&path_refs, &archive_path, wrap_dir)?,
-                            "tar.xz" => {
-                                create_tar_xz(
-                                    &path_refs,
-                                    &archive_path,
-                                    None,
-                                    wrap_dir,
-                                    source_date_epoch,
-                                )?
-                            }
-                            "tar.zst" => {
-                                create_tar_zst(
-                                    &path_refs,
-                                    &archive_path,
-                                    None,
-                                    wrap_dir,
-                                    source_date_epoch,
-                                )?
-                            }
+                            "tar.xz" => create_tar_xz(
+                                &path_refs,
+                                &archive_path,
+                                None,
+                                wrap_dir,
+                                source_date_epoch,
+                            )?,
+                            "tar.zst" => create_tar_zst(
+                                &path_refs,
+                                &archive_path,
+                                None,
+                                wrap_dir,
+                                source_date_epoch,
+                            )?,
                             "binary" => copy_binary(&path_refs, &archive_path)?,
-                            _ => {
-                                create_tar_gz(
-                                    &path_refs,
-                                    &archive_path,
-                                    None,
-                                    wrap_dir,
-                                    source_date_epoch,
-                                )?
-                            }
+                            _ => create_tar_gz(
+                                &path_refs,
+                                &archive_path,
+                                None,
+                                wrap_dir,
+                                source_date_epoch,
+                            )?,
                         }
                     }
 
@@ -1861,10 +1855,7 @@ crates:
         let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
         assert_eq!(archives.len(), 1);
         // Verify the artifact metadata contains format and name
-        assert_eq!(
-            archives[0].metadata.get("format"),
-            Some(&"zip".to_string())
-        );
+        assert_eq!(archives[0].metadata.get("format"), Some(&"zip".to_string()));
         assert!(archives[0].metadata.contains_key("name"));
         // Verify it's registered as an Archive artifact for the right crate
         assert_eq!(archives[0].crate_name, "myapp");
@@ -1999,7 +1990,10 @@ crates:
 
         // Create an archive with empty file list
         let result = create_tar_gz(&[], &archive_path, None, None, None);
-        assert!(result.is_ok(), "creating archive with empty file list should succeed");
+        assert!(
+            result.is_ok(),
+            "creating archive with empty file list should succeed"
+        );
         assert!(archive_path.exists(), "archive file should be created");
     }
 
@@ -2009,7 +2003,10 @@ crates:
         let archive_path = tmp.path().join("empty.zip");
 
         let result = create_zip(&[], &archive_path, None);
-        assert!(result.is_ok(), "creating zip with empty file list should succeed");
+        assert!(
+            result.is_ok(),
+            "creating zip with empty file list should succeed"
+        );
         assert!(archive_path.exists(), "zip file should be created");
     }
 
@@ -2020,7 +2017,10 @@ crates:
         let output = tmp.path().join("output");
 
         let result = copy_binary(&[missing.as_path()], &output);
-        assert!(result.is_err(), "copy_binary with missing source should fail");
+        assert!(
+            result.is_err(),
+            "copy_binary with missing source should fail"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("does not exist") || err.contains("does-not-exist"),

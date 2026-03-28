@@ -16,6 +16,8 @@ pub struct Cli {
     pub verbose: bool,
     #[arg(long, global = true, help = "Enable debug output")]
     pub debug: bool,
+    #[arg(long, global = true, help = "Suppress non-error output")]
+    pub quiet: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -38,7 +40,11 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Remove dist directory before starting")]
         clean: bool,
-        #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated, e.g. docker,announce)")]
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Skip stages (comma-separated, e.g. docker,announce)"
+        )]
         skip: Vec<String>,
         #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
         token: Option<String>,
@@ -66,6 +72,11 @@ pub enum Commands {
     Build {
         #[arg(long = "crate", action = clap::ArgAction::Append, help = "Build a specific crate (repeatable)")]
         crate_names: Vec<String>,
+        #[arg(
+            long,
+            help = "Build without publishing (snapshot mode, default for build)"
+        )]
+        snapshot: bool,
         #[arg(
             long,
             default_value = "30m",

@@ -1,9 +1,10 @@
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 use std::process::Command;
 
-use crate::util::{find_all_platform_artifacts, run_cmd_in, OsArtifact};
+use crate::util::{OsArtifact, find_all_platform_artifacts, run_cmd_in};
 
 // ---------------------------------------------------------------------------
 // KrewManifestParams
@@ -187,7 +188,7 @@ fn artifacts_to_platforms(artifacts: &[OsArtifact], binary_name: &str) -> Vec<Kr
 // publish_to_krew
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
+pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let crate_cfg = ctx
         .config
         .crates
@@ -205,18 +206,16 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("krew: no krew config for '{}'", crate_name))?;
 
-    let manifests_repo = krew_cfg.manifests_repo.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "krew: no manifests_repo config for '{}'",
-            crate_name
-        )
-    })?;
+    let manifests_repo = krew_cfg
+        .manifests_repo
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("krew: no manifests_repo config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
-        eprintln!(
-            "[publish] (dry-run) would submit Krew plugin manifest for '{}' to {}/{}",
+        log.status(&format!(
+            "(dry-run) would submit Krew plugin manifest for '{}' to {}/{}",
             crate_name, manifests_repo.owner, manifests_repo.name
-        );
+        ));
         return Ok(());
     }
 
@@ -235,22 +234,20 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
         .short_description
         .clone()
         .unwrap_or_else(|| crate_name.to_string());
-    let homepage = krew_cfg.homepage.clone().unwrap_or_else(|| {
-        format!(
-            "https://github.com/{}/{}",
-            manifests_repo.owner, crate_name
-        )
-    });
+    let homepage = krew_cfg
+        .homepage
+        .clone()
+        .unwrap_or_else(|| format!("https://github.com/{}/{}", manifests_repo.owner, crate_name));
     let caveats = krew_cfg.caveats.clone().unwrap_or_default();
 
     // Find artifacts across all platforms.
     let all_artifacts = find_all_platform_artifacts(ctx, crate_name);
 
     let platforms = if all_artifacts.is_empty() {
-        eprintln!(
-            "[publish] krew: no artifacts found for '{}', using placeholder URLs",
+        log.warn(&format!(
+            "krew: no artifacts found for '{}', using placeholder URLs",
             crate_name
-        );
+        ));
         vec![KrewPlatform {
             os: "linux".to_string(),
             arch: "amd64".to_string(),
@@ -300,13 +297,11 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
     let repo_path_str = repo_path.to_string_lossy();
     clone_args.push(&repo_path_str);
 
-    let status = Command::new("git")
+    let output = Command::new("git")
         .args(&clone_args)
-        .status()
+        .output()
         .context("krew: git clone: spawn")?;
-    if !status.success() {
-        anyhow::bail!("krew: git clone: exited with {}", status);
-    }
+    log.check_output(output, "krew: git clone")?;
 
     if let Some(ref tok) = token {
         run_cmd_in(
@@ -330,10 +325,10 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
     std::fs::write(&manifest_file, &manifest)
         .with_context(|| format!("krew: write manifest {}", manifest_file.display()))?;
 
-    eprintln!(
-        "[publish] wrote Krew plugin manifest: {}",
+    log.status(&format!(
+        "wrote Krew plugin manifest: {}",
         manifest_file.display()
-    );
+    ));
 
     let branch_name = format!("{}-v{}", crate_name, version);
     run_cmd_in(
@@ -360,19 +355,16 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
         "krew: git push",
     )?;
 
-    eprintln!(
-        "[publish] Krew manifest pushed to {}/{} branch '{}'",
+    log.status(&format!(
+        "Krew manifest pushed to {}/{} branch '{}'",
         manifests_repo.owner, manifests_repo.name, branch_name
-    );
+    ));
 
     // Determine the upstream repo to submit the PR against.
     // Use the configured upstream_repo if available, otherwise fall back to
     // the manifests_repo itself (which works when it is the canonical repo
     // rather than a fork).
-    let upstream = krew_cfg
-        .upstream_repo
-        .as_ref()
-        .unwrap_or(manifests_repo);
+    let upstream = krew_cfg.upstream_repo.as_ref().unwrap_or(manifests_repo);
     let upstream_slug = format!("{}/{}", upstream.owner, upstream.name);
 
     // Submit PR via GitHub CLI (gh) if available.
@@ -393,26 +385,32 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
             "--head",
             &format!("{}:{}", manifests_repo.owner, branch_name),
         ])
-        .status();
+        .output();
 
     match pr_result {
-        Ok(status) if status.success() => {
-            eprintln!(
-                "[publish] Krew PR submitted for {} v{}",
+        Ok(output) if output.status.success() => {
+            log.status(&format!(
+                "Krew PR submitted for {} v{}",
                 crate_name, version
-            );
+            ));
         }
-        Ok(status) => {
-            eprintln!(
-                "[publish] krew: gh pr create exited with {} -- you may need to create the PR manually",
-                status
-            );
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log.warn(&format!(
+                "krew: gh pr create exited with {} -- you may need to create the PR manually{}",
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
+            ));
         }
         Err(e) => {
-            eprintln!(
-                "[publish] krew: could not run gh to create PR: {} -- you may need to create the PR manually",
+            log.warn(&format!(
+                "krew: could not run gh to create PR: {} -- you may need to create the PR manually",
                 e
-            );
+            ));
         }
     }
 
@@ -497,8 +495,7 @@ mod tests {
         });
 
         assert!(manifest.contains("caveats:"));
-        assert!(manifest
-            .contains("Run 'kubectl my-plugin init' after installation."));
+        assert!(manifest.contains("Run 'kubectl my-plugin init' after installation."));
     }
 
     #[test]
@@ -605,7 +602,10 @@ mod tests {
 
         // Verify structure order
         let lines: Vec<&str> = manifest.lines().collect();
-        assert_eq!(lines[0], "apiVersion: krew.googlecontainertools.github.com/v1alpha2");
+        assert_eq!(
+            lines[0],
+            "apiVersion: krew.googlecontainertools.github.com/v1alpha2"
+        );
         assert_eq!(lines[1], "kind: Plugin");
         assert_eq!(lines[2], "metadata:");
         assert_eq!(lines[3], "  name: kubectl-anodize");
@@ -648,8 +648,11 @@ mod tests {
 
     #[test]
     fn test_publish_to_krew_dry_run() {
-        use anodize_core::config::{Config, CrateConfig, KrewConfig, KrewManifestsRepoConfig, PublishConfig};
+        use anodize_core::config::{
+            Config, CrateConfig, KrewConfig, KrewManifestsRepoConfig, PublishConfig,
+        };
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -677,14 +680,16 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_krew(&ctx, "kubectl-mytool").is_ok());
+        assert!(publish_to_krew(&ctx, "kubectl-mytool", &log).is_ok());
     }
 
     #[test]
     fn test_publish_to_krew_missing_config() {
         use anodize_core::config::{Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -702,14 +707,16 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_krew(&ctx, "mytool").is_err());
+        assert!(publish_to_krew(&ctx, "mytool", &log).is_err());
     }
 
     #[test]
     fn test_publish_to_krew_missing_manifests_repo() {
         use anodize_core::config::{Config, CrateConfig, KrewConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -733,7 +740,8 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_krew(&ctx, "mytool").is_err());
+        assert!(publish_to_krew(&ctx, "mytool", &log).is_err());
     }
 }

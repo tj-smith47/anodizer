@@ -93,6 +93,7 @@ impl Stage for DockerStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("docker");
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
         let dist = ctx.config.dist.clone();
@@ -192,17 +193,17 @@ impl Stage for DockerStage {
                         let dest = binaries_dir.join(bin_name);
 
                         if dry_run {
-                            eprintln!(
-                                "[docker] (dry-run) would copy {} → {}",
+                            log.status(&format!(
+                                "(dry-run) would copy {} → {}",
                                 bin_artifact.path.display(),
                                 dest.display()
-                            );
+                            ));
                         } else {
-                            eprintln!(
-                                "[docker] staging binary {} → {}",
+                            log.status(&format!(
+                                "staging binary {} → {}",
                                 bin_artifact.path.display(),
                                 dest.display()
-                            );
+                            ));
                             fs::copy(&bin_artifact.path, &dest).with_context(|| {
                                 format!(
                                     "docker: copy binary {} to {}",
@@ -221,17 +222,17 @@ impl Stage for DockerStage {
                 let dockerfile_dest = staging_dir.join("Dockerfile");
 
                 if dry_run {
-                    eprintln!(
-                        "[docker] (dry-run) would copy Dockerfile {} → {}",
+                    log.status(&format!(
+                        "(dry-run) would copy Dockerfile {} → {}",
                         dockerfile_src.display(),
                         dockerfile_dest.display()
-                    );
+                    ));
                 } else {
-                    eprintln!(
-                        "[docker] copying Dockerfile {} → {}",
+                    log.status(&format!(
+                        "copying Dockerfile {} → {}",
                         dockerfile_src.display(),
                         dockerfile_dest.display()
-                    );
+                    ));
                     fs::copy(&dockerfile_src, &dockerfile_dest).with_context(|| {
                         format!(
                             "docker: copy Dockerfile from {} to {}",
@@ -259,17 +260,17 @@ impl Stage for DockerStage {
                         let dest = staging_dir.join(file_name);
 
                         if dry_run {
-                            eprintln!(
-                                "[docker] (dry-run) would copy extra file {} → {}",
+                            log.status(&format!(
+                                "(dry-run) would copy extra file {} → {}",
                                 src.display(),
                                 dest.display()
-                            );
+                            ));
                         } else {
-                            eprintln!(
-                                "[docker] copying extra file {} → {}",
+                            log.status(&format!(
+                                "copying extra file {} → {}",
                                 src.display(),
                                 dest.display()
-                            );
+                            ));
                             fs::copy(&src, &dest).with_context(|| {
                                 format!(
                                     "docker: copy extra file {} to {}",
@@ -338,28 +339,20 @@ impl Stage for DockerStage {
                 );
 
                 if dry_run {
-                    eprintln!("[docker] (dry-run) would run: {}", cmd_args.join(" "));
+                    log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
                 } else {
-                    eprintln!("[docker] running: {}", cmd_args.join(" "));
+                    log.status(&format!("running: {}", cmd_args.join(" ")));
 
-                    let status = Command::new(&cmd_args[0])
+                    let output = Command::new(&cmd_args[0])
                         .args(&cmd_args[1..])
-                        .status()
+                        .output()
                         .with_context(|| {
                             format!(
                                 "docker: execute buildx for crate {} index {}",
                                 krate.name, idx
                             )
                         })?;
-
-                    if !status.success() {
-                        anyhow::bail!(
-                            "docker buildx failed for crate {} index {}: exit code {:?}",
-                            krate.name,
-                            idx,
-                            status.code()
-                        );
-                    }
+                    log.check_output(output, "docker buildx")?;
                 }
 
                 // ------------------------------------------------------------------
@@ -857,10 +850,7 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_push_flags_appended_to_command() {
-        let push_flags = vec![
-            "--provenance=true".to_string(),
-            "--sbom=true".to_string(),
-        ];
+        let push_flags = vec!["--provenance=true".to_string(), "--sbom=true".to_string()];
         let cmd = build_docker_command(
             "/tmp/staging",
             &["linux/amd64"],
@@ -1072,9 +1062,7 @@ dockerfile: Dockerfile
             &[],
         );
         assert!(cmd.contains(&"--build-arg=APP_VERSION=1.0.0".to_string()));
-        assert!(cmd.contains(
-            &"--label=org.opencontainers.image.version=1.0.0".to_string()
-        ));
+        assert!(cmd.contains(&"--label=org.opencontainers.image.version=1.0.0".to_string()));
     }
 
     #[test]
@@ -1245,7 +1233,10 @@ dockerfile: Dockerfile
 
         let stage = DockerStage;
         let result = stage.run(&mut ctx);
-        assert!(result.is_err(), "directory as extra_files entry should fail");
+        assert!(
+            result.is_err(),
+            "directory as extra_files entry should fail"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("directory") || err.contains("some_directory"),

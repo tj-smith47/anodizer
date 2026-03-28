@@ -91,6 +91,7 @@ impl Stage for SignStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("sign");
         // ----------------------------------------------------------------
         // GPG / generic signing via `signs` config (supports multiple)
         // ----------------------------------------------------------------
@@ -159,25 +160,27 @@ impl Stage for SignStage {
                     .collect();
 
                 if ctx.is_dry_run() {
-                    eprintln!(
-                        "[sign] (dry-run) would run: {} {}",
+                    log.status(&format!(
+                        "(dry-run) would run: {} {}",
                         cmd,
                         fully_resolved.join(" ")
-                    );
+                    ));
                     continue;
                 }
 
                 let id_label = sign_cfg.id.as_deref().unwrap_or("default");
-                eprintln!(
-                    "[sign:{}] signing {} -> {}",
+                log.status(&format!(
+                    "[{}] signing {} -> {}",
                     id_label, artifact_str, signature_str
-                );
+                ));
 
                 let (stdin_cfg, stdin_data) = prepare_stdin(sign_cfg)?;
 
                 let mut child = Command::new(&cmd)
                     .args(&fully_resolved)
                     .stdin(stdin_cfg)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
                     .spawn()
                     .with_context(|| {
                         format!("sign: failed to spawn '{}' for {}", cmd, artifact_str)
@@ -192,17 +195,10 @@ impl Stage for SignStage {
                     drop(child_stdin); // Explicitly close stdin so child sees EOF
                 }
 
-                let status = child.wait().with_context(|| {
+                let output = child.wait_with_output().with_context(|| {
                     format!("sign: failed to wait for '{}' for {}", cmd, artifact_str)
                 })?;
-
-                if !status.success() {
-                    anyhow::bail!(
-                        "sign: '{}' exited with non-zero status for {}",
-                        cmd,
-                        artifact_str
-                    );
-                }
+                log.check_output(output, &cmd)?;
             }
         }
 
@@ -250,33 +246,26 @@ impl Stage for SignStage {
                         .collect();
 
                     if ctx.is_dry_run() {
-                        eprintln!(
-                            "[sign] (dry-run) would run: {} {}",
+                        log.status(&format!(
+                            "(dry-run) would run: {} {}",
                             cmd,
                             fully_resolved.join(" ")
-                        );
+                        ));
                         continue;
                     }
 
-                    eprintln!("[sign] docker-sign {}", image_str);
+                    log.status(&format!("docker-sign {}", image_str));
 
-                    let status = Command::new(&cmd)
+                    let output = Command::new(&cmd)
                         .args(&fully_resolved)
-                        .status()
+                        .output()
                         .with_context(|| {
                             format!(
                                 "sign: failed to spawn '{}' for docker image {}",
                                 cmd, image_str
                             )
                         })?;
-
-                    if !status.success() {
-                        anyhow::bail!(
-                            "sign: '{}' exited with non-zero status for docker image {}",
-                            cmd,
-                            image_str
-                        );
-                    }
+                    log.check_output(output, &cmd)?;
                 }
             }
         }
@@ -367,9 +356,7 @@ mod tests {
 
     #[test]
     fn test_stage_skips_with_empty_signs() {
-        let mut ctx = TestContextBuilder::new()
-            .signs(vec![])
-            .build();
+        let mut ctx = TestContextBuilder::new().signs(vec![]).build();
         let stage = SignStage;
         assert!(stage.run(&mut ctx).is_ok());
     }
@@ -406,10 +393,7 @@ mod tests {
             },
         ];
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .signs(signs)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).signs(signs).build();
 
         // Add artifacts of both types
         ctx.artifacts.add(Artifact {
@@ -460,8 +444,14 @@ mod tests {
         assert!(!should_sign_artifact(ArtifactKind::Archive, "package"));
 
         // Unknown filter defaults to checksum
-        assert!(should_sign_artifact(ArtifactKind::Checksum, "unknown-value"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "unknown-value"));
+        assert!(should_sign_artifact(
+            ArtifactKind::Checksum,
+            "unknown-value"
+        ));
+        assert!(!should_sign_artifact(
+            ArtifactKind::Archive,
+            "unknown-value"
+        ));
     }
 
     #[test]
@@ -684,9 +674,7 @@ mod tests {
             stdin_file: None,
         }];
 
-        let mut ctx = TestContextBuilder::new()
-            .signs(signs)
-            .build();
+        let mut ctx = TestContextBuilder::new().signs(signs).build();
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -776,7 +764,10 @@ mod tests {
 
         let stage = SignStage;
         let result = stage.run(&mut ctx);
-        assert!(result.is_err(), "signing command returning non-zero should fail");
+        assert!(
+            result.is_err(),
+            "signing command returning non-zero should fail"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("non-zero") || err.contains("false"),
@@ -788,7 +779,10 @@ mod tests {
     fn test_resolve_sign_args_no_placeholders() {
         let args = vec!["--armor".to_string(), "--verbose".to_string()];
         let resolved = resolve_sign_args(&args, "/tmp/file", "/tmp/file.sig");
-        assert_eq!(resolved, args, "args without placeholders should be unchanged");
+        assert_eq!(
+            resolved, args,
+            "args without placeholders should be unchanged"
+        );
     }
 
     #[test]
@@ -812,7 +806,10 @@ mod tests {
         };
 
         let result = prepare_stdin(&sign_cfg);
-        assert!(result.is_err(), "missing stdin_file should produce an error");
+        assert!(
+            result.is_err(),
+            "missing stdin_file should produce an error"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("/nonexistent/stdin_file.txt") || err.contains("stdin_file"),

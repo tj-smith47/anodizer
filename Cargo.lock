@@ -64,6 +64,7 @@ dependencies = [
  "anodize-core",
  "anyhow",
  "chrono",
+ "colored",
  "regex",
  "schemars",
  "serde",

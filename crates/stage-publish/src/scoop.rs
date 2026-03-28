@@ -1,4 +1,5 @@
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util::{find_windows_artifact, run_cmd, run_cmd_in};
@@ -48,7 +49,7 @@ pub fn generate_manifest(
 // publish_to_scoop
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
+pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let crate_cfg = ctx
         .config
         .crates
@@ -72,10 +73,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("scoop: no bucket config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
-        eprintln!(
-            "[publish] (dry-run) would update Scoop bucket {}/{} for '{}'",
+        log.status(&format!(
+            "(dry-run) would update Scoop bucket {}/{} for '{}'",
             bucket.owner, bucket.name, crate_name
-        );
+        ));
         return Ok(());
     }
 
@@ -143,10 +144,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
     std::fs::write(&manifest_path, &manifest)
         .with_context(|| format!("scoop: write manifest {}", manifest_path.display()))?;
 
-    eprintln!(
-        "[publish] wrote Scoop manifest: {}",
+    log.status(&format!(
+        "wrote Scoop manifest: {}",
         manifest_path.display()
-    );
+    ));
 
     run_cmd_in(
         repo_path,
@@ -166,10 +167,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
     )?;
     run_cmd_in(repo_path, "git", &["push"], "scoop: git push")?;
 
-    eprintln!(
-        "[publish] Scoop bucket {}/{} updated for '{}'",
+    log.status(&format!(
+        "Scoop bucket {}/{} updated for '{}'",
         bucket.owner, bucket.name, crate_name
-    );
+    ));
 
     Ok(())
 }
@@ -223,6 +224,7 @@ mod tests {
     fn test_publish_to_scoop_dry_run() {
         use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -250,9 +252,10 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // dry-run should succeed without any network/git calls
-        assert!(publish_to_scoop(&ctx, "cfgd").is_ok());
+        assert!(publish_to_scoop(&ctx, "cfgd", &log).is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -471,10 +474,12 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["checkver"], "github");
         assert!(json["autoupdate"].is_object());
-        assert!(json["autoupdate"]["architecture"]["64bit"]["url"]
-            .as_str()
-            .unwrap()
-            .contains("$version"));
+        assert!(
+            json["autoupdate"]["architecture"]["64bit"]["url"]
+                .as_str()
+                .unwrap()
+                .contains("$version")
+        );
     }
 
     #[test]

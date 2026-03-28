@@ -7,10 +7,20 @@ use anyhow::Result;
 
 /// Build the request body for a generic HTTP webhook.
 ///
-/// The user's rendered `message_template` is sent as the raw body.
-/// For generic webhooks the user controls the full payload shape.
-pub(crate) fn webhook_body(message: &str, _content_type: &str) -> String {
-    message.to_string()
+/// When content_type is `application/json` and the message is not already valid
+/// JSON, wraps the message in a `{"text": ...}` JSON object.  For all other
+/// content types the raw message is returned as-is.
+pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
+    if content_type == "application/json" {
+        // If the message is already valid JSON, send it verbatim.
+        if serde_json::from_str::<serde_json::Value>(message).is_ok() {
+            return message.to_string();
+        }
+        // Otherwise wrap in a simple JSON envelope.
+        serde_json::json!({ "text": message }).to_string()
+    } else {
+        message.to_string()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -57,11 +67,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_webhook_body_is_raw_message() {
-        // Generic webhook sends user's template as raw body
+    fn test_webhook_body_json_passthrough() {
+        // Valid JSON is passed through verbatim when content_type is application/json
         let body = webhook_body(r#"{"project":"myapp","tag":"v1.0.0"}"#, "application/json");
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["project"], "myapp");
         assert_eq!(json["tag"], "v1.0.0");
+    }
+
+    #[test]
+    fn test_webhook_body_json_wraps_plain_text() {
+        // Plain text is wrapped in {"text": ...} when content_type is application/json
+        let body = webhook_body("Release v1.0.0 is out!", "application/json");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["text"], "Release v1.0.0 is out!");
+    }
+
+    #[test]
+    fn test_webhook_body_text_plain_raw() {
+        // text/plain returns the message as-is
+        let body = webhook_body("hello world", "text/plain");
+        assert_eq!(body, "hello world");
     }
 }

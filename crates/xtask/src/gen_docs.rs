@@ -14,7 +14,10 @@ pub fn run(check: bool) -> Result<(), String> {
     let templates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
 
     let tera = Tera::new(
-        templates_dir.join("*.tera").to_str().ok_or("invalid template path")?,
+        templates_dir
+            .join("*.tera")
+            .to_str()
+            .ok_or("invalid template path")?,
     )
     .map_err(|e| format!("failed to load templates: {e}"))?;
 
@@ -75,16 +78,15 @@ struct CmdInfo {
 fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
     let cmd = anodize_cli::build_cli();
 
-    let about = cmd
-        .get_about()
-        .map(|a| a.to_string())
-        .unwrap_or_default();
+    let about = cmd.get_about().map(|a| a.to_string()).unwrap_or_default();
 
     let global_args: Vec<ArgInfo> = cmd
         .get_arguments()
         .filter(|a| a.is_global_set())
         .map(|a| {
-            if a.get_help().is_none() && let Some(long) = a.get_long() {
+            if a.get_help().is_none()
+                && let Some(long) = a.get_long()
+            {
                 eprintln!("warning: global flag --{long} has no help text");
             }
             ArgInfo {
@@ -104,9 +106,7 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
         .map(|sub| {
             let args = sub
                 .get_arguments()
-                .filter(|a| {
-                    !a.is_global_set() && a.get_id() != "help" && a.get_id() != "version"
-                })
+                .filter(|a| !a.is_global_set() && a.get_id() != "help" && a.get_id() != "version")
                 .map(|a| {
                     if a.get_help().is_none() {
                         let flag = a.get_long().unwrap_or_else(|| a.get_id().as_str());
@@ -132,10 +132,7 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
                 .collect();
             CmdInfo {
                 name: sub.get_name().to_string(),
-                about: sub
-                    .get_about()
-                    .map(|a| a.to_string())
-                    .unwrap_or_default(),
+                about: sub.get_about().map(|a| a.to_string()).unwrap_or_default(),
                 args,
             }
         })
@@ -172,41 +169,217 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
     // The --check flag in CI will catch drift (the generated output changes
     // when the CLI types change, even though config fields are manual).
     let top_level_fields = vec![
-        ConfigField { name: "project_name".into(), field_type: "string".into(), default: "`\"\"`".into(), description: "Project name used in templates".into() },
-        ConfigField { name: "dist".into(), field_type: "string".into(), default: "`./dist`".into(), description: "Output directory for artifacts".into() },
-        ConfigField { name: "includes".into(), field_type: "list".into(), default: "none".into(), description: "Config files to merge (coming soon)".into() },
-        ConfigField { name: "env".into(), field_type: "map".into(), default: "none".into(), description: "Environment variables for templates and commands".into() },
-        ConfigField { name: "report_sizes".into(), field_type: "bool".into(), default: "none".into(), description: "Print artifact sizes after build".into() },
-        ConfigField { name: "crates".into(), field_type: "list".into(), default: "`[]`".into(), description: "Crate configurations (see below)".into() },
-        ConfigField { name: "defaults".into(), field_type: "object".into(), default: "none".into(), description: "Default build/archive/checksum settings".into() },
-        ConfigField { name: "changelog".into(), field_type: "object".into(), default: "none".into(), description: "Changelog generation settings".into() },
-        ConfigField { name: "signs".into(), field_type: "list".into(), default: "`[]`".into(), description: "Signing configurations".into() },
-        ConfigField { name: "docker_signs".into(), field_type: "list".into(), default: "none".into(), description: "Docker image signing configs".into() },
-        ConfigField { name: "snapshot".into(), field_type: "object".into(), default: "none".into(), description: "Snapshot mode settings".into() },
-        ConfigField { name: "nightly".into(), field_type: "object".into(), default: "none".into(), description: "Nightly build settings".into() },
-        ConfigField { name: "announce".into(), field_type: "object".into(), default: "none".into(), description: "Announcement channels".into() },
-        ConfigField { name: "publishers".into(), field_type: "list".into(), default: "none".into(), description: "Custom publisher definitions".into() },
-        ConfigField { name: "tag".into(), field_type: "object".into(), default: "none".into(), description: "Auto-tagging configuration".into() },
-        ConfigField { name: "before".into(), field_type: "object".into(), default: "none".into(), description: "Pre-pipeline hooks".into() },
-        ConfigField { name: "after".into(), field_type: "object".into(), default: "none".into(), description: "Post-pipeline hooks".into() },
-        ConfigField { name: "workspaces".into(), field_type: "list".into(), default: "none".into(), description: "Monorepo workspace definitions".into() },
+        ConfigField {
+            name: "version".into(),
+            field_type: "integer".into(),
+            default: "none".into(),
+            description: "Schema version (currently 1 or 2)".into(),
+        },
+        ConfigField {
+            name: "project_name".into(),
+            field_type: "string".into(),
+            default: "`\"\"`".into(),
+            description: "Project name used in templates".into(),
+        },
+        ConfigField {
+            name: "dist".into(),
+            field_type: "string".into(),
+            default: "`./dist`".into(),
+            description: "Output directory for artifacts".into(),
+        },
+        ConfigField {
+            name: "includes".into(),
+            field_type: "list".into(),
+            default: "none".into(),
+            description: "Config files to merge (deep merge, sequences concatenate)".into(),
+        },
+        ConfigField {
+            name: "env_files".into(),
+            field_type: "list".into(),
+            default: "none".into(),
+            description: "List of .env files to load before template expansion".into(),
+        },
+        ConfigField {
+            name: "env".into(),
+            field_type: "map".into(),
+            default: "none".into(),
+            description: "Environment variables for templates and commands".into(),
+        },
+        ConfigField {
+            name: "report_sizes".into(),
+            field_type: "bool".into(),
+            default: "none".into(),
+            description: "Print artifact sizes after build".into(),
+        },
+        ConfigField {
+            name: "crates".into(),
+            field_type: "list".into(),
+            default: "`[]`".into(),
+            description: "Crate configurations (see below)".into(),
+        },
+        ConfigField {
+            name: "defaults".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Default build/archive/checksum settings".into(),
+        },
+        ConfigField {
+            name: "changelog".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Changelog generation settings".into(),
+        },
+        ConfigField {
+            name: "signs".into(),
+            field_type: "list".into(),
+            default: "`[]`".into(),
+            description: "Signing configurations".into(),
+        },
+        ConfigField {
+            name: "docker_signs".into(),
+            field_type: "list".into(),
+            default: "none".into(),
+            description: "Docker image signing configs".into(),
+        },
+        ConfigField {
+            name: "upx".into(),
+            field_type: "list".into(),
+            default: "`[]`".into(),
+            description: "UPX binary compression configurations".into(),
+        },
+        ConfigField {
+            name: "snapshot".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Snapshot mode settings".into(),
+        },
+        ConfigField {
+            name: "nightly".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Nightly build settings".into(),
+        },
+        ConfigField {
+            name: "announce".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Announcement channels".into(),
+        },
+        ConfigField {
+            name: "publishers".into(),
+            field_type: "list".into(),
+            default: "none".into(),
+            description: "Custom publisher definitions".into(),
+        },
+        ConfigField {
+            name: "tag".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Auto-tagging configuration".into(),
+        },
+        ConfigField {
+            name: "before".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Pre-pipeline hooks".into(),
+        },
+        ConfigField {
+            name: "after".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Post-pipeline hooks".into(),
+        },
+        ConfigField {
+            name: "workspaces".into(),
+            field_type: "list".into(),
+            default: "none".into(),
+            description: "Monorepo workspace definitions".into(),
+        },
+        ConfigField {
+            name: "source".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Source archive generation settings".into(),
+        },
+        ConfigField {
+            name: "sbom".into(),
+            field_type: "object".into(),
+            default: "none".into(),
+            description: "Software Bill of Materials (SBOM) generation settings".into(),
+        },
     ];
 
     let section_links = vec![
-        SectionLink { title: "Rust Builds".into(), path: "@/docs/builds/rust.md".into(), config_path: "crates[].builds".into() },
-        SectionLink { title: "Archives".into(), path: "@/docs/packages/archives.md".into(), config_path: "crates[].archives".into() },
-        SectionLink { title: "Checksums".into(), path: "@/docs/packages/checksums.md".into(), config_path: "defaults.checksum / crates[].checksum".into() },
-        SectionLink { title: "GitHub Releases".into(), path: "@/docs/publish/github.md".into(), config_path: "crates[].release".into() },
-        SectionLink { title: "Homebrew".into(), path: "@/docs/publish/homebrew.md".into(), config_path: "crates[].publish.homebrew".into() },
-        SectionLink { title: "Scoop".into(), path: "@/docs/publish/scoop.md".into(), config_path: "crates[].publish.scoop".into() },
-        SectionLink { title: "crates.io".into(), path: "@/docs/publish/crates-io.md".into(), config_path: "crates[].publish.crates".into() },
-        SectionLink { title: "Docker".into(), path: "@/docs/packages/docker.md".into(), config_path: "crates[].docker".into() },
-        SectionLink { title: "nFPM".into(), path: "@/docs/packages/nfpm.md".into(), config_path: "crates[].nfpm".into() },
-        SectionLink { title: "Signing".into(), path: "@/docs/sign/binaries-archives.md".into(), config_path: "signs".into() },
-        SectionLink { title: "Changelog".into(), path: "@/docs/more/changelog.md".into(), config_path: "changelog".into() },
-        SectionLink { title: "Announce".into(), path: "@/docs/announce/discord.md".into(), config_path: "announce".into() },
-        SectionLink { title: "Auto-Tagging".into(), path: "@/docs/advanced/auto-tagging.md".into(), config_path: "tag".into() },
-        SectionLink { title: "Global Hooks".into(), path: "@/docs/general/hooks.md".into(), config_path: "before / after".into() },
+        SectionLink {
+            title: "Rust Builds".into(),
+            path: "@/docs/builds/rust.md".into(),
+            config_path: "crates[].builds".into(),
+        },
+        SectionLink {
+            title: "Archives".into(),
+            path: "@/docs/packages/archives.md".into(),
+            config_path: "crates[].archives".into(),
+        },
+        SectionLink {
+            title: "Checksums".into(),
+            path: "@/docs/packages/checksums.md".into(),
+            config_path: "defaults.checksum / crates[].checksum".into(),
+        },
+        SectionLink {
+            title: "GitHub Releases".into(),
+            path: "@/docs/publish/github.md".into(),
+            config_path: "crates[].release".into(),
+        },
+        SectionLink {
+            title: "Homebrew".into(),
+            path: "@/docs/publish/homebrew.md".into(),
+            config_path: "crates[].publish.homebrew".into(),
+        },
+        SectionLink {
+            title: "Scoop".into(),
+            path: "@/docs/publish/scoop.md".into(),
+            config_path: "crates[].publish.scoop".into(),
+        },
+        SectionLink {
+            title: "crates.io".into(),
+            path: "@/docs/publish/crates-io.md".into(),
+            config_path: "crates[].publish.crates".into(),
+        },
+        SectionLink {
+            title: "Docker".into(),
+            path: "@/docs/packages/docker.md".into(),
+            config_path: "crates[].docker".into(),
+        },
+        SectionLink {
+            title: "nFPM".into(),
+            path: "@/docs/packages/nfpm.md".into(),
+            config_path: "crates[].nfpm".into(),
+        },
+        SectionLink {
+            title: "Signing".into(),
+            path: "@/docs/sign/binaries-archives.md".into(),
+            config_path: "signs".into(),
+        },
+        SectionLink {
+            title: "Changelog".into(),
+            path: "@/docs/more/changelog.md".into(),
+            config_path: "changelog".into(),
+        },
+        SectionLink {
+            title: "Announce".into(),
+            path: "@/docs/announce/discord.md".into(),
+            config_path: "announce".into(),
+        },
+        SectionLink {
+            title: "Auto-Tagging".into(),
+            path: "@/docs/advanced/auto-tagging.md".into(),
+            config_path: "tag".into(),
+        },
+        SectionLink {
+            title: "Global Hooks".into(),
+            path: "@/docs/general/hooks.md".into(),
+            config_path: "before / after".into(),
+        },
     ];
 
     let mut ctx = Context::new();

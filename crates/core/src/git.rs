@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use regex::Regex;
 use std::process::Command;
 
@@ -86,14 +86,26 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     })
 }
 
+/// The four accepted placeholder forms for the version variable in tag templates.
+const VERSION_PLACEHOLDERS: &[&str] = &[
+    "{{ .Version }}",
+    "{{.Version}}",
+    "{{ Version }}",
+    "{{Version}}",
+];
+
+/// Check whether a tag template string contains any recognised version placeholder.
+pub fn has_version_placeholder(template: &str) -> bool {
+    VERSION_PLACEHOLDERS.iter().any(|p| template.contains(p))
+}
+
 /// Find the latest tag matching a template pattern.
 /// E.g., tag_template "cfgd-core-v{{ .Version }}" → matches tags like "cfgd-core-v1.2.3"
 pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
-    let pattern = tag_template
-        .replace("{{ .Version }}", r"\d+\.\d+\.\d+(?:-.+)?")
-        .replace("{{.Version}}", r"\d+\.\d+\.\d+(?:-.+)?")
-        .replace("{{ Version }}", r"\d+\.\d+\.\d+(?:-.+)?")
-        .replace("{{Version}}", r"\d+\.\d+\.\d+(?:-.+)?");
+    let mut pattern = tag_template.to_string();
+    for placeholder in VERSION_PLACEHOLDERS {
+        pattern = pattern.replace(placeholder, r"\d+\.\d+\.\d+(?:-.+)?");
+    }
     let re = Regex::new(&format!("^{}$", pattern))?;
 
     let tags_output = git_output(&["tag", "--list"])?;
@@ -175,6 +187,7 @@ pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
 }
 
 /// Get all semver tags in the repo, sorted descending by version.
+/// Prerelease tags sort after release tags of the same major.minor.patch.
 pub fn get_all_semver_tags(prefix: &str) -> Result<Vec<String>> {
     let tags_output = git_output(&["tag", "--list"])?;
     if tags_output.is_empty() {
@@ -190,11 +203,18 @@ pub fn get_all_semver_tags(prefix: &str) -> Result<Vec<String>> {
             .cmp(&a.0.major)
             .then(b.0.minor.cmp(&a.0.minor))
             .then(b.0.patch.cmp(&a.0.patch))
+            .then(match (&a.0.prerelease, &b.0.prerelease) {
+                // descending: release (None) > prerelease (Some)
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Equal,
+            })
     });
     Ok(matching.into_iter().map(|(_, tag)| tag).collect())
 }
 
 /// Get semver tags reachable from HEAD, sorted descending by version.
+/// Prerelease tags sort after release tags of the same major.minor.patch.
 pub fn get_branch_semver_tags(prefix: &str) -> Result<Vec<String>> {
     let tags_output = git_output(&["tag", "--merged", "HEAD", "--list"])?;
     if tags_output.is_empty() {
@@ -210,6 +230,12 @@ pub fn get_branch_semver_tags(prefix: &str) -> Result<Vec<String>> {
             .cmp(&a.0.major)
             .then(b.0.minor.cmp(&a.0.minor))
             .then(b.0.patch.cmp(&a.0.patch))
+            .then(match (&a.0.prerelease, &b.0.prerelease) {
+                // descending: release (None) > prerelease (Some)
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                _ => std::cmp::Ordering::Equal,
+            })
     });
     Ok(matching.into_iter().map(|(_, tag)| tag).collect())
 }
@@ -233,6 +259,127 @@ pub fn create_and_push_tag(tag: &str, message: &str, dry_run: bool) -> Result<()
     } else {
         eprintln!("[tag] no 'origin' remote found, skipping push");
     }
+    Ok(())
+}
+
+/// Create a tag via the GitHub API (using the `gh` CLI).
+///
+/// This avoids the need for local git push access. Requires the `gh` CLI to be
+/// installed and authenticated (`gh auth login`). The GitHub API creates a
+/// lightweight tag object pointing at the HEAD commit on the default branch.
+///
+/// Falls back to [`create_and_push_tag`] if `gh` is not available.
+pub fn create_tag_via_github_api(tag: &str, message: &str, dry_run: bool) -> Result<()> {
+    if dry_run {
+        eprintln!(
+            "  [dry-run] would create tag via GitHub API: {} (\"{}\")",
+            tag, message
+        );
+        return Ok(());
+    }
+
+    // Detect owner/repo from the origin remote.
+    let (owner, repo) = detect_github_repo()?;
+
+    // Get the current HEAD SHA to point the tag at.
+    let sha = git_output(&["rev-parse", "HEAD"])?;
+
+    // Use `gh api` to create the tag via the GitHub REST API.
+    let body = serde_json::json!({
+        "tag": tag,
+        "message": message,
+        "object": sha,
+        "type": "commit",
+        "tagger": {
+            "name": git_output(&["config", "user.name"]).unwrap_or_else(|_| "anodize".to_string()),
+            "email": git_output(&["config", "user.email"]).unwrap_or_else(|_| "anodize@users.noreply.github.com".to_string()),
+            "date": chrono::Utc::now().to_rfc3339(),
+        }
+    });
+
+    let body_str = serde_json::to_string(&body)?;
+
+    // Step 1: Create the tag object
+    let output = Command::new("gh")
+        .args([
+            "api",
+            "--method",
+            "POST",
+            &format!("/repos/{owner}/{repo}/git/tags"),
+            "--input",
+            "-",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+
+    let mut child = match output {
+        Ok(child) => child,
+        Err(_) => {
+            // gh CLI not available, fall back to local git
+            eprintln!("[tag] gh CLI not found, falling back to local git tag + push");
+            return create_and_push_tag(tag, message, dry_run);
+        }
+    };
+
+    {
+        use std::io::Write;
+        if let Some(ref mut stdin) = child.stdin {
+            stdin.write_all(body_str.as_bytes())?;
+        }
+    }
+    child.stdin.take(); // close stdin
+
+    let child_output = child.wait_with_output()?;
+    if !child_output.status.success() {
+        let stderr = String::from_utf8_lossy(&child_output.stderr);
+        bail!("gh api (create tag object) failed: {}", stderr.trim());
+    }
+
+    // Parse the tag SHA from the response
+    let response: serde_json::Value = serde_json::from_slice(&child_output.stdout)
+        .context("failed to parse GitHub API response for tag object")?;
+    let tag_sha = response["sha"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("GitHub API response missing 'sha' field"))?;
+
+    // Step 2: Create the ref pointing to the tag object
+    let ref_body = serde_json::json!({
+        "ref": format!("refs/tags/{}", tag),
+        "sha": tag_sha,
+    });
+    let ref_body_str = serde_json::to_string(&ref_body)?;
+
+    let mut ref_child = Command::new("gh")
+        .args([
+            "api",
+            "--method",
+            "POST",
+            &format!("/repos/{owner}/{repo}/git/refs"),
+            "--input",
+            "-",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn gh for ref creation")?;
+
+    {
+        use std::io::Write;
+        if let Some(ref mut stdin) = ref_child.stdin {
+            stdin.write_all(ref_body_str.as_bytes())?;
+        }
+    }
+    ref_child.stdin.take(); // close stdin
+
+    let ref_output = ref_child.wait_with_output()?;
+    if !ref_output.status.success() {
+        let stderr = String::from_utf8_lossy(&ref_output.stderr);
+        bail!("gh api (create ref) failed: {}", stderr.trim());
+    }
+
     Ok(())
 }
 

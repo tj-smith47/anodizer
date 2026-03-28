@@ -119,7 +119,8 @@ pub fn load_env_files(files: &[String]) -> Result<(), String> {
                 if key.is_empty() {
                     eprintln!(
                         "[env] warning: skipping line with empty key in '{}': {}",
-                        file_path, line.trim()
+                        file_path,
+                        line.trim()
                     );
                     continue;
                 }
@@ -302,10 +303,22 @@ pub struct BuildConfig {
 // ArchivesConfig — untagged enum: false => Disabled, array => Configs
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, JsonSchema)]
 pub enum ArchivesConfig {
     Disabled,
     Configs(Vec<ArchiveConfig>),
+}
+
+impl Serialize for ArchivesConfig {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            ArchivesConfig::Disabled => serializer.serialize_bool(false),
+            ArchivesConfig::Configs(configs) => configs.serialize(serializer),
+        }
+    }
 }
 
 impl Default for ArchivesConfig {
@@ -468,7 +481,9 @@ pub struct ReleaseConfig {
 }
 
 /// Schema for prerelease: "auto" or boolean.
-fn prerelease_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+fn prerelease_schema(
+    _generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
     use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
     Schema::Object(SchemaObject {
         subschemas: Some(Box::new(SubschemaValidation {
@@ -490,7 +505,9 @@ fn prerelease_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schem
 }
 
 /// Schema for make_latest: "auto" or boolean.
-fn make_latest_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+fn make_latest_schema(
+    _generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
     use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
     Schema::Object(SchemaObject {
         subschemas: Some(Box::new(SubschemaValidation {
@@ -635,7 +652,9 @@ pub struct PublishConfig {
 }
 
 /// Schema for crates publish config (bool or object).
-fn crates_publish_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+fn crates_publish_schema(
+    _generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
     schemars::schema::Schema::Bool(true)
 }
 
@@ -2828,10 +2847,7 @@ crates:
         assert_eq!(repo.name, "winget-pkgs");
         assert_eq!(winget.description, Some("A great tool".to_string()));
         assert_eq!(winget.license, Some("MIT".to_string()));
-        assert_eq!(
-            winget.package_identifier,
-            Some("MyOrg.MyTool".to_string())
-        );
+        assert_eq!(winget.package_identifier, Some("MyOrg.MyTool".to_string()));
         assert_eq!(winget.publisher, Some("My Org".to_string()));
         assert_eq!(
             winget.publisher_url,
@@ -2866,10 +2882,7 @@ crates:
         let repo = winget.manifests_repo.as_ref().unwrap();
         assert_eq!(repo.owner, "myorg");
         assert_eq!(repo.name, "winget-pkgs");
-        assert_eq!(
-            winget.package_identifier,
-            Some("MyOrg.MyTool".to_string())
-        );
+        assert_eq!(winget.package_identifier, Some("MyOrg.MyTool".to_string()));
         assert!(winget.description.is_none());
         assert!(winget.license.is_none());
         assert!(winget.publisher.is_none());
@@ -2906,10 +2919,7 @@ name = "winget-pkgs"
             .unwrap();
 
         assert_eq!(winget.description, Some("A tool".to_string()));
-        assert_eq!(
-            winget.package_identifier,
-            Some("Org.Tool".to_string())
-        );
+        assert_eq!(winget.package_identifier, Some("Org.Tool".to_string()));
         let repo = winget.manifests_repo.as_ref().unwrap();
         assert_eq!(repo.owner, "org");
     }
@@ -2978,14 +2988,8 @@ crates:
         assert_eq!(aur.conflicts, Some(vec!["mytool-git".to_string()]));
         assert_eq!(aur.provides, Some(vec!["mytool".to_string()]));
         assert_eq!(aur.replaces, Some(vec!["old-mytool".to_string()]));
-        assert_eq!(
-            aur.backup,
-            Some(vec!["etc/mytool/config.toml".to_string()])
-        );
-        assert_eq!(
-            aur.url,
-            Some("https://github.com/org/mytool".to_string())
-        );
+        assert_eq!(aur.backup, Some(vec!["etc/mytool/config.toml".to_string()]));
+        assert_eq!(aur.url, Some("https://github.com/org/mytool".to_string()));
     }
 
     #[test]
@@ -3094,10 +3098,7 @@ crates:
             krew.description,
             Some("A comprehensive kubectl plugin".to_string())
         );
-        assert_eq!(
-            krew.short_description,
-            Some("A kubectl plugin".to_string())
-        );
+        assert_eq!(krew.short_description, Some("A kubectl plugin".to_string()));
         assert_eq!(
             krew.homepage,
             Some("https://github.com/myorg/kubectl-mytool".to_string())
@@ -3167,10 +3168,7 @@ name = "krew-index"
             .as_ref()
             .unwrap();
 
-        assert_eq!(
-            krew.short_description,
-            Some("A kubectl plugin".to_string())
-        );
+        assert_eq!(krew.short_description, Some("A kubectl plugin".to_string()));
         let repo = krew.manifests_repo.as_ref().unwrap();
         assert_eq!(repo.owner, "org");
     }
@@ -3263,7 +3261,11 @@ crates: []
         };
         let result = validate_version(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("unsupported config version: 99"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("unsupported config version: 99")
+        );
     }
 
     // ---- env_files tests ----
@@ -3301,7 +3303,7 @@ crates: []
         let env_path = dir.path().join(".env");
         let mut f = std::fs::File::create(&env_path).unwrap();
         writeln!(f, "# comment line").unwrap();
-        writeln!(f, "").unwrap();
+        writeln!(f).unwrap();
         writeln!(f, "TEST_ANODIZE_KEY=hello_world").unwrap();
         writeln!(f, "TEST_ANODIZE_QUOTED=\"with quotes\"").unwrap();
         writeln!(f, "TEST_ANODIZE_SINGLE='single_quoted'").unwrap();
@@ -3432,10 +3434,7 @@ crates: []
         assert_eq!(overrides[0].targets, vec!["x86_64-*"]);
         assert_eq!(overrides[0].features, Some(vec!["simd".to_string()]));
         assert_eq!(overrides[0].flags, Some("--release".to_string()));
-        assert_eq!(
-            overrides[0].env.as_ref().unwrap().get("CC").unwrap(),
-            "gcc"
-        );
+        assert_eq!(overrides[0].env.as_ref().unwrap().get("CC").unwrap(), "gcc");
         assert_eq!(overrides[1].targets, vec!["*-apple-darwin"]);
         assert_eq!(overrides[1].features, Some(vec!["metal".to_string()]));
         assert!(overrides[1].env.is_none());

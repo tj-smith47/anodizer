@@ -16,6 +16,7 @@ Release Rust projects with ease
 | `--config` | `-f` | Path to config file (overrides auto-detection) |
 | `--verbose` | — | Enable verbose output |
 | `--debug` | — | Enable debug output |
+| `--quiet` | — | Suppress non-error output |
 
 
 ## Commands
@@ -53,6 +54,7 @@ Build binaries only
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — | Build a specific crate (repeatable) |
+| `--snapshot` | — | — | Build without publishing (snapshot mode, default for build) |
 | `--timeout` | — | `30m` | Pipeline timeout duration (e.g., 30m, 1h, 5s) |
 | `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
 | `--single-target` | — | — | Build only for the host target triple |
@@ -97,6 +99,11 @@ Generate shell completions
 ### `anodize healthcheck`
 
 Check availability of required external tools
+
+
+### `anodize jsonschema`
+
+Output JSON Schema for .anodize.yaml
 
 
 ### `anodize tag`

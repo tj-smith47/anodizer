@@ -3,6 +3,7 @@ use anodize_core::artifact;
 use anodize_core::config::{Config, CrateConfig, GitHubConfig, WorkspaceConfig};
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::git;
+use anodize_core::log::{StageLogger, Verbosity};
 use anodize_core::template;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
@@ -21,6 +22,7 @@ pub struct ReleaseOpts {
     pub token: Option<String>,
     pub verbose: bool,
     pub debug: bool,
+    pub quiet: bool,
     pub config_override: Option<PathBuf>,
     pub parallelism: usize,
     pub single_target: Option<String>,
@@ -29,6 +31,11 @@ pub struct ReleaseOpts {
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
+    let log = StageLogger::new(
+        "release",
+        Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
+    );
+
     if opts.snapshot && opts.nightly {
         anyhow::bail!("--snapshot and --nightly cannot be combined");
     }
@@ -38,8 +45,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Load .env files early (before template expansion)
     if let Some(ref env_files) = config.env_files {
-        anodize_core::config::load_env_files(env_files)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        anodize_core::config::load_env_files(env_files).map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     // If --workspace is specified, resolve the workspace and overlay its config
@@ -80,7 +86,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
                     name: name.clone(),
                 });
             } else {
-                eprintln!("[release] warning: could not auto-detect GitHub repo from git remote");
+                log.warn("could not auto-detect GitHub repo from git remote");
             }
         }
     }
@@ -163,7 +169,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
                 ctx.populate_git_vars();
             }
             Err(e) => {
-                eprintln!("[release] warning: could not detect git info: {e}");
+                log.warn(&format!("could not detect git info: {e}"));
                 // Still populate snapshot/draft vars even without git info
                 ctx.populate_git_vars();
             }
@@ -174,7 +180,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     }
 
     // Apply nightly overrides after git vars are populated.
-    if opts.nightly {
+    if ctx.is_nightly() {
         let nightly_cfg = config.nightly.as_ref();
         let date_str = Utc::now().format("%Y%m%d").to_string();
 
@@ -215,12 +221,25 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             .with_context(|| format!("failed to render nightly name_template: {name_tmpl}"))?;
         ctx.template_vars_mut().set("ReleaseName", &release_name);
 
-        if opts.verbose {
-            eprintln!(
-                "[nightly] version={}, tag={}, name={}",
-                nightly_version, nightly_tag, release_name
-            );
-        }
+        log.verbose(&format!(
+            "nightly: version={}, tag={}, name={}",
+            nightly_version, nightly_tag, release_name
+        ));
+    }
+
+    // Apply snapshot name_template if configured.
+    if ctx.is_snapshot()
+        && let Some(ref snapshot_cfg) = config.snapshot
+    {
+        let rendered_name = template::render(&snapshot_cfg.name_template, ctx.template_vars())
+            .with_context(|| {
+                format!(
+                    "failed to render snapshot name_template: {}",
+                    snapshot_cfg.name_template
+                )
+            })?;
+        ctx.template_vars_mut().set("ReleaseName", &rendered_name);
+        log.verbose(&format!("snapshot: release_name={}", rendered_name));
     }
 
     let p = pipeline::build_release_pipeline();
@@ -246,7 +265,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             serde_json::to_string_pretty(&metadata).context("failed to serialize metadata JSON")?;
         std::fs::write(&metadata_path, &json_str)
             .with_context(|| format!("failed to write {}", metadata_path.display()))?;
-        eprintln!("  wrote {}", metadata_path.display());
+        log.status(&format!("wrote {}", metadata_path.display()));
     }
 
     // Run custom publishers (only if pipeline succeeded)
@@ -254,7 +273,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         && let Some(ref publishers) = config.publishers
         && !publishers.is_empty()
     {
-        eprintln!("  running custom publishers...");
+        log.status("running custom publishers...");
         super::publisher::run_publishers(
             publishers,
             ctx.artifacts.all(),
@@ -346,22 +365,18 @@ fn check_workspace_files_changed(tag: &str) -> Result<bool> {
 /// Resolve a workspace by name from the config. Returns an error if
 /// `workspaces` is not configured or the given name is not found.
 pub fn resolve_workspace<'a>(config: &'a Config, name: &str) -> Result<&'a WorkspaceConfig> {
-    let workspaces = config
-        .workspaces
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("--workspace specified but no workspaces defined in config"))?;
+    let workspaces = config.workspaces.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("--workspace specified but no workspaces defined in config")
+    })?;
 
-    workspaces
-        .iter()
-        .find(|ws| ws.name == name)
-        .ok_or_else(|| {
-            let available: Vec<&str> = workspaces.iter().map(|ws| ws.name.as_str()).collect();
-            anyhow::anyhow!(
-                "workspace '{}' not found (available: {})",
-                name,
-                available.join(", ")
-            )
-        })
+    workspaces.iter().find(|ws| ws.name == name).ok_or_else(|| {
+        let available: Vec<&str> = workspaces.iter().map(|ws| ws.name.as_str()).collect();
+        anyhow::anyhow!(
+            "workspace '{}' not found (available: {})",
+            name,
+            available.join(", ")
+        )
+    })
 }
 
 /// Topologically sort the selected crates respecting depends_on order.
@@ -412,11 +427,10 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
     }
 
     // Append any remaining (cycle case — shouldn't happen post-check)
-    for (i, c) in filtered.iter().enumerate() {
+    for c in &filtered {
         if !result.contains(&c.name) {
             result.push(c.name.clone());
         }
-        let _ = i;
     }
 
     result
@@ -626,16 +640,36 @@ mod tests {
 
         // Verify env merged additively: TOP_ONLY preserved, SHARED overridden, WS_ONLY added
         let env = config.env.as_ref().unwrap();
-        assert_eq!(env.get("TOP_ONLY").unwrap(), "top-value", "top-level-only key should be preserved");
-        assert_eq!(env.get("SHARED").unwrap(), "from-ws", "shared key should be overridden by workspace");
-        assert_eq!(env.get("WS_ONLY").unwrap(), "ws-value", "workspace-only key should be added");
+        assert_eq!(
+            env.get("TOP_ONLY").unwrap(),
+            "top-value",
+            "top-level-only key should be preserved"
+        );
+        assert_eq!(
+            env.get("SHARED").unwrap(),
+            "from-ws",
+            "shared key should be overridden by workspace"
+        );
+        assert_eq!(
+            env.get("WS_ONLY").unwrap(),
+            "ws-value",
+            "workspace-only key should be added"
+        );
 
         // Verify signs were replaced (not merged)
         assert_eq!(config.signs.len(), 1);
-        assert_eq!(config.signs[0].cmd.as_deref(), Some("cosign"), "signs should be replaced by workspace");
+        assert_eq!(
+            config.signs[0].cmd.as_deref(),
+            Some("cosign"),
+            "signs should be replaced by workspace"
+        );
 
         // Verify changelog was replaced
         let cl = config.changelog.as_ref().unwrap();
-        assert_eq!(cl.sort.as_deref(), Some("desc"), "changelog should be replaced by workspace");
+        assert_eq!(
+            cl.sort.as_deref(),
+            Some("desc"),
+            "changelog should be replaced by workspace"
+        );
     }
 }

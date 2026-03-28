@@ -245,10 +245,7 @@ impl GitHubClient for MockGitHubClient {
     }
 
     fn upload_asset(&self, params: &UploadAssetParams) -> anyhow::Result<AssetInfo> {
-        self.upload_asset_calls
-            .lock()
-            .unwrap()
-            .push(params.clone());
+        self.upload_asset_calls.lock().unwrap().push(params.clone());
 
         match self.upload_asset_response.lock().unwrap().as_ref() {
             Some(Ok(info)) => Ok(info.clone()),
@@ -408,10 +405,12 @@ mod tests {
 
         let result = mock.create_release(&params);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("no create_release response configured"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no create_release response configured")
+        );
     }
 
     #[test]
@@ -433,10 +432,12 @@ mod tests {
 
         let result = mock.create_release(&params);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("API rate limit exceeded"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("API rate limit exceeded")
+        );
     }
 
     #[test]

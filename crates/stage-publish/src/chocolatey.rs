@@ -1,4 +1,5 @@
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util::{find_windows_artifact, run_cmd_in};
@@ -93,7 +94,10 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     ctx.insert("authors", params.authors);
     ctx.insert("description", params.description);
     ctx.insert("project_url", params.project_url);
-    ctx.insert("icon_url", &(!params.icon_url.is_empty()).then_some(params.icon_url));
+    ctx.insert(
+        "icon_url",
+        &(!params.icon_url.is_empty()).then_some(params.icon_url),
+    );
     ctx.insert("license_url", &license_url);
     ctx.insert("tags_str", &tags_str);
 
@@ -107,13 +111,10 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
 
 /// Generate a `chocolateyInstall.ps1` PowerShell script string.
 ///
-/// The `_version` parameter is accepted for API symmetry with other manifest
-/// generators and may be used in future for version-specific install logic.
-///
 /// NOTE: This currently only generates a 64-bit download URL (`url64bit`).
 /// This is acceptable because Rust primarily targets x86_64 on Windows;
 /// 32-bit Windows support is uncommon for modern Rust CLI tools.
-pub fn generate_install_script(name: &str, _version: &str, url: &str, hash: &str) -> String {
+pub fn generate_install_script(name: &str, url: &str, hash: &str) -> String {
     let mut tera = tera::Tera::default();
     tera.add_raw_template("install", INSTALL_SCRIPT_TEMPLATE)
         .expect("chocolatey: parse install script template");
@@ -134,15 +135,13 @@ pub fn generate_install_script(name: &str, _version: &str, url: &str, hash: &str
 // publish_to_chocolatey
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
+pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let crate_cfg = ctx
         .config
         .crates
         .iter()
         .find(|c| c.name == crate_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!("chocolatey: crate '{}' not found in config", crate_name)
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("chocolatey: crate '{}' not found in config", crate_name))?;
 
     let publish = crate_cfg
         .publish
@@ -155,17 +154,14 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
     let project_repo = choco_cfg.project_repo.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "chocolatey: no project_repo config for '{}'",
-            crate_name
-        )
+        anyhow::anyhow!("chocolatey: no project_repo config for '{}'", crate_name)
     })?;
 
     if ctx.is_dry_run() {
-        eprintln!(
-            "[publish] (dry-run) would push Chocolatey package for '{}' to {}/{}",
+        log.status(&format!(
+            "(dry-run) would push Chocolatey package for '{}' to {}/{}",
             crate_name, project_repo.owner, project_repo.name
-        );
+        ));
         return Ok(());
     }
 
@@ -201,10 +197,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
     let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
         found
     } else {
-        eprintln!(
-            "[publish] chocolatey: no windows artifact found for '{}', using placeholder URL",
+        log.warn(&format!(
+            "chocolatey: no windows artifact found for '{}', using placeholder URL",
             crate_name
-        );
+        ));
         (
             format!(
                 "https://github.com/{0}/{1}/releases/download/v{2}/{1}-{2}-windows-amd64.zip",
@@ -225,7 +221,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         icon_url: &icon_url,
         tags: &tags,
     });
-    let install_script = generate_install_script(crate_name, &version, &url, &hash);
+    let install_script = generate_install_script(crate_name, &url, &hash);
 
     // Create temp directory, write files, run choco pack + push.
     let tmp_dir = tempfile::tempdir().context("chocolatey: create temp dir")?;
@@ -239,17 +235,21 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
     std::fs::create_dir_all(&tools_dir).context("chocolatey: create tools dir")?;
 
     let install_path = tools_dir.join("chocolateyInstall.ps1");
-    std::fs::write(&install_path, &install_script)
-        .with_context(|| format!("chocolatey: write install script {}", install_path.display()))?;
+    std::fs::write(&install_path, &install_script).with_context(|| {
+        format!(
+            "chocolatey: write install script {}",
+            install_path.display()
+        )
+    })?;
 
-    eprintln!(
-        "[publish] wrote Chocolatey nuspec: {}",
+    log.status(&format!(
+        "wrote Chocolatey nuspec: {}",
         nuspec_path.display()
-    );
-    eprintln!(
-        "[publish] wrote Chocolatey install script: {}",
+    ));
+    log.status(&format!(
+        "wrote Chocolatey install script: {}",
         install_path.display()
-    );
+    ));
 
     // choco pack
     run_cmd_in(
@@ -282,10 +282,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str) -> Result<()> {
         "chocolatey: choco push",
     )?;
 
-    eprintln!(
-        "[publish] Chocolatey package pushed for '{}'",
-        crate_name
-    );
+    log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
 
     Ok(())
 }
@@ -399,8 +396,9 @@ mod tests {
             tags: &[],
         });
 
-        assert!(nuspec
-            .contains("<licenseUrl>https://opensource.org/licenses/Apache-2.0</licenseUrl>"));
+        assert!(
+            nuspec.contains("<licenseUrl>https://opensource.org/licenses/Apache-2.0</licenseUrl>")
+        );
     }
 
     #[test]
@@ -460,16 +458,16 @@ mod tests {
     fn test_generate_install_script_basic() {
         let script = generate_install_script(
             "mytool",
-            "1.0.0",
             "https://example.com/mytool-1.0.0-windows-amd64.zip",
             "deadbeef",
         );
 
         assert!(script.contains("$ErrorActionPreference = 'Stop'"));
         assert!(script.contains("packageName    = 'mytool'"));
-        assert!(script.contains(
-            "url64bit       = 'https://example.com/mytool-1.0.0-windows-amd64.zip'"
-        ));
+        assert!(
+            script
+                .contains("url64bit       = 'https://example.com/mytool-1.0.0-windows-amd64.zip'")
+        );
         assert!(script.contains("checksum64     = 'deadbeef'"));
         assert!(script.contains("checksumType64 = 'sha256'"));
         assert!(script.contains("Install-ChocolateyZipPackage @packageArgs"));
@@ -477,12 +475,7 @@ mod tests {
 
     #[test]
     fn test_generate_install_script_has_unzip_location() {
-        let script = generate_install_script(
-            "tool",
-            "2.0.0",
-            "https://example.com/tool.zip",
-            "abc",
-        );
+        let script = generate_install_script("tool", "https://example.com/tool.zip", "abc");
 
         assert!(script.contains("unzipLocation"));
         assert!(script.contains("Split-Path"));
@@ -490,12 +483,7 @@ mod tests {
 
     #[test]
     fn test_generate_install_script_structure() {
-        let script = generate_install_script(
-            "my-app",
-            "0.5.0",
-            "https://example.com/my-app.zip",
-            "hash123",
-        );
+        let script = generate_install_script("my-app", "https://example.com/my-app.zip", "hash123");
 
         // Verify the script has the expected structure
         let lines: Vec<&str> = script.lines().collect();
@@ -504,9 +492,11 @@ mod tests {
         assert_eq!(lines[1], "");
         assert_eq!(lines[2], "$packageArgs = @{");
         // Script should end with the Install command
-        assert!(script
-            .trim_end()
-            .ends_with("Install-ChocolateyZipPackage @packageArgs"));
+        assert!(
+            script
+                .trim_end()
+                .ends_with("Install-ChocolateyZipPackage @packageArgs")
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -519,6 +509,7 @@ mod tests {
             ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig, PublishConfig,
         };
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -546,15 +537,17 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // dry-run should succeed without any network/command calls
-        assert!(publish_to_chocolatey(&ctx, "mytool").is_ok());
+        assert!(publish_to_chocolatey(&ctx, "mytool", &log).is_ok());
     }
 
     #[test]
     fn test_publish_to_chocolatey_missing_config() {
         use anodize_core::config::{Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -572,15 +565,17 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // Should fail because there's no chocolatey config
-        assert!(publish_to_chocolatey(&ctx, "mytool").is_err());
+        assert!(publish_to_chocolatey(&ctx, "mytool", &log).is_err());
     }
 
     #[test]
     fn test_publish_to_chocolatey_missing_project_repo() {
         use anodize_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -604,8 +599,9 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // Should fail because project_repo is missing
-        assert!(publish_to_chocolatey(&ctx, "mytool").is_err());
+        assert!(publish_to_chocolatey(&ctx, "mytool", &log).is_err());
     }
 }

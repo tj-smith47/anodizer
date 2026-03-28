@@ -62,8 +62,7 @@ mod tests {
 
     #[test]
     fn test_telegram_payload_with_parse_mode() {
-        let payload =
-            telegram_payload("-100123", "myapp v1.0.0 released!", Some("MarkdownV2"));
+        let payload = telegram_payload("-100123", "myapp v1.0.0 released!", Some("MarkdownV2"));
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["chat_id"], "-100123");
         assert_eq!(json["text"], "myapp v1.0.0 released!");

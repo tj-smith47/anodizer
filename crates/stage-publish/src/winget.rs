@@ -1,4 +1,5 @@
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 use std::process::Command;
@@ -91,7 +92,7 @@ pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
 // publish_to_winget
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
+pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let crate_cfg = ctx
         .config
         .crates
@@ -109,25 +110,20 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?;
 
-    let manifests_repo = winget_cfg.manifests_repo.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "winget: no manifests_repo config for '{}'",
-            crate_name
-        )
-    })?;
+    let manifests_repo = winget_cfg
+        .manifests_repo
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("winget: no manifests_repo config for '{}'", crate_name))?;
 
     let package_id = winget_cfg.package_identifier.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "winget: no package_identifier config for '{}'",
-            crate_name
-        )
+        anyhow::anyhow!("winget: no package_identifier config for '{}'", crate_name)
     })?;
 
     if ctx.is_dry_run() {
-        eprintln!(
-            "[publish] (dry-run) would submit WinGet manifest for '{}' (pkg={}) to {}/{}",
+        log.status(&format!(
+            "(dry-run) would submit WinGet manifest for '{}' (pkg={}) to {}/{}",
             crate_name, package_id, manifests_repo.owner, manifests_repo.name
-        );
+        ));
         return Ok(());
     }
 
@@ -195,10 +191,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
     let auth_header;
     let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
     if let Some(ref tok) = token {
-        auth_header = format!(
-            "http.extraheader=Authorization: bearer {}",
-            tok
-        );
+        auth_header = format!("http.extraheader=Authorization: bearer {}", tok);
         clone_args.extend_from_slice(&["-c", &auth_header]);
     }
     clone_args.push(&repo_url);
@@ -206,13 +199,11 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
     clone_args.push(&repo_path_str);
 
     // We need to use run_cmd without a working dir (not run_cmd_in) for clone.
-    let status = Command::new("git")
+    let output = Command::new("git")
         .args(&clone_args)
-        .status()
+        .output()
         .context("winget: git clone: spawn")?;
-    if !status.success() {
-        anyhow::bail!("winget: git clone: exited with {}", status);
-    }
+    log.check_output(output, "winget: git clone")?;
 
     // If we used a token, also configure it for subsequent push operations
     // in this repo clone so that push uses the same auth mechanism.
@@ -247,10 +238,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
     std::fs::write(&manifest_file, &manifest)
         .with_context(|| format!("winget: write manifest {}", manifest_file.display()))?;
 
-    eprintln!(
-        "[publish] wrote WinGet manifest: {}",
+    log.status(&format!(
+        "wrote WinGet manifest: {}",
         manifest_file.display()
-    );
+    ));
 
     let branch_name = format!("{}-{}", package_id, version);
     run_cmd_in(
@@ -259,12 +250,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
         &["checkout", "-b", &branch_name],
         "winget: git checkout",
     )?;
-    run_cmd_in(
-        repo_path,
-        "git",
-        &["add", "."],
-        "winget: git add",
-    )?;
+    run_cmd_in(repo_path, "git", &["add", "."], "winget: git add")?;
     run_cmd_in(
         repo_path,
         "git",
@@ -282,10 +268,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
         "winget: git push",
     )?;
 
-    eprintln!(
-        "[publish] WinGet manifest pushed to {}/{} branch '{}'",
+    log.status(&format!(
+        "WinGet manifest pushed to {}/{} branch '{}'",
         manifests_repo.owner, manifests_repo.name, branch_name
-    );
+    ));
 
     // Submit PR via GitHub CLI (gh) if available.
     let pr_result = Command::new("gh")
@@ -305,26 +291,32 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
             "--head",
             &format!("{}:{}", manifests_repo.owner, branch_name),
         ])
-        .status();
+        .output();
 
     match pr_result {
-        Ok(status) if status.success() => {
-            eprintln!(
-                "[publish] WinGet PR submitted for {} version {}",
+        Ok(output) if output.status.success() => {
+            log.status(&format!(
+                "WinGet PR submitted for {} version {}",
                 package_id, version
-            );
+            ));
         }
-        Ok(status) => {
-            eprintln!(
-                "[publish] winget: gh pr create exited with {} — you may need to create the PR manually",
-                status
-            );
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log.warn(&format!(
+                "winget: gh pr create exited with {} — you may need to create the PR manually{}",
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
+            ));
         }
         Err(e) => {
-            eprintln!(
-                "[publish] winget: could not run gh to create PR: {} — you may need to create the PR manually",
+            log.warn(&format!(
+                "winget: could not run gh to create PR: {} — you may need to create the PR manually",
                 e
-            );
+            ));
         }
     }
 
@@ -367,9 +359,9 @@ mod tests {
         assert!(manifest.contains("ShortDescription: A great tool"));
         assert!(manifest.contains("Installers:"));
         assert!(manifest.contains("Architecture: x64"));
-        assert!(manifest.contains(
-            "InstallerUrl: https://example.com/mytool-1.0.0-windows-amd64.zip"
-        ));
+        assert!(
+            manifest.contains("InstallerUrl: https://example.com/mytool-1.0.0-windows-amd64.zip")
+        );
         assert!(manifest.contains("InstallerSha256: deadbeef1234567890abcdef"));
         assert!(manifest.contains("InstallerType: zip"));
         assert!(manifest.contains("ManifestType: singleton"));
@@ -461,8 +453,7 @@ mod tests {
 
         // Values with special YAML characters should be quoted by serde_yaml_ng
         assert!(manifest.contains("PackageName: 'tool: the best'"));
-        assert!(manifest
-            .contains("ShortDescription: 'A tool with #special: characters & more'"));
+        assert!(manifest.contains("ShortDescription: 'A tool with #special: characters & more'"));
     }
 
     // -----------------------------------------------------------------------
@@ -475,6 +466,7 @@ mod tests {
             Config, CrateConfig, PublishConfig, WingetConfig, WingetManifestsRepoConfig,
         };
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -504,15 +496,17 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // dry-run should succeed without any network/command calls
-        assert!(publish_to_winget(&ctx, "mytool").is_ok());
+        assert!(publish_to_winget(&ctx, "mytool", &log).is_ok());
     }
 
     #[test]
     fn test_publish_to_winget_missing_config() {
         use anodize_core::config::{Config, CrateConfig, PublishConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -530,9 +524,10 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // Should fail because there's no winget config
-        assert!(publish_to_winget(&ctx, "mytool").is_err());
+        assert!(publish_to_winget(&ctx, "mytool", &log).is_err());
     }
 
     #[test]
@@ -541,6 +536,7 @@ mod tests {
             Config, CrateConfig, PublishConfig, WingetConfig, WingetManifestsRepoConfig,
         };
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -568,15 +564,17 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // Should fail because package_identifier is missing
-        assert!(publish_to_winget(&ctx, "mytool").is_err());
+        assert!(publish_to_winget(&ctx, "mytool", &log).is_err());
     }
 
     #[test]
     fn test_publish_to_winget_missing_manifests_repo() {
         use anodize_core::config::{Config, CrateConfig, PublishConfig, WingetConfig};
         use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -601,8 +599,9 @@ mod tests {
                 ..Default::default()
             },
         );
+        let log = StageLogger::new("publish", Verbosity::Normal);
 
         // Should fail because manifests_repo is missing
-        assert!(publish_to_winget(&ctx, "mytool").is_err());
+        assert!(publish_to_winget(&ctx, "mytool", &log).is_err());
     }
 }

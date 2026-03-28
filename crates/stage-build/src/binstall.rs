@@ -41,11 +41,12 @@ pub fn generate_binstall_metadata(
         binstall_table.insert("pkg-fmt", toml_edit::Value::from(pkg_fmt.as_str()));
     }
 
+    let log = ctx.logger("build");
     if dry_run {
-        eprintln!(
-            "[binstall] (dry-run) would update [package.metadata.binstall] in {}",
+        log.status(&format!(
+            "(dry-run) binstall: would update [package.metadata.binstall] in {}",
             cargo_toml_path.display()
-        );
+        ));
         return Ok(());
     }
 
@@ -53,12 +54,7 @@ pub fn generate_binstall_metadata(
     let package = doc
         .get_mut("package")
         .and_then(|p| p.as_table_mut())
-        .with_context(|| {
-            format!(
-                "no [package] table in {}",
-                cargo_toml_path.display()
-            )
-        })?;
+        .with_context(|| format!("no [package] table in {}", cargo_toml_path.display()))?;
 
     if !package.contains_key("metadata") {
         package.insert("metadata", toml_edit::Item::Table(toml_edit::Table::new()));
@@ -84,10 +80,10 @@ pub fn generate_binstall_metadata(
     std::fs::write(&cargo_toml_path, doc.to_string())
         .with_context(|| format!("failed to write {}", cargo_toml_path.display()))?;
 
-    eprintln!(
-        "[binstall] updated [package.metadata.binstall] in {}",
+    log.status(&format!(
+        "binstall: updated [package.metadata.binstall] in {}",
         cargo_toml_path.display()
-    );
+    ));
 
     Ok(())
 }
@@ -99,8 +95,10 @@ mod tests {
     use anodize_core::context::{Context, ContextOptions};
 
     fn make_ctx() -> Context {
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
+        let config = Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("ProjectName", "myapp");
@@ -139,9 +137,15 @@ edition = "2024"
         let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
 
         let binstall = &doc["package"]["metadata"]["binstall"];
-        assert!(binstall.as_table().is_some(), "binstall section should exist as a table");
+        assert!(
+            binstall.as_table().is_some(),
+            "binstall section should exist as a table"
+        );
         assert_eq!(binstall["pkg-fmt"].as_str().unwrap(), "tgz");
-        assert_eq!(binstall["bin-dir"].as_str().unwrap(), "{ bin }{ binary-ext }");
+        assert_eq!(
+            binstall["bin-dir"].as_str().unwrap(),
+            "{ bin }{ binary-ext }"
+        );
         // The pkg-url should have the template variable rendered
         let pkg_url = binstall["pkg-url"].as_str().unwrap();
         assert!(

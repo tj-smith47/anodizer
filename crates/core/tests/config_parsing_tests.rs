@@ -1262,10 +1262,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.crates[0].checksum.as_ref().unwrap();
-    assert_eq!(
-        checksum.ids.as_ref().unwrap(),
-        &["my-archive", "my-binary"]
-    );
+    assert_eq!(checksum.ids.as_ref().unwrap(), &["my-archive", "my-binary"]);
 }
 
 #[test]
@@ -1554,10 +1551,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
-    assert_eq!(
-        nfpm.recommends.as_ref().unwrap(),
-        &["bash-completion"]
-    );
+    assert_eq!(nfpm.recommends.as_ref().unwrap(), &["bash-completion"]);
     assert_eq!(nfpm.suggests.as_ref().unwrap(), &["zsh"]);
     assert_eq!(nfpm.conflicts.as_ref().unwrap(), &["old-app"]);
     assert_eq!(nfpm.replaces.as_ref().unwrap(), &["old-app"]);
@@ -1677,12 +1671,14 @@ crates:
       crates: true
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert!(config.crates[0]
-        .publish
-        .as_ref()
-        .unwrap()
-        .homebrew
-        .is_none());
+    assert!(
+        config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .homebrew
+            .is_none()
+    );
 }
 
 // ---- publish.scoop tests ----
@@ -1772,11 +1768,7 @@ crates:
       crates: false
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let settings = config.crates[0]
-        .publish
-        .as_ref()
-        .unwrap()
-        .crates_config();
+    let settings = config.crates[0].publish.as_ref().unwrap().crates_config();
     assert!(!settings.enabled);
     assert_eq!(settings.index_timeout, 300);
 }
@@ -1794,11 +1786,7 @@ crates:
         enabled: true
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let settings = config.crates[0]
-        .publish
-        .as_ref()
-        .unwrap()
-        .crates_config();
+    let settings = config.crates[0].publish.as_ref().unwrap().crates_config();
     assert!(settings.enabled);
     assert_eq!(settings.index_timeout, 300);
 }
@@ -1814,11 +1802,7 @@ crates:
     publish: {}
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let settings = config.crates[0]
-        .publish
-        .as_ref()
-        .unwrap()
-        .crates_config();
+    let settings = config.crates[0].publish.as_ref().unwrap().crates_config();
     assert!(!settings.enabled);
     assert_eq!(settings.index_timeout, 300);
 }
@@ -1869,10 +1853,7 @@ crates:
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
     assert_eq!(docker.dockerfile, "Dockerfile");
     assert_eq!(docker.image_templates.len(), 2);
-    assert_eq!(
-        docker.image_templates[0],
-        "ghcr.io/myorg/app:{{ version }}"
-    );
+    assert_eq!(docker.image_templates[0], "ghcr.io/myorg/app:{{ version }}");
     assert_eq!(docker.platforms.as_ref().unwrap().len(), 2);
     assert_eq!(docker.binaries.as_ref().unwrap(), &["app"]);
     assert_eq!(docker.build_flag_templates.as_ref().unwrap().len(), 2);
@@ -2243,10 +2224,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
-    assert_eq!(
-        release.name_template,
-        Some("Release {{ tag }}".to_string())
-    );
+    assert_eq!(release.name_template, Some("Release {{ tag }}".to_string()));
 }
 
 #[test]
@@ -2509,13 +2487,7 @@ announce:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let discord = config
-        .announce
-        .as_ref()
-        .unwrap()
-        .discord
-        .as_ref()
-        .unwrap();
+    let discord = config.announce.as_ref().unwrap().discord.as_ref().unwrap();
     assert_eq!(discord.enabled, Some(true));
     assert_eq!(
         discord.webhook_url,
@@ -2538,13 +2510,7 @@ announce:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let slack = config
-        .announce
-        .as_ref()
-        .unwrap()
-        .slack
-        .as_ref()
-        .unwrap();
+    let slack = config.announce.as_ref().unwrap().slack.as_ref().unwrap();
     assert_eq!(slack.enabled, Some(true));
 }
 
@@ -2563,22 +2529,13 @@ announce:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let webhook = config
-        .announce
-        .as_ref()
-        .unwrap()
-        .webhook
-        .as_ref()
-        .unwrap();
+    let webhook = config.announce.as_ref().unwrap().webhook.as_ref().unwrap();
     assert_eq!(webhook.enabled, Some(true));
     assert_eq!(
         webhook.endpoint_url,
         Some("https://api.example.com/webhook".to_string())
     );
-    assert_eq!(
-        webhook.content_type,
-        Some("application/json".to_string())
-    );
+    assert_eq!(webhook.content_type, Some("application/json".to_string()));
     let headers = webhook.headers.as_ref().unwrap();
     assert_eq!(headers.get("Authorization").unwrap(), "Bearer token123");
 }
@@ -2647,13 +2604,7 @@ changelog:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let filters = config
-        .changelog
-        .as_ref()
-        .unwrap()
-        .filters
-        .as_ref()
-        .unwrap();
+    let filters = config.changelog.as_ref().unwrap().filters.as_ref().unwrap();
     assert_eq!(filters.exclude.as_ref().unwrap().len(), 2);
     assert_eq!(filters.include.as_ref().unwrap().len(), 2);
     assert_eq!(filters.exclude.as_ref().unwrap()[0], "^docs:");
@@ -2676,13 +2627,7 @@ changelog:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let groups = config
-        .changelog
-        .as_ref()
-        .unwrap()
-        .groups
-        .as_ref()
-        .unwrap();
+    let groups = config.changelog.as_ref().unwrap().groups.as_ref().unwrap();
     assert_eq!(groups.len(), 3);
     assert_eq!(groups[0].title, "Features");
     assert_eq!(groups[0].regexp, Some("^feat".to_string()));
@@ -2779,10 +2724,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(config.defaults.unwrap().cross, Some(CrossStrategy::Auto));
-    assert_eq!(
-        config.crates[0].cross,
-        Some(CrossStrategy::Zigbuild)
-    );
+    assert_eq!(config.crates[0].cross, Some(CrossStrategy::Zigbuild));
 }
 
 #[test]
@@ -2824,10 +2766,7 @@ crates:
     assert_eq!(config.crates[0].name, "core");
     assert_eq!(config.crates[1].name, "cli");
     assert_eq!(config.crates[2].name, "server");
-    assert_eq!(
-        config.crates[1].depends_on.as_ref().unwrap(),
-        &["core"]
-    );
+    assert_eq!(config.crates[1].depends_on.as_ref().unwrap(), &["core"]);
 }
 
 // ---- TOML format tests ----
@@ -2937,7 +2876,10 @@ tag_template = "v{{ .Version }}"
     let config: Config = toml::from_str(toml_str).unwrap();
     let pub_cfg = &config.publishers.as_ref().unwrap()[0];
     assert_eq!(pub_cfg.name, Some("upload".to_string()));
-    assert_eq!(pub_cfg.env.as_ref().unwrap().get("TOKEN").unwrap(), "abc123");
+    assert_eq!(
+        pub_cfg.env.as_ref().unwrap().get("TOKEN").unwrap(),
+        "abc123"
+    );
 }
 
 #[test]
@@ -3637,9 +3579,7 @@ crates:
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(
             configs[0].name_template,
-            Some(
-                "{{ project_name }}-{{ version }}-{{ os }}-{{ arch }}".to_string()
-            )
+            Some("{{ project_name }}-{{ version }}-{{ os }}-{{ arch }}".to_string())
         );
     } else {
         panic!("expected ArchivesConfig::Configs");
@@ -3710,13 +3650,7 @@ announce:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let discord = config
-        .announce
-        .as_ref()
-        .unwrap()
-        .discord
-        .as_ref()
-        .unwrap();
+    let discord = config.announce.as_ref().unwrap().discord.as_ref().unwrap();
     assert_eq!(discord.enabled, Some(false));
 }
 
@@ -3764,13 +3698,7 @@ announce:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let webhook = config
-        .announce
-        .as_ref()
-        .unwrap()
-        .webhook
-        .as_ref()
-        .unwrap();
+    let webhook = config.announce.as_ref().unwrap().webhook.as_ref().unwrap();
     assert!(webhook.headers.is_none());
 }
 
@@ -3936,7 +3864,10 @@ crates:
     archives: false
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert!(matches!(config.crates[0].archives, ArchivesConfig::Disabled));
+    assert!(matches!(
+        config.crates[0].archives,
+        ArchivesConfig::Disabled
+    ));
 }
 
 // ---- Missing required fields ----
@@ -3951,7 +3882,10 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
     let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-    assert!(result.is_ok(), "missing name should parse due to #[serde(default)]");
+    assert!(
+        result.is_ok(),
+        "missing name should parse due to #[serde(default)]"
+    );
     let config = result.unwrap();
     assert_eq!(config.crates[0].name, "");
 }

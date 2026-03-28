@@ -26,10 +26,7 @@ struct CargoPackage {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct CargoBin {
-    #[allow(dead_code)]
-    name: Option<String>,
-}
+struct CargoBin {}
 
 // ---------------------------------------------------------------------------
 // CrateInfo — intermediate representation

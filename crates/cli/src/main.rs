@@ -1,4 +1,4 @@
-pub use anodize_cli::{Cli, Commands, num_cpus};
+use anodize_cli::{Cli, Commands};
 
 use clap::Parser;
 use colored::Colorize;
@@ -116,6 +116,7 @@ fn main() {
                     token,
                     verbose: cli.verbose,
                     debug: cli.debug,
+                    quiet: cli.quiet,
                     config_override: cli.config.clone(),
                     parallelism,
                     single_target: resolved_single_target,
@@ -126,6 +127,7 @@ fn main() {
         }
         Commands::Build {
             crate_names,
+            snapshot,
             timeout,
             parallelism,
             single_target,
@@ -142,24 +144,39 @@ fn main() {
             });
             let config_override = cli.config.clone();
             let resolved_single_target = resolve_single_target(single_target);
+            let verbose = cli.verbose;
+            let debug = cli.debug;
+            let quiet = cli.quiet;
 
             timeout::run_with_timeout(duration, move || {
                 commands::build::run(commands::build::BuildOpts {
                     crate_names,
+                    snapshot,
                     config_override,
+                    verbose,
+                    debug,
+                    quiet,
                     parallelism,
                     single_target: resolved_single_target,
                     workspace,
                 })
             })
         }
-        Commands::Check { workspace } => {
-            commands::check::run(cli.config.as_deref(), workspace.as_deref())
-        }
+        Commands::Check { workspace } => commands::check::run(
+            cli.config.as_deref(),
+            workspace.as_deref(),
+            cli.verbose,
+            cli.debug,
+            cli.quiet,
+        ),
         Commands::Init => commands::init::run(),
-        Commands::Changelog { crate_name } => {
-            commands::changelog::run(crate_name, cli.config.as_deref())
-        }
+        Commands::Changelog { crate_name } => commands::changelog::run(
+            crate_name,
+            cli.config.as_deref(),
+            cli.verbose,
+            cli.debug,
+            cli.quiet,
+        ),
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
         Commands::Jsonschema => commands::jsonschema::run(),
@@ -175,6 +192,8 @@ fn main() {
             crate_name,
             config_override: cli.config.clone(),
             verbose: cli.verbose,
+            debug: cli.debug,
+            quiet: cli.quiet,
         }),
     };
     if let Err(e) = result {
@@ -194,6 +213,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anodize_cli::num_cpus;
     use clap::CommandFactory;
 
     #[test]
@@ -332,10 +352,7 @@ mod tests {
             help.contains("healthcheck"),
             "help should mention healthcheck command"
         );
-        assert!(
-            help.contains("tag"),
-            "help should mention tag command"
-        );
+        assert!(help.contains("tag"), "help should mention tag command");
         assert!(
             help.contains("jsonschema"),
             "help should mention jsonschema command"
@@ -400,11 +417,7 @@ mod tests {
     #[test]
     fn test_cli_parses_tag_crate_flag() {
         let cli = Cli::try_parse_from(["anodize", "tag", "--crate", "my-lib"]);
-        assert!(
-            cli.is_ok(),
-            "CLI should parse tag --crate: {:?}",
-            cli.err()
-        );
+        assert!(cli.is_ok(), "CLI should parse tag --crate: {:?}", cli.err());
         if let Commands::Tag { crate_name, .. } = cli.unwrap().command {
             assert_eq!(crate_name, Some("my-lib".to_string()));
         } else {
@@ -475,8 +488,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_release_workspace_flag() {
-        let cli =
-            Cli::try_parse_from(["anodize", "release", "--workspace", "frontend"]);
+        let cli = Cli::try_parse_from(["anodize", "release", "--workspace", "frontend"]);
         assert!(
             cli.is_ok(),
             "CLI should parse release --workspace: {:?}",
@@ -493,10 +505,7 @@ mod tests {
     fn test_cli_release_workspace_defaults_none() {
         let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
         if let Commands::Release { workspace, .. } = cli.command {
-            assert!(
-                workspace.is_none(),
-                "--workspace should default to None"
-            );
+            assert!(workspace.is_none(), "--workspace should default to None");
         } else {
             panic!("expected Release command");
         }

@@ -460,7 +460,10 @@ mod tests {
     fn test_undefined_variable_error_mentions_variable() {
         let vars = test_vars();
         let result = render("{{ UndefinedFoo }}", &vars);
-        assert!(result.is_err(), "undefined variable should produce an error");
+        assert!(
+            result.is_err(),
+            "undefined variable should produce an error"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("UndefinedFoo") || err.contains("template"),
@@ -484,7 +487,10 @@ mod tests {
     fn test_unclosed_tag_block_error() {
         let vars = test_vars();
         let result = render("{% for x in items %} content", &vars);
-        assert!(result.is_err(), "unclosed for block should produce an error");
+        assert!(
+            result.is_err(),
+            "unclosed for block should produce an error"
+        );
     }
 
     #[test]
@@ -543,6 +549,9 @@ mod tests {
         let vars = test_vars();
         // This template has both an undefined variable and a syntax issue
         let result = render("{% if %}", &vars);
-        assert!(result.is_err(), "empty if condition should produce an error");
+        assert!(
+            result.is_err(),
+            "empty if condition should produce an error"
+        );
     }
 }

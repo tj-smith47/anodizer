@@ -44,7 +44,10 @@ pub(crate) fn should_compress(
     // Filter by targets: if targets is set, at least one pattern must match
     if let Some(ref targets) = upx_cfg.targets {
         if let Some(target) = artifact_target {
-            if !targets.iter().any(|pat| target_matches_pattern(target, pat)) {
+            if !targets
+                .iter()
+                .any(|pat| target_matches_pattern(target, pat))
+            {
                 return false;
             }
         } else {
@@ -68,6 +71,7 @@ impl Stage for UpxStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("upx");
         let upx_configs = ctx.config.upx.clone();
 
         if upx_configs.is_empty() {
@@ -89,10 +93,10 @@ impl Stage for UpxStage {
                         binary
                     );
                 }
-                eprintln!(
-                    "[upx] warning: binary '{}' not found, skipping compression",
+                log.warn(&format!(
+                    "binary '{}' not found, skipping compression",
                     binary
-                );
+                ));
                 continue;
             }
 
@@ -114,7 +118,10 @@ impl Stage for UpxStage {
 
             if matching_artifacts.is_empty() {
                 let id_label = upx_cfg.id.as_deref().unwrap_or("default");
-                eprintln!("[upx:{}] no matching binary artifacts to compress", id_label);
+                log.status(&format!(
+                    "[{}] no matching binary artifacts to compress",
+                    id_label
+                ));
                 continue;
             }
 
@@ -124,39 +131,29 @@ impl Stage for UpxStage {
                 let target_label = target.as_deref().unwrap_or("unknown");
 
                 if ctx.is_dry_run() {
-                    eprintln!(
-                        "[upx:{}] (dry-run) would run: {} {} {}",
+                    log.status(&format!(
+                        "(dry-run) [{}] would run: {} {} {}",
                         id_label,
                         binary,
                         upx_cfg.args.join(" "),
                         artifact_str,
-                    );
+                    ));
                     continue;
                 }
 
-                eprintln!(
-                    "[upx:{}] compressing {} (target: {})",
+                log.status(&format!(
+                    "[{}] compressing {} (target: {})",
                     id_label, artifact_str, target_label,
-                );
+                ));
 
-                let status = Command::new(binary)
+                let output = Command::new(binary)
                     .args(&upx_cfg.args)
                     .arg(artifact_path)
-                    .status()
+                    .output()
                     .with_context(|| {
-                        format!(
-                            "upx: failed to spawn '{}' for {}",
-                            binary, artifact_str
-                        )
+                        format!("upx: failed to spawn '{}' for {}", binary, artifact_str)
                     })?;
-
-                if !status.success() {
-                    anyhow::bail!(
-                        "upx: '{}' exited with non-zero status for {}",
-                        binary,
-                        artifact_str,
-                    );
-                }
+                log.check_output(output, binary)?;
             }
         }
 
@@ -221,10 +218,7 @@ mod tests {
 
     #[test]
     fn test_target_matches_star_matches_all() {
-        assert!(target_matches_pattern(
-            "x86_64-unknown-linux-gnu",
-            "*"
-        ));
+        assert!(target_matches_pattern("x86_64-unknown-linux-gnu", "*"));
     }
 
     // -----------------------------------------------------------------------
@@ -234,7 +228,12 @@ mod tests {
     #[test]
     fn test_should_compress_no_filters() {
         let cfg = UpxConfig::default();
-        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+        assert!(should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -249,7 +248,12 @@ mod tests {
             ids: Some(vec!["myapp".to_string()]),
             ..Default::default()
         };
-        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), Some("myapp"), None));
+        assert!(should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            Some("myapp"),
+            None
+        ));
     }
 
     #[test]
@@ -258,7 +262,12 @@ mod tests {
             ids: Some(vec!["myapp".to_string()]),
             ..Default::default()
         };
-        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, Some("myapp")));
+        assert!(should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            Some("myapp")
+        ));
     }
 
     #[test]
@@ -281,7 +290,12 @@ mod tests {
             ids: Some(vec!["myapp".to_string()]),
             ..Default::default()
         };
-        assert!(!should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+        assert!(!should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -290,7 +304,12 @@ mod tests {
             targets: Some(vec!["x86_64-*".to_string()]),
             ..Default::default()
         };
-        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+        assert!(should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -299,7 +318,12 @@ mod tests {
             targets: Some(vec!["aarch64-*".to_string()]),
             ..Default::default()
         };
-        assert!(!should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+        assert!(!should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -317,9 +341,24 @@ mod tests {
             targets: Some(vec!["x86_64-*".to_string(), "aarch64-*".to_string()]),
             ..Default::default()
         };
-        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
-        assert!(should_compress(&cfg, Some("aarch64-apple-darwin"), None, None));
-        assert!(!should_compress(&cfg, Some("armv7-unknown-linux-gnueabihf"), None, None));
+        assert!(should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            None,
+            None
+        ));
+        assert!(should_compress(
+            &cfg,
+            Some("aarch64-apple-darwin"),
+            None,
+            None
+        ));
+        assert!(!should_compress(
+            &cfg,
+            Some("armv7-unknown-linux-gnueabihf"),
+            None,
+            None
+        ));
     }
 
     #[test]
@@ -558,10 +597,7 @@ crates: []
             ..Default::default()
         }];
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .upx(upx)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).upx(upx).build();
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -588,10 +624,7 @@ crates: []
             ..Default::default()
         }];
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .upx(upx)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).upx(upx).build();
 
         // Add a non-Binary artifact — should be ignored
         ctx.artifacts.add(Artifact {
@@ -615,10 +648,7 @@ crates: []
             ..Default::default()
         }];
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .upx(upx)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).upx(upx).build();
 
         // Matching artifact
         ctx.artifacts.add(Artifact {
@@ -658,10 +688,7 @@ crates: []
             ..Default::default()
         }];
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .upx(upx)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).upx(upx).build();
 
         // Matching target
         ctx.artifacts.add(Artifact {
@@ -704,10 +731,7 @@ crates: []
             },
         ];
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .upx(upx)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).upx(upx).build();
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,

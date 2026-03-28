@@ -86,8 +86,7 @@ mod tests {
 
     #[test]
     fn test_mattermost_payload_partial_options() {
-        let payload =
-            mattermost_payload("released!", Some("releases"), None, None);
+        let payload = mattermost_payload("released!", Some("releases"), None, None);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["channel"], "releases");
         assert!(json.get("username").is_none());

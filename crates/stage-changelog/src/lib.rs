@@ -59,13 +59,17 @@ pub fn parse_commit_message(msg: &str) -> CommitInfo {
 
 /// Filter out commits whose `raw_message` matches any of the exclude regex
 /// patterns. Returns a new `Vec` of commits that did NOT match any pattern.
-pub fn apply_filters(commits: &[CommitInfo], exclude: &[String]) -> Vec<CommitInfo> {
+pub fn apply_filters(
+    commits: &[CommitInfo],
+    exclude: &[String],
+    log: &anodize_core::log::StageLogger,
+) -> Vec<CommitInfo> {
     let patterns: Vec<Regex> = exclude
         .iter()
         .filter_map(|p| match Regex::new(p) {
             Ok(re) => Some(re),
             Err(e) => {
-                eprintln!("[changelog] warning: invalid exclude regex {:?}: {}", p, e);
+                log.warn(&format!("invalid exclude regex {:?}: {}", p, e));
                 None
             }
         })
@@ -84,7 +88,11 @@ pub fn apply_filters(commits: &[CommitInfo], exclude: &[String]) -> Vec<CommitIn
 
 /// Keep only commits whose `raw_message` matches at least one of the include
 /// regex patterns. If `include` is empty, all commits are kept (no-op).
-pub fn apply_include_filters(commits: &[CommitInfo], include: &[String]) -> Vec<CommitInfo> {
+pub fn apply_include_filters(
+    commits: &[CommitInfo],
+    include: &[String],
+    log: &anodize_core::log::StageLogger,
+) -> Vec<CommitInfo> {
     if include.is_empty() {
         return commits.to_vec();
     }
@@ -93,7 +101,7 @@ pub fn apply_include_filters(commits: &[CommitInfo], include: &[String]) -> Vec<
         .filter_map(|p| match Regex::new(p) {
             Ok(re) => Some(re),
             Err(e) => {
-                eprintln!("[changelog] warning: invalid include regex {:?}: {}", p, e);
+                log.warn(&format!("invalid include regex {:?}: {}", p, e));
                 None
             }
         })
@@ -128,7 +136,11 @@ pub fn sort_commits(commits: &mut [CommitInfo], order: &str) {
 /// Groups are emitted in `order` (ascending). Commits that do not match any
 /// group are collected into an implicit "Others" group appended at the end.
 /// Groups with zero matching commits are omitted from the output.
-pub fn group_commits(commits: &[CommitInfo], groups: &[ChangelogGroup]) -> Vec<GroupedCommits> {
+pub fn group_commits(
+    commits: &[CommitInfo],
+    groups: &[ChangelogGroup],
+    log: &anodize_core::log::StageLogger,
+) -> Vec<GroupedCommits> {
     // Sort groups by their `order` field (None sorts last).
     let mut sorted_groups: Vec<&ChangelogGroup> = groups.iter().collect();
     sorted_groups.sort_by_key(|g| g.order.unwrap_or(i32::MAX));
@@ -140,10 +152,10 @@ pub fn group_commits(commits: &[CommitInfo], groups: &[ChangelogGroup]) -> Vec<G
             let re = g.regexp.as_deref().and_then(|p| match Regex::new(p) {
                 Ok(re) => Some(re),
                 Err(e) => {
-                    eprintln!(
-                        "[changelog] warning: invalid group regex {:?} for group {:?}: {}",
+                    log.warn(&format!(
+                        "invalid group regex {:?} for group {:?}: {}",
                         p, g.title, e
-                    );
+                    ));
                     None
                 }
             });
@@ -224,6 +236,7 @@ impl Stage for ChangelogStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("changelog");
         let changelog_cfg = ctx.config.changelog.clone();
 
         // If disabled, skip the stage entirely.
@@ -232,7 +245,7 @@ impl Stage for ChangelogStage {
             .and_then(|c| c.disable)
             .unwrap_or(false)
         {
-            eprintln!("[changelog] disabled, skipping");
+            log.status("disabled, skipping");
             return Ok(());
         }
 
@@ -245,7 +258,7 @@ impl Stage for ChangelogStage {
             .unwrap_or_else(|| "git".to_string());
 
         if use_source == "github-native" {
-            eprintln!("[changelog] using github-native changelog — skipping local generation");
+            log.status("using github-native changelog — skipping local generation");
             ctx.github_native_changelog = true;
             let selected = ctx.options.selected_crates.clone();
             let crates: Vec<_> = ctx
@@ -312,10 +325,10 @@ impl Stage for ChangelogStage {
                 Some(tag) => get_commits_between(tag, "HEAD", path_filter).unwrap_or_default(),
                 None => {
                     // Initial release: no previous tag, treat all commits as new.
-                    eprintln!(
-                        "[changelog] no previous tag found for crate '{}', using all commits",
+                    log.status(&format!(
+                        "no previous tag found for crate '{}', using all commits",
                         crate_name
-                    );
+                    ));
                     get_all_commits(path_filter).unwrap_or_default()
                 }
             };
@@ -328,8 +341,8 @@ impl Stage for ChangelogStage {
             }
 
             // Apply exclude filters, then include filters.
-            let after_exclude = apply_filters(&all_commit_infos, &exclude_filters);
-            let filtered = apply_include_filters(&after_exclude, &include_filters);
+            let after_exclude = apply_filters(&all_commit_infos, &exclude_filters, &log);
+            let filtered = apply_include_filters(&after_exclude, &include_filters, &log);
 
             // Sort commits.
             let mut sorted = filtered;
@@ -347,7 +360,7 @@ impl Stage for ChangelogStage {
                     }]
                 }
             } else {
-                group_commits(&sorted, &groups)
+                group_commits(&sorted, &groups, &log)
             };
 
             // Render the markdown for this crate.
@@ -373,7 +386,7 @@ impl Stage for ChangelogStage {
 
         // Write to dist/RELEASE_NOTES.md (skip during dry-run — this is the only side effect).
         if ctx.is_dry_run() {
-            eprintln!("[changelog] (dry-run) skipping write to disk");
+            log.status("(dry-run) skipping write to disk");
             return Ok(());
         }
 
@@ -383,7 +396,7 @@ impl Stage for ChangelogStage {
         std::fs::write(&notes_path, &final_markdown)
             .with_context(|| format!("changelog: write {}", notes_path.display()))?;
 
-        eprintln!("[changelog] wrote {}", notes_path.display());
+        log.status(&format!("wrote {}", notes_path.display()));
         Ok(())
     }
 }
@@ -396,7 +409,12 @@ impl Stage for ChangelogStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use anodize_core::log::{StageLogger, Verbosity};
     use serial_test::serial;
+
+    fn test_logger() -> StageLogger {
+        StageLogger::new("changelog", Verbosity::Normal)
+    }
 
     #[test]
     fn test_parse_conventional_commit() {
@@ -453,7 +471,7 @@ mod tests {
                 order: Some(1),
             },
         ];
-        let result = group_commits(&commits, &groups);
+        let result = group_commits(&commits, &groups, &test_logger());
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "Features");
         assert_eq!(result[0].commits.len(), 2);
@@ -484,7 +502,7 @@ mod tests {
             },
         ];
         let filters = vec!["^docs:".to_string(), "^ci:".to_string()];
-        let filtered = apply_filters(&commits, &filters);
+        let filtered = apply_filters(&commits, &filters, &test_logger());
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].kind, "feat");
     }
@@ -580,7 +598,7 @@ mod tests {
             regexp: Some("^feat".into()),
             order: Some(0),
         }];
-        let result = group_commits(&commits, &groups);
+        let result = group_commits(&commits, &groups, &test_logger());
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "Features");
         assert_eq!(result[1].title, "Others");
@@ -608,7 +626,7 @@ mod tests {
                 order: Some(1),
             },
         ];
-        let result = group_commits(&commits, &groups);
+        let result = group_commits(&commits, &groups, &test_logger());
         // "Bug Fixes" has no commits, should be omitted
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Features");
@@ -646,7 +664,7 @@ mod tests {
             description: "something".into(),
             hash: "a".into(),
         }];
-        let filtered = apply_filters(&commits, &[]);
+        let filtered = apply_filters(&commits, &[], &test_logger());
         assert_eq!(filtered.len(), 1);
     }
 
@@ -791,7 +809,7 @@ mod tests {
             },
         ];
         let include = vec!["^feat".to_string(), "^fix".to_string()];
-        let result = apply_include_filters(&commits, &include);
+        let result = apply_include_filters(&commits, &include, &test_logger());
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].kind, "feat");
         assert_eq!(result[1].kind, "fix");
@@ -814,7 +832,7 @@ mod tests {
             },
         ];
         let include = vec!["^feat".to_string()];
-        let result = apply_include_filters(&commits, &include);
+        let result = apply_include_filters(&commits, &include, &test_logger());
         assert!(result.is_empty());
     }
 
@@ -834,7 +852,7 @@ mod tests {
                 hash: "b".into(),
             },
         ];
-        let result = apply_include_filters(&commits, &[]);
+        let result = apply_include_filters(&commits, &[], &test_logger());
         assert_eq!(result.len(), 2);
     }
 
@@ -848,7 +866,7 @@ mod tests {
         }];
         // Invalid regex is skipped; valid one still works.
         let include = vec!["[invalid".to_string(), "^feat".to_string()];
-        let result = apply_include_filters(&commits, &include);
+        let result = apply_include_filters(&commits, &include, &test_logger());
         assert_eq!(result.len(), 1);
     }
 
@@ -1018,12 +1036,15 @@ abbrev: 10
         ];
 
         // Exclude WIP commits
-        let after_exclude = apply_filters(&commits, &["wip".to_string()]);
+        let after_exclude = apply_filters(&commits, &["wip".to_string()], &test_logger());
         assert_eq!(after_exclude.len(), 3); // feat, fix, docs
 
         // Then include only feat and fix
-        let after_include =
-            apply_include_filters(&after_exclude, &["^feat".to_string(), "^fix".to_string()]);
+        let after_include = apply_include_filters(
+            &after_exclude,
+            &["^feat".to_string(), "^fix".to_string()],
+            &test_logger(),
+        );
         assert_eq!(after_include.len(), 2);
         assert_eq!(after_include[0].description, "good feature");
         assert_eq!(after_include[1].description, "important fix");
@@ -1102,7 +1123,7 @@ abbrev: 10
 
         // Apply exclude filters (filter out docs and ci)
         let exclude = vec!["^docs:".to_string(), "^ci:".to_string()];
-        let filtered = apply_filters(&all_commits, &exclude);
+        let filtered = apply_filters(&all_commits, &exclude, &test_logger());
         assert_eq!(filtered.len(), 6, "docs and ci commits should be excluded");
         assert!(
             !filtered.iter().any(|c| c.kind == "docs"),
@@ -1130,7 +1151,7 @@ abbrev: 10
                 order: Some(1),
             },
         ];
-        let grouped = group_commits(&sorted, &groups);
+        let grouped = group_commits(&sorted, &groups, &test_logger());
 
         // Verify grouping
         assert!(
@@ -1233,7 +1254,11 @@ abbrev: 10
             .collect();
 
         // Include only feat and fix
-        let included = apply_include_filters(&commits, &["^feat".to_string(), "^fix".to_string()]);
+        let included = apply_include_filters(
+            &commits,
+            &["^feat".to_string(), "^fix".to_string()],
+            &test_logger(),
+        );
         assert_eq!(included.len(), 3);
 
         // Sort the filtered list, then group
@@ -1251,7 +1276,7 @@ abbrev: 10
                 order: Some(1),
             },
         ];
-        let grouped = group_commits(&sorted, &groups);
+        let grouped = group_commits(&sorted, &groups, &test_logger());
 
         let md = render_changelog(&grouped, 7);
 
@@ -1325,7 +1350,11 @@ abbrev: 10
             },
         ];
 
-        let filtered = apply_filters(&commits, &["^ci:".to_string(), "^docs:".to_string()]);
+        let filtered = apply_filters(
+            &commits,
+            &["^ci:".to_string(), "^docs:".to_string()],
+            &test_logger(),
+        );
         assert!(filtered.is_empty());
 
         let grouped = group_commits(
@@ -1335,6 +1364,7 @@ abbrev: 10
                 regexp: Some("^feat".into()),
                 order: Some(0),
             }],
+            &test_logger(),
         );
         assert!(grouped.is_empty());
 
@@ -1585,7 +1615,11 @@ abbrev: 10
             },
         ];
 
-        let result = apply_include_filters(&commits, &["^feat".to_string(), "^fix".to_string()]);
+        let result = apply_include_filters(
+            &commits,
+            &["^feat".to_string(), "^fix".to_string()],
+            &test_logger(),
+        );
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|c| c.kind == "feat" || c.kind == "fix"));
         // Excluded types should not be present
@@ -1632,7 +1666,11 @@ abbrev: 10
 
         // abbrev = 0 should be clamped to 1 (minimum)
         let md = render_changelog(&grouped, 0);
-        assert!(md.contains("(a)"), "abbrev=0 should clamp to 1, got: {}", md);
+        assert!(
+            md.contains("(a)"),
+            "abbrev=0 should clamp to 1, got: {}",
+            md
+        );
     }
 
     #[test]
@@ -1670,22 +1708,23 @@ abbrev: 10
 
     #[test]
     fn test_empty_changelog_when_all_commits_filtered() {
-        let commits = vec![
-            CommitInfo {
-                raw_message: "ci: pipeline fix".into(),
-                kind: "ci".into(),
-                description: "pipeline fix".into(),
-                hash: "a".into(),
-            },
-        ];
+        let commits = vec![CommitInfo {
+            raw_message: "ci: pipeline fix".into(),
+            kind: "ci".into(),
+            description: "pipeline fix".into(),
+            hash: "a".into(),
+        }];
 
         // Include filter that matches nothing
-        let result = apply_include_filters(&commits, &["^feat".to_string()]);
+        let result = apply_include_filters(&commits, &["^feat".to_string()], &test_logger());
         assert!(result.is_empty());
 
-        let grouped = group_commits(&result, &[]);
+        let grouped = group_commits(&result, &[], &test_logger());
         let md = render_changelog(&grouped, 7);
-        assert!(md.is_empty(), "changelog should be empty when no commits match");
+        assert!(
+            md.is_empty(),
+            "changelog should be empty when no commits match"
+        );
     }
 
     #[test]
@@ -1771,9 +1810,13 @@ abbrev: 10
         // Invalid regex: unclosed group
         let filters = vec!["^feat(".to_string()];
         // apply_filters logs a warning but does not panic or error
-        let result = apply_filters(&commits, &filters);
+        let result = apply_filters(&commits, &filters, &test_logger());
         // The invalid regex is skipped, so the commit passes through
-        assert_eq!(result.len(), 1, "invalid regex should be skipped, commits pass through");
+        assert_eq!(
+            result.len(),
+            1,
+            "invalid regex should be skipped, commits pass through"
+        );
     }
 
     #[test]
@@ -1785,9 +1828,13 @@ abbrev: 10
             hash: "def".into(),
         }];
         let filters = vec!["[invalid".to_string()];
-        let result = apply_include_filters(&commits, &filters);
+        let result = apply_include_filters(&commits, &filters, &test_logger());
         // Invalid regex is skipped, no valid patterns remain, so nothing matches
-        assert_eq!(result.len(), 0, "invalid include regex means no commits match");
+        assert_eq!(
+            result.len(),
+            0,
+            "invalid include regex means no commits match"
+        );
     }
 
     #[test]
@@ -1803,7 +1850,7 @@ abbrev: 10
             regexp: Some("^feat(".into()), // invalid regex
             order: Some(0),
         }];
-        let result = group_commits(&commits, &groups);
+        let result = group_commits(&commits, &groups, &test_logger());
         // The invalid regex group compiles to None, so commit goes to "Others"
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Others");
@@ -1847,7 +1894,10 @@ abbrev: 10
     fn test_render_changelog_empty_groups() {
         let grouped: Vec<GroupedCommits> = vec![];
         let result = render_changelog(&grouped, 7);
-        assert_eq!(result, "", "rendering empty groups should produce empty string");
+        assert_eq!(
+            result, "",
+            "rendering empty groups should produce empty string"
+        );
     }
 
     #[test]
@@ -1863,7 +1913,10 @@ abbrev: 10
         }];
         let result = render_changelog(&grouped, 7);
         // Short hash should be used as-is without truncation
-        assert!(result.contains("(ab)"), "short hash should be kept intact, got: {result}");
+        assert!(
+            result.contains("(ab)"),
+            "short hash should be kept intact, got: {result}"
+        );
     }
 
     #[test]

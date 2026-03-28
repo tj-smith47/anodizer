@@ -1,6 +1,7 @@
 use crate::artifact::ArtifactRegistry;
 use crate::config::Config;
 use crate::git::GitInfo;
+use crate::log::{StageLogger, Verbosity};
 use crate::template::TemplateVars;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -96,6 +97,16 @@ impl Context {
         self.options.nightly
     }
 
+    /// Derive the verbosity level from context options.
+    pub fn verbosity(&self) -> Verbosity {
+        Verbosity::from_flags(false, self.options.verbose, self.options.debug)
+    }
+
+    /// Create a [`StageLogger`] for the given stage name.
+    pub fn logger(&self, stage: &'static str) -> StageLogger {
+        StageLogger::new(stage, self.verbosity())
+    }
+
     /// Populate template variables from `self.git_info`.
     ///
     /// Must be called after `self.git_info` is set. Sets the following vars:
@@ -171,7 +182,11 @@ impl Context {
         );
         self.template_vars.set(
             "IsNightly",
-            if self.options.nightly { "true" } else { "false" },
+            if self.options.nightly {
+                "true"
+            } else {
+                "false"
+            },
         );
         self.template_vars.set("IsDraft", "false");
     }
@@ -482,7 +497,10 @@ mod tests {
             Some(&"false".to_string()),
             "IsNightly should default to 'false'"
         );
-        assert!(!ctx.is_nightly(), "is_nightly() should return false by default");
+        assert!(
+            !ctx.is_nightly(),
+            "is_nightly() should return false by default"
+        );
     }
 
     #[test]

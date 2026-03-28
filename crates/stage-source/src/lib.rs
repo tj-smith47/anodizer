@@ -26,7 +26,10 @@ fn create_source_archive(
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
         "zip" => ("zip", "zip"),
-        _ => bail!("source: unsupported archive format '{}' (use tar.gz or zip)", format),
+        _ => bail!(
+            "source: unsupported archive format '{}' (use tar.gz or zip)",
+            format
+        ),
     };
 
     let filename = format!("{}.{}", prefix, extension);
@@ -91,8 +94,8 @@ pub struct CargoPackage {
 
 /// Parse `Cargo.lock` to extract package entries.
 pub fn parse_cargo_lock(content: &str) -> Result<Vec<CargoPackage>> {
-    let parsed: toml::Value = toml::from_str(content)
-        .context("sbom: failed to parse Cargo.lock as TOML")?;
+    let parsed: toml::Value =
+        toml::from_str(content).context("sbom: failed to parse Cargo.lock as TOML")?;
 
     let packages = parsed
         .get("package")
@@ -197,13 +200,11 @@ pub fn generate_spdx(
     });
 
     let mut spdx_packages = vec![root_package];
-    let mut relationships = vec![
-        serde_json::json!({
-            "spdxElementId": "SPDXRef-DOCUMENT",
-            "relatedSpdxElement": "SPDXRef-Package",
-            "relationshipType": "DESCRIBES",
-        })
-    ];
+    let mut relationships = vec![serde_json::json!({
+        "spdxElementId": "SPDXRef-DOCUMENT",
+        "relatedSpdxElement": "SPDXRef-Package",
+        "relationshipType": "DESCRIBES",
+    })];
 
     for (i, pkg) in packages.iter().enumerate() {
         let spdx_id = format!("SPDXRef-Package-{}", i);
@@ -316,6 +317,7 @@ impl Stage for SourceStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("source");
         let source_enabled = ctx
             .config
             .source
@@ -331,14 +333,15 @@ impl Stage for SourceStage {
             .unwrap_or(false);
 
         if !source_enabled && !sbom_enabled {
-            eprintln!("  source/sbom: nothing enabled, skipping");
+            log.status("nothing enabled, skipping");
             return Ok(());
         }
 
         let dist = ctx.config.dist.clone();
         if !ctx.is_dry_run() {
-            std::fs::create_dir_all(&dist)
-                .with_context(|| format!("source: failed to create dist dir: {}", dist.display()))?;
+            std::fs::create_dir_all(&dist).with_context(|| {
+                format!("source: failed to create dist dir: {}", dist.display())
+            })?;
         }
 
         // --- Source archive ---
@@ -377,15 +380,16 @@ impl SourceStage {
 
         let extra_files = source_cfg.files.clone().unwrap_or_default();
 
+        let log = ctx.logger("source");
         if ctx.is_dry_run() {
-            eprintln!(
-                "  [dry-run] source: would create {}.{} archive",
+            log.status(&format!(
+                "(dry-run) would create {}.{} archive",
                 prefix, format
-            );
+            ));
             return Ok(());
         }
 
-        eprintln!("  source: creating {}.{} archive...", prefix, format);
+        log.status(&format!("creating {}.{} archive...", prefix, format));
 
         let repo_root = get_repo_root()?;
         let output_path = create_source_archive(dist, &format, &prefix, &extra_files, &repo_root)?;
@@ -415,11 +419,12 @@ impl SourceStage {
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
 
+        let log = ctx.logger("source");
         if ctx.is_dry_run() {
-            eprintln!(
-                "  [dry-run] sbom: would generate {} SBOM for {}",
+            log.status(&format!(
+                "(dry-run) sbom: would generate {} SBOM for {}",
                 format, project_name
-            );
+            ));
             return Ok(());
         }
 
@@ -427,19 +432,18 @@ impl SourceStage {
         let search_dir = get_repo_root()
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let cargo_lock_path = find_cargo_lock(&search_dir)?;
-        let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path)
-            .with_context(|| {
-                format!(
-                    "sbom: failed to read Cargo.lock at {}",
-                    cargo_lock_path.display()
-                )
-            })?;
+        let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path).with_context(|| {
+            format!(
+                "sbom: failed to read Cargo.lock at {}",
+                cargo_lock_path.display()
+            )
+        })?;
 
         let packages = parse_cargo_lock(&cargo_lock_content)?;
-        eprintln!(
-            "  sbom: parsed {} packages from Cargo.lock",
+        log.status(&format!(
+            "sbom: parsed {} packages from Cargo.lock",
             packages.len()
-        );
+        ));
 
         let (sbom_json, extension) = match format.as_str() {
             "cyclonedx" => {
@@ -464,7 +468,7 @@ impl SourceStage {
         std::fs::write(&output_path, &json_string)
             .with_context(|| format!("sbom: failed to write {}", output_path.display()))?;
 
-        eprintln!("  sbom: wrote {} ({})", filename, format);
+        log.status(&format!("sbom: wrote {} ({})", filename, format));
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format);
@@ -538,11 +542,13 @@ version = "0.1.0"
         assert_eq!(packages[0].name, "serde");
         assert_eq!(packages[0].version, "1.0.200");
         assert!(packages[0].source.is_some());
-        assert!(packages[0]
-            .source
-            .as_ref()
-            .unwrap()
-            .starts_with("registry+"));
+        assert!(
+            packages[0]
+                .source
+                .as_ref()
+                .unwrap()
+                .starts_with("registry+")
+        );
 
         assert_eq!(packages[1].name, "anyhow");
         assert_eq!(packages[1].version, "1.0.82");
@@ -602,9 +608,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             CargoPackage {
                 name: "serde".to_string(),
                 version: "1.0.200".to_string(),
-                source: Some(
-                    "registry+https://github.com/rust-lang/crates.io-index".to_string(),
-                ),
+                source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
             },
             CargoPackage {
                 name: "my-lib".to_string(),
@@ -656,9 +660,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let packages = vec![CargoPackage {
             name: "tokio".to_string(),
             version: "1.37.0".to_string(),
-            source: Some(
-                "registry+https://github.com/rust-lang/crates.io-index".to_string(),
-            ),
+            source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
         }];
 
         let sbom = generate_cyclonedx("test", "1.0.0", &packages).unwrap();
@@ -676,9 +678,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             CargoPackage {
                 name: "serde".to_string(),
                 version: "1.0.200".to_string(),
-                source: Some(
-                    "registry+https://github.com/rust-lang/crates.io-index".to_string(),
-                ),
+                source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
             },
             CargoPackage {
                 name: "local-dep".to_string(),
@@ -694,10 +694,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         assert_eq!(sbom["dataLicense"], "CC0-1.0");
         assert_eq!(sbom["SPDXID"], "SPDXRef-DOCUMENT");
         assert_eq!(sbom["name"], "my-app-2.0.0");
-        assert!(sbom["documentNamespace"]
-            .as_str()
-            .unwrap()
-            .starts_with("https://spdx.org/spdxdocs/my-app-2.0.0-"));
+        assert!(
+            sbom["documentNamespace"]
+                .as_str()
+                .unwrap()
+                .starts_with("https://spdx.org/spdxdocs/my-app-2.0.0-")
+        );
 
         // Check packages (root + 2 deps)
         let spdx_packages = sbom["packages"].as_array().unwrap();
@@ -712,10 +714,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         assert_eq!(spdx_packages[1]["SPDXID"], "SPDXRef-Package-0");
         assert_eq!(spdx_packages[1]["name"], "serde");
         assert_eq!(spdx_packages[1]["versionInfo"], "1.0.200");
-        assert!(spdx_packages[1]["downloadLocation"]
-            .as_str()
-            .unwrap()
-            .contains("crates.io"));
+        assert!(
+            spdx_packages[1]["downloadLocation"]
+                .as_str()
+                .unwrap()
+                .contains("crates.io")
+        );
 
         // Local dependency
         assert_eq!(spdx_packages[2]["SPDXID"], "SPDXRef-Package-1");
@@ -748,9 +752,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let packages = vec![CargoPackage {
             name: "clap".to_string(),
             version: "4.5.0".to_string(),
-            source: Some(
-                "registry+https://github.com/rust-lang/crates.io-index".to_string(),
-            ),
+            source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
         }];
 
         let sbom = generate_spdx("test", "1.0.0", &packages).unwrap();
@@ -862,7 +864,14 @@ crates: []
         std::fs::create_dir_all(&dist).unwrap();
 
         let output = std::process::Command::new("git")
-            .args(["archive", "--format", "tar.gz", "--prefix", "test-project-1.2.3/", "--output"])
+            .args([
+                "archive",
+                "--format",
+                "tar.gz",
+                "--prefix",
+                "test-project-1.2.3/",
+                "--output",
+            ])
             .arg(dist.join("test-project-1.2.3.tar.gz").to_str().unwrap())
             .arg("HEAD")
             .current_dir(tmp.path())
@@ -892,7 +901,14 @@ crates: []
         init_git_repo(tmp.path());
 
         let output = std::process::Command::new("git")
-            .args(["archive", "--format", "zip", "--prefix", "test-project-1.2.3/", "--output"])
+            .args([
+                "archive",
+                "--format",
+                "zip",
+                "--prefix",
+                "test-project-1.2.3/",
+                "--output",
+            ])
             .arg(dist.join("test-project-1.2.3.zip").to_str().unwrap())
             .arg("HEAD")
             .current_dir(tmp.path())
@@ -967,9 +983,7 @@ dependencies = [
         let packages = vec![CargoPackage {
             name: "tokio".to_string(),
             version: "1.37.0".to_string(),
-            source: Some(
-                "registry+https://github.com/rust-lang/crates.io-index".to_string(),
-            ),
+            source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
         }];
 
         // CycloneDX
@@ -1168,10 +1182,7 @@ dependencies = [
         );
         assert!(sbom.get("creationInfo").is_some(), "missing creationInfo");
         assert!(sbom.get("packages").is_some(), "missing packages");
-        assert!(
-            sbom.get("relationships").is_some(),
-            "missing relationships"
-        );
+        assert!(sbom.get("relationships").is_some(), "missing relationships");
 
         // Package sub-fields
         let pkg = &sbom["packages"][1]; // first dependency (index 0 is root)
@@ -1208,11 +1219,7 @@ dependencies = [
         create_test_project(tmp.path());
         // Write a Cargo.lock so SBOM can also find it (not needed for this test
         // but keeps the fixture realistic)
-        std::fs::write(
-            tmp.path().join("Cargo.lock"),
-            "version = 4\n",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join("Cargo.lock"), "version = 4\n").unwrap();
         init_git_repo(tmp.path());
 
         let mut ctx = TestContextBuilder::new()

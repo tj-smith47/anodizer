@@ -223,6 +223,7 @@ impl Stage for NfpmStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("nfpm");
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
         let dist = ctx.config.dist.clone();
@@ -317,10 +318,10 @@ impl Stage for NfpmStage {
                         let pkg_path = output_dir.join(&pkg_filename);
 
                         if dry_run {
-                            eprintln!(
-                                "[nfpm] (dry-run) would run: nfpm pkg --packager {format} for crate {} target {:?}",
+                            log.status(&format!(
+                                "(dry-run) would run: nfpm pkg --packager {format} for crate {} target {:?}",
                                 krate.name, target
-                            );
+                            ));
                             new_artifacts.push(Artifact {
                                 kind: ArtifactKind::LinuxPackage,
                                 path: pkg_path,
@@ -349,26 +350,18 @@ impl Stage for NfpmStage {
                             &output_dir.to_string_lossy(),
                         );
 
-                        eprintln!("[nfpm] running: {}", cmd_args.join(" "));
+                        log.status(&format!("running: {}", cmd_args.join(" ")));
 
-                        let status = Command::new(&cmd_args[0])
+                        let output = Command::new(&cmd_args[0])
                             .args(&cmd_args[1..])
-                            .status()
+                            .output()
                             .with_context(|| {
                                 format!(
                                     "execute nfpm for format {format} (crate {} target {:?})",
                                     krate.name, target
                                 )
                             })?;
-
-                        if !status.success() {
-                            anyhow::bail!(
-                                "nfpm failed for format {format} (crate {} target {:?}): exit code {:?}",
-                                krate.name,
-                                target,
-                                status.code()
-                            );
-                        }
+                        log.check_output(output, "nfpm")?;
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::LinuxPackage,
@@ -975,10 +968,7 @@ crates:
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].kind, ArtifactKind::LinuxPackage);
         assert_eq!(pkgs[0].crate_name, "myapp");
-        assert_eq!(
-            pkgs[0].metadata.get("format"),
-            Some(&"deb".to_string())
-        );
+        assert_eq!(pkgs[0].metadata.get("format"), Some(&"deb".to_string()));
     }
 
     #[test]
@@ -1082,7 +1072,10 @@ crates:
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
-        assert!(!yaml.contains("name:"), "no name: line should appear when package_name is None");
+        assert!(
+            !yaml.contains("name:"),
+            "no name: line should appear when package_name is None"
+        );
         assert!(yaml.contains("version: 1.0.0"));
     }
 

@@ -87,19 +87,19 @@ pub fn load_config(path: &Path) -> Result<Config> {
             // Accumulate all included files into a merged defaults value.
             // The base config is then merged on top so its values always win.
             let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-            let mut merged =
-                serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+            let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
             for include in &include_paths {
                 let include_path = base_dir.join(include);
-                let include_content = std::fs::read_to_string(&include_path).with_context(|| {
-                    format!(
-                        "failed to read include file '{}' (referenced from {})",
-                        include_path.display(),
-                        path.display()
-                    )
-                })?;
-                let overlay: serde_yaml_ng::Value =
-                    serde_yaml_ng::from_str(&include_content).with_context(|| {
+                let include_content =
+                    std::fs::read_to_string(&include_path).with_context(|| {
+                        format!(
+                            "failed to read include file '{}' (referenced from {})",
+                            include_path.display(),
+                            path.display()
+                        )
+                    })?;
+                let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str(&include_content)
+                    .with_context(|| {
                         format!("failed to parse include file: {}", include_path.display())
                     })?;
                 merge_yaml(&mut merged, &overlay);
@@ -115,8 +115,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     };
 
     // Validate config schema version
-    anodize_core::config::validate_version(&config)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodize_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     Ok(config)
 }
@@ -288,8 +287,10 @@ mod tests {
 
     #[test]
     fn test_merge_yaml_sequences_concatenate() {
-        let mut base: serde_yaml_ng::Value = serde_yaml_ng::from_str("items:\n  - a\n  - b").unwrap();
-        let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str("items:\n  - c\n  - d").unwrap();
+        let mut base: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("items:\n  - a\n  - b").unwrap();
+        let overlay: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str("items:\n  - c\n  - d").unwrap();
         merge_yaml(&mut base, &overlay);
         let items = base["items"].as_sequence().unwrap();
         assert_eq!(items.len(), 4);
@@ -325,10 +326,7 @@ mod tests {
 
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.project_name, "myproject");
-        assert_eq!(
-            config.includes,
-            Some(vec!["extra.yaml".to_string()])
-        );
+        assert_eq!(config.includes, Some(vec!["extra.yaml".to_string()]));
         assert_eq!(config.report_sizes, Some(true));
     }
 
@@ -426,11 +424,7 @@ mod tests {
     fn test_load_config_no_includes_works_as_before() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("anodize.yaml");
-        fs::write(
-            &cfg_path,
-            "project_name: simple\ncrates: []\n",
-        )
-        .unwrap();
+        fs::write(&cfg_path, "project_name: simple\ncrates: []\n").unwrap();
 
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.project_name, "simple");
@@ -443,11 +437,7 @@ mod tests {
     fn test_load_config_version_1_accepted() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("anodize.yaml");
-        fs::write(
-            &cfg_path,
-            "project_name: test\nversion: 1\ncrates: []\n",
-        )
-        .unwrap();
+        fs::write(&cfg_path, "project_name: test\nversion: 1\ncrates: []\n").unwrap();
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.version, Some(1));
     }
@@ -456,11 +446,7 @@ mod tests {
     fn test_load_config_version_2_accepted() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("anodize.yaml");
-        fs::write(
-            &cfg_path,
-            "project_name: test\nversion: 2\ncrates: []\n",
-        )
-        .unwrap();
+        fs::write(&cfg_path, "project_name: test\nversion: 2\ncrates: []\n").unwrap();
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.version, Some(2));
     }
@@ -469,11 +455,7 @@ mod tests {
     fn test_load_config_version_99_rejected() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("anodize.yaml");
-        fs::write(
-            &cfg_path,
-            "project_name: test\nversion: 99\ncrates: []\n",
-        )
-        .unwrap();
+        fs::write(&cfg_path, "project_name: test\nversion: 99\ncrates: []\n").unwrap();
         let result = load_config(&cfg_path);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();

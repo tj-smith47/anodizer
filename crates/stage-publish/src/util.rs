@@ -123,11 +123,7 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         .get("url")
         .cloned()
         .unwrap_or_else(|| a.path.to_string_lossy().into_owned());
-    let sha256 = a
-        .metadata
-        .get("sha256")
-        .cloned()
-        .unwrap_or_default();
+    let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
     let target = a.target.as_deref().unwrap_or("");
     OsArtifact {
         url,
@@ -200,11 +196,7 @@ pub(crate) fn find_windows_artifact(ctx: &Context, crate_name: &str) -> Option<(
         .get("url")
         .cloned()
         .unwrap_or_else(|| artifact.path.to_string_lossy().into_owned());
-    let hash = artifact
-        .metadata
-        .get("sha256")
-        .cloned()
-        .unwrap_or_default();
+    let hash = artifact.metadata.get("sha256").cloned().unwrap_or_default();
     Some((url, hash))
 }
 
@@ -238,7 +230,10 @@ mod tests {
             meta.insert("sha256".to_string(), sha256.to_string());
             ctx.artifacts.add(Artifact {
                 kind: ArtifactKind::Archive,
-                path: PathBuf::from(format!("dist/{}", url.rsplit('/').next().unwrap_or("a.tar.gz"))),
+                path: PathBuf::from(format!(
+                    "dist/{}",
+                    url.rsplit('/').next().unwrap_or("a.tar.gz")
+                )),
                 target: Some(target.to_string()),
                 crate_name: crate_name.to_string(),
                 metadata: meta,
@@ -270,7 +265,10 @@ mod tests {
 
     #[test]
     fn test_infer_os_unknown_uses_fallback() {
-        assert_eq!(infer_os("wasm32-unknown-unknown", "myfallback"), "myfallback");
+        assert_eq!(
+            infer_os("wasm32-unknown-unknown", "myfallback"),
+            "myfallback"
+        );
     }
 
     #[test]
@@ -297,27 +295,69 @@ mod tests {
 
     #[test]
     fn test_find_artifacts_by_os_linux() {
-        let ctx = ctx_with_artifacts("mytool", vec![
-            ("x86_64-unknown-linux-gnu", "https://example.com/mytool-linux-amd64.tar.gz", "hash_linux_amd64"),
-            ("aarch64-unknown-linux-musl", "https://example.com/mytool-linux-arm64.tar.gz", "hash_linux_arm64"),
-            ("aarch64-apple-darwin", "https://example.com/mytool-darwin-arm64.tar.gz", "hash_darwin_arm64"),
-            ("x86_64-pc-windows-msvc", "https://example.com/mytool-windows-amd64.zip", "hash_win_amd64"),
-        ]);
+        let ctx = ctx_with_artifacts(
+            "mytool",
+            vec![
+                (
+                    "x86_64-unknown-linux-gnu",
+                    "https://example.com/mytool-linux-amd64.tar.gz",
+                    "hash_linux_amd64",
+                ),
+                (
+                    "aarch64-unknown-linux-musl",
+                    "https://example.com/mytool-linux-arm64.tar.gz",
+                    "hash_linux_arm64",
+                ),
+                (
+                    "aarch64-apple-darwin",
+                    "https://example.com/mytool-darwin-arm64.tar.gz",
+                    "hash_darwin_arm64",
+                ),
+                (
+                    "x86_64-pc-windows-msvc",
+                    "https://example.com/mytool-windows-amd64.zip",
+                    "hash_win_amd64",
+                ),
+            ],
+        );
 
         let linux = find_artifacts_by_os(&ctx, "mytool", "linux");
         assert_eq!(linux.len(), 2);
         assert!(linux.iter().all(|a| a.os == "linux"));
-        assert!(linux.iter().any(|a| a.arch == "amd64" && a.sha256 == "hash_linux_amd64"));
-        assert!(linux.iter().any(|a| a.arch == "arm64" && a.sha256 == "hash_linux_arm64"));
+        assert!(
+            linux
+                .iter()
+                .any(|a| a.arch == "amd64" && a.sha256 == "hash_linux_amd64")
+        );
+        assert!(
+            linux
+                .iter()
+                .any(|a| a.arch == "arm64" && a.sha256 == "hash_linux_arm64")
+        );
     }
 
     #[test]
     fn test_find_artifacts_by_os_darwin() {
-        let ctx = ctx_with_artifacts("mytool", vec![
-            ("x86_64-unknown-linux-gnu", "https://example.com/mytool-linux-amd64.tar.gz", "h1"),
-            ("aarch64-apple-darwin", "https://example.com/mytool-darwin-arm64.tar.gz", "h2"),
-            ("x86_64-apple-darwin", "https://example.com/mytool-darwin-amd64.tar.gz", "h3"),
-        ]);
+        let ctx = ctx_with_artifacts(
+            "mytool",
+            vec![
+                (
+                    "x86_64-unknown-linux-gnu",
+                    "https://example.com/mytool-linux-amd64.tar.gz",
+                    "h1",
+                ),
+                (
+                    "aarch64-apple-darwin",
+                    "https://example.com/mytool-darwin-arm64.tar.gz",
+                    "h2",
+                ),
+                (
+                    "x86_64-apple-darwin",
+                    "https://example.com/mytool-darwin-amd64.tar.gz",
+                    "h3",
+                ),
+            ],
+        );
 
         let darwin = find_artifacts_by_os(&ctx, "mytool", "darwin");
         assert_eq!(darwin.len(), 2);
@@ -326,9 +366,14 @@ mod tests {
 
     #[test]
     fn test_find_artifacts_by_os_no_match() {
-        let ctx = ctx_with_artifacts("mytool", vec![
-            ("x86_64-unknown-linux-gnu", "https://example.com/mytool-linux-amd64.tar.gz", "h1"),
-        ]);
+        let ctx = ctx_with_artifacts(
+            "mytool",
+            vec![(
+                "x86_64-unknown-linux-gnu",
+                "https://example.com/mytool-linux-amd64.tar.gz",
+                "h1",
+            )],
+        );
 
         let windows = find_artifacts_by_os(&ctx, "mytool", "windows");
         assert!(windows.is_empty());
@@ -340,11 +385,26 @@ mod tests {
 
     #[test]
     fn test_find_all_platform_artifacts() {
-        let ctx = ctx_with_artifacts("mytool", vec![
-            ("x86_64-unknown-linux-gnu", "https://example.com/linux-amd64.tar.gz", "h1"),
-            ("aarch64-apple-darwin", "https://example.com/darwin-arm64.tar.gz", "h2"),
-            ("x86_64-pc-windows-msvc", "https://example.com/windows-amd64.zip", "h3"),
-        ]);
+        let ctx = ctx_with_artifacts(
+            "mytool",
+            vec![
+                (
+                    "x86_64-unknown-linux-gnu",
+                    "https://example.com/linux-amd64.tar.gz",
+                    "h1",
+                ),
+                (
+                    "aarch64-apple-darwin",
+                    "https://example.com/darwin-arm64.tar.gz",
+                    "h2",
+                ),
+                (
+                    "x86_64-pc-windows-msvc",
+                    "https://example.com/windows-amd64.zip",
+                    "h3",
+                ),
+            ],
+        );
 
         let all = find_all_platform_artifacts(&ctx, "mytool");
         assert_eq!(all.len(), 3);
@@ -362,11 +422,15 @@ mod tests {
 
     #[test]
     fn test_find_all_platform_artifacts_wrong_crate() {
-        let ctx = ctx_with_artifacts("mytool", vec![
-            ("x86_64-unknown-linux-gnu", "https://example.com/linux-amd64.tar.gz", "h1"),
-        ]);
+        let ctx = ctx_with_artifacts(
+            "mytool",
+            vec![(
+                "x86_64-unknown-linux-gnu",
+                "https://example.com/linux-amd64.tar.gz",
+                "h1",
+            )],
+        );
         let all = find_all_platform_artifacts(&ctx, "other_tool");
         assert!(all.is_empty());
     }
-
 }

@@ -1796,28 +1796,36 @@ crates:
         .collect();
 
     // Verify all four formats present
-    let has_targz = entries.iter().any(|n| n.contains("targz") && n.ends_with(".tar.gz"));
+    let has_targz = entries
+        .iter()
+        .any(|n| n.contains("targz") && n.ends_with(".tar.gz"));
     assert!(
         has_targz,
         "dist/ should contain a tar.gz archive, found: {:?}",
         entries
     );
 
-    let has_tarxz = entries.iter().any(|n| n.contains("tarxz") && n.ends_with(".tar.xz"));
+    let has_tarxz = entries
+        .iter()
+        .any(|n| n.contains("tarxz") && n.ends_with(".tar.xz"));
     assert!(
         has_tarxz,
         "dist/ should contain a tar.xz archive, found: {:?}",
         entries
     );
 
-    let has_zip = entries.iter().any(|n| n.contains("zipped") && n.ends_with(".zip"));
+    let has_zip = entries
+        .iter()
+        .any(|n| n.contains("zipped") && n.ends_with(".zip"));
     assert!(
         has_zip,
         "dist/ should contain a zip archive, found: {:?}",
         entries
     );
 
-    let has_binary = entries.iter().any(|n| n.contains("raw") && !n.contains('.'));
+    let has_binary = entries
+        .iter()
+        .any(|n| n.contains("raw") && !n.contains('.'));
     assert!(
         has_binary,
         "dist/ should contain a raw binary (no extension), found: {:?}",
@@ -2242,9 +2250,7 @@ fn test_e2e_workspace_dependency_ordering() {
     let helper_pos = stderr
         .find("helper-lib")
         .expect("stderr should mention helper-lib");
-    let app_pos = stderr
-        .find("myapp")
-        .expect("stderr should mention myapp");
+    let app_pos = stderr.find("myapp").expect("stderr should mention myapp");
 
     assert!(
         core_pos < helper_pos,
@@ -2602,9 +2608,9 @@ crates:
         .collect();
 
     // The archive name should contain the Cargo.toml version (0.1.0)
-    let has_versioned_archive = entries
-        .iter()
-        .any(|name| name.starts_with("test-project-") && name.contains("0.1.0") && name.ends_with(".tar.gz"));
+    let has_versioned_archive = entries.iter().any(|name| {
+        name.starts_with("test-project-") && name.contains("0.1.0") && name.ends_with(".tar.gz")
+    });
     assert!(
         has_versioned_archive,
         "dist/ should contain versioned archive with 0.1.0, found: {:?}",
@@ -2814,18 +2820,22 @@ fn test_e2e_init_yaml_structural_round_trip() {
 
     // Parse as generic YAML
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml_str).unwrap_or_else(|e| {
-        panic!("init output should be valid YAML: {}\nOutput:\n{}", e, yaml_str);
+        panic!(
+            "init output should be valid YAML: {}\nOutput:\n{}",
+            e, yaml_str
+        );
     });
     let map = value.as_mapping().expect("top-level should be a mapping");
 
     // Re-serialize the parsed value back to YAML and verify it's still valid
     let re_serialized = serde_yaml_ng::to_string(&value).unwrap();
-    let re_parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&re_serialized).unwrap_or_else(|e| {
-        panic!(
-            "re-serialized YAML should parse: {}\nOutput:\n{}",
-            e, re_serialized
-        );
-    });
+    let re_parsed: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&re_serialized).unwrap_or_else(|e| {
+            panic!(
+                "re-serialized YAML should parse: {}\nOutput:\n{}",
+                e, re_serialized
+            );
+        });
 
     // Verify structural equivalence after round-trip
     assert_eq!(
@@ -2835,10 +2845,11 @@ fn test_e2e_init_yaml_structural_round_trip() {
     );
 
     // Verify essential keys survived the round-trip
-    let has_key = |key: &str| {
-        map.contains_key(serde_yaml_ng::Value::String(key.to_string()))
-    };
-    assert!(has_key("project_name"), "should have project_name after round-trip");
+    let has_key = |key: &str| map.contains_key(serde_yaml_ng::Value::String(key.to_string()));
+    assert!(
+        has_key("project_name"),
+        "should have project_name after round-trip"
+    );
     assert!(has_key("crates"), "should have crates after round-trip");
 }
 
@@ -2983,14 +2994,18 @@ crates:
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
 
-    let has_app_one = entries.iter().any(|n| n.starts_with("app-one") && n.ends_with(".tar.gz"));
+    let has_app_one = entries
+        .iter()
+        .any(|n| n.starts_with("app-one") && n.ends_with(".tar.gz"));
     assert!(
         has_app_one,
         "dist/ should contain app-one archive, found: {:?}",
         entries
     );
 
-    let has_app_two = entries.iter().any(|n| n.starts_with("app-two") && n.ends_with(".tar.gz"));
+    let has_app_two = entries
+        .iter()
+        .any(|n| n.starts_with("app-two") && n.ends_with(".tar.gz"));
     assert!(
         has_app_two,
         "dist/ should contain app-two archive, found: {:?}",
@@ -3026,7 +3041,10 @@ fn test_e2e_healthcheck_detects_tools() {
 
     // Should indicate tools are found or not found with clear status
     assert!(
-        stderr.contains("found") || stderr.contains("ok") || stderr.contains("✓") || stderr.contains("available"),
+        stderr.contains("found")
+            || stderr.contains("ok")
+            || stderr.contains("✓")
+            || stderr.contains("available"),
         "healthcheck should report tool status, got:\n{}",
         stderr
     );

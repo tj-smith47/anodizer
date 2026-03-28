@@ -50,10 +50,11 @@ fn dispatch(
     log_line: &str,
     send: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
+    let log = ctx.logger("announce");
     if ctx.is_dry_run() {
-        eprintln!("[announce] (dry-run) {provider}: {log_line}");
+        log.status(&format!("(dry-run) {provider}: {log_line}"));
     } else {
-        eprintln!("[announce] {provider}: {log_line}");
+        log.status(&format!("{provider}: {log_line}"));
         send()?;
     }
     Ok(())
@@ -71,10 +72,11 @@ impl Stage for AnnounceStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("announce");
         let announce = match ctx.config.announce.clone() {
             Some(a) => a,
             None => {
-                eprintln!("[announce] no announce config — skipping");
+                log.status("no announce config — skipping");
                 return Ok(());
             }
         };
@@ -100,9 +102,7 @@ impl Stage for AnnounceStage {
         {
             let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "slack", "webhook_url")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            dispatch(ctx, "slack", &message, || {
-                slack::send_slack(&url, &message)
-            })?;
+            dispatch(ctx, "slack", &message, || slack::send_slack(&url, &message))?;
         }
 
         // ----------------------------------------------------------------
@@ -155,9 +155,7 @@ impl Stage for AnnounceStage {
         {
             let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "teams", "webhook_url")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            dispatch(ctx, "teams", &message, || {
-                teams::send_teams(&url, &message)
-            })?;
+            dispatch(ctx, "teams", &message, || teams::send_teams(&url, &message))?;
         }
 
         // ----------------------------------------------------------------
@@ -637,7 +635,6 @@ mod tests {
                 to: vec!["dev@example.com".to_string()],
                 subject_template: Some("{{ .ProjectName }} {{ .Tag }} released".to_string()),
                 message_template: Some("New release!".to_string()),
-                ..Default::default()
             }),
             ..Default::default()
         };
