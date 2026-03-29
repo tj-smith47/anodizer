@@ -441,28 +441,9 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
         }
 
-        // Blob storage CLI tool availability
-        for c in &config.crates {
-            if let Some(ref blobs) = c.blobs {
-                for blob in blobs {
-                    if blob.disable.unwrap_or(false) {
-                        continue;
-                    }
-                    let tool = match blob.provider.as_str() {
-                        "s3" => "aws",
-                        "gs" | "gcs" => "gsutil",
-                        "azblob" | "azure" => "az",
-                        _ => continue,
-                    };
-                    if !tool_available(tool) {
-                        warnings.push(format!(
-                            "'{}' is not installed but blobs provider '{}' is configured for crate '{}'",
-                            tool, blob.provider, c.name
-                        ));
-                    }
-                }
-            }
-        }
+        // Blob storage: cloud credentials are validated at upload time by the SDK.
+        // No CLI tools needed — object_store handles S3/GCS/Azure natively.
+        // We still validate config correctness (provider, bucket) above.
 
         // GPG/cosign availability
         if !config.signs.is_empty() {

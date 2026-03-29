@@ -1172,7 +1172,7 @@ pub struct PkgConfig {
 pub struct BlobConfig {
     /// Unique identifier for this blob config.
     pub id: Option<String>,
-    /// Cloud storage provider: s3, gcs, or azblob.
+    /// Cloud storage provider: s3, gcs (or gs), or azblob (or azure).
     pub provider: String,
     /// Bucket or container name (supports templates).
     pub bucket: String,
@@ -1181,25 +1181,31 @@ pub struct BlobConfig {
     pub directory: Option<String>,
     /// AWS region (S3 only).
     pub region: Option<String>,
-    /// Custom endpoint URL for S3-compatible storage (e.g. MinIO).
+    /// Custom endpoint URL for S3-compatible storage (e.g. MinIO, R2, DO Spaces).
     pub endpoint: Option<String>,
     /// Disable SSL for the connection (S3 only, default: false).
     pub disable_ssl: Option<bool>,
-    /// Enable path-style addressing for S3-compatible backends (e.g. MinIO).
-    /// Sets `AWS_S3_ADDRESSING_STYLE=path` on the subprocess. Default: false.
+    /// Enable path-style addressing for S3-compatible backends.
+    /// Defaults to `true` when `endpoint` is set (MinIO, R2, DO Spaces need this),
+    /// `false` otherwise (standard AWS virtual-hosted style).
     pub s3_force_path_style: Option<bool>,
-    /// ACL for uploaded objects (S3 and GCS, e.g. "public-read", "private").
+    /// ACL for uploaded objects (S3, e.g. "public-read", "private").
     pub acl: Option<String>,
-    /// HTTP Cache-Control header for uploaded objects (supports templates).
-    pub cache_control: Option<String>,
-    /// HTTP Content-Disposition header (supports templates). Optional.
+    /// HTTP Cache-Control header values, joined with ", " when uploading.
+    /// Accepts a string (single value) or array of strings in YAML.
+    #[serde(deserialize_with = "deserialize_string_or_vec_opt", default)]
+    pub cache_control: Option<Vec<String>>,
+    /// HTTP Content-Disposition header (supports templates).
+    /// Default: `"attachment;filename={{Filename}}"`. Set to `"-"` to disable.
     pub content_disposition: Option<String>,
     /// AWS KMS encryption key for server-side encryption (S3 only).
     pub kms_key: Option<String>,
     /// Build IDs to include. Empty means all artifacts.
     pub ids: Option<Vec<String>>,
-    /// Disable this blob config.
-    pub disable: Option<bool>,
+    /// Disable this blob config. Accepts bool or template string
+    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Also upload metadata.json and artifacts.json.
     pub include_meta: Option<bool>,
     /// Pre-existing files to upload (supports glob patterns).
@@ -1226,8 +1232,9 @@ pub struct ExtraFile {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct PartialConfig {
-    /// How to split builds: "target" (per target triple).
-    /// Default: "target".
+    /// How to split builds: "goos" (by OS, default) or "target" (by full triple).
+    /// "goos" groups all arch variants for the same OS into one split job.
+    /// "target" gives each unique target triple its own split job.
     pub by: Option<String>,
 }
 
@@ -1622,6 +1629,140 @@ pub struct WorkspaceConfig {
     pub before: Option<HooksConfig>,
     pub after: Option<HooksConfig>,
     pub env: Option<HashMap<String, String>>,
+}
+
+// ---------------------------------------------------------------------------
+// StringOrBool — accepts bool or template string in YAML
+// ---------------------------------------------------------------------------
+
+/// A value that can be either a bool or a template string.
+/// Used by `BlobConfig.disable` to support both `disable: true` and
+/// `disable: "{{ if IsSnapshot }}true{{ endif }}"`.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum StringOrBool {
+    Bool(bool),
+    String(String),
+}
+
+impl StringOrBool {
+    /// Evaluate this value to a bool. If it's a string, treat "true" / "1" as true,
+    /// everything else as false.
+    pub fn as_bool(&self) -> bool {
+        match self {
+            StringOrBool::Bool(b) => *b,
+            StringOrBool::String(s) => matches!(s.trim(), "true" | "1"),
+        }
+    }
+
+    /// Return the raw string value for template rendering, or the bool as a string.
+    pub fn as_str(&self) -> &str {
+        match self {
+            StringOrBool::Bool(true) => "true",
+            StringOrBool::Bool(false) => "false",
+            StringOrBool::String(s) => s,
+        }
+    }
+
+    /// Whether this value contains a template expression that needs rendering.
+    pub fn is_template(&self) -> bool {
+        matches!(self, StringOrBool::String(s) if s.contains('{'))
+    }
+}
+
+impl Default for StringOrBool {
+    fn default() -> Self {
+        StringOrBool::Bool(false)
+    }
+}
+
+/// Custom deserializer for `Option<StringOrBool>`.
+fn deserialize_string_or_bool_opt<'de, D>(
+    deserializer: D,
+) -> Result<Option<StringOrBool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct StringOrBoolVisitor;
+
+    impl<'de> Visitor<'de> for StringOrBoolVisitor {
+        type Value = Option<StringOrBool>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a bool, a string, or null")
+        }
+
+        fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(StringOrBool::Bool(v)))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(StringOrBool::String(v.to_owned())))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(StringOrBool::String(v)))
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrBoolVisitor)
+}
+
+/// Custom deserializer for `Option<Vec<String>>` that accepts either a single
+/// string or an array of strings. Used by `BlobConfig.cache_control`.
+fn deserialize_string_or_vec_opt<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct StringOrVecVisitor;
+
+    impl<'de> Visitor<'de> for StringOrVecVisitor {
+        type Value = Option<Vec<String>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a string, a list of strings, or null")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(vec![v.to_owned()]))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(vec![v]))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut items = Vec::new();
+            while let Some(item) = seq.next_element::<String>()? {
+                items.push(item);
+            }
+            Ok(Some(items))
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVecVisitor)
 }
 
 // ---------------------------------------------------------------------------

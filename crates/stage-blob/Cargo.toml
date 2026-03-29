@@ -11,8 +11,10 @@ description = "Cloud storage (S3/GCS/Azure) upload stage for anodize release aut
 anodize-core.workspace = true
 anyhow.workspace = true
 glob.workspace = true
+object_store.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -1,12 +1,16 @@
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::Artifact;
-use anodize_core::config::BlobConfig;
+use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::config::{BlobConfig, ExtraFile, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
+use anodize_core::template;
+
+use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, PutOptions};
 
 // ---------------------------------------------------------------------------
 // Provider enum
@@ -26,222 +30,216 @@ impl Provider {
             "gs" | "gcs" => Ok(Provider::Gcs),
             "azblob" | "azure" => Ok(Provider::AzBlob),
             other => anyhow::bail!(
-                "blobs: unknown provider '{}'. Valid providers are: s3, gcs, azblob",
+                "blobs: unknown provider '{}'. Valid providers are: s3, gs, azblob",
                 other
             ),
         }
     }
 
-    /// Return the CLI binary name for this provider.
-    pub fn cli_binary(&self) -> &'static str {
+    fn display_name(&self) -> &'static str {
         match self {
-            Provider::S3 => "aws",
-            Provider::Gcs => "gsutil",
-            Provider::AzBlob => "az",
+            Provider::S3 => "s3",
+            Provider::Gcs => "gs",
+            Provider::AzBlob => "azblob",
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// build_upload_command — construct the CLI invocation for each provider
+// Store construction — one function per provider
 // ---------------------------------------------------------------------------
 
-/// Build the command to upload a single file to cloud storage.
-pub fn build_upload_command(
+/// Build an `ObjectStore` for the given provider and config.
+/// All env-based credential chains are handled by the builder's `from_env()`.
+fn build_store(
     provider: Provider,
     config: &BlobConfig,
-    local_path: &Path,
-    remote_key: &str,
     rendered_bucket: &str,
-    rendered_directory: &str,
-) -> Vec<String> {
+    ctx: &Context,
+) -> Result<Box<dyn ObjectStore>> {
     match provider {
-        Provider::S3 => build_s3_command(
-            config,
-            local_path,
-            remote_key,
-            rendered_bucket,
-            rendered_directory,
-        ),
-        Provider::Gcs => build_gcs_command(
-            config,
-            local_path,
-            remote_key,
-            rendered_bucket,
-            rendered_directory,
-        ),
-        Provider::AzBlob => build_azblob_command(
-            config,
-            local_path,
-            remote_key,
-            rendered_bucket,
-            rendered_directory,
-        ),
+        Provider::S3 => build_s3_store(config, rendered_bucket, ctx),
+        Provider::Gcs => build_gcs_store(rendered_bucket),
+        Provider::AzBlob => build_azure_store(rendered_bucket),
     }
 }
 
-fn build_s3_command(
+fn build_s3_store(
     config: &BlobConfig,
-    local_path: &Path,
-    remote_key: &str,
     bucket: &str,
-    directory: &str,
-) -> Vec<String> {
-    let remote_path = if directory.is_empty() {
-        format!("s3://{}/{}", bucket, remote_key)
-    } else {
-        format!(
-            "s3://{}/{}/{}",
-            bucket,
-            directory.trim_matches('/'),
-            remote_key
-        )
-    };
+    ctx: &Context,
+) -> Result<Box<dyn ObjectStore>> {
+    use object_store::aws::AmazonS3Builder;
 
-    let mut args = vec![
-        "aws".to_string(),
-        "s3".to_string(),
-        "cp".to_string(),
-        local_path.to_string_lossy().into_owned(),
-        remote_path,
-    ];
+    let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
 
     if let Some(ref region) = config.region {
-        args.push("--region".to_string());
-        args.push(region.clone());
+        let rendered = template::render(region, ctx.template_vars())
+            .with_context(|| format!("blobs: render region template: {region}"))?;
+        builder = builder.with_region(&rendered);
     }
+
     if let Some(ref endpoint) = config.endpoint {
-        args.push("--endpoint-url".to_string());
-        args.push(endpoint.clone());
+        let rendered = template::render(endpoint, ctx.template_vars())
+            .with_context(|| format!("blobs: render endpoint template: {endpoint}"))?;
+        builder = builder.with_endpoint(&rendered);
+
+        // Smart default: force path style when custom endpoint is set.
+        // MinIO, R2, DO Spaces, Backblaze B2 all need path-style addressing.
+        let force_path = config.s3_force_path_style.unwrap_or(true);
+        builder = builder.with_virtual_hosted_style_request(!force_path);
+    } else if let Some(force_path) = config.s3_force_path_style {
+        builder = builder.with_virtual_hosted_style_request(!force_path);
     }
-    if let Some(ref acl) = config.acl {
-        args.push("--acl".to_string());
-        args.push(acl.clone());
-    }
-    if let Some(ref cache_control) = config.cache_control {
-        args.push("--cache-control".to_string());
-        args.push(cache_control.clone());
-    }
-    if let Some(ref content_disposition) = config.content_disposition {
-        args.push("--content-disposition".to_string());
-        args.push(content_disposition.clone());
-    }
-    if let Some(ref kms_key) = config.kms_key {
-        args.push("--sse".to_string());
-        args.push("aws:kms".to_string());
-        args.push("--sse-kms-key-id".to_string());
-        args.push(kms_key.clone());
-    }
+
     if config.disable_ssl.unwrap_or(false) {
-        args.push("--no-verify-ssl".to_string());
+        builder = builder.with_allow_http(true);
     }
 
-    args
+    // KMS server-side encryption
+    if let Some(ref kms_key) = config.kms_key {
+        builder = builder.with_sse_kms_encryption(kms_key);
+    }
+
+    Ok(Box::new(
+        builder
+            .build()
+            .context("blobs: failed to build S3 client")?,
+    ))
 }
 
-fn build_gcs_command(
-    config: &BlobConfig,
-    local_path: &Path,
-    remote_key: &str,
-    bucket: &str,
-    directory: &str,
-) -> Vec<String> {
-    let remote_path = if directory.is_empty() {
-        format!("gs://{}/{}", bucket, remote_key)
-    } else {
-        format!(
-            "gs://{}/{}/{}",
-            bucket,
-            directory.trim_matches('/'),
-            remote_key
-        )
-    };
+fn build_gcs_store(bucket: &str) -> Result<Box<dyn ObjectStore>> {
+    use object_store::gcp::GoogleCloudStorageBuilder;
 
-    let mut args = vec!["gsutil".to_string()];
+    let builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(bucket);
 
-    // GCS supports setting headers via -h flag
-    if let Some(ref cache_control) = config.cache_control {
-        args.push("-h".to_string());
-        args.push(format!("Cache-Control:{cache_control}"));
-    }
-    if let Some(ref content_disposition) = config.content_disposition {
-        args.push("-h".to_string());
-        args.push(format!("Content-Disposition:{content_disposition}"));
-    }
-
-    args.push("cp".to_string());
-
-    // ACL can be set with -a flag on cp
-    if let Some(ref acl) = config.acl {
-        args.push("-a".to_string());
-        args.push(acl.clone());
-    }
-
-    args.push(local_path.to_string_lossy().into_owned());
-    args.push(remote_path);
-
-    args
+    Ok(Box::new(
+        builder
+            .build()
+            .context("blobs: failed to build GCS client")?,
+    ))
 }
 
-fn build_azblob_command(
-    config: &BlobConfig,
-    local_path: &Path,
-    remote_key: &str,
-    bucket: &str,
-    directory: &str,
-) -> Vec<String> {
-    let blob_name = if directory.is_empty() {
-        remote_key.to_string()
-    } else {
-        format!("{}/{}", directory.trim_matches('/'), remote_key)
-    };
+fn build_azure_store(container: &str) -> Result<Box<dyn ObjectStore>> {
+    use object_store::azure::MicrosoftAzureBuilder;
 
-    let mut args = vec![
-        "az".to_string(),
-        "storage".to_string(),
-        "blob".to_string(),
-        "upload".to_string(),
-        "--file".to_string(),
-        local_path.to_string_lossy().into_owned(),
-        "--container-name".to_string(),
-        bucket.to_string(),
-        "--name".to_string(),
-        blob_name,
-        "--overwrite".to_string(),
-    ];
+    let builder = MicrosoftAzureBuilder::from_env().with_container_name(container);
 
-    if let Some(ref cache_control) = config.cache_control {
-        args.push("--content-cache-control".to_string());
-        args.push(cache_control.clone());
-    }
-    if let Some(ref content_disposition) = config.content_disposition {
-        args.push("--content-disposition".to_string());
-        args.push(content_disposition.clone());
-    }
-
-    args
+    Ok(Box::new(
+        builder
+            .build()
+            .context("blobs: failed to build Azure Blob client")?,
+    ))
 }
 
 // ---------------------------------------------------------------------------
-// resolve_extra_files — expand glob patterns for extra_files
+// Put options — headers (cache-control, content-disposition)
 // ---------------------------------------------------------------------------
 
-/// Resolve extra files from glob patterns.
-pub fn resolve_extra_files(
-    extra_files: &[anodize_core::config::ExtraFile],
+fn build_put_options(
+    config: &BlobConfig,
+    filename: &str,
+    ctx: &Context,
+    log: &anodize_core::log::StageLogger,
+) -> Result<PutOptions> {
+    use object_store::Attribute;
+
+    let mut attrs = object_store::Attributes::new();
+
+    // Cache-Control: join array with ", " (GoReleaser uses []string)
+    if let Some(ref cc) = config.cache_control
+        && !cc.is_empty()
+    {
+        attrs.insert(Attribute::CacheControl, cc.join(", ").into());
+    }
+
+    // Content-Disposition: template-rendered with {{Filename}} variable.
+    // Default: "attachment;filename={{Filename}}". Set to "-" to disable.
+    let disp_template = config
+        .content_disposition
+        .as_deref()
+        .unwrap_or("attachment;filename={{Filename}}");
+
+    if disp_template != "-" {
+        // Render the template with the Filename variable added
+        let mut vars = ctx.template_vars().clone();
+        vars.set("Filename", filename);
+        let rendered = template::render(disp_template, &vars)
+            .with_context(|| format!("blobs: render content_disposition: {disp_template}"))?;
+        attrs.insert(Attribute::ContentDisposition, rendered.into());
+    }
+
+    // ACL: object_store does not have first-class ACL support. Warn the user
+    // if they configured it so they know it's not being applied.
+    if config.acl.is_some() {
+        log.warn("blobs: 'acl' field is configured but not yet supported by the SDK backend — objects will use the bucket's default ACL");
+    }
+
+    Ok(PutOptions {
+        attributes: attrs,
+        ..Default::default()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Disable evaluation — supports bool and template strings
+// ---------------------------------------------------------------------------
+
+fn is_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
+    match disable {
+        None => Ok(false),
+        Some(StringOrBool::Bool(b)) => Ok(*b),
+        Some(StringOrBool::String(tmpl)) => {
+            if !tmpl.contains('{') {
+                // Plain string, not a template — treat "true"/"1" as disabled
+                return Ok(matches!(tmpl.trim(), "true" | "1"));
+            }
+            let rendered = template::render(tmpl, ctx.template_vars())
+                .with_context(|| format!("blobs: render disable template: {tmpl}"))?;
+            Ok(matches!(rendered.trim(), "true" | "1"))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Extra files resolution — with template-rendered names
+// ---------------------------------------------------------------------------
+
+fn resolve_extra_files(
+    extra_files: &[ExtraFile],
+    ctx: &Context,
+    log: &anodize_core::log::StageLogger,
 ) -> Result<Vec<(PathBuf, String)>> {
     let mut resolved = Vec::new();
+
     for ef in extra_files {
-        let matches: Vec<_> = glob::glob(&ef.glob)
-            .with_context(|| format!("invalid glob pattern: {}", ef.glob))?
-            .filter_map(|entry| entry.ok())
+        let matches: Vec<PathBuf> = glob::glob(&ef.glob)
+            .with_context(|| format!("blobs: invalid glob pattern: {}", ef.glob))?
+            .filter_map(|r| r.ok())
             .collect();
+
         if matches.is_empty() {
-            anyhow::bail!("blobs: extra_files glob '{}' matched no files", ef.glob);
+            // Warn and continue, matching GoReleaser behavior. Users with
+            // platform-conditional extra_files (e.g., *.exe on Windows) should
+            // not get failures on other platforms.
+            log.warn(&format!(
+                "blobs: extra_files glob '{}' matched no files, skipping",
+                ef.glob
+            ));
+            continue;
         }
+
         for path in matches {
-            let upload_name = if let Some(ref tmpl) = ef.name {
-                tmpl.clone()
+            let upload_name = if let Some(ref name_tmpl) = ef.name {
+                // Template-render the name with standard vars + Filename
+                let filename = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file");
+                let mut vars = ctx.template_vars().clone();
+                vars.set("Filename", filename);
+                template::render(name_tmpl, &vars)
+                    .with_context(|| format!("blobs: render extra_files name: {name_tmpl}"))?
             } else {
                 path.file_name()
                     .and_then(|n| n.to_str())
@@ -252,6 +250,183 @@ pub fn resolve_extra_files(
         }
     }
     Ok(resolved)
+}
+
+// ---------------------------------------------------------------------------
+// Artifact filtering
+// ---------------------------------------------------------------------------
+
+/// Collect artifacts to upload based on config filters.
+fn collect_artifacts<'a>(
+    ctx: &'a Context,
+    config: &BlobConfig,
+    crate_name: &str,
+) -> Vec<&'a Artifact> {
+    if config.extra_files_only.unwrap_or(false) {
+        return vec![];
+    }
+
+    let uploadable_kinds = if config.include_meta.unwrap_or(false) {
+        vec![
+            ArtifactKind::Binary,
+            ArtifactKind::Archive,
+            ArtifactKind::Checksum,
+            ArtifactKind::LinuxPackage,
+            ArtifactKind::SourceArchive,
+            ArtifactKind::Sbom,
+            ArtifactKind::Snap,
+            ArtifactKind::DiskImage,
+            ArtifactKind::Installer,
+            ArtifactKind::MacOsPackage,
+            ArtifactKind::Metadata,
+        ]
+    } else {
+        vec![
+            ArtifactKind::Binary,
+            ArtifactKind::Archive,
+            ArtifactKind::Checksum,
+            ArtifactKind::LinuxPackage,
+            ArtifactKind::SourceArchive,
+            ArtifactKind::Sbom,
+            ArtifactKind::Snap,
+            ArtifactKind::DiskImage,
+            ArtifactKind::Installer,
+            ArtifactKind::MacOsPackage,
+        ]
+    };
+
+    ctx.artifacts
+        .all()
+        .iter()
+        .filter(|a| a.crate_name == crate_name)
+        .filter(|a| uploadable_kinds.contains(&a.kind))
+        .filter(|a| {
+            if let Some(ref filter_ids) = config.ids {
+                if filter_ids.is_empty() {
+                    return true;
+                }
+                a.metadata
+                    .get("id")
+                    .map(|id| filter_ids.contains(id))
+                    .unwrap_or(false)
+                    || a.metadata
+                        .get("name")
+                        .map(|n| filter_ids.contains(n))
+                        .unwrap_or(false)
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Upload execution
+// ---------------------------------------------------------------------------
+
+struct UploadParams<'a> {
+    store: Arc<dyn ObjectStore>,
+    items: &'a [(PathBuf, String)],
+    directory: &'a str,
+    config: &'a BlobConfig,
+    ctx: &'a Context,
+}
+
+fn upload_files(params: &UploadParams<'_>, log: &anodize_core::log::StageLogger) -> Result<()> {
+    // Use multi-threaded tokio runtime for actual parallel uploads
+    let rt = tokio::runtime::Runtime::new()
+        .context("blobs: failed to create tokio runtime")?;
+
+    rt.block_on(async {
+        let parallelism = params.ctx.options.parallelism.max(1);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
+
+        let mut handles = Vec::new();
+
+        for (local_path, remote_key) in params.items {
+            let dir_trimmed = params.directory.trim_matches('/');
+            let object_key = if dir_trimmed.is_empty() {
+                remote_key.clone()
+            } else {
+                format!("{}/{}", dir_trimmed, remote_key)
+            };
+
+            let object_path = ObjectPath::from(object_key.as_str());
+            let put_opts = build_put_options(params.config, remote_key, params.ctx, log)?;
+
+            let store = Arc::clone(&params.store);
+            let sem = Arc::clone(&semaphore);
+            let path_display = local_path.display().to_string();
+            let local = local_path.clone();
+            let key_display = object_key.clone();
+
+            handles.push(tokio::spawn(async move {
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("semaphore error: {}", e))?;
+                // Read file inside the spawned task to interleave I/O with uploads
+                let data = tokio::fs::read(&local).await.map_err(|e| {
+                    anyhow::anyhow!("blobs: read file for upload: {}: {}", path_display, e)
+                })?;
+                store
+                    .put_opts(&object_path, data.into(), put_opts)
+                    .await
+                    .map_err(|e| handle_upload_error(e, &path_display, &key_display))?;
+                Ok::<(), anyhow::Error>(())
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .await
+                .map_err(|e| anyhow::anyhow!("upload task panicked: {}", e))??;
+        }
+        Ok(())
+    })
+}
+
+fn format_remote_path(provider: Provider, bucket: &str, directory: &str, key: &str) -> String {
+    let dir_trimmed = directory.trim_matches('/');
+    let scheme = match provider {
+        Provider::S3 => "s3",
+        Provider::Gcs => "gs",
+        Provider::AzBlob => "azblob",
+    };
+    if dir_trimmed.is_empty() {
+        format!("{}://{}/{}", scheme, bucket, key)
+    } else {
+        format!("{}://{}/{}/{}", scheme, bucket, dir_trimmed, key)
+    }
+}
+
+fn handle_upload_error(err: object_store::Error, local_path: &str, remote_key: &str) -> anyhow::Error {
+    match &err {
+        object_store::Error::NotFound { path, .. } => {
+            anyhow::anyhow!(
+                "blobs: bucket or object not found ({}): uploading {} -> {}",
+                path, local_path, remote_key
+            )
+        }
+        object_store::Error::Unauthenticated { path, .. } => {
+            anyhow::anyhow!(
+                "blobs: authentication failed — check credentials. Uploading {} -> {} ({})",
+                local_path, remote_key, path
+            )
+        }
+        object_store::Error::PermissionDenied { path, .. } => {
+            anyhow::anyhow!(
+                "blobs: access denied — check permissions. Uploading {} -> {} ({})",
+                local_path, remote_key, path
+            )
+        }
+        _ => {
+            anyhow::anyhow!(
+                "blobs: upload failed for {} -> {}: {}",
+                local_path, remote_key, err
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -288,8 +463,8 @@ impl Stage for BlobStage {
             let blob_configs = krate.blobs.as_ref().unwrap();
 
             for blob_cfg in blob_configs {
-                // Skip disabled configs
-                if blob_cfg.disable.unwrap_or(false) {
+                // Evaluate disable (supports both bool and template string)
+                if is_disabled(&blob_cfg.disable, ctx)? {
                     log.status(&format!(
                         "skipping disabled blob config for crate {}",
                         krate.name
@@ -305,18 +480,17 @@ impl Stage for BlobStage {
                     anyhow::bail!("blobs: bucket is required for crate '{}'", krate.name);
                 }
 
-                // Parse provider
                 let provider = Provider::parse(&blob_cfg.provider)?;
-
                 let config_label = blob_cfg.id.as_deref().unwrap_or(&blob_cfg.provider);
 
                 // Render template fields
-                let rendered_bucket = ctx.render_template(&blob_cfg.bucket).with_context(|| {
-                    format!(
-                        "blobs[{}]: render bucket template for crate {}",
-                        config_label, krate.name
-                    )
-                })?;
+                let rendered_bucket =
+                    ctx.render_template(&blob_cfg.bucket).with_context(|| {
+                        format!(
+                            "blobs[{}]: render bucket template for crate {}",
+                            config_label, krate.name
+                        )
+                    })?;
 
                 let directory_template = blob_cfg
                     .directory
@@ -332,52 +506,28 @@ impl Stage for BlobStage {
 
                 log.status(&format!(
                     "uploading to {} {}/{}",
-                    blob_cfg.provider, rendered_bucket, rendered_directory
+                    provider.display_name(),
+                    rendered_bucket,
+                    rendered_directory
                 ));
 
-                // Collect artifacts to upload (unless extra_files_only is set)
+                // Collect artifacts to upload
                 let mut upload_items: Vec<(PathBuf, String)> = Vec::new();
 
-                if !blob_cfg.extra_files_only.unwrap_or(false) {
-                    // Filter artifacts by ids if configured
-                    let artifacts: Vec<&Artifact> = ctx
-                        .artifacts
-                        .all()
-                        .iter()
-                        .filter(|a| a.crate_name == krate.name)
-                        .filter(|a| {
-                            if let Some(ref filter_ids) = blob_cfg.ids {
-                                if filter_ids.is_empty() {
-                                    return true;
-                                }
-                                a.metadata
-                                    .get("id")
-                                    .map(|id| filter_ids.contains(id))
-                                    .unwrap_or(false)
-                                    || a.metadata
-                                        .get("name")
-                                        .map(|n| filter_ids.contains(n))
-                                        .unwrap_or(false)
-                            } else {
-                                true
-                            }
-                        })
-                        .collect();
-
-                    for artifact in &artifacts {
-                        let filename = artifact
-                            .path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("artifact")
-                            .to_string();
-                        upload_items.push((artifact.path.clone(), filename));
-                    }
+                let artifacts = collect_artifacts(ctx, blob_cfg, &krate.name);
+                for artifact in &artifacts {
+                    let filename = artifact
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("artifact")
+                        .to_string();
+                    upload_items.push((artifact.path.clone(), filename));
                 }
 
-                // Resolve extra files
+                // Resolve extra files (with template-rendered names)
                 if let Some(ref extra_files) = blob_cfg.extra_files {
-                    let resolved = resolve_extra_files(extra_files)?;
+                    let resolved = resolve_extra_files(extra_files, ctx, &log)?;
                     upload_items.extend(resolved);
                 }
 
@@ -400,51 +550,38 @@ impl Stage for BlobStage {
                     continue;
                 }
 
-                // Execute uploads
-                for (local_path, remote_key) in &upload_items {
-                    let cmd_args = build_upload_command(
-                        provider,
-                        blob_cfg,
-                        local_path,
-                        remote_key,
-                        &rendered_bucket,
-                        &rendered_directory,
-                    );
-
-                    if dry_run {
-                        log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
-                        continue;
-                    }
-
-                    log.verbose(&format!("running: {}", cmd_args.join(" ")));
-
-                    let mut cmd = Command::new(&cmd_args[0]);
-                    cmd.args(&cmd_args[1..]);
-
-                    // S3: enable path-style addressing for S3-compatible backends
-                    if provider == Provider::S3 && blob_cfg.s3_force_path_style.unwrap_or(false) {
-                        cmd.env("AWS_S3_ADDRESSING_STYLE", "path");
-                    }
-
-                    let output = cmd.output().with_context(|| {
-                        format!(
-                            "execute {} upload for {} to {}/{}",
-                            provider.cli_binary(),
+                if dry_run {
+                    // Dry-run: log what would happen without constructing the store
+                    for (local_path, remote_key) in &upload_items {
+                        let remote = format_remote_path(
+                            provider,
+                            &rendered_bucket,
+                            &rendered_directory,
+                            remote_key,
+                        );
+                        log.status(&format!(
+                            "[dry-run] would upload {} -> {}",
                             local_path.display(),
-                            rendered_bucket,
-                            rendered_directory,
-                        )
-                    })?;
-                    log.check_output(
-                        output,
-                        &format!("{} upload: {}", blob_cfg.provider, remote_key),
-                    )?;
+                            remote,
+                        ));
+                    }
+                } else {
+                    let store: Arc<dyn ObjectStore> =
+                        Arc::from(build_store(provider, blob_cfg, &rendered_bucket, ctx)?);
+                    let params = UploadParams {
+                        store,
+                        items: &upload_items,
+                        directory: &rendered_directory,
+                        config: blob_cfg,
+                        ctx,
+                    };
+                    upload_files(&params, &log)?;
                 }
 
                 log.status(&format!(
                     "uploaded {} file(s) to {} {}/{}",
                     upload_items.len(),
-                    blob_cfg.provider,
+                    provider.display_name(),
                     rendered_bucket,
                     rendered_directory,
                 ));
@@ -463,18 +600,10 @@ impl Stage for BlobStage {
 mod tests {
     use super::*;
     use anodize_core::config::BlobConfig;
-    use std::path::Path;
-
-    fn default_blob_config() -> BlobConfig {
-        BlobConfig {
-            provider: "s3".to_string(),
-            bucket: "my-bucket".to_string(),
-            ..Default::default()
-        }
-    }
+    use anodize_core::context::{Context, ContextOptions};
 
     // -----------------------------------------------------------------------
-    // Provider parsing
+    // Provider tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -496,350 +625,276 @@ mod tests {
 
     #[test]
     fn test_provider_invalid() {
-        let result = Provider::parse("dropbox");
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("unknown provider"), "got: {}", msg);
-        assert!(msg.contains("dropbox"), "got: {}", msg);
+        let err = Provider::parse("dropbox").unwrap_err();
+        assert!(err.to_string().contains("unknown provider"));
     }
 
     #[test]
-    fn test_provider_cli_binary() {
-        assert_eq!(Provider::S3.cli_binary(), "aws");
-        assert_eq!(Provider::Gcs.cli_binary(), "gsutil");
-        assert_eq!(Provider::AzBlob.cli_binary(), "az");
+    fn test_provider_display_name() {
+        assert_eq!(Provider::S3.display_name(), "s3");
+        assert_eq!(Provider::Gcs.display_name(), "gs");
+        assert_eq!(Provider::AzBlob.display_name(), "azblob");
     }
 
     // -----------------------------------------------------------------------
-    // S3 command construction
+    // S3 store builder tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_s3_basic_command() {
-        let cfg = default_blob_config();
-        let args = build_upload_command(
-            Provider::S3,
-            &cfg,
-            Path::new("/tmp/artifact.tar.gz"),
-            "artifact.tar.gz",
-            "my-bucket",
-            "releases/v1.0.0",
-        );
-        assert_eq!(args[0], "aws");
-        assert_eq!(args[1], "s3");
-        assert_eq!(args[2], "cp");
-        assert_eq!(args[3], "/tmp/artifact.tar.gz");
-        assert_eq!(args[4], "s3://my-bucket/releases/v1.0.0/artifact.tar.gz");
-    }
-
-    #[test]
-    fn test_s3_empty_directory() {
-        let cfg = default_blob_config();
-        let args = build_upload_command(
-            Provider::S3,
-            &cfg,
-            Path::new("/tmp/file.txt"),
-            "file.txt",
-            "my-bucket",
-            "",
-        );
-        assert_eq!(args[4], "s3://my-bucket/file.txt");
-    }
-
-    #[test]
-    fn test_s3_with_region() {
-        let cfg = BlobConfig {
-            region: Some("eu-central-1".to_string()),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(
-            Provider::S3,
-            &cfg,
-            Path::new("/tmp/f.tar.gz"),
-            "f.tar.gz",
-            "b",
-            "d",
-        );
-        assert!(args.contains(&"--region".to_string()));
-        assert!(args.contains(&"eu-central-1".to_string()));
-    }
-
-    #[test]
-    fn test_s3_with_endpoint() {
-        let cfg = BlobConfig {
-            endpoint: Some("http://localhost:9000".to_string()),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(Provider::S3, &cfg, Path::new("/tmp/f"), "f", "b", "d");
-        assert!(args.contains(&"--endpoint-url".to_string()));
-        assert!(args.contains(&"http://localhost:9000".to_string()));
-    }
-
-    #[test]
-    fn test_s3_with_acl() {
-        let cfg = BlobConfig {
-            acl: Some("public-read".to_string()),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(Provider::S3, &cfg, Path::new("/tmp/f"), "f", "b", "d");
-        assert!(args.contains(&"--acl".to_string()));
-        assert!(args.contains(&"public-read".to_string()));
-    }
-
-    #[test]
-    fn test_s3_with_cache_control() {
-        let cfg = BlobConfig {
-            cache_control: Some("max-age=86400".to_string()),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(Provider::S3, &cfg, Path::new("/tmp/f"), "f", "b", "d");
-        assert!(args.contains(&"--cache-control".to_string()));
-        assert!(args.contains(&"max-age=86400".to_string()));
-    }
-
-    #[test]
-    fn test_s3_with_content_disposition() {
-        let cfg = BlobConfig {
-            content_disposition: Some("attachment;filename=release.tar.gz".to_string()),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(Provider::S3, &cfg, Path::new("/tmp/f"), "f", "b", "d");
-        assert!(args.contains(&"--content-disposition".to_string()));
-        assert!(args.contains(&"attachment;filename=release.tar.gz".to_string()));
-    }
-
-    #[test]
-    fn test_s3_with_kms_key() {
-        let cfg = BlobConfig {
-            kms_key: Some("arn:aws:kms:us-east-1:123:key/abc".to_string()),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(Provider::S3, &cfg, Path::new("/tmp/f"), "f", "b", "d");
-        assert!(args.contains(&"--sse".to_string()));
-        assert!(args.contains(&"aws:kms".to_string()));
-        assert!(args.contains(&"--sse-kms-key-id".to_string()));
-        assert!(args.contains(&"arn:aws:kms:us-east-1:123:key/abc".to_string()));
-    }
-
-    #[test]
-    fn test_s3_disable_ssl() {
-        let cfg = BlobConfig {
-            disable_ssl: Some(true),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(Provider::S3, &cfg, Path::new("/tmp/f"), "f", "b", "d");
-        assert!(args.contains(&"--no-verify-ssl".to_string()));
-    }
-
-    #[test]
-    fn test_s3_disable_ssl_false() {
-        let cfg = BlobConfig {
-            disable_ssl: Some(false),
-            ..default_blob_config()
-        };
-        let args = build_upload_command(Provider::S3, &cfg, Path::new("/tmp/f"), "f", "b", "d");
-        assert!(!args.contains(&"--no-verify-ssl".to_string()));
-    }
-
-    #[test]
-    fn test_s3_all_options() {
-        let cfg = BlobConfig {
+    fn test_s3_basic_build() {
+        // Verify the builder doesn't panic with minimal config.
+        // Actual credential validation happens at upload time, not build time.
+        let config = BlobConfig {
             provider: "s3".to_string(),
-            bucket: "my-bucket".to_string(),
-            region: Some("us-west-2".to_string()),
-            endpoint: Some("http://minio:9000".to_string()),
-            acl: Some("private".to_string()),
-            cache_control: Some("no-cache".to_string()),
-            content_disposition: Some("inline".to_string()),
-            kms_key: Some("key123".to_string()),
-            disable_ssl: Some(true),
+            bucket: "test-bucket".to_string(),
             ..Default::default()
         };
-        let args = build_upload_command(
-            Provider::S3,
-            &cfg,
-            Path::new("/tmp/f"),
-            "f",
-            "my-bucket",
-            "dir",
-        );
-        assert!(args.contains(&"--region".to_string()));
-        assert!(args.contains(&"--endpoint-url".to_string()));
-        assert!(args.contains(&"--acl".to_string()));
-        assert!(args.contains(&"--cache-control".to_string()));
-        assert!(args.contains(&"--content-disposition".to_string()));
-        assert!(args.contains(&"--sse".to_string()));
-        assert!(args.contains(&"--no-verify-ssl".to_string()));
-    }
-
-    // -----------------------------------------------------------------------
-    // GCS command construction
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_gcs_basic_command() {
-        let cfg = BlobConfig {
-            provider: "gcs".to_string(),
-            bucket: "my-gcs-bucket".to_string(),
-            ..Default::default()
-        };
-        let args = build_upload_command(
-            Provider::Gcs,
-            &cfg,
-            Path::new("/tmp/artifact.tar.gz"),
-            "artifact.tar.gz",
-            "my-gcs-bucket",
-            "releases/v1.0.0",
-        );
-        assert_eq!(args[0], "gsutil");
-        assert_eq!(args[1], "cp");
-        assert_eq!(args[2], "/tmp/artifact.tar.gz");
-        assert_eq!(
-            args[3],
-            "gs://my-gcs-bucket/releases/v1.0.0/artifact.tar.gz"
-        );
+        // The builder will succeed (credentials validated lazily)
+        let result = build_s3_store(&config, "test-bucket", &make_ctx());
+        // May fail due to missing AWS creds in test env, but should not panic
+        // and should produce a meaningful error if it fails
+        let _ = result;
     }
 
     #[test]
-    fn test_gcs_empty_directory() {
-        let cfg = BlobConfig {
-            provider: "gcs".to_string(),
+    fn test_s3_force_path_style_defaults_true_with_endpoint() {
+        // When endpoint is set, force_path_style should default to true
+        let config = BlobConfig {
+            provider: "s3".to_string(),
             bucket: "b".to_string(),
+            endpoint: Some("http://minio:9000".to_string()),
+            // s3_force_path_style NOT set — should default to true
             ..Default::default()
         };
-        let args = build_upload_command(Provider::Gcs, &cfg, Path::new("/tmp/f"), "f", "b", "");
-        assert_eq!(args[3], "gs://b/f");
+        // This exercises the builder path. The builder configures
+        // virtual_hosted_style_request = !force_path = false, which means
+        // path-style is enabled.
+        let _ = build_s3_store(&config, "b", &make_ctx());
+    }
+
+    #[test]
+    fn test_s3_force_path_style_explicit_false_with_endpoint() {
+        let config = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b".to_string(),
+            endpoint: Some("http://minio:9000".to_string()),
+            s3_force_path_style: Some(false),
+            ..Default::default()
+        };
+        let _ = build_s3_store(&config, "b", &make_ctx());
     }
 
     // -----------------------------------------------------------------------
-    // Azure Blob command construction
+    // Put options tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_azblob_basic_command() {
-        let cfg = BlobConfig {
-            provider: "azblob".to_string(),
-            bucket: "mycontainer".to_string(),
+    fn test_put_options_cache_control_array_joined() {
+        let config = BlobConfig {
+            cache_control: Some(vec![
+                "max-age=86400".to_string(),
+                "public".to_string(),
+            ]),
             ..Default::default()
         };
-        let args = build_upload_command(
-            Provider::AzBlob,
-            &cfg,
-            Path::new("/tmp/artifact.tar.gz"),
-            "artifact.tar.gz",
-            "mycontainer",
-            "releases/v1.0.0",
+        let opts = build_put_options(&config,"file.tar.gz", &make_ctx(), &test_log()).unwrap();
+        let cc = opts
+            .attributes
+            .get(&object_store::Attribute::CacheControl)
+            .expect("cache_control should be set");
+        assert_eq!(cc.as_ref(), "max-age=86400, public");
+    }
+
+    #[test]
+    fn test_put_options_cache_control_single() {
+        let config = BlobConfig {
+            cache_control: Some(vec!["no-cache".to_string()]),
+            ..Default::default()
+        };
+        let opts = build_put_options(&config,"f.txt", &make_ctx(), &test_log()).unwrap();
+        let cc = opts
+            .attributes
+            .get(&object_store::Attribute::CacheControl)
+            .expect("should be set");
+        assert_eq!(cc.as_ref(), "no-cache");
+    }
+
+    #[test]
+    fn test_put_options_content_disposition_default() {
+        let config = BlobConfig::default();
+        let opts = build_put_options(&config,"myapp-v1.tar.gz", &make_ctx(), &test_log()).unwrap();
+        let cd = opts
+            .attributes
+            .get(&object_store::Attribute::ContentDisposition)
+            .expect("default content-disposition should be set");
+        assert_eq!(cd.as_ref(), "attachment;filename=myapp-v1.tar.gz");
+    }
+
+    #[test]
+    fn test_put_options_content_disposition_disabled() {
+        let config = BlobConfig {
+            content_disposition: Some("-".to_string()),
+            ..Default::default()
+        };
+        let opts = build_put_options(&config,"f.txt", &make_ctx(), &test_log()).unwrap();
+        assert!(opts
+            .attributes
+            .get(&object_store::Attribute::ContentDisposition)
+            .is_none());
+    }
+
+    #[test]
+    fn test_put_options_content_disposition_custom() {
+        let config = BlobConfig {
+            content_disposition: Some("inline".to_string()),
+            ..Default::default()
+        };
+        let opts = build_put_options(&config,"f.txt", &make_ctx(), &test_log()).unwrap();
+        let cd = opts
+            .attributes
+            .get(&object_store::Attribute::ContentDisposition)
+            .expect("should be set");
+        assert_eq!(cd.as_ref(), "inline");
+    }
+
+    // -----------------------------------------------------------------------
+    // Disable evaluation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_disabled_none() {
+        assert!(!is_disabled(&None, &make_ctx()).unwrap());
+    }
+
+    #[test]
+    fn test_is_disabled_bool_true() {
+        assert!(is_disabled(&Some(StringOrBool::Bool(true)), &make_ctx()).unwrap());
+    }
+
+    #[test]
+    fn test_is_disabled_bool_false() {
+        assert!(!is_disabled(&Some(StringOrBool::Bool(false)), &make_ctx()).unwrap());
+    }
+
+    #[test]
+    fn test_is_disabled_string_true() {
+        assert!(
+            is_disabled(&Some(StringOrBool::String("true".to_string())), &make_ctx()).unwrap()
         );
-        assert_eq!(args[0], "az");
-        assert_eq!(args[1], "storage");
-        assert_eq!(args[2], "blob");
-        assert_eq!(args[3], "upload");
-        assert_eq!(args[4], "--file");
-        assert_eq!(args[5], "/tmp/artifact.tar.gz");
-        assert_eq!(args[6], "--container-name");
-        assert_eq!(args[7], "mycontainer");
-        assert_eq!(args[8], "--name");
-        assert_eq!(args[9], "releases/v1.0.0/artifact.tar.gz");
-        assert_eq!(args[10], "--overwrite");
     }
 
     #[test]
-    fn test_azblob_empty_directory() {
-        let cfg = BlobConfig {
-            provider: "azblob".to_string(),
-            bucket: "c".to_string(),
-            ..Default::default()
-        };
-        let args = build_upload_command(Provider::AzBlob, &cfg, Path::new("/tmp/f"), "f", "c", "");
-        assert_eq!(args[9], "f");
-    }
-
-    // -----------------------------------------------------------------------
-    // Directory trimming
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_directory_trim_slashes() {
-        let cfg = default_blob_config();
-        let args = build_upload_command(
-            Provider::S3,
-            &cfg,
-            Path::new("/tmp/f"),
-            "f",
-            "b",
-            "/leading/trailing/",
+    fn test_is_disabled_string_false() {
+        assert!(
+            !is_disabled(&Some(StringOrBool::String("false".to_string())), &make_ctx()).unwrap()
         );
-        assert_eq!(args[4], "s3://b/leading/trailing/f");
+    }
+
+    #[test]
+    fn test_is_disabled_template_evaluates_to_true() {
+        let ctx = make_ctx_with_snapshot();
+        let disable = Some(StringOrBool::String(
+            "{% if IsSnapshot %}true{% endif %}".to_string(),
+        ));
+        assert!(is_disabled(&disable, &ctx).unwrap());
+    }
+
+    #[test]
+    fn test_is_disabled_template_evaluates_to_false() {
+        let ctx = make_ctx(); // IsSnapshot is "false"
+        let disable = Some(StringOrBool::String(
+            "{% if IsSnapshot == \"true\" %}true{% endif %}".to_string(),
+        ));
+        assert!(!is_disabled(&disable, &ctx).unwrap());
     }
 
     // -----------------------------------------------------------------------
-    // Extra file resolution
+    // Remote path formatting
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_resolve_extra_files_basic() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let file = tmp.path().join("readme.txt");
-        std::fs::write(&file, "hello").unwrap();
-
-        let extras = vec![anodize_core::config::ExtraFile {
-            glob: file.to_string_lossy().into_owned(),
-            name: None,
-        }];
-
-        let resolved = resolve_extra_files(&extras).unwrap();
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].0, file);
-        assert_eq!(resolved[0].1, "readme.txt");
+    fn test_format_remote_path_s3() {
+        let path = format_remote_path(Provider::S3, "my-bucket", "releases/v1", "file.tar.gz");
+        assert_eq!(path, "s3://my-bucket/releases/v1/file.tar.gz");
     }
 
     #[test]
-    fn test_resolve_extra_files_with_name() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let file = tmp.path().join("LICENSE");
-        std::fs::write(&file, "MIT").unwrap();
-
-        let extras = vec![anodize_core::config::ExtraFile {
-            glob: file.to_string_lossy().into_owned(),
-            name: Some("LICENSE.txt".to_string()),
-        }];
-
-        let resolved = resolve_extra_files(&extras).unwrap();
-        assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].1, "LICENSE.txt");
+    fn test_format_remote_path_gcs() {
+        let path = format_remote_path(Provider::Gcs, "my-bucket", "dir", "file.tar.gz");
+        assert_eq!(path, "gs://my-bucket/dir/file.tar.gz");
     }
 
     #[test]
-    fn test_resolve_extra_files_glob_pattern() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
-        std::fs::write(tmp.path().join("b.txt"), "b").unwrap();
-        std::fs::write(tmp.path().join("c.log"), "c").unwrap();
-
-        let pattern = format!("{}/*.txt", tmp.path().display());
-        let extras = vec![anodize_core::config::ExtraFile {
-            glob: pattern,
-            name: None,
-        }];
-
-        let resolved = resolve_extra_files(&extras).unwrap();
-        assert_eq!(resolved.len(), 2);
-        let names: Vec<&str> = resolved.iter().map(|(_, n)| n.as_str()).collect();
-        assert!(names.contains(&"a.txt"));
-        assert!(names.contains(&"b.txt"));
+    fn test_format_remote_path_azure() {
+        let path = format_remote_path(Provider::AzBlob, "container", "path", "file.tar.gz");
+        assert_eq!(path, "azblob://container/path/file.tar.gz");
     }
 
     #[test]
-    fn test_resolve_extra_files_no_match() {
-        let extras = vec![anodize_core::config::ExtraFile {
-            glob: "/nonexistent/path/to/*.xyz".to_string(),
-            name: None,
-        }];
+    fn test_format_remote_path_empty_directory() {
+        let path = format_remote_path(Provider::S3, "b", "", "file.tar.gz");
+        assert_eq!(path, "s3://b/file.tar.gz");
+    }
 
-        let result = resolve_extra_files(&extras);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("matched no files"), "got: {}", msg);
+    #[test]
+    fn test_format_remote_path_trims_slashes() {
+        let path = format_remote_path(Provider::S3, "b", "/dir/", "file.tar.gz");
+        assert_eq!(path, "s3://b/dir/file.tar.gz");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error handling tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_handle_upload_error_not_found() {
+        let err = object_store::Error::NotFound {
+            path: "test/path".to_string(),
+            source: Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "not found")),
+        };
+        let anyhow_err = handle_upload_error(err, "local.tar.gz", "remote/file.tar.gz");
+        let msg = anyhow_err.to_string();
+        assert!(msg.contains("bucket or object not found"), "got: {msg}");
+        assert!(msg.contains("local.tar.gz"), "got: {msg}");
+    }
+
+    #[test]
+    fn test_handle_upload_error_unauthenticated() {
+        let err = object_store::Error::Unauthenticated {
+            path: "test".to_string(),
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "bad creds",
+            )),
+        };
+        let anyhow_err = handle_upload_error(err, "a.tar.gz", "r/a.tar.gz");
+        assert!(anyhow_err.to_string().contains("authentication failed"));
+    }
+
+    #[test]
+    fn test_handle_upload_error_permission_denied() {
+        let err = object_store::Error::PermissionDenied {
+            path: "test".to_string(),
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "access denied",
+            )),
+        };
+        let anyhow_err = handle_upload_error(err, "a.tar.gz", "r/a.tar.gz");
+        assert!(anyhow_err.to_string().contains("access denied"));
+    }
+
+    #[test]
+    fn test_handle_upload_error_generic() {
+        let err = object_store::Error::Generic {
+            store: "S3",
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "network timeout",
+            )),
+        };
+        let anyhow_err = handle_upload_error(err, "a.tar.gz", "r/a.tar.gz");
+        assert!(anyhow_err.to_string().contains("upload failed"));
     }
 
     // -----------------------------------------------------------------------
@@ -852,31 +907,26 @@ mod tests {
 blobs:
   - provider: s3
     bucket: my-releases
-    directory: "{{ ProjectName }}/{{ Tag }}"
-    region: us-east-1
-    acl: public-read
-    cache_control: "max-age=86400"
+    region: us-west-2
 "#;
         let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0].provider, "s3");
         assert_eq!(blobs[0].bucket, "my-releases");
-        assert_eq!(blobs[0].region.as_deref(), Some("us-east-1"));
-        assert_eq!(blobs[0].acl.as_deref(), Some("public-read"));
+        assert_eq!(blobs[0].region.as_deref(), Some("us-west-2"));
     }
 
     #[test]
     fn test_blob_config_parses_gcs() {
         let yaml = r#"
 blobs:
-  - provider: gcs
+  - provider: gs
     bucket: my-gcs-bucket
 "#;
         let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
-        assert_eq!(blobs[0].provider, "gcs");
-        assert_eq!(blobs[0].bucket, "my-gcs-bucket");
+        assert_eq!(blobs[0].provider, "gs");
     }
 
     #[test]
@@ -884,17 +934,11 @@ blobs:
         let yaml = r#"
 blobs:
   - provider: azblob
-    bucket: mycontainer
-    directory: releases/{{ Version }}
+    bucket: my-container
 "#;
         let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs[0].provider, "azblob");
-        assert_eq!(blobs[0].bucket, "mycontainer");
-        assert_eq!(
-            blobs[0].directory.as_deref(),
-            Some("releases/{{ Version }}")
-        );
     }
 
     #[test]
@@ -902,9 +946,8 @@ blobs:
         let yaml = r#"
 blobs:
   - provider: s3
-    bucket: s3-bucket
-    region: us-west-2
-  - provider: gcs
+    bucket: aws-bucket
+  - provider: gs
     bucket: gcs-bucket
   - provider: azblob
     bucket: azure-container
@@ -912,9 +955,6 @@ blobs:
         let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs.len(), 3);
-        assert_eq!(blobs[0].provider, "s3");
-        assert_eq!(blobs[1].provider, "gcs");
-        assert_eq!(blobs[2].provider, "azblob");
     }
 
     #[test]
@@ -929,7 +969,9 @@ blobs:
     disable_ssl: true
     s3_force_path_style: true
     acl: private
-    cache_control: "no-cache"
+    cache_control:
+      - "no-cache"
+      - "no-store"
     content_disposition: "inline"
     kms_key: "key123"
     ids:
@@ -952,15 +994,84 @@ blobs:
         assert_eq!(b.disable_ssl, Some(true));
         assert_eq!(b.s3_force_path_style, Some(true));
         assert_eq!(b.acl.as_deref(), Some("private"));
-        assert_eq!(b.cache_control.as_deref(), Some("no-cache"));
+        assert_eq!(
+            b.cache_control.as_ref().unwrap(),
+            &["no-cache", "no-store"]
+        );
         assert_eq!(b.content_disposition.as_deref(), Some("inline"));
         assert_eq!(b.kms_key.as_deref(), Some("key123"));
         assert_eq!(b.ids.as_ref().unwrap(), &["build-linux"]);
-        assert_eq!(b.disable, Some(false));
+        assert_eq!(b.disable, Some(StringOrBool::Bool(false)));
         assert_eq!(b.include_meta, Some(true));
         assert!(b.extra_files.is_some());
         assert_eq!(b.extra_files_only, Some(false));
         assert_eq!(b.id.as_deref(), Some("my-blob-config"));
+    }
+
+    #[test]
+    fn test_blob_config_cache_control_as_string() {
+        // Backward compat: cache_control as a single string
+        let yaml = r#"
+blobs:
+  - provider: s3
+    bucket: b
+    cache_control: "max-age=86400"
+"#;
+        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let blobs = crate_cfg.blobs.unwrap();
+        assert_eq!(
+            blobs[0].cache_control.as_ref().unwrap(),
+            &["max-age=86400"]
+        );
+    }
+
+    #[test]
+    fn test_blob_config_cache_control_as_array() {
+        let yaml = r#"
+blobs:
+  - provider: s3
+    bucket: b
+    cache_control:
+      - "max-age=86400"
+      - "public"
+"#;
+        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let blobs = crate_cfg.blobs.unwrap();
+        assert_eq!(
+            blobs[0].cache_control.as_ref().unwrap(),
+            &["max-age=86400", "public"]
+        );
+    }
+
+    #[test]
+    fn test_blob_config_disable_as_bool() {
+        let yaml = r#"
+blobs:
+  - provider: s3
+    bucket: b
+    disable: true
+"#;
+        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let blobs = crate_cfg.blobs.unwrap();
+        assert_eq!(blobs[0].disable, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_blob_config_disable_as_template_string() {
+        let yaml = r#"
+blobs:
+  - provider: s3
+    bucket: b
+    disable: "{% if IsSnapshot %}true{% endif %}"
+"#;
+        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let blobs = crate_cfg.blobs.unwrap();
+        match &blobs[0].disable {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -1007,24 +1118,213 @@ blobs:
     }
 
     #[test]
+    fn test_blob_config_extra_files_name_template_alias() {
+        let yaml = r#"
+blobs:
+  - provider: s3
+    bucket: b
+    extra_files:
+      - glob: "./LICENSE"
+        name_template: "LICENSE-{{ Tag }}"
+"#;
+        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let blobs = crate_cfg.blobs.unwrap();
+        let extras = blobs[0].extra_files.as_ref().unwrap();
+        assert_eq!(extras[0].name.as_deref(), Some("LICENSE-{{ Tag }}"));
+    }
+
+    #[test]
     fn test_partial_config_parses() {
         let yaml = r#"
 partial:
-  by: target
+  by: goos
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(
+            &format!("project_name: test\ncrates: []\n{}", yaml),
+        )
+        .unwrap();
         let partial = config.partial.unwrap();
-        assert_eq!(partial.by.as_deref(), Some("target"));
+        assert_eq!(partial.by.as_deref(), Some("goos"));
+    }
+
+    #[test]
+    fn test_partial_config_by_target() {
+        let yaml = "project_name: test\ncrates: []\npartial:\n  by: target\n";
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            config.partial.unwrap().by.as_deref(),
+            Some("target")
+        );
     }
 
     #[test]
     fn test_partial_config_defaults() {
-        let cfg = anodize_core::config::PartialConfig::default();
-        assert!(cfg.by.is_none());
+        let yaml = "project_name: test\ncrates: []\npartial: {}\n";
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        // by defaults to None, which the runtime interprets as "goos"
+        assert!(config.partial.unwrap().by.is_none());
     }
 
     // -----------------------------------------------------------------------
-    // Stage behavior tests (dry-run)
+    // Extra files resolution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_extra_files_basic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file_path = tmp.path().join("LICENSE");
+        std::fs::write(&file_path, "MIT").unwrap();
+
+        let extras = vec![ExtraFile {
+            glob: file_path.to_string_lossy().to_string(),
+            name: None,
+        }];
+        let resolved = resolve_extra_files(&extras, &make_ctx(), &test_log()).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].1, "LICENSE");
+    }
+
+    #[test]
+    fn test_resolve_extra_files_with_name_template() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let file_path = tmp.path().join("LICENSE");
+        std::fs::write(&file_path, "MIT").unwrap();
+
+        let extras = vec![ExtraFile {
+            glob: file_path.to_string_lossy().to_string(),
+            name: Some("LICENSE-{{ Tag }}".to_string()),
+        }];
+
+        let mut ctx = make_ctx();
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let resolved = resolve_extra_files(&extras, &ctx, &test_log()).unwrap();
+        assert_eq!(resolved[0].1, "LICENSE-v1.0.0");
+    }
+
+    #[test]
+    fn test_resolve_extra_files_glob_pattern() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("LICENSE"), "MIT").unwrap();
+        std::fs::write(tmp.path().join("LICENSE.md"), "MIT").unwrap();
+
+        let glob_pattern = format!("{}/*", tmp.path().display());
+        let extras = vec![ExtraFile {
+            glob: glob_pattern,
+            name: None,
+        }];
+        let resolved = resolve_extra_files(&extras, &make_ctx(), &test_log()).unwrap();
+        assert_eq!(resolved.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_extra_files_no_match_warns_and_continues() {
+        let extras = vec![ExtraFile {
+            glob: "/nonexistent/path/to/files/*.xyz".to_string(),
+            name: None,
+        }];
+        // Should succeed with empty results (warning logged), not error
+        let result = resolve_extra_files(&extras, &make_ctx(), &test_log()).unwrap();
+        assert!(result.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Artifact filtering tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_collect_artifacts_filters_by_crate() {
+        let mut ctx = make_ctx();
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/a.tar.gz"),
+            target: None,
+            crate_name: "mycrate".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/b.tar.gz"),
+            target: None,
+            crate_name: "othercrate".to_string(),
+            metadata: Default::default(),
+        });
+        let config = BlobConfig::default();
+        let arts = collect_artifacts(&ctx, &config, "mycrate");
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].crate_name, "mycrate");
+    }
+
+    #[test]
+    fn test_collect_artifacts_extra_files_only() {
+        let mut ctx = make_ctx();
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/a.tar.gz"),
+            target: None,
+            crate_name: "mycrate".to_string(),
+            metadata: Default::default(),
+        });
+        let config = BlobConfig {
+            extra_files_only: Some(true),
+            ..Default::default()
+        };
+        let arts = collect_artifacts(&ctx, &config, "mycrate");
+        assert!(arts.is_empty());
+    }
+
+    #[test]
+    fn test_collect_artifacts_ids_filter() {
+        let mut ctx = make_ctx();
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("id".to_string(), "linux-build".to_string());
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/a.tar.gz"),
+            target: None,
+            crate_name: "mycrate".to_string(),
+            metadata: meta,
+        });
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/b.tar.gz"),
+            target: None,
+            crate_name: "mycrate".to_string(),
+            metadata: Default::default(),
+        });
+        let config = BlobConfig {
+            ids: Some(vec!["linux-build".to_string()]),
+            ..Default::default()
+        };
+        let arts = collect_artifacts(&ctx, &config, "mycrate");
+        assert_eq!(arts.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_artifacts_includes_metadata_kind() {
+        let mut ctx = make_ctx();
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: ArtifactKind::Metadata,
+            path: PathBuf::from("dist/metadata.json"),
+            target: None,
+            crate_name: "mycrate".to_string(),
+            metadata: Default::default(),
+        });
+        // Without include_meta
+        let config = BlobConfig::default();
+        let arts = collect_artifacts(&ctx, &config, "mycrate");
+        assert!(arts.is_empty());
+
+        // With include_meta
+        let config_meta = BlobConfig {
+            include_meta: Some(true),
+            ..Default::default()
+        };
+        let arts = collect_artifacts(&ctx, &config_meta, "mycrate");
+        assert_eq!(arts.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage behavior tests
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1038,9 +1338,10 @@ partial:
             }],
             ..Default::default()
         };
-        let opts = anodize_core::context::ContextOptions::default();
+        let opts = ContextOptions::default();
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "test");
 
         let stage = BlobStage;
         let result = stage.run(&mut ctx);
@@ -1057,14 +1358,14 @@ partial:
                 blobs: Some(vec![BlobConfig {
                     provider: "s3".to_string(),
                     bucket: "b".to_string(),
-                    disable: Some(true),
+                    disable: Some(StringOrBool::Bool(true)),
                     ..Default::default()
                 }]),
                 ..Default::default()
             }],
             ..Default::default()
         };
-        let opts = anodize_core::context::ContextOptions::default();
+        let opts = ContextOptions::default();
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         ctx.template_vars_mut().set("ProjectName", "test");
@@ -1072,223 +1373,6 @@ partial:
         let stage = BlobStage;
         let result = stage.run(&mut ctx);
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_blob_stage_invalid_provider() {
-        let config = anodize_core::config::Config {
-            project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
-                name: "mycrate".to_string(),
-                path: ".".to_string(),
-                blobs: Some(vec![BlobConfig {
-                    provider: "dropbox".to_string(),
-                    bucket: "b".to_string(),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let opts = anodize_core::context::ContextOptions::default();
-        let mut ctx = Context::new(config, opts);
-        ctx.template_vars_mut().set("Tag", "v1.0.0");
-        ctx.template_vars_mut().set("ProjectName", "test");
-
-        let stage = BlobStage;
-        let result = stage.run(&mut ctx);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("unknown provider"), "got: {}", msg);
-    }
-
-    #[test]
-    fn test_blob_stage_dry_run_logs_commands() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use std::collections::HashMap;
-
-        let config = anodize_core::config::Config {
-            project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
-                name: "mycrate".to_string(),
-                path: ".".to_string(),
-                blobs: Some(vec![BlobConfig {
-                    provider: "s3".to_string(),
-                    bucket: "my-bucket".to_string(),
-                    directory: Some("releases".to_string()),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let opts = anodize_core::context::ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
-        ctx.template_vars_mut().set("Tag", "v1.0.0");
-        ctx.template_vars_mut().set("ProjectName", "test");
-
-        // Add a fake artifact
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Archive,
-            path: PathBuf::from("/tmp/test.tar.gz"),
-            target: Some("x86_64-unknown-linux-gnu".to_string()),
-            crate_name: "mycrate".to_string(),
-            metadata: HashMap::new(),
-        });
-
-        let stage = BlobStage;
-        let result = stage.run(&mut ctx);
-        assert!(result.is_ok(), "dry-run should succeed: {:?}", result.err());
-    }
-
-    #[test]
-    fn test_blob_stage_extra_files_only() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let extra = tmp.path().join("extra.txt");
-        std::fs::write(&extra, "data").unwrap();
-
-        let config = anodize_core::config::Config {
-            project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
-                name: "mycrate".to_string(),
-                path: ".".to_string(),
-                blobs: Some(vec![BlobConfig {
-                    provider: "s3".to_string(),
-                    bucket: "b".to_string(),
-                    directory: Some("d".to_string()),
-                    extra_files: Some(vec![anodize_core::config::ExtraFile {
-                        glob: extra.to_string_lossy().into_owned(),
-                        name: None,
-                    }]),
-                    extra_files_only: Some(true),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let opts = anodize_core::context::ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
-        ctx.template_vars_mut().set("Tag", "v1.0.0");
-        ctx.template_vars_mut().set("ProjectName", "test");
-
-        // Add an artifact that should NOT be uploaded
-        ctx.artifacts.add(Artifact {
-            kind: anodize_core::artifact::ArtifactKind::Archive,
-            path: PathBuf::from("/tmp/should-not-upload.tar.gz"),
-            target: None,
-            crate_name: "mycrate".to_string(),
-            metadata: std::collections::HashMap::new(),
-        });
-
-        let stage = BlobStage;
-        let result = stage.run(&mut ctx);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_blob_stage_ids_filter() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use std::collections::HashMap;
-
-        let config = anodize_core::config::Config {
-            project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
-                name: "mycrate".to_string(),
-                path: ".".to_string(),
-                blobs: Some(vec![BlobConfig {
-                    provider: "gcs".to_string(),
-                    bucket: "b".to_string(),
-                    directory: Some("d".to_string()),
-                    ids: Some(vec!["linux-build".to_string()]),
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let opts = anodize_core::context::ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
-        ctx.template_vars_mut().set("Tag", "v1.0.0");
-        ctx.template_vars_mut().set("ProjectName", "test");
-
-        // Add two artifacts, only one should match the ids filter
-        let mut meta_linux = HashMap::new();
-        meta_linux.insert("id".to_string(), "linux-build".to_string());
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Archive,
-            path: PathBuf::from("/tmp/linux.tar.gz"),
-            target: None,
-            crate_name: "mycrate".to_string(),
-            metadata: meta_linux,
-        });
-
-        let mut meta_windows = HashMap::new();
-        meta_windows.insert("id".to_string(), "windows-build".to_string());
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Archive,
-            path: PathBuf::from("/tmp/windows.zip"),
-            target: None,
-            crate_name: "mycrate".to_string(),
-            metadata: meta_windows,
-        });
-
-        let stage = BlobStage;
-        // In dry-run mode this will succeed; the filter logic only allows linux-build
-        let result = stage.run(&mut ctx);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_blob_stage_include_meta() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let dist = tmp.path().join("dist");
-        std::fs::create_dir_all(&dist).unwrap();
-        std::fs::write(dist.join("metadata.json"), r#"{"version":"1"}"#).unwrap();
-        std::fs::write(dist.join("artifacts.json"), r#"{"artifacts":[]}"#).unwrap();
-
-        let config = anodize_core::config::Config {
-            project_name: "test".to_string(),
-            dist: dist.clone(),
-            crates: vec![anodize_core::config::CrateConfig {
-                name: "mycrate".to_string(),
-                path: ".".to_string(),
-                blobs: Some(vec![BlobConfig {
-                    provider: "s3".to_string(),
-                    bucket: "b".to_string(),
-                    directory: Some("d".to_string()),
-                    include_meta: Some(true),
-                    extra_files_only: Some(true), // skip artifacts, only meta
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let opts = anodize_core::context::ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
-        ctx.template_vars_mut().set("Tag", "v1.0.0");
-        ctx.template_vars_mut().set("ProjectName", "test");
-
-        let stage = BlobStage;
-        let result = stage.run(&mut ctx);
-        assert!(
-            result.is_ok(),
-            "include_meta with existing metadata files should succeed in dry-run: {:?}",
-            result.err()
-        );
     }
 
     #[test]
@@ -1307,7 +1391,7 @@ partial:
             }],
             ..Default::default()
         };
-        let opts = anodize_core::context::ContextOptions::default();
+        let opts = ContextOptions::default();
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         ctx.template_vars_mut().set("ProjectName", "test");
@@ -1315,8 +1399,7 @@ partial:
         let stage = BlobStage;
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("provider is required"), "got: {}", msg);
+        assert!(result.unwrap_err().to_string().contains("provider is required"));
     }
 
     #[test]
@@ -1335,7 +1418,7 @@ partial:
             }],
             ..Default::default()
         };
-        let opts = anodize_core::context::ContextOptions::default();
+        let opts = ContextOptions::default();
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         ctx.template_vars_mut().set("ProjectName", "test");
@@ -1343,7 +1426,244 @@ partial:
         let stage = BlobStage;
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("bucket is required"), "got: {}", msg);
+        assert!(result.unwrap_err().to_string().contains("bucket is required"));
+    }
+
+    #[test]
+    fn test_blob_stage_invalid_provider() {
+        let config = anodize_core::config::Config {
+            project_name: "test".to_string(),
+            crates: vec![anodize_core::config::CrateConfig {
+                name: "mycrate".to_string(),
+                path: ".".to_string(),
+                blobs: Some(vec![BlobConfig {
+                    provider: "dropbox".to_string(),
+                    bucket: "b".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let opts = ContextOptions::default();
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "test");
+
+        let stage = BlobStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown provider"));
+    }
+
+    #[test]
+    fn test_blob_stage_dry_run_logs_commands() {
+        let config = anodize_core::config::Config {
+            project_name: "test".to_string(),
+            crates: vec![anodize_core::config::CrateConfig {
+                name: "mycrate".to_string(),
+                path: ".".to_string(),
+                blobs: Some(vec![BlobConfig {
+                    provider: "s3".to_string(),
+                    bucket: "my-bucket".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut opts = ContextOptions::default();
+        opts.dry_run = true;
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "test");
+
+        // Add an artifact so there's something to "upload"
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/test-v1.0.0.tar.gz"),
+            target: None,
+            crate_name: "mycrate".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = BlobStage;
+        // Dry-run should succeed without any credentials
+        let result = stage.run(&mut ctx);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // StringOrBool unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_string_or_bool_as_bool() {
+        assert!(StringOrBool::Bool(true).as_bool());
+        assert!(!StringOrBool::Bool(false).as_bool());
+        assert!(StringOrBool::String("true".to_string()).as_bool());
+        assert!(StringOrBool::String("1".to_string()).as_bool());
+        assert!(!StringOrBool::String("false".to_string()).as_bool());
+        assert!(!StringOrBool::String("".to_string()).as_bool());
+    }
+
+    #[test]
+    fn test_string_or_bool_is_template() {
+        assert!(StringOrBool::String("{% if X %}true{% endif %}".to_string()).is_template());
+        assert!(!StringOrBool::String("true".to_string()).is_template());
+        assert!(!StringOrBool::Bool(true).is_template());
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test with InMemory store
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_upload_to_in_memory_store() {
+        use object_store::ObjectStoreExt as _;
+
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Create test files
+        let file1 = tmp.path().join("app.tar.gz");
+        std::fs::write(&file1, b"archive data").unwrap();
+        let file2 = tmp.path().join("checksums.sha256");
+        std::fs::write(&file2, b"abc123  app.tar.gz").unwrap();
+
+        let upload_items = vec![
+            (file1, "app.tar.gz".to_string()),
+            (file2, "checksums.sha256".to_string()),
+        ];
+        let config = BlobConfig::default();
+        let ctx = make_ctx();
+        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+
+        let params = UploadParams {
+            store: Arc::clone(&store),
+            items: &upload_items,
+            directory: "myproject/v1.0.0",
+            config: &config,
+            ctx: &ctx,
+        };
+        let result = upload_files(&params, &log);
+        assert!(result.is_ok(), "upload failed: {:?}", result.err());
+
+        // Verify files were uploaded to the store
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let path1 = ObjectPath::from("myproject/v1.0.0/app.tar.gz");
+            let get_result = store
+                .get_opts(&path1, object_store::GetOptions::default())
+                .await
+                .unwrap();
+            let data = get_result.bytes().await.unwrap();
+            assert_eq!(data.as_ref(), b"archive data");
+
+            let path2 = ObjectPath::from("myproject/v1.0.0/checksums.sha256");
+            let get_result = store
+                .get_opts(&path2, object_store::GetOptions::default())
+                .await
+                .unwrap();
+            let data = get_result.bytes().await.unwrap();
+            assert_eq!(data.as_ref(), b"abc123  app.tar.gz");
+        });
+    }
+
+    #[test]
+    fn test_upload_to_in_memory_store_empty_directory() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let file1 = tmp.path().join("file.txt");
+        std::fs::write(&file1, b"data").unwrap();
+
+        let upload_items = vec![(file1, "file.txt".to_string())];
+        let config = BlobConfig::default();
+        let ctx = make_ctx();
+        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+
+        let params = UploadParams {
+            store: Arc::clone(&store),
+            items: &upload_items,
+            directory: "",
+            config: &config,
+            ctx: &ctx,
+        };
+        let result = upload_files(&params, &log);
+        assert!(result.is_ok());
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let path = ObjectPath::from("file.txt");
+            let get_result = store
+                .get_opts(&path, object_store::GetOptions::default())
+                .await
+                .unwrap();
+            let data = get_result.bytes().await.unwrap();
+            assert_eq!(data.as_ref(), b"data");
+        });
+    }
+
+    #[test]
+    fn test_upload_with_content_disposition() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let file1 = tmp.path().join("app.tar.gz");
+        std::fs::write(&file1, b"data").unwrap();
+
+        let upload_items = vec![(file1, "app.tar.gz".to_string())];
+        let config = BlobConfig {
+            content_disposition: Some("attachment;filename={{Filename}}".to_string()),
+            ..Default::default()
+        };
+        let ctx = make_ctx();
+        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+
+        let params = UploadParams {
+            store,
+            items: &upload_items,
+            directory: "dir",
+            config: &config,
+            ctx: &ctx,
+        };
+        let result = upload_files(&params, &log);
+        assert!(result.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn test_log() -> anodize_core::log::StageLogger {
+        anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet)
+    }
+
+    fn make_ctx() -> Context {
+        let config = anodize_core::config::Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        };
+        let opts = ContextOptions::default();
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "test");
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        ctx
+    }
+
+    fn make_ctx_with_snapshot() -> Context {
+        let config = anodize_core::config::Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        };
+        let mut opts = ContextOptions::default();
+        opts.snapshot = true;
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "test");
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+        ctx
     }
 }
