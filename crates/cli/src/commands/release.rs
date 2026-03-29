@@ -449,6 +449,9 @@ pub struct SplitContext {
     pub partial_target: String,
     /// Template variables (all resolved values at split time).
     pub template_vars: HashMap<String, String>,
+    /// Environment variables accessible as {{ Env.VAR }} in templates.
+    #[serde(default)]
+    pub env_vars: HashMap<String, String>,
     /// Git info snapshot.
     pub git_tag: Option<String>,
     pub git_commit: Option<String>,
@@ -519,6 +522,26 @@ fn run_split(
         subdir
     ));
 
+    // Validate that the partial target matches at least one configured build target
+    let all_targets = collect_build_targets(config, ctx);
+    let matching = partial_target.filter_targets(&all_targets);
+    if matching.is_empty() && !all_targets.is_empty() {
+        anyhow::bail!(
+            "split: no build targets match {}. Available targets: [{}]",
+            match &partial_target {
+                anodize_core::partial::PartialTarget::Exact(t) => format!("TARGET={}", t),
+                anodize_core::partial::PartialTarget::OsArch { os, arch } => {
+                    if let Some(a) = arch {
+                        format!("ANODIZE_OS={}, ANODIZE_ARCH={}", os, a)
+                    } else {
+                        format!("ANODIZE_OS={}", os)
+                    }
+                }
+            },
+            all_targets.join(", ")
+        );
+    }
+
     // Set partial target on context so build stage filters targets
     ctx.options.partial_target = Some(partial_target.clone());
 
@@ -542,6 +565,7 @@ fn run_split(
     let split_ctx = SplitContext {
         partial_target: subdir.clone(),
         template_vars: ctx.template_vars().all().clone(),
+        env_vars: ctx.template_vars().all_env().clone(),
         git_tag: ctx.template_vars().get("Tag").map(String::from),
         git_commit: ctx.template_vars().get("FullCommit").map(String::from),
         git_branch: ctx.template_vars().get("Branch").map(String::from),
@@ -600,7 +624,9 @@ fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
         };
 
         if seen.insert(entry_target.clone()) {
-            let runner = anodize_core::partial::suggest_runner(&entry_target);
+            // For target mode, extract OS component for runner suggestion
+            let (os, _) = anodize_core::target::map_target(t);
+            let runner = anodize_core::partial::suggest_runner(&os);
             entries.push(MatrixEntry {
                 target: entry_target,
                 runner: runner.to_string(),
@@ -653,10 +679,13 @@ pub fn run_merge(
         let split_ctx: SplitContext = serde_json::from_str(&content)
             .with_context(|| format!("parse split context: {}", ctx_file.display()))?;
 
-        // Restore template vars from first split context
+        // Restore template vars and env vars from first split context
         if first_vars.is_none() {
             for (key, value) in &split_ctx.template_vars {
                 ctx.template_vars_mut().set(key, value);
+            }
+            for (key, value) in &split_ctx.env_vars {
+                ctx.template_vars_mut().set_env(key, value);
             }
             first_vars = Some(split_ctx.template_vars.clone());
         }
@@ -665,13 +694,17 @@ pub fn run_merge(
             if !seen_paths.insert(sa.path.clone()) {
                 continue;
             }
-            let kind = artifact::ArtifactKind::parse(&sa.kind).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "merge: unknown artifact kind '{}' in {}",
-                    sa.kind,
-                    ctx_file.display()
-                )
-            })?;
+            let kind = match artifact::ArtifactKind::parse(&sa.kind) {
+                Some(k) => k,
+                None => {
+                    log.warn(&format!(
+                        "merge: unknown artifact kind '{}' in {}, skipping",
+                        sa.kind,
+                        ctx_file.display()
+                    ));
+                    continue;
+                }
+            };
             // Convert extra back to flat string metadata
             let metadata: HashMap<String, String> = sa
                 .extra
@@ -1238,6 +1271,9 @@ mod tests {
                 ("Tag".to_string(), "v1.0.0".to_string()),
                 ("ProjectName".to_string(), "myapp".to_string()),
             ]),
+            env_vars: HashMap::from([
+                ("GITHUB_TOKEN".to_string(), "ghp_secret".to_string()),
+            ]),
             git_tag: Some("v1.0.0".to_string()),
             git_commit: Some("abc123".to_string()),
             git_branch: Some("main".to_string()),
@@ -1262,6 +1298,7 @@ mod tests {
         let ctx = SplitContext {
             partial_target: "linux".to_string(),
             template_vars: HashMap::new(),
+            env_vars: HashMap::new(),
             git_tag: None,
             git_commit: None,
             git_branch: None,

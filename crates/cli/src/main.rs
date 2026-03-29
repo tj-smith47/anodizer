@@ -215,9 +215,13 @@ fn main() {
         Commands::Announce {
             dry_run,
             dist,
+            token,
+            skip,
         } => commands::announce_cmd::run(commands::announce_cmd::AnnounceOpts {
             dry_run,
             dist,
+            token,
+            skip,
             config_override: cli.config.clone(),
             verbose: cli.verbose,
             debug: cli.debug,

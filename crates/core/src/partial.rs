@@ -145,6 +145,7 @@ pub fn suggest_runner(os: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::config::PartialConfig;
+    use serial_test::serial;
 
     // -----------------------------------------------------------------------
     // PartialTarget filtering
@@ -292,6 +293,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[serial]
     fn test_resolve_with_goos_default() {
         // Clear env vars that might interfere
         // SAFETY: test-only, no concurrent env var access in these serial tests
@@ -315,6 +317,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_resolve_with_by_target() {
         // SAFETY: test-only, no concurrent env var access in these serial tests
         unsafe {
@@ -338,6 +341,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_resolve_invalid_by_value() {
         // SAFETY: test-only, no concurrent env var access in these serial tests
         unsafe {

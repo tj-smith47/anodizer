@@ -167,25 +167,21 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
+        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
+        token: Option<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Skip stages (comma-separated)"
+        )]
+        skip: Vec<String>,
     },
 }
 
 /// Detect the host target triple by parsing `rustc -vV` output.
+/// Delegates to `anodize_core::partial::detect_host_target()`.
 pub fn detect_host_target() -> anyhow::Result<String> {
-    let output = std::process::Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run rustc: {}", e))?;
-    if !output.status.success() {
-        anyhow::bail!("rustc -vV failed");
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(triple) = line.strip_prefix("host: ") {
-            return Ok(triple.trim().to_string());
-        }
-    }
-    anyhow::bail!("could not find 'host:' line in rustc -vV output")
+    anodize_core::partial::detect_host_target()
 }
 
 /// Return a sensible default parallelism value (number of logical CPUs, minimum 1).

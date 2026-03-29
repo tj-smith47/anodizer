@@ -12,6 +12,8 @@ use std::path::PathBuf;
 pub struct AnnounceOpts {
     pub dry_run: bool,
     pub dist: Option<PathBuf>,
+    pub token: Option<String>,
+    pub skip: Vec<String>,
     pub config_override: Option<PathBuf>,
     pub verbose: bool,
     pub debug: bool,
@@ -33,6 +35,8 @@ pub fn run(opts: AnnounceOpts) -> Result<()> {
         quiet: opts.quiet,
         verbose: opts.verbose,
         debug: opts.debug,
+        skip_stages: opts.skip,
+        token: opts.token,
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);

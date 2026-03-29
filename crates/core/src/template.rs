@@ -119,6 +119,11 @@ impl TemplateVars {
     pub fn all(&self) -> &HashMap<String, String> {
         &self.vars
     }
+
+    /// Return all environment variables.
+    pub fn all_env(&self) -> &HashMap<String, String> {
+        &self.env
+    }
 }
 
 impl Default for TemplateVars {

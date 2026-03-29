@@ -514,6 +514,19 @@ impl Stage for BuildStage {
                     }
                 }
 
+                // --split: filter targets to those matching the partial target
+                if let Some(ref partial) = ctx.options.partial_target {
+                    let had_targets = !targets.is_empty();
+                    targets = partial.filter_targets(&targets);
+                    if had_targets && targets.is_empty() {
+                        log.verbose(&format!(
+                            "split: no targets match partial filter for {}/{}, skipping",
+                            crate_cfg.name, build.binary
+                        ));
+                        continue;
+                    }
+                }
+
                 // If no targets configured, skip (caller should ensure defaults)
                 if targets.is_empty() {
                     log.warn(&format!(
