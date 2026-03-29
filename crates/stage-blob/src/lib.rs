@@ -59,7 +59,7 @@ fn build_store(
 ) -> Result<Box<dyn ObjectStore>> {
     match provider {
         Provider::S3 => build_s3_store(config, rendered_bucket, ctx),
-        Provider::Gcs => build_gcs_store(rendered_bucket),
+        Provider::Gcs => build_gcs_store(rendered_bucket, config),
         Provider::AzBlob => build_azure_store(rendered_bucket),
     }
 }
@@ -101,6 +101,20 @@ fn build_s3_store(
         builder = builder.with_sse_kms_encryption(kms_key);
     }
 
+    // S3 canned ACL via x-amz-acl header.
+    // We set it as a default header on the client — since each blob config
+    // gets its own ObjectStore client, this is per-config ACL.
+    if let Some(ref acl) = config.acl {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-amz-acl"),
+            reqwest::header::HeaderValue::from_str(acl)
+                .with_context(|| format!("blobs: invalid ACL value: {acl}"))?,
+        );
+        let client_opts = object_store::ClientOptions::new().with_default_headers(headers);
+        builder = builder.with_client_options(client_opts);
+    }
+
     Ok(Box::new(
         builder
             .build()
@@ -108,10 +122,22 @@ fn build_s3_store(
     ))
 }
 
-fn build_gcs_store(bucket: &str) -> Result<Box<dyn ObjectStore>> {
+fn build_gcs_store(bucket: &str, config: &BlobConfig) -> Result<Box<dyn ObjectStore>> {
     use object_store::gcp::GoogleCloudStorageBuilder;
 
-    let builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(bucket);
+    let mut builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(bucket);
+
+    // GCS predefined ACL via x-goog-acl header
+    if let Some(ref acl) = config.acl {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-goog-acl"),
+            reqwest::header::HeaderValue::from_str(acl)
+                .with_context(|| format!("blobs: invalid ACL value: {acl}"))?,
+        );
+        let client_opts = object_store::ClientOptions::new().with_default_headers(headers);
+        builder = builder.with_client_options(client_opts);
+    }
 
     Ok(Box::new(
         builder
@@ -140,7 +166,6 @@ fn build_put_options(
     config: &BlobConfig,
     filename: &str,
     ctx: &Context,
-    log: &anodize_core::log::StageLogger,
 ) -> Result<PutOptions> {
     use object_store::Attribute;
 
@@ -169,11 +194,8 @@ fn build_put_options(
         attrs.insert(Attribute::ContentDisposition, rendered.into());
     }
 
-    // ACL: object_store does not have first-class ACL support. Warn the user
-    // if they configured it so they know it's not being applied.
-    if config.acl.is_some() {
-        log.warn("blobs: 'acl' field is configured but not yet supported by the SDK backend — objects will use the bucket's default ACL");
-    }
+    // ACL is handled at the client level via x-amz-acl / x-goog-acl headers
+    // set in build_s3_store() / build_gcs_store(). No per-request handling needed.
 
     Ok(PutOptions {
         attributes: attrs,
@@ -332,7 +354,7 @@ struct UploadParams<'a> {
     ctx: &'a Context,
 }
 
-fn upload_files(params: &UploadParams<'_>, log: &anodize_core::log::StageLogger) -> Result<()> {
+fn upload_files(params: &UploadParams<'_>) -> Result<()> {
     // Use multi-threaded tokio runtime for actual parallel uploads
     let rt = tokio::runtime::Runtime::new()
         .context("blobs: failed to create tokio runtime")?;
@@ -352,7 +374,7 @@ fn upload_files(params: &UploadParams<'_>, log: &anodize_core::log::StageLogger)
             };
 
             let object_path = ObjectPath::from(object_key.as_str());
-            let put_opts = build_put_options(params.config, remote_key, params.ctx, log)?;
+            let put_opts = build_put_options(params.config, remote_key, params.ctx)?;
 
             let store = Arc::clone(&params.store);
             let sem = Arc::clone(&semaphore);
@@ -575,7 +597,7 @@ impl Stage for BlobStage {
                         config: blob_cfg,
                         ctx,
                     };
-                    upload_files(&params, &log)?;
+                    upload_files(&params)?;
                 }
 
                 log.status(&format!(
@@ -697,7 +719,7 @@ mod tests {
             ]),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"file.tar.gz", &make_ctx(), &test_log()).unwrap();
+        let opts = build_put_options(&config,"file.tar.gz", &make_ctx()).unwrap();
         let cc = opts
             .attributes
             .get(&object_store::Attribute::CacheControl)
@@ -711,7 +733,7 @@ mod tests {
             cache_control: Some(vec!["no-cache".to_string()]),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"f.txt", &make_ctx(), &test_log()).unwrap();
+        let opts = build_put_options(&config,"f.txt", &make_ctx()).unwrap();
         let cc = opts
             .attributes
             .get(&object_store::Attribute::CacheControl)
@@ -722,7 +744,7 @@ mod tests {
     #[test]
     fn test_put_options_content_disposition_default() {
         let config = BlobConfig::default();
-        let opts = build_put_options(&config,"myapp-v1.tar.gz", &make_ctx(), &test_log()).unwrap();
+        let opts = build_put_options(&config,"myapp-v1.tar.gz", &make_ctx()).unwrap();
         let cd = opts
             .attributes
             .get(&object_store::Attribute::ContentDisposition)
@@ -736,7 +758,7 @@ mod tests {
             content_disposition: Some("-".to_string()),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"f.txt", &make_ctx(), &test_log()).unwrap();
+        let opts = build_put_options(&config,"f.txt", &make_ctx()).unwrap();
         assert!(opts
             .attributes
             .get(&object_store::Attribute::ContentDisposition)
@@ -749,7 +771,7 @@ mod tests {
             content_disposition: Some("inline".to_string()),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"f.txt", &make_ctx(), &test_log()).unwrap();
+        let opts = build_put_options(&config,"f.txt", &make_ctx()).unwrap();
         let cd = opts
             .attributes
             .get(&object_store::Attribute::ContentDisposition)
@@ -1546,7 +1568,7 @@ partial:
             config: &config,
             ctx: &ctx,
         };
-        let result = upload_files(&params, &log);
+        let result = upload_files(&params);
         assert!(result.is_ok(), "upload failed: {:?}", result.err());
 
         // Verify files were uploaded to the store
@@ -1590,7 +1612,7 @@ partial:
             config: &config,
             ctx: &ctx,
         };
-        let result = upload_files(&params, &log);
+        let result = upload_files(&params);
         assert!(result.is_ok());
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1628,7 +1650,7 @@ partial:
             config: &config,
             ctx: &ctx,
         };
-        let result = upload_files(&params, &log);
+        let result = upload_files(&params);
         assert!(result.is_ok());
     }
 

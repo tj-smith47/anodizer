@@ -116,6 +116,7 @@ dependencies = [
  "anyhow",
  "glob",
  "object_store",
+ "reqwest",
  "serde",
  "serde_json",
  "serde_yaml_ng",
