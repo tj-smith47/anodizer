@@ -1,0 +1,19 @@
+[package]
+name = "anodize-stage-blob"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Cloud storage (S3/GCS/Azure) upload stage for anodize release automation"
+
+[dependencies]
+anodize-core.workspace = true
+anyhow.workspace = true
+glob.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_yaml_ng.workspace = true

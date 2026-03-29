@@ -65,6 +65,11 @@ fn main() {
             single_target,
             release_notes,
             workspace,
+            draft,
+            release_header,
+            release_footer,
+            split,
+            merge,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -101,6 +106,11 @@ fn main() {
                     single_target: resolved_single_target,
                     release_notes,
                     workspace,
+                    draft,
+                    release_header,
+                    release_footer,
+                    split,
+                    merge,
                 })
             })
         }
@@ -600,5 +610,156 @@ mod tests {
         // quiet defaults to false
         let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
         assert!(!cli.quiet, "quiet should default to false");
+    }
+
+    #[test]
+    fn test_cli_parses_release_draft_flag() {
+        let cli = Cli::try_parse_from(["anodize", "release", "--draft"]);
+        assert!(cli.is_ok(), "CLI should parse --draft: {:?}", cli.err());
+        if let Commands::Release { draft, .. } = cli.unwrap().command {
+            assert!(draft, "--draft should be true");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_draft_defaults_false() {
+        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        if let Commands::Release { draft, .. } = cli.command {
+            assert!(!draft, "--draft should default to false");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_release_header_footer() {
+        let cli = Cli::try_parse_from([
+            "anodize",
+            "release",
+            "--release-header",
+            "/tmp/header.md",
+            "--release-footer",
+            "/tmp/footer.md",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse --release-header/--release-footer: {:?}",
+            cli.err()
+        );
+        if let Commands::Release {
+            release_header,
+            release_footer,
+            ..
+        } = cli.unwrap().command
+        {
+            assert_eq!(
+                release_header,
+                Some(std::path::PathBuf::from("/tmp/header.md"))
+            );
+            assert_eq!(
+                release_footer,
+                Some(std::path::PathBuf::from("/tmp/footer.md"))
+            );
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    // ---- Split/merge CLI flag tests ----
+
+    #[test]
+    fn test_cli_parses_release_split_flag() {
+        let cli = Cli::try_parse_from(["anodize", "release", "--split"]);
+        assert!(cli.is_ok(), "CLI should parse --split: {:?}", cli.err());
+        if let Commands::Release { split, merge, .. } = cli.unwrap().command {
+            assert!(split, "--split should be true");
+            assert!(!merge, "--merge should be false");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_release_merge_flag() {
+        let cli = Cli::try_parse_from(["anodize", "release", "--merge"]);
+        assert!(cli.is_ok(), "CLI should parse --merge: {:?}", cli.err());
+        if let Commands::Release { split, merge, .. } = cli.unwrap().command {
+            assert!(!split, "--split should be false");
+            assert!(merge, "--merge should be true");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_split_merge_default_false() {
+        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        if let Commands::Release { split, merge, .. } = cli.command {
+            assert!(!split, "--split should default to false");
+            assert!(!merge, "--merge should default to false");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_split_with_single_target() {
+        let cli = Cli::try_parse_from(["anodize", "release", "--split", "--single-target"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse --split --single-target: {:?}",
+            cli.err()
+        );
+        if let Commands::Release {
+            split,
+            single_target,
+            ..
+        } = cli.unwrap().command
+        {
+            assert!(split);
+            assert!(single_target);
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_help_output_contains_split_merge_flags() {
+        let mut cmd = Cli::command();
+        let release_help = cmd
+            .find_subcommand_mut("release")
+            .expect("release subcommand should exist")
+            .render_help()
+            .to_string();
+        assert!(
+            release_help.contains("--split"),
+            "release help should mention --split flag, got: {}",
+            release_help
+        );
+        assert!(
+            release_help.contains("--merge"),
+            "release help should mention --merge flag, got: {}",
+            release_help
+        );
+    }
+
+    #[test]
+    fn test_cli_split_merge_mutually_exclusive() {
+        let result = Cli::try_parse_from(["anodize", "release", "--split", "--merge"]);
+        assert!(
+            result.is_err(),
+            "--split and --merge should be mutually exclusive"
+        );
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.contains("--split") || err.contains("--merge") || err.contains("cannot be used"),
+            "error should mention the conflicting flags: {}",
+            err
+        );
     }
 }

@@ -67,6 +67,24 @@ pub enum Commands {
         release_notes: Option<PathBuf>,
         #[arg(long, help = "Release a specific workspace in a monorepo config")]
         workspace: Option<String>,
+        #[arg(long, help = "Set the release as a draft")]
+        draft: bool,
+        #[arg(long, help = "Path to a file containing custom release header text")]
+        release_header: Option<PathBuf>,
+        #[arg(long, help = "Path to a file containing custom release footer text")]
+        release_footer: Option<PathBuf>,
+        #[arg(
+            long,
+            conflicts_with = "merge",
+            help = "Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/)"
+        )]
+        split: bool,
+        #[arg(
+            long,
+            conflicts_with = "split",
+            help = "Merge artifacts from split build jobs and resume the pipeline from post-build stages"
+        )]
+        merge: bool,
     },
     /// Build binaries only (always runs in snapshot mode)
     Build {

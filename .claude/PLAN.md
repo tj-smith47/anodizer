@@ -532,6 +532,8 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 
 **Session exit criteria:** Blob upload works with mocked cloud APIs. Split/merge round-trips correctly in tests.
 
+**Session actual results:** 1441 tests (up from 1372), 0 clippy warnings, 0 fmt issues. New stage crate `stage-blob` with full S3/GCS/Azure upload via CLI tools (`aws s3 cp`, `gsutil cp`, `az storage blob upload`). BlobConfig with all GoReleaser-parity fields: provider, bucket, directory (templated), region, endpoint, disable_ssl, s3_force_path_style, acl, cache_control, content_disposition, kms_key, ids filter, disable, include_meta, extra_files (with glob), extra_files_only. GCS and Azure commands wire through cache_control, content_disposition, and acl where supported. Split/merge CI fan-out: `--split` runs build-only pipeline + serializes artifacts.json + generates GitHub Actions matrix.json with target list; `--merge` loads artifacts from split jobs (with dedup by path), runs post-build pipeline. PartialConfig with `by` field controls matrix strategy. Flags are clap-level mutually exclusive. ExtraFile config with `name` field (aliased `name_template` for compat). ArtifactKind::parse() for round-trip serialization. Blob validation in `check.rs` (provider/bucket required, valid providers). Blob CLI tools in `healthcheck.rs` (aws, gsutil, az). 4 review rounds, 26 total findings fixed, final round: zero findings.
+
 ---
 
 ## Remaining Session 6 Gaps + Final GoReleaser Parity Audit

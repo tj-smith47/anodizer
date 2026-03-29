@@ -41,6 +41,18 @@ const TOOLS: &[ToolCheck] = &[
         name: "cosign",
         description: "Sigstore container signing",
     },
+    ToolCheck {
+        name: "aws",
+        description: "AWS CLI (S3 blob storage)",
+    },
+    ToolCheck {
+        name: "gsutil",
+        description: "Google Cloud Storage CLI",
+    },
+    ToolCheck {
+        name: "az",
+        description: "Azure CLI (Blob storage)",
+    },
 ];
 
 fn tool_available(name: &str) -> bool {

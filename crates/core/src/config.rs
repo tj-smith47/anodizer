@@ -40,6 +40,7 @@ pub struct Config {
     pub env: Option<HashMap<String, String>>,
     pub publishers: Option<Vec<PublisherConfig>>,
     pub tag: Option<TagConfig>,
+    pub partial: Option<PartialConfig>,
     pub workspaces: Option<Vec<WorkspaceConfig>>,
     pub source: Option<SourceConfig>,
     pub sbom: Option<SbomConfig>,
@@ -83,6 +84,7 @@ impl Default for Config {
             env: None,
             publishers: None,
             tag: None,
+            partial: None,
             workspaces: None,
             source: None,
             sbom: None,
@@ -247,6 +249,7 @@ pub struct CrateConfig {
     pub dmgs: Option<Vec<DmgConfig>>,
     pub msis: Option<Vec<MsiConfig>>,
     pub pkgs: Option<Vec<PkgConfig>>,
+    pub blobs: Option<Vec<BlobConfig>>,
     pub binstall: Option<BinstallConfig>,
     pub version_sync: Option<VersionSyncConfig>,
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
@@ -276,6 +279,7 @@ impl Default for CrateConfig {
             dmgs: None,
             msis: None,
             pkgs: None,
+            blobs: None,
             binstall: None,
             version_sync: None,
             universal_binaries: None,
@@ -1157,6 +1161,74 @@ pub struct PkgConfig {
     pub mod_timestamp: Option<String>,
     /// Disable this PKG config.
     pub disable: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// BlobConfig (S3/GCS/Azure cloud storage)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct BlobConfig {
+    /// Unique identifier for this blob config.
+    pub id: Option<String>,
+    /// Cloud storage provider: s3, gcs, or azblob.
+    pub provider: String,
+    /// Bucket or container name (supports templates).
+    pub bucket: String,
+    /// Directory/folder within the bucket (supports templates).
+    /// Default: `{{ ProjectName }}/{{ Tag }}`.
+    pub directory: Option<String>,
+    /// AWS region (S3 only).
+    pub region: Option<String>,
+    /// Custom endpoint URL for S3-compatible storage (e.g. MinIO).
+    pub endpoint: Option<String>,
+    /// Disable SSL for the connection (S3 only, default: false).
+    pub disable_ssl: Option<bool>,
+    /// Enable path-style addressing for S3-compatible backends (e.g. MinIO).
+    /// Sets `AWS_S3_ADDRESSING_STYLE=path` on the subprocess. Default: false.
+    pub s3_force_path_style: Option<bool>,
+    /// ACL for uploaded objects (S3 and GCS, e.g. "public-read", "private").
+    pub acl: Option<String>,
+    /// HTTP Cache-Control header for uploaded objects (supports templates).
+    pub cache_control: Option<String>,
+    /// HTTP Content-Disposition header (supports templates). Optional.
+    pub content_disposition: Option<String>,
+    /// AWS KMS encryption key for server-side encryption (S3 only).
+    pub kms_key: Option<String>,
+    /// Build IDs to include. Empty means all artifacts.
+    pub ids: Option<Vec<String>>,
+    /// Disable this blob config.
+    pub disable: Option<bool>,
+    /// Also upload metadata.json and artifacts.json.
+    pub include_meta: Option<bool>,
+    /// Pre-existing files to upload (supports glob patterns).
+    pub extra_files: Option<Vec<ExtraFile>>,
+    /// Upload only extra files (skip artifacts).
+    pub extra_files_only: Option<bool>,
+}
+
+/// An extra file to upload, with optional name override.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ExtraFile {
+    /// Glob pattern for the file(s) to upload.
+    pub glob: String,
+    /// Optional override for the upload filename.
+    #[serde(alias = "name_template")]
+    pub name: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// PartialConfig (split/merge CI fan-out)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct PartialConfig {
+    /// How to split builds: "target" (per target triple).
+    /// Default: "target".
+    pub by: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

@@ -42,6 +42,27 @@ impl ArtifactKind {
             ArtifactKind::MacOsPackage => "macos_package",
         }
     }
+
+    /// Parse a snake_case string into an ArtifactKind.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "binary" => Some(ArtifactKind::Binary),
+            "archive" => Some(ArtifactKind::Archive),
+            "checksum" => Some(ArtifactKind::Checksum),
+            "docker_image" => Some(ArtifactKind::DockerImage),
+            "linux_package" => Some(ArtifactKind::LinuxPackage),
+            "metadata" => Some(ArtifactKind::Metadata),
+            "library" => Some(ArtifactKind::Library),
+            "wasm" => Some(ArtifactKind::Wasm),
+            "source_archive" => Some(ArtifactKind::SourceArchive),
+            "sbom" => Some(ArtifactKind::Sbom),
+            "snap" => Some(ArtifactKind::Snap),
+            "disk_image" => Some(ArtifactKind::DiskImage),
+            "installer" => Some(ArtifactKind::Installer),
+            "macos_package" => Some(ArtifactKind::MacOsPackage),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

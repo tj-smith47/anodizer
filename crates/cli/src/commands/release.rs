@@ -8,7 +8,7 @@ use anodize_core::log::{StageLogger, Verbosity};
 use anodize_core::template;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct ReleaseOpts {
     pub crate_names: Vec<String>,
@@ -28,6 +28,11 @@ pub struct ReleaseOpts {
     pub single_target: Option<String>,
     pub release_notes: Option<PathBuf>,
     pub workspace: Option<String>,
+    pub draft: bool,
+    pub release_header: Option<PathBuf>,
+    pub release_footer: Option<PathBuf>,
+    pub split: bool,
+    pub merge: bool,
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
@@ -52,6 +57,32 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Auto-detect GitHub owner/name from git remote
     helpers::auto_detect_github(&mut config, &log);
+
+    // CLI overrides for release config
+    if opts.draft {
+        let release = config.release.get_or_insert_with(Default::default);
+        release.draft = Some(true);
+    }
+    if let Some(ref header_path) = opts.release_header {
+        let header_content = std::fs::read_to_string(header_path).with_context(|| {
+            format!(
+                "failed to read release header file: {}",
+                header_path.display()
+            )
+        })?;
+        let release = config.release.get_or_insert_with(Default::default);
+        release.header = Some(header_content);
+    }
+    if let Some(ref footer_path) = opts.release_footer {
+        let footer_content = std::fs::read_to_string(footer_path).with_context(|| {
+            format!(
+                "failed to read release footer file: {}",
+                footer_path.display()
+            )
+        })?;
+        let release = config.release.get_or_insert_with(Default::default);
+        release.footer = Some(footer_content);
+    }
 
     if opts.clean {
         let dist = &config.dist;
@@ -96,6 +127,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();
+    ctx.populate_runtime_vars();
 
     // Populate user-defined env vars into template context
     helpers::setup_env(&mut ctx, &config, &log)?;
@@ -166,14 +198,37 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         log.verbose(&format!("snapshot: release_name={}", rendered_name));
     }
 
+    // --split: run only the build stage, serialize artifacts to dist/, then exit
+    if opts.split {
+        return run_split(&mut ctx, &config, &log);
+    }
+
+    // --merge: load artifacts from split jobs, then run post-build stages
+    if opts.merge {
+        return run_merge(&mut ctx, &config, &log, opts.dry_run);
+    }
+
     let p = pipeline::build_release_pipeline();
     let result = p.run(&mut ctx, &log);
 
-    // Post-pipeline: report sizes and write metadata (only if pipeline succeeded, not in dry-run)
-    if result.is_ok() && !ctx.is_dry_run() {
+    if result.is_ok() {
+        run_post_pipeline(&mut ctx, &config, opts.dry_run, &log)?;
+    }
+
+    result
+}
+
+/// Post-pipeline tasks: metadata writing, publishers, after hooks.
+fn run_post_pipeline(
+    ctx: &mut Context,
+    config: &Config,
+    dry_run: bool,
+    log: &anodize_core::log::StageLogger,
+) -> Result<()> {
+    if !dry_run {
         // Print artifact size table if configured
         if config.report_sizes.unwrap_or(false) {
-            artifact::print_size_report(&ctx.artifacts, &log);
+            artifact::print_size_report(&ctx.artifacts, log);
         }
 
         // Write metadata.json to dist/
@@ -192,9 +247,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         log.status(&format!("wrote {}", metadata_path.display()));
     }
 
-    // Run custom publishers (only if pipeline succeeded)
-    if result.is_ok()
-        && let Some(ref publishers) = config.publishers
+    // Run custom publishers
+    if let Some(ref publishers) = config.publishers
         && !publishers.is_empty()
     {
         log.status("running custom publishers...");
@@ -202,19 +256,17 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             publishers,
             ctx.artifacts.all(),
             ctx.template_vars(),
-            opts.dry_run,
-            &log,
+            dry_run,
+            log,
         )?;
     }
 
-    // Run hooks after pipeline (only if pipeline succeeded)
-    if result.is_ok()
-        && let Some(after) = &config.after
-    {
-        pipeline::run_hooks(&after.hooks, "after", opts.dry_run, &log)?;
+    // Run after hooks
+    if let Some(after) = &config.after {
+        pipeline::run_hooks(&after.hooks, "after", dry_run, log)?;
     }
 
-    result
+    Ok(())
 }
 
 /// Detect which crates have changes since their last tag.
@@ -234,19 +286,11 @@ fn detect_changed_crates(crates: &[CrateConfig]) -> Result<Vec<String>> {
                     changed.push(c.name.clone());
                 }
                 // Track the earliest tag for workspace-level check
-                let sv = git::parse_semver(tag).ok();
-                if let Some(sv) = sv {
+                if let Ok(sv) = git::parse_semver(tag) {
                     let is_older = oldest_tag
                         .as_ref()
                         .and_then(|t| git::parse_semver(t).ok())
-                        .map(|osv| {
-                            sv.major < osv.major
-                                || (sv.major == osv.major && sv.minor < osv.minor)
-                                || (sv.major == osv.major
-                                    && sv.minor == osv.minor
-                                    && sv.patch < osv.patch)
-                        })
-                        .unwrap_or(true);
+                        .is_none_or(|osv| sv < osv);
                     if is_older {
                         oldest_tag = Some(tag.clone());
                     }
@@ -353,59 +397,265 @@ pub fn resolve_workspace<'a>(config: &'a Config, name: &str) -> Result<&'a Works
 
 /// Topologically sort the selected crates respecting depends_on order.
 fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<String> {
-    use std::collections::{HashMap, VecDeque};
-
     let selected_set: std::collections::HashSet<&str> =
         selected.iter().map(|s| s.as_str()).collect();
 
-    // Only consider selected crates
-    let filtered: Vec<&CrateConfig> = all_crates
+    let items: Vec<(String, Vec<String>)> = all_crates
         .iter()
         .filter(|c| selected_set.contains(c.name.as_str()))
+        .map(|c| (c.name.clone(), c.depends_on.clone().unwrap_or_default()))
         .collect();
 
-    let name_to_idx: HashMap<&str, usize> = filtered
+    anodize_core::util::topological_sort(&items)
+}
+
+// ---------------------------------------------------------------------------
+// Split/Merge CI Fan-Out
+// ---------------------------------------------------------------------------
+
+/// Serializable artifact for split/merge JSON.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct SplitArtifact {
+    kind: String,
+    path: String,
+    target: Option<String>,
+    crate_name: String,
+    metadata: std::collections::HashMap<String, String>,
+}
+
+/// The JSON output of a --split build job.
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct SplitOutput {
+    /// The target triple that was built (if single-target).
+    target: Option<String>,
+    /// Artifacts produced by this split job.
+    artifacts: Vec<SplitArtifact>,
+}
+
+/// GitHub Actions matrix definition for split builds.
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+struct GithubActionsMatrix {
+    /// How the build was split (e.g., "target").
+    split_by: String,
+    target: Vec<String>,
+}
+
+/// Run in --split mode: execute only the build stage, then serialize artifacts.
+fn run_split(
+    ctx: &mut Context,
+    config: &Config,
+    log: &anodize_core::log::StageLogger,
+) -> Result<()> {
+    log.status("running in split mode (build only)...");
+
+    // Run only the build stage
+    let p = pipeline::build_split_pipeline();
+    p.run(ctx, log)?;
+
+    // Serialize artifacts to dist/
+    let dist = &config.dist;
+    std::fs::create_dir_all(dist)
+        .with_context(|| format!("create dist directory: {}", dist.display()))?;
+
+    let artifacts: Vec<SplitArtifact> = ctx
+        .artifacts
+        .all()
         .iter()
-        .enumerate()
-        .map(|(i, c)| (c.name.as_str(), i))
+        .map(|a| SplitArtifact {
+            kind: a.kind.as_str().to_string(),
+            path: a.path.to_string_lossy().into_owned(),
+            target: a.target.clone(),
+            crate_name: a.crate_name.clone(),
+            metadata: a.metadata.clone(),
+        })
         .collect();
 
-    let n = filtered.len();
-    let mut in_degree = vec![0usize; n];
-    let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+    let split_output = SplitOutput {
+        target: ctx.options.single_target.clone(),
+        artifacts,
+    };
 
-    for (i, c) in filtered.iter().enumerate() {
-        if let Some(deps) = &c.depends_on {
-            for dep in deps {
-                if let Some(&j) = name_to_idx.get(dep.as_str()) {
-                    adj[j].push(i);
-                    in_degree[i] += 1;
+    let json = serde_json::to_string_pretty(&split_output).context("serialize split output")?;
+
+    let output_path = dist.join("artifacts.json");
+    std::fs::write(&output_path, &json)
+        .with_context(|| format!("write split artifacts to {}", output_path.display()))?;
+
+    log.status(&format!(
+        "split: wrote {} artifact(s) to {}",
+        split_output.artifacts.len(),
+        output_path.display()
+    ));
+
+    // Generate a GitHub Actions matrix JSON based on the partial.by strategy
+    let split_by = config
+        .partial
+        .as_ref()
+        .and_then(|p| p.by.as_deref())
+        .unwrap_or("target");
+
+    let targets = collect_build_targets(config, ctx);
+    if !targets.is_empty() {
+        let matrix = GithubActionsMatrix {
+            split_by: split_by.to_string(),
+            target: targets,
+        };
+        let matrix_json = serde_json::to_string(&matrix).context("serialize matrix")?;
+        let matrix_path = dist.join("matrix.json");
+        std::fs::write(&matrix_path, &matrix_json)
+            .with_context(|| format!("write matrix to {}", matrix_path.display()))?;
+        log.status(&format!(
+            "split: wrote matrix to {} (split by: {})",
+            matrix_path.display(),
+            split_by
+        ));
+    }
+
+    Ok(())
+}
+
+/// Run in --merge mode: load artifacts from split jobs, then run post-build stages.
+fn run_merge(
+    ctx: &mut Context,
+    config: &Config,
+    log: &anodize_core::log::StageLogger,
+    dry_run: bool,
+) -> Result<()> {
+    log.status("running in merge mode (post-build stages)...");
+
+    let dist = &config.dist;
+
+    // Find all artifacts.json files in dist/ subdirectories
+    let artifact_files = find_split_artifacts(dist)?;
+    if artifact_files.is_empty() {
+        anyhow::bail!(
+            "merge: no artifacts.json files found in {}. \
+             Run `anodize release --split` first to produce split outputs.",
+            dist.display()
+        );
+    }
+
+    // Load and merge all split artifacts, deduplicating by path
+    let mut total_loaded = 0;
+    let mut seen_paths = std::collections::HashSet::new();
+    for artifact_file in &artifact_files {
+        let content = std::fs::read_to_string(artifact_file)
+            .with_context(|| format!("read split artifacts: {}", artifact_file.display()))?;
+        let split_output: SplitOutput = serde_json::from_str(&content)
+            .with_context(|| format!("parse split artifacts: {}", artifact_file.display()))?;
+
+        for sa in &split_output.artifacts {
+            // Deduplicate by path to handle overlapping artifact files
+            if !seen_paths.insert(sa.path.clone()) {
+                continue;
+            }
+            let kind = artifact::ArtifactKind::parse(sa.kind.as_str())
+                .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", sa.kind))?;
+            ctx.artifacts.add(artifact::Artifact {
+                kind,
+                path: PathBuf::from(&sa.path),
+                target: sa.target.clone(),
+                crate_name: sa.crate_name.clone(),
+                metadata: sa.metadata.clone(),
+            });
+            total_loaded += 1;
+        }
+    }
+
+    log.status(&format!(
+        "merge: loaded {} artifact(s) from {} file(s)",
+        total_loaded,
+        artifact_files.len()
+    ));
+
+    // Run post-build pipeline stages (everything except build and upx)
+    let p = pipeline::build_merge_pipeline();
+    let result = p.run(ctx, log);
+
+    if result.is_ok() {
+        run_post_pipeline(ctx, config, dry_run, log)?;
+    }
+
+    result
+}
+
+/// Collect all build targets from config for matrix generation,
+/// filtering out targets excluded by `defaults.ignore`.
+fn collect_build_targets(config: &Config, ctx: &Context) -> Vec<String> {
+    let mut targets = Vec::new();
+
+    for krate in &config.crates {
+        if !ctx.options.selected_crates.is_empty()
+            && !ctx.options.selected_crates.contains(&krate.name)
+        {
+            continue;
+        }
+
+        if let Some(ref builds) = krate.builds {
+            for build in builds {
+                if let Some(ref build_targets) = build.targets {
+                    for t in build_targets {
+                        if !targets.contains(t) {
+                            targets.push(t.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also check default targets
+        if let Some(ref defaults) = config.defaults
+            && let Some(ref default_targets) = defaults.targets
+        {
+            for t in default_targets {
+                if !targets.contains(t) {
+                    targets.push(t.clone());
                 }
             }
         }
     }
 
-    let mut queue: VecDeque<usize> = (0..n).filter(|&i| in_degree[i] == 0).collect();
-    let mut result = vec![];
+    // Filter out ignored os/arch combinations
+    if let Some(ref defaults) = config.defaults
+        && let Some(ref ignores) = defaults.ignore
+    {
+        targets.retain(|t| {
+            let (os, arch) = anodize_core::target::map_target(t);
+            !ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
+        });
+    }
 
-    while let Some(node) = queue.pop_front() {
-        result.push(filtered[node].name.clone());
-        for &next in &adj[node] {
-            in_degree[next] -= 1;
-            if in_degree[next] == 0 {
-                queue.push_back(next);
+    targets
+}
+
+/// Find all artifacts.json files in dist/ directory.
+/// Searches `dist/artifacts.json` and `dist/*/artifacts.json` (one level deep).
+/// Duplicate artifacts are deduplicated by path during merge.
+fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+
+    // Check top-level artifacts.json
+    let top = dist.join("artifacts.json");
+    if top.exists() {
+        files.push(top);
+    }
+
+    // Check subdirectories (e.g., dist/linux/artifacts.json, dist/x86_64-unknown-linux-gnu/artifacts.json)
+    if dist.is_dir()
+        && let Ok(entries) = std::fs::read_dir(dist)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let sub_artifacts = path.join("artifacts.json");
+                if sub_artifacts.exists() {
+                    files.push(sub_artifacts);
+                }
             }
         }
     }
 
-    // Append any remaining (cycle case — shouldn't happen post-check)
-    for c in &filtered {
-        if !result.contains(&c.name) {
-            result.push(c.name.clone());
-        }
-    }
-
-    result
+    Ok(files)
 }
 
 // ---------------------------------------------------------------------------
@@ -686,5 +936,327 @@ mod tests {
         assert_eq!(result[0], "a");
         assert!(result.contains(&"b".to_string()));
         assert!(result.contains(&"c".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // CLI flag override tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_draft_flag_sets_release_config_draft() {
+        // Start with a config that has no release config
+        let mut config = Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        };
+        assert!(config.release.is_none());
+
+        // Simulate what the release command does when --draft is true
+        let release = config.release.get_or_insert_with(Default::default);
+        release.draft = Some(true);
+
+        assert_eq!(config.release.as_ref().unwrap().draft, Some(true));
+    }
+
+    #[test]
+    fn test_draft_flag_overrides_existing_config() {
+        use anodize_core::config::ReleaseConfig;
+
+        // Start with a config that has draft=false
+        let mut config = Config {
+            project_name: "test".to_string(),
+            release: Some(ReleaseConfig {
+                draft: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // Simulate --draft CLI override
+        let release = config.release.get_or_insert_with(Default::default);
+        release.draft = Some(true);
+
+        assert_eq!(
+            config.release.as_ref().unwrap().draft,
+            Some(true),
+            "CLI --draft should override config draft=false"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Split/merge tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_split_artifact_serialization_roundtrip() {
+        let artifact = SplitArtifact {
+            kind: "binary".to_string(),
+            path: "/tmp/myapp".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "linux-build".to_string())]),
+        };
+
+        let json = serde_json::to_string(&artifact).unwrap();
+        let deserialized: SplitArtifact = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.kind, "binary");
+        assert_eq!(deserialized.path, "/tmp/myapp");
+        assert_eq!(
+            deserialized.target.as_deref(),
+            Some("x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(deserialized.crate_name, "myapp");
+        assert_eq!(deserialized.metadata.get("id").unwrap(), "linux-build");
+    }
+
+    #[test]
+    fn test_split_output_serialization_roundtrip() {
+        let output = SplitOutput {
+            target: Some("aarch64-apple-darwin".to_string()),
+            artifacts: vec![
+                SplitArtifact {
+                    kind: "binary".to_string(),
+                    path: "/tmp/myapp".to_string(),
+                    target: Some("aarch64-apple-darwin".to_string()),
+                    crate_name: "myapp".to_string(),
+                    metadata: HashMap::new(),
+                },
+                SplitArtifact {
+                    kind: "archive".to_string(),
+                    path: "/tmp/myapp.tar.gz".to_string(),
+                    target: Some("aarch64-apple-darwin".to_string()),
+                    crate_name: "myapp".to_string(),
+                    metadata: HashMap::new(),
+                },
+            ],
+        };
+
+        let json = serde_json::to_string_pretty(&output).unwrap();
+        let deserialized: SplitOutput = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.target.as_deref(), Some("aarch64-apple-darwin"));
+        assert_eq!(deserialized.artifacts.len(), 2);
+        assert_eq!(deserialized.artifacts[0].kind, "binary");
+        assert_eq!(deserialized.artifacts[1].kind, "archive");
+    }
+
+    #[test]
+    fn test_split_output_no_target() {
+        let output = SplitOutput {
+            target: None,
+            artifacts: vec![],
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        let deserialized: SplitOutput = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.target.is_none());
+        assert!(deserialized.artifacts.is_empty());
+    }
+
+    #[test]
+    fn test_find_split_artifacts_top_level() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let artifacts_path = tmp.path().join("artifacts.json");
+        std::fs::write(&artifacts_path, "{}").unwrap();
+
+        let files = find_split_artifacts(tmp.path()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0], artifacts_path);
+    }
+
+    #[test]
+    fn test_find_split_artifacts_subdirectories() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Create subdirectories with artifacts.json
+        let linux_dir = tmp.path().join("linux");
+        std::fs::create_dir(&linux_dir).unwrap();
+        std::fs::write(linux_dir.join("artifacts.json"), "{}").unwrap();
+
+        let darwin_dir = tmp.path().join("darwin");
+        std::fs::create_dir(&darwin_dir).unwrap();
+        std::fs::write(darwin_dir.join("artifacts.json"), "{}").unwrap();
+
+        let files = find_split_artifacts(tmp.path()).unwrap();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_find_split_artifacts_both_levels() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Top-level
+        std::fs::write(tmp.path().join("artifacts.json"), "{}").unwrap();
+
+        // Subdirectory
+        let sub = tmp.path().join("linux");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("artifacts.json"), "{}").unwrap();
+
+        let files = find_split_artifacts(tmp.path()).unwrap();
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn test_find_split_artifacts_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let files = find_split_artifacts(tmp.path()).unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_find_split_artifacts_nonexistent_dir() {
+        let files = find_split_artifacts(std::path::Path::new("/nonexistent/path")).unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn test_collect_build_targets() {
+        use anodize_core::config::BuildConfig;
+
+        let config = Config {
+            project_name: "test".to_string(),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                builds: Some(vec![BuildConfig {
+                    binary: "myapp".to_string(),
+                    targets: Some(vec![
+                        "x86_64-unknown-linux-gnu".to_string(),
+                        "aarch64-apple-darwin".to_string(),
+                    ]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let opts = anodize_core::context::ContextOptions::default();
+        let ctx = anodize_core::context::Context::new(config.clone(), opts);
+        let targets = collect_build_targets(&config, &ctx);
+        assert_eq!(targets.len(), 2);
+        assert!(targets.contains(&"x86_64-unknown-linux-gnu".to_string()));
+        assert!(targets.contains(&"aarch64-apple-darwin".to_string()));
+    }
+
+    #[test]
+    fn test_collect_build_targets_deduplicates() {
+        use anodize_core::config::BuildConfig;
+
+        let config = Config {
+            project_name: "test".to_string(),
+            crates: vec![
+                CrateConfig {
+                    name: "a".to_string(),
+                    path: ".".to_string(),
+                    builds: Some(vec![BuildConfig {
+                        binary: "a".to_string(),
+                        targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "b".to_string(),
+                    path: ".".to_string(),
+                    builds: Some(vec![BuildConfig {
+                        binary: "b".to_string(),
+                        targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let opts = anodize_core::context::ContextOptions::default();
+        let ctx = anodize_core::context::Context::new(config.clone(), opts);
+        let targets = collect_build_targets(&config, &ctx);
+        assert_eq!(targets.len(), 1, "should deduplicate targets");
+    }
+
+    #[test]
+    fn test_collect_build_targets_from_defaults() {
+        use anodize_core::config::Defaults;
+
+        let config = Config {
+            project_name: "test".to_string(),
+            defaults: Some(Defaults {
+                targets: Some(vec![
+                    "x86_64-unknown-linux-gnu".to_string(),
+                    "x86_64-pc-windows-msvc".to_string(),
+                ]),
+                ..Default::default()
+            }),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let opts = anodize_core::context::ContextOptions::default();
+        let ctx = anodize_core::context::Context::new(config.clone(), opts);
+        let targets = collect_build_targets(&config, &ctx);
+        assert_eq!(targets.len(), 2);
+    }
+
+    #[test]
+    fn test_github_actions_matrix_serialization() {
+        let matrix = GithubActionsMatrix {
+            split_by: "target".to_string(),
+            target: vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "aarch64-apple-darwin".to_string(),
+                "x86_64-pc-windows-msvc".to_string(),
+            ],
+        };
+        let json = serde_json::to_string(&matrix).unwrap();
+        assert!(json.contains("x86_64-unknown-linux-gnu"));
+        assert!(json.contains("aarch64-apple-darwin"));
+        assert!(json.contains("x86_64-pc-windows-msvc"));
+
+        // Should be parseable as a JSON object with "target" array
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed["target"].is_array());
+        assert_eq!(parsed["target"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_split_merge_artifact_kind_roundtrip() {
+        use anodize_core::artifact::ArtifactKind;
+
+        // All artifact kinds should round-trip through as_str/from_str
+        let kinds = [
+            ArtifactKind::Binary,
+            ArtifactKind::Archive,
+            ArtifactKind::Checksum,
+            ArtifactKind::DockerImage,
+            ArtifactKind::LinuxPackage,
+            ArtifactKind::Metadata,
+            ArtifactKind::Library,
+            ArtifactKind::Wasm,
+            ArtifactKind::SourceArchive,
+            ArtifactKind::Sbom,
+            ArtifactKind::Snap,
+            ArtifactKind::DiskImage,
+            ArtifactKind::Installer,
+            ArtifactKind::MacOsPackage,
+        ];
+        for kind in &kinds {
+            let s = kind.as_str();
+            let parsed = ArtifactKind::parse(s);
+            assert!(
+                parsed.is_some(),
+                "ArtifactKind::parse({:?}) should succeed",
+                s
+            );
+            assert_eq!(*kind, parsed.unwrap());
+        }
+    }
+
+    #[test]
+    fn test_artifact_kind_from_str_unknown() {
+        use anodize_core::artifact::ArtifactKind;
+        assert!(ArtifactKind::parse("unknown_kind").is_none());
+        assert!(ArtifactKind::parse("").is_none());
     }
 }

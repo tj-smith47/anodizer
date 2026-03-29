@@ -33,6 +33,7 @@ dependencies = [
  "anodize-core",
  "anodize-stage-announce",
  "anodize-stage-archive",
+ "anodize-stage-blob",
  "anodize-stage-build",
  "anodize-stage-changelog",
  "anodize-stage-checksum",
@@ -104,6 +105,19 @@ dependencies = [
  "xz2",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "anodize-stage-blob"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "glob",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
 ]
 
 [[package]]

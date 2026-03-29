@@ -35,6 +35,7 @@ anodize-stage-snapcraft.workspace = true
 anodize-stage-dmg.workspace = true
 anodize-stage-msi.workspace = true
 anodize-stage-pkg.workspace = true
+anodize-stage-blob.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 serde_json.workspace = true

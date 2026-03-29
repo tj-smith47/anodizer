@@ -347,6 +347,37 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
     }
 
+    // 14. Validate blob configs
+    let valid_blob_providers = ["s3", "gs", "gcs", "azblob", "azure"];
+    for c in &config.crates {
+        if let Some(ref blobs) = c.blobs {
+            for (i, blob) in blobs.iter().enumerate() {
+                let idx = i.to_string();
+                let label = blob.id.as_deref().unwrap_or(&idx);
+                if blob.provider.is_empty() {
+                    errors.push(format!(
+                        "crate '{}' blobs[{}]: provider is required",
+                        c.name, label
+                    ));
+                } else if !valid_blob_providers.contains(&blob.provider.as_str()) {
+                    errors.push(format!(
+                        "crate '{}' blobs[{}]: unrecognized provider '{}' (valid: {})",
+                        c.name,
+                        label,
+                        blob.provider,
+                        valid_blob_providers.join(", ")
+                    ));
+                }
+                if blob.bucket.is_empty() {
+                    errors.push(format!(
+                        "crate '{}' blobs[{}]: bucket is required",
+                        c.name, label
+                    ));
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Environment checks (warnings only)
     // ------------------------------------------------------------------
@@ -408,6 +439,29 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         let needs_nfpm = config.crates.iter().any(|c| c.nfpm.is_some());
         if needs_nfpm && !tool_available("nfpm") {
             warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
+        }
+
+        // Blob storage CLI tool availability
+        for c in &config.crates {
+            if let Some(ref blobs) = c.blobs {
+                for blob in blobs {
+                    if blob.disable.unwrap_or(false) {
+                        continue;
+                    }
+                    let tool = match blob.provider.as_str() {
+                        "s3" => "aws",
+                        "gs" | "gcs" => "gsutil",
+                        "azblob" | "azure" => "az",
+                        _ => continue,
+                    };
+                    if !tool_available(tool) {
+                        warnings.push(format!(
+                            "'{}' is not installed but blobs provider '{}' is configured for crate '{}'",
+                            tool, blob.provider, c.name
+                        ));
+                    }
+                }
+            }
         }
 
         // GPG/cosign availability
@@ -721,6 +775,7 @@ mod tests {
             }]),
             use_source: None,
             abbrev: None,
+            format: None,
         });
         // Should pass (warnings only, not errors)
         assert!(run_checks(&config, false, &test_logger()).is_ok());
@@ -1058,5 +1113,88 @@ mod tests {
                 fmt
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Blob config validation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_blob_config_valid_provider() {
+        use anodize_core::config::BlobConfig;
+        for provider in &["s3", "gcs", "gs", "azblob", "azure"] {
+            let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
+            config.crates[0].blobs = Some(vec![BlobConfig {
+                provider: provider.to_string(),
+                bucket: "my-bucket".to_string(),
+                ..Default::default()
+            }]);
+            assert!(
+                run_checks(&config, false, &test_logger()).is_ok(),
+                "blob provider '{}' should pass",
+                provider
+            );
+        }
+    }
+
+    #[test]
+    fn test_blob_config_invalid_provider() {
+        use anodize_core::config::BlobConfig;
+        let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
+        config.crates[0].blobs = Some(vec![BlobConfig {
+            provider: "dropbox".to_string(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false, &test_logger());
+        assert!(result.is_err(), "invalid blob provider should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("validation failed"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_blob_config_empty_provider() {
+        use anodize_core::config::BlobConfig;
+        let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
+        config.crates[0].blobs = Some(vec![BlobConfig {
+            provider: String::new(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false, &test_logger());
+        assert!(result.is_err(), "empty blob provider should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("validation failed"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_blob_config_empty_bucket() {
+        use anodize_core::config::BlobConfig;
+        let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
+        config.crates[0].blobs = Some(vec![BlobConfig {
+            provider: "s3".to_string(),
+            bucket: String::new(),
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false, &test_logger());
+        assert!(result.is_err(), "empty blob bucket should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("validation failed"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_blob_config_id_in_error_label() {
+        use anodize_core::config::BlobConfig;
+        let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
+        config.crates[0].blobs = Some(vec![BlobConfig {
+            id: Some("my-upload".to_string()),
+            provider: "invalid".to_string(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        }]);
+        let result = run_checks(&config, false, &test_logger());
+        assert!(result.is_err(), "invalid provider with id should fail");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("validation failed"), "got: {}", msg);
     }
 }

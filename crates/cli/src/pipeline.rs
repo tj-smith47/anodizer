@@ -197,6 +197,7 @@ impl Pipeline {
 pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_announce::AnnounceStage;
     use anodize_stage_archive::ArchiveStage;
+    use anodize_stage_blob::BlobStage;
     use anodize_stage_build::BuildStage;
     use anodize_stage_changelog::ChangelogStage;
     use anodize_stage_checksum::ChecksumStage;
@@ -228,6 +229,55 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(PublishStage));
     p.add(Box::new(DockerStage));
     p.add(Box::new(SignStage));
+    p.add(Box::new(BlobStage));
+    p.add(Box::new(AnnounceStage));
+    p
+}
+
+/// Build a pipeline that only runs the build stage (for --split mode).
+pub fn build_split_pipeline() -> Pipeline {
+    use anodize_stage_build::BuildStage;
+    use anodize_stage_upx::UpxStage;
+
+    let mut p = Pipeline::new();
+    p.add(Box::new(BuildStage));
+    p.add(Box::new(UpxStage));
+    p
+}
+
+/// Build a pipeline for --merge mode: all post-build stages.
+pub fn build_merge_pipeline() -> Pipeline {
+    use anodize_stage_announce::AnnounceStage;
+    use anodize_stage_archive::ArchiveStage;
+    use anodize_stage_blob::BlobStage;
+    use anodize_stage_changelog::ChangelogStage;
+    use anodize_stage_checksum::ChecksumStage;
+    use anodize_stage_dmg::DmgStage;
+    use anodize_stage_docker::DockerStage;
+    use anodize_stage_msi::MsiStage;
+    use anodize_stage_nfpm::NfpmStage;
+    use anodize_stage_pkg::PkgStage;
+    use anodize_stage_publish::PublishStage;
+    use anodize_stage_release::ReleaseStage;
+    use anodize_stage_sign::SignStage;
+    use anodize_stage_snapcraft::SnapcraftStage;
+    use anodize_stage_source::SourceStage;
+
+    let mut p = Pipeline::new();
+    p.add(Box::new(ArchiveStage));
+    p.add(Box::new(NfpmStage));
+    p.add(Box::new(SnapcraftStage));
+    p.add(Box::new(DmgStage));
+    p.add(Box::new(MsiStage));
+    p.add(Box::new(PkgStage));
+    p.add(Box::new(SourceStage));
+    p.add(Box::new(ChecksumStage));
+    p.add(Box::new(ChangelogStage));
+    p.add(Box::new(ReleaseStage));
+    p.add(Box::new(PublishStage));
+    p.add(Box::new(DockerStage));
+    p.add(Box::new(SignStage));
+    p.add(Box::new(BlobStage));
     p.add(Box::new(AnnounceStage));
     p
 }
