@@ -174,6 +174,55 @@ fn main() {
             debug: cli.debug,
             quiet: cli.quiet,
         }),
+        Commands::Continue {
+            merge,
+            dist,
+            dry_run,
+            skip,
+            token,
+        } => {
+            if !merge {
+                eprintln!(
+                    "{} `anodize continue` requires --merge flag",
+                    "Error:".red().bold()
+                );
+                std::process::exit(1);
+            }
+            commands::continue_cmd::run(commands::continue_cmd::ContinueOpts {
+                dist,
+                dry_run,
+                skip,
+                token,
+                config_override: cli.config.clone(),
+                verbose: cli.verbose,
+                debug: cli.debug,
+                quiet: cli.quiet,
+            })
+        }
+        Commands::Publish {
+            dry_run,
+            token,
+            dist,
+        } => commands::publish_cmd::run(commands::publish_cmd::PublishOpts {
+            dry_run,
+            token,
+            dist,
+            config_override: cli.config.clone(),
+            verbose: cli.verbose,
+            debug: cli.debug,
+            quiet: cli.quiet,
+        }),
+        Commands::Announce {
+            dry_run,
+            dist,
+        } => commands::announce_cmd::run(commands::announce_cmd::AnnounceOpts {
+            dry_run,
+            dist,
+            config_override: cli.config.clone(),
+            verbose: cli.verbose,
+            debug: cli.debug,
+            quiet: cli.quiet,
+        }),
     };
     if let Err(e) = result {
         eprintln!("{} {}", "Error:".red().bold(), e);

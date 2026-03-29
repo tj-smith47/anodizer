@@ -245,6 +245,28 @@ pub fn build_split_pipeline() -> Pipeline {
     p
 }
 
+/// Build a publish-only pipeline: release, publish, blob stages.
+pub fn build_publish_pipeline() -> Pipeline {
+    use anodize_stage_blob::BlobStage;
+    use anodize_stage_publish::PublishStage;
+    use anodize_stage_release::ReleaseStage;
+
+    let mut p = Pipeline::new();
+    p.add(Box::new(ReleaseStage));
+    p.add(Box::new(PublishStage));
+    p.add(Box::new(BlobStage));
+    p
+}
+
+/// Build an announce-only pipeline.
+pub fn build_announce_pipeline() -> Pipeline {
+    use anodize_stage_announce::AnnounceStage;
+
+    let mut p = Pipeline::new();
+    p.add(Box::new(AnnounceStage));
+    p
+}
+
 /// Build a pipeline for --merge mode: all post-build stages.
 pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_announce::AnnounceStage;

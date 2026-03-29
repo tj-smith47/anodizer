@@ -1,8 +1,11 @@
+use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::{Config, GitHubConfig, WorkspaceConfig};
 use anodize_core::context::Context;
 use anodize_core::git;
 use anodize_core::log::StageLogger;
+use anyhow::{Context as _, Result};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Apply a workspace's configuration overlay onto the top-level config.
 ///
@@ -110,6 +113,48 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
             }
         }
     }
+}
+
+/// Load artifacts from dist/metadata.json into the context's artifact registry.
+/// Used by `publish` and `announce` commands that run from a completed dist/.
+pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
+    let metadata_path = dist.join("metadata.json");
+    if !metadata_path.exists() {
+        anyhow::bail!(
+            "no metadata.json found in {}. Run a full release or merge first.",
+            dist.display()
+        );
+    }
+
+    let content = std::fs::read_to_string(&metadata_path)
+        .with_context(|| format!("read {}", metadata_path.display()))?;
+
+    #[derive(serde::Deserialize)]
+    struct MetadataArtifact {
+        kind: String,
+        path: String,
+        target: Option<String>,
+        crate_name: String,
+        #[serde(default)]
+        metadata: HashMap<String, String>,
+    }
+
+    let artifacts: Vec<MetadataArtifact> = serde_json::from_str(&content)
+        .with_context(|| format!("parse {}", metadata_path.display()))?;
+
+    for a in artifacts {
+        let kind = ArtifactKind::parse(&a.kind)
+            .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", a.kind))?;
+        ctx.artifacts.add(Artifact {
+            kind,
+            path: std::path::PathBuf::from(&a.path),
+            target: a.target,
+            crate_name: a.crate_name,
+            metadata: a.metadata,
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

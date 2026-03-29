@@ -114,6 +114,11 @@ impl TemplateVars {
     pub fn set_env(&mut self, key: &str, value: &str) {
         self.env.insert(key.to_string(), value.to_string());
     }
+
+    /// Return all template variables (excluding env).
+    pub fn all(&self) -> &HashMap<String, String> {
+        &self.vars
+    }
 }
 
 impl Default for TemplateVars {

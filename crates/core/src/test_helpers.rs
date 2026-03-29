@@ -297,6 +297,7 @@ impl TestContextBuilder {
             parallelism: self.parallelism,
             single_target: self.single_target,
             release_notes_path: None,
+            partial_target: None,
         };
 
         let mut ctx = Context::new(config, options);

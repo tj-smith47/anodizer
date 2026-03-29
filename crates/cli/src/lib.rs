@@ -135,6 +135,39 @@ pub enum Commands {
         #[arg(long = "crate", help = "Tag a specific crate in a workspace")]
         crate_name: Option<String>,
     },
+    /// Continue a split release by merging artifacts and running post-build stages
+    Continue {
+        #[arg(long, help = "Merge artifacts from split build jobs and run post-build stages")]
+        merge: bool,
+        #[arg(long, help = "Custom dist directory (overrides config)")]
+        dist: Option<PathBuf>,
+        #[arg(long, help = "Run full pipeline without side effects")]
+        dry_run: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Skip stages (comma-separated, e.g. docker,announce)"
+        )]
+        skip: Vec<String>,
+        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
+        token: Option<String>,
+    },
+    /// Run only the publish stages (release, publish, blob) from a completed dist/
+    Publish {
+        #[arg(long, help = "Run full pipeline without side effects")]
+        dry_run: bool,
+        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
+        token: Option<String>,
+        #[arg(long, help = "Custom dist directory (overrides config)")]
+        dist: Option<PathBuf>,
+    },
+    /// Run only the announce stage from a completed dist/
+    Announce {
+        #[arg(long, help = "Run full pipeline without side effects")]
+        dry_run: bool,
+        #[arg(long, help = "Custom dist directory (overrides config)")]
+        dist: Option<PathBuf>,
+    },
 }
 
 /// Detect the host target triple by parsing `rustc -vV` output.

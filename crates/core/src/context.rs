@@ -2,6 +2,7 @@ use crate::artifact::ArtifactRegistry;
 use crate::config::Config;
 use crate::git::GitInfo;
 use crate::log::{StageLogger, Verbosity};
+use crate::partial::PartialTarget;
 use crate::template::TemplateVars;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -23,6 +24,9 @@ pub struct ContextOptions {
     pub single_target: Option<String>,
     /// Path to a custom release notes file (overrides changelog).
     pub release_notes_path: Option<PathBuf>,
+    /// Partial build target for split/merge mode. When set, the build stage
+    /// filters targets to only those matching this partial target.
+    pub partial_target: Option<PartialTarget>,
 }
 
 impl Default for ContextOptions {
@@ -40,6 +44,7 @@ impl Default for ContextOptions {
             parallelism: 1,
             single_target: None,
             release_notes_path: None,
+            partial_target: None,
         }
     }
 }

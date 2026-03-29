@@ -1,11 +1,14 @@
+pub mod announce_cmd;
 pub mod build;
 pub mod changelog;
 pub mod check;
 pub mod completion;
+pub mod continue_cmd;
 pub mod healthcheck;
 pub mod helpers;
 pub mod init;
 pub mod jsonschema;
+pub mod publish_cmd;
 pub mod publisher;
 pub mod release;
 pub mod tag;

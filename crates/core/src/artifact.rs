@@ -74,6 +74,31 @@ pub struct Artifact {
     pub metadata: HashMap<String, String>,
 }
 
+impl Artifact {
+    /// Return the artifact filename (basename of the path).
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("artifact")
+            .to_string()
+    }
+
+    /// Return the OS component of the target (e.g., "linux", "darwin", "windows").
+    pub fn goos(&self) -> Option<String> {
+        self.target
+            .as_ref()
+            .map(|t| crate::target::map_target(t).0)
+    }
+
+    /// Return the arch component of the target (e.g., "amd64", "arm64").
+    pub fn goarch(&self) -> Option<String> {
+        self.target
+            .as_ref()
+            .map(|t| crate::target::map_target(t).1)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ArtifactRegistry {
     artifacts: Vec<Artifact>,
