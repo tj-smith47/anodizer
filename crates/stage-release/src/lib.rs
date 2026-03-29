@@ -139,6 +139,16 @@ impl Stage for ReleaseStage {
 
         for crate_cfg in &crates {
             let release_cfg = crate_cfg.release.as_ref().unwrap();
+
+            // Skip crates where release is explicitly disabled.
+            if release_cfg.disable.unwrap_or(false) {
+                log.status(&format!(
+                    "release disabled for crate '{}', skipping",
+                    crate_cfg.name
+                ));
+                continue;
+            }
+
             let crate_name = crate_cfg.name.clone();
             let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
 
@@ -1299,6 +1309,82 @@ mod tests {
             .build();
 
         let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // ---- release disable tests ----
+
+    #[test]
+    fn test_release_disable_config_parsing() {
+        let yaml = r#"
+disable: true
+draft: false
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.disable, Some(true));
+    }
+
+    #[test]
+    fn test_release_disable_config_parsing_false() {
+        let yaml = r#"
+disable: false
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.disable, Some(false));
+    }
+
+    #[test]
+    fn test_release_disable_config_parsing_absent() {
+        let yaml = r#"
+draft: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.disable, None);
+    }
+
+    #[test]
+    fn test_release_stage_skipped_when_disabled() {
+        // When disable: true is set, the release stage should skip
+        // the crate entirely. We test via dry-run to avoid real API calls.
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    disable: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        // Should succeed with no error - the crate is simply skipped
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_release_stage_not_skipped_when_disable_false() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    disable: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        // Should succeed - disable=false means proceed normally (dry-run)
         assert!(stage.run(&mut ctx).is_ok());
     }
 }

@@ -77,6 +77,16 @@ pub struct GitInfo {
     /// Previous tag matching the same pattern, if any.
     /// Populated externally by the release command once the tag_template is known.
     pub previous_tag: Option<String>,
+    /// Remote URL from `git remote get-url origin`.
+    pub remote_url: String,
+    /// Git describe summary (e.g. `v1.0.0-10-g34f56g3`) from `git describe --tags --always`.
+    pub summary: String,
+    /// Annotated tag subject (first line of tag message) or commit subject.
+    pub tag_subject: String,
+    /// Full annotated tag message or full commit message.
+    pub tag_contents: String,
+    /// Tag message body (everything after first line) or commit message body.
+    pub tag_body: String,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +94,8 @@ pub struct Commit {
     pub hash: String,
     pub short_hash: String,
     pub message: String,
+    pub author_name: String,
+    pub author_email: String,
 }
 
 /// Run a git command and return stdout, trimmed.
@@ -111,6 +123,23 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     let dirty = is_git_dirty();
     let commit_date = git_output(&["log", "-1", "--format=%aI"]).unwrap_or_default();
     let commit_timestamp = git_output(&["log", "-1", "--format=%at"]).unwrap_or_default();
+    let remote_url = git_output(&["remote", "get-url", "origin"]).unwrap_or_default();
+    let summary = git_output(&["describe", "--tags", "--always"]).unwrap_or_default();
+
+    // Try annotated tag message fields first; fall back to commit message fields.
+    let tag_subject = git_output(&["tag", "-l", "--format=%(subject)", tag])
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| git_output(&["log", "-1", "--format=%s"]).unwrap_or_default());
+    let tag_contents = git_output(&["tag", "-l", "--format=%(contents)", tag])
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| git_output(&["log", "-1", "--format=%B"]).unwrap_or_default());
+    let tag_body = git_output(&["tag", "-l", "--format=%(body)", tag])
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| git_output(&["log", "-1", "--format=%b"]).unwrap_or_default());
+
     let semver = parse_semver(tag)?;
     Ok(GitInfo {
         tag: tag.to_string(),
@@ -122,6 +151,11 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
         commit_date,
         commit_timestamp,
         previous_tag: None,
+        remote_url,
+        summary,
+        tag_subject,
+        tag_contents,
+        tag_body,
     })
 }
 
@@ -183,20 +217,22 @@ pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
     Ok(matching.last().map(|(_, tag)| tag.clone()))
 }
 
-/// Parse git log output (formatted as `%H%n%h%n%s`) into a vec of [`Commit`]s.
+/// Parse git log output (formatted as `%H%n%h%n%s%n%an%n%ae`) into a vec of [`Commit`]s.
 fn parse_commit_output(output: &str) -> Vec<Commit> {
     if output.is_empty() {
         return vec![];
     }
     let lines: Vec<&str> = output.lines().collect();
     lines
-        .chunks(3)
+        .chunks(5)
         .filter_map(|chunk| {
-            if chunk.len() == 3 {
+            if chunk.len() == 5 {
                 Some(Commit {
                     hash: chunk[0].to_string(),
                     short_hash: chunk[1].to_string(),
                     message: chunk[2].to_string(),
+                    author_name: chunk[3].to_string(),
+                    author_email: chunk[4].to_string(),
                 })
             } else {
                 None
@@ -208,7 +244,7 @@ fn parse_commit_output(output: &str) -> Vec<Commit> {
 /// Get commits between two refs, optionally filtered to a path.
 pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> Result<Vec<Commit>> {
     let range = format!("{}..{}", from, to);
-    let mut args = vec!["log", "--pretty=format:%H%n%h%n%s", &range];
+    let mut args = vec!["log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", &range];
     if let Some(path) = path_filter {
         args.push("--");
         args.push(path);
@@ -220,7 +256,7 @@ pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> R
 /// Get all commits reachable from HEAD, optionally filtered to a path.
 /// Used for initial releases where there is no previous tag.
 pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
-    let mut args = vec!["log", "--pretty=format:%H%n%h%n%s", "HEAD"];
+    let mut args = vec!["log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", "HEAD"];
     if let Some(path) = path_filter {
         args.push("--");
         args.push(path);
@@ -390,22 +426,14 @@ pub fn create_tag_via_github_api(
 
 /// Get last N commit subjects.
 pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
-    let n = format!("-{}", count);
-    let output = git_output(&["log", &n, "--pretty=format:%s"])?;
-    if output.is_empty() {
-        return Ok(vec![]);
-    }
-    Ok(output.lines().map(|l| l.to_string()).collect())
+    let output = git_output(&["log", &format!("-{count}"), "--pretty=format:%s"])?;
+    Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Get commit subjects between two refs.
 pub fn get_commit_messages_between(from: &str, to: &str) -> Result<Vec<String>> {
-    let range = format!("{}..{}", from, to);
-    let output = git_output(&["log", "--pretty=format:%s", &range])?;
-    if output.is_empty() {
-        return Ok(vec![]);
-    }
-    Ok(output.lines().map(|l| l.to_string()).collect())
+    let output = git_output(&["log", "--pretty=format:%s", &format!("{from}..{to}")])?;
+    Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Get the current branch name.

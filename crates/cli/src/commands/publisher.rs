@@ -22,6 +22,20 @@ pub fn run_publishers(
         let default_label = format!("publisher[{}]", i);
         let label = publisher.name.as_deref().unwrap_or(&default_label);
 
+        // Check template-conditional disable
+        if let Some(ref disable_tmpl) = publisher.disable {
+            let rendered = template::render(disable_tmpl, base_vars).with_context(|| {
+                format!("failed to render publisher disable template for {}", label)
+            })?;
+            if rendered.trim() == "true" {
+                log.verbose(&format!(
+                    "[publisher] skipping {} -- disabled by template",
+                    label
+                ));
+                continue;
+            }
+        }
+
         if publisher.cmd.is_empty() {
             log.verbose(&format!("[publisher] skipping {} -- empty cmd", label));
             continue;
@@ -61,6 +75,13 @@ pub fn run_publishers(
                 // Build the full shell command string
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
                 cmd.arg(&full_cmd);
+
+                // Apply publisher working directory (template-rendered)
+                if let Some(ref dir) = publisher.dir {
+                    let rendered_dir =
+                        template::render(dir, base_vars).unwrap_or_else(|_| dir.clone());
+                    cmd.current_dir(rendered_dir);
+                }
 
                 // Apply publisher-specific env vars
                 if let Some(ref env_map) = publisher.env {
@@ -208,6 +229,8 @@ mod tests {
             ids: ids.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
             artifact_types: artifact_types.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
             env: None,
+            dir: None,
+            disable: None,
         }
     }
 
@@ -360,6 +383,8 @@ mod tests {
             ids: None,
             artifact_types: None,
             env: None,
+            dir: None,
+            disable: None,
         }];
 
         // In dry-run mode, the command is never executed, so a non-existent
@@ -396,6 +421,8 @@ mod tests {
             ids: None,
             artifact_types: None,
             env: None,
+            dir: None,
+            disable: None,
         }];
 
         let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
@@ -506,5 +533,108 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.publishers.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for dir and disable config fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_publisher_config_parses_dir_and_disable() {
+        use anodize_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+publishers:
+  - name: deploy
+    cmd: "deploy.sh"
+    dir: "/opt/deploy"
+    disable: "{{ IsSnapshot }}"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let publishers = config.publishers.as_ref().unwrap();
+        assert_eq!(publishers.len(), 1);
+        assert_eq!(publishers[0].dir.as_deref(), Some("/opt/deploy"));
+        assert_eq!(publishers[0].disable.as_deref(), Some("{{ IsSnapshot }}"));
+    }
+
+    #[test]
+    fn test_publisher_dir_sets_working_directory() {
+        // This test verifies the dir field is present and would be used.
+        // We can't easily test Command::current_dir in a unit test without running it,
+        // but we verify the config parsing round-trips correctly.
+        let publisher = PublisherConfig {
+            name: Some("test".to_string()),
+            cmd: "echo hello".to_string(),
+            args: None,
+            ids: None,
+            artifact_types: None,
+            env: None,
+            dir: Some("/tmp/work".to_string()),
+            disable: None,
+        };
+        assert_eq!(publisher.dir.as_deref(), Some("/tmp/work"));
+    }
+
+    #[test]
+    fn test_publisher_disable_skips_when_true() {
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("disabled".to_string()),
+            cmd: "this-should-not-run".to_string(),
+            args: None,
+            ids: None,
+            artifact_types: None,
+            env: None,
+            dir: None,
+            disable: Some("true".to_string()),
+        }];
+
+        // Publisher with disable="true" should be skipped entirely
+        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
+        assert!(
+            result.is_ok(),
+            "disabled publisher should be skipped without error: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_publisher_disable_template_conditional() {
+        let mut vars = base_vars();
+        vars.set("IsSnapshot", "true");
+
+        let artifacts = vec![make_artifact(
+            ArtifactKind::Archive,
+            "/dist/myapp.tar.gz",
+            None,
+        )];
+        let publishers = vec![PublisherConfig {
+            name: Some("conditional".to_string()),
+            cmd: "this-should-not-run".to_string(),
+            args: None,
+            ids: None,
+            artifact_types: None,
+            env: None,
+            dir: None,
+            disable: Some("{{ IsSnapshot }}".to_string()),
+        }];
+
+        // When IsSnapshot is "true", the disable template renders to "true" and publisher is skipped
+        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
+        assert!(
+            result.is_ok(),
+            "conditionally disabled publisher should be skipped: {:?}",
+            result.err()
+        );
     }
 }

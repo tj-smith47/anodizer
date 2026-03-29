@@ -3,7 +3,7 @@ use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use tera::Tera;
 
-use crate::util::{find_artifacts_by_os, run_cmd_in};
+use crate::util::{self, find_artifacts_by_os};
 
 // ---------------------------------------------------------------------------
 // PkgbuildParams
@@ -129,17 +129,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .ok_or_else(|| anyhow::anyhow!("aur: crate '{}' not found in config", crate_name))?;
-
-    let publish = crate_cfg
-        .publish
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("aur: no publish config for '{}'", crate_name))?;
+    let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "aur")?;
 
     let aur_cfg = publish
         .aur
@@ -159,12 +149,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         return Ok(());
     }
 
-    // Resolve version.
-    let version = ctx
-        .template_vars()
-        .get("Version")
-        .cloned()
-        .unwrap_or_default();
+    let version = ctx.version();
 
     let package_name = aur_cfg
         .package_name
@@ -255,11 +240,8 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    let output = std::process::Command::new("git")
-        .args(["clone", "--depth=1", git_url, &repo_path.to_string_lossy()])
-        .output()
-        .context("aur: git clone: spawn")?;
-    log.check_output(output, "aur: git clone")?;
+    // AUR uses SSH or plain HTTPS (no bearer-token auth).
+    util::clone_repo_with_auth(git_url, None, repo_path, "aur", log)?;
 
     let pkgbuild_path = repo_path.join("PKGBUILD");
     std::fs::write(&pkgbuild_path, &pkgbuild)
@@ -285,14 +267,13 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         );
     }
 
-    run_cmd_in(repo_path, "git", &["add", "."], "aur: git add")?;
-    run_cmd_in(
+    util::commit_and_push(
         repo_path,
-        "git",
-        &["commit", "-m", &format!("Update to version {}", version)],
-        "aur: git commit",
+        &["."],
+        &format!("Update to version {}", version),
+        None,
+        "aur",
     )?;
-    run_cmd_in(repo_path, "git", &["push"], "aur: git push")?;
 
     log.status(&format!(
         "AUR package '{}' pushed to {}",

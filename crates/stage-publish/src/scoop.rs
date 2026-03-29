@@ -2,11 +2,30 @@ use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
-use crate::util::{find_windows_artifact, run_cmd_in};
+use crate::util;
 
 // ---------------------------------------------------------------------------
 // generate_manifest
 // ---------------------------------------------------------------------------
+
+/// Optional extended fields for manifest generation.
+#[derive(Default)]
+pub struct ManifestOptions<'a> {
+    /// Explicit homepage URL.  Falls back to the GitHub release URL when available.
+    pub homepage: Option<&'a str>,
+    /// GitHub owner/name for default homepage fallback (e.g. "owner/repo").
+    pub github_slug: Option<String>,
+    /// Data paths persisted between updates.
+    pub persist: Option<&'a [String]>,
+    /// Application dependencies.
+    pub depends: Option<&'a [String]>,
+    /// Commands to run before installation.
+    pub pre_install: Option<&'a [String]>,
+    /// Commands to run after installation.
+    pub post_install: Option<&'a [String]>,
+    /// Start menu shortcuts.
+    pub shortcuts: Option<&'a [Vec<String>]>,
+}
 
 /// Generate a Scoop JSON manifest string for a Windows binary.
 pub fn generate_manifest(
@@ -17,16 +36,51 @@ pub fn generate_manifest(
     description: &str,
     license: &str,
 ) -> String {
-    let manifest = serde_json::json!({
+    generate_manifest_with_opts(
+        name,
+        version,
+        url,
+        hash,
+        description,
+        license,
+        &ManifestOptions::default(),
+    )
+}
+
+/// Generate a Scoop JSON manifest string with extended options.
+pub fn generate_manifest_with_opts(
+    name: &str,
+    version: &str,
+    url: &str,
+    hash: &str,
+    description: &str,
+    license: &str,
+    opts: &ManifestOptions<'_>,
+) -> String {
+    // Homepage: explicit > GitHub owner/repo > bare name fallback.
+    let default_homepage = opts
+        .github_slug
+        .as_deref()
+        .map(|slug| format!("https://github.com/{}", slug))
+        .unwrap_or_else(|| format!("https://github.com/{}", name));
+    let homepage = opts.homepage.unwrap_or(&default_homepage);
+
+    // Scoop bin entry should include .exe for Windows.
+    let bin_name = format!("{}.exe", name);
+
+    // Autoupdate URL uses GitHub slug if available.
+    let autoupdate_prefix = opts.github_slug.as_deref().unwrap_or(name);
+
+    let mut manifest = serde_json::json!({
         "version": version,
         "description": description,
-        "homepage": format!("https://github.com/{}", name),
+        "homepage": homepage,
         "license": license,
         "architecture": {
             "64bit": {
                 "url": url,
                 "hash": hash,
-                "bin": name
+                "bin": bin_name
             }
         },
         "checkver": "github",
@@ -34,13 +88,32 @@ pub fn generate_manifest(
             "architecture": {
                 "64bit": {
                     "url": format!(
-                        "https://github.com/{0}/{0}/releases/download/v$version/{0}-$version-windows-amd64.zip",
-                        name
+                        "https://github.com/{}/releases/download/v$version/{}-$version-windows-amd64.zip",
+                        autoupdate_prefix, name
                     )
                 }
             }
         }
     });
+
+    // Add optional array fields when present.
+    let obj = manifest.as_object_mut().expect("manifest is an object");
+
+    if let Some(persist) = opts.persist {
+        obj.insert("persist".to_string(), serde_json::json!(persist));
+    }
+    if let Some(depends) = opts.depends {
+        obj.insert("depends".to_string(), serde_json::json!(depends));
+    }
+    if let Some(pre_install) = opts.pre_install {
+        obj.insert("pre_install".to_string(), serde_json::json!(pre_install));
+    }
+    if let Some(post_install) = opts.post_install {
+        obj.insert("post_install".to_string(), serde_json::json!(post_install));
+    }
+    if let Some(shortcuts) = opts.shortcuts {
+        obj.insert("shortcuts".to_string(), serde_json::json!(shortcuts));
+    }
 
     // SAFETY: The manifest is a serde_json::Value constructed from string
     // literals and function parameters; serialisation to JSON is infallible.
@@ -52,22 +125,22 @@ pub fn generate_manifest(
 // ---------------------------------------------------------------------------
 
 pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .ok_or_else(|| anyhow::anyhow!("scoop: crate '{}' not found in config", crate_name))?;
-
-    let publish = crate_cfg
-        .publish
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("scoop: no publish config for '{}'", crate_name))?;
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "scoop")?;
 
     let scoop_cfg = publish
         .scoop
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?;
+
+    // Check skip_upload before doing any work.
+    if crate::homebrew::should_skip_upload(scoop_cfg.skip_upload.as_deref(), ctx) {
+        log.status(&format!(
+            "scoop: skipping upload for '{}' (skip_upload={})",
+            crate_name,
+            scoop_cfg.skip_upload.as_deref().unwrap_or("")
+        ));
+        return Ok(());
+    }
 
     let bucket = scoop_cfg
         .bucket
@@ -82,12 +155,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    // Resolve version.
-    let version = ctx
-        .template_vars()
-        .get("Version")
-        .cloned()
-        .unwrap_or_default();
+    let version = ctx.version();
 
     let description = scoop_cfg
         .description
@@ -100,61 +168,43 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .unwrap_or_else(|| "MIT".to_string());
 
     // Find the windows-amd64 Archive artifact.
-    let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
-        found
-    } else {
-        anyhow::bail!(
-            "scoop: no Windows archive artifact found for crate '{}'",
-            crate_name
-        );
+    let (url, hash) = util::require_windows_artifact(ctx, crate_name, "scoop")?;
+
+    // Derive GitHub slug (owner/repo) for homepage fallback.
+    let github_slug = _crate_cfg
+        .release
+        .as_ref()
+        .and_then(|r| r.github.as_ref())
+        .map(|gh| format!("{}/{}", gh.owner, gh.name));
+
+    let opts = ManifestOptions {
+        homepage: scoop_cfg.homepage.as_deref(),
+        github_slug,
+        persist: scoop_cfg.persist.as_deref(),
+        depends: scoop_cfg.depends.as_deref(),
+        pre_install: scoop_cfg.pre_install.as_deref(),
+        post_install: scoop_cfg.post_install.as_deref(),
+        shortcuts: scoop_cfg.shortcuts.as_deref(),
     };
 
-    let manifest = generate_manifest(crate_name, &version, &url, &hash, &description, &license);
+    let manifest = generate_manifest_with_opts(
+        crate_name,
+        &version,
+        &url,
+        &hash,
+        &description,
+        &license,
+        &opts,
+    );
 
     // Clone bucket repo, write manifest, commit, push.
-    let token = ctx
-        .options
-        .token
-        .clone()
-        .or_else(|| std::env::var("SCOOP_BUCKET_TOKEN").ok())
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
-
+    let token = util::resolve_token(ctx, Some("SCOOP_BUCKET_TOKEN"));
     let repo_url = format!("https://github.com/{}/{}.git", bucket.owner, bucket.name);
 
     let tmp_dir = tempfile::tempdir().context("scoop: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    // Clone using http.extraheader for auth instead of embedding the token
-    // in the URL (avoids leaking secrets in process lists and logs).
-    let auth_header;
-    let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
-    if let Some(ref tok) = token {
-        auth_header = format!("http.extraheader=Authorization: bearer {}", tok);
-        clone_args.extend_from_slice(&["-c", &auth_header]);
-    }
-    clone_args.push(&repo_url);
-    let repo_path_str = repo_path.to_string_lossy();
-    clone_args.push(&repo_path_str);
-
-    let output = std::process::Command::new("git")
-        .args(&clone_args)
-        .output()
-        .context("scoop: git clone: spawn")?;
-    log.check_output(output, "scoop: git clone")?;
-
-    // Configure auth for subsequent push operations in this repo clone.
-    if let Some(ref tok) = token {
-        run_cmd_in(
-            repo_path,
-            "git",
-            &[
-                "config",
-                "http.extraheader",
-                &format!("Authorization: bearer {}", tok),
-            ],
-            "scoop: git config auth",
-        )?;
-    }
+    util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "scoop", log)?;
 
     let manifest_path = repo_path.join(format!("{}.json", crate_name));
     std::fs::write(&manifest_path, &manifest)
@@ -165,23 +215,14 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         manifest_path.display()
     ));
 
-    run_cmd_in(
+    let manifest_lossy = manifest_path.to_string_lossy();
+    util::commit_and_push(
         repo_path,
-        "git",
-        &["add", &manifest_path.to_string_lossy()],
-        "scoop: git add",
+        &[&manifest_lossy],
+        &format!("chore: update {} manifest to {}", crate_name, version),
+        None,
+        "scoop",
     )?;
-    run_cmd_in(
-        repo_path,
-        "git",
-        &[
-            "commit",
-            "-m",
-            &format!("chore: update {} manifest to {}", crate_name, version),
-        ],
-        "scoop: git commit",
-    )?;
-    run_cmd_in(repo_path, "git", &["push"], "scoop: git push")?;
 
     log.status(&format!(
         "Scoop bucket {}/{} updated for '{}'",
@@ -310,7 +351,7 @@ mod tests {
             "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip"
         );
         assert_eq!(arch_64["hash"], "aabbccdd1122334455667788");
-        assert_eq!(arch_64["bin"], "anodize");
+        assert_eq!(arch_64["bin"], "anodize.exe");
 
         // Verify checkver field
         assert_eq!(json["checkver"], "github");
@@ -419,7 +460,7 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(
-            json["architecture"]["64bit"]["bin"], "my-special-cli",
+            json["architecture"]["64bit"]["bin"], "my-special-cli.exe",
             "bin should match the tool name"
         );
     }
@@ -441,10 +482,11 @@ mod tests {
             .unwrap();
 
         // The autoupdate URL should follow the pattern:
-        // https://github.com/<name>/<name>/releases/download/v$version/<name>-$version-windows-amd64.zip
-        assert!(auto_url.starts_with(
-            "https://github.com/release-tool/release-tool/releases/download/v$version/"
-        ));
+        // https://github.com/<name>/releases/download/v$version/<name>-$version-windows-amd64.zip
+        // When github_slug is set, it uses owner/repo instead of bare name.
+        assert!(
+            auto_url.starts_with("https://github.com/release-tool/releases/download/v$version/")
+        );
         assert!(auto_url.ends_with("-windows-amd64.zip"));
         assert!(auto_url.contains("release-tool-$version-"));
     }
@@ -473,7 +515,7 @@ mod tests {
             "https://example.com/myapp-1.0.0-windows-amd64.zip"
         );
         assert_eq!(arch64["hash"], "deadbeef");
-        assert_eq!(arch64["bin"], "myapp");
+        assert_eq!(arch64["bin"], "myapp.exe");
     }
 
     #[test]
@@ -511,5 +553,282 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["homepage"], "https://github.com/my-tool");
+    }
+
+    // -----------------------------------------------------------------------
+    // New fields: homepage, persist, depends, pre/post_install, shortcuts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_manifest_custom_homepage() {
+        let opts = ManifestOptions {
+            homepage: Some("https://example.com/mytool"),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["homepage"], "https://example.com/mytool");
+    }
+
+    #[test]
+    fn test_manifest_homepage_fallback() {
+        let manifest = generate_manifest(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["homepage"], "https://github.com/mytool");
+    }
+
+    #[test]
+    fn test_manifest_persist() {
+        let persist = vec!["data".to_string(), "config.ini".to_string()];
+        let opts = ManifestOptions {
+            persist: Some(&persist),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let arr = json["persist"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "data");
+        assert_eq!(arr[1], "config.ini");
+    }
+
+    #[test]
+    fn test_manifest_depends() {
+        let depends = vec!["git".to_string(), "7zip".to_string()];
+        let opts = ManifestOptions {
+            depends: Some(&depends),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let arr = json["depends"].as_array().unwrap();
+        assert_eq!(arr, &["git", "7zip"]);
+    }
+
+    #[test]
+    fn test_manifest_pre_install() {
+        let pre = vec!["Write-Host 'Installing...'".to_string()];
+        let opts = ManifestOptions {
+            pre_install: Some(&pre),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let arr = json["pre_install"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0], "Write-Host 'Installing...'");
+    }
+
+    #[test]
+    fn test_manifest_post_install() {
+        let post = vec!["Write-Host 'Done!'".to_string()];
+        let opts = ManifestOptions {
+            post_install: Some(&post),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let arr = json["post_install"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0], "Write-Host 'Done!'");
+    }
+
+    #[test]
+    fn test_manifest_shortcuts() {
+        let shortcuts = vec![
+            vec!["myapp.exe".to_string(), "My App".to_string()],
+            vec![
+                "myapp.exe".to_string(),
+                "My App CLI".to_string(),
+                "--cli".to_string(),
+            ],
+        ];
+        let opts = ManifestOptions {
+            shortcuts: Some(&shortcuts),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let arr = json["shortcuts"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0][0], "myapp.exe");
+        assert_eq!(arr[0][1], "My App");
+        assert_eq!(arr[1][2], "--cli");
+    }
+
+    #[test]
+    fn test_manifest_no_optional_fields_when_not_set() {
+        let manifest = generate_manifest(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert!(json.get("persist").is_none());
+        assert!(json.get("depends").is_none());
+        assert!(json.get("pre_install").is_none());
+        assert!(json.get("post_install").is_none());
+        assert!(json.get("shortcuts").is_none());
+    }
+
+    #[test]
+    fn test_manifest_all_new_fields_together() {
+        let persist = vec!["data".to_string()];
+        let depends = vec!["git".to_string()];
+        let pre = vec!["echo pre".to_string()];
+        let post = vec!["echo post".to_string()];
+        let shortcuts = vec![vec!["app.exe".to_string(), "App".to_string()]];
+        let opts = ManifestOptions {
+            homepage: Some("https://example.com"),
+            github_slug: None,
+            persist: Some(&persist),
+            depends: Some(&depends),
+            pre_install: Some(&pre),
+            post_install: Some(&post),
+            shortcuts: Some(&shortcuts),
+        };
+        let manifest = generate_manifest_with_opts(
+            "mytool",
+            "1.0.0",
+            "https://example.com/a.zip",
+            "abc",
+            "desc",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["homepage"], "https://example.com");
+        assert!(json["persist"].is_array());
+        assert!(json["depends"].is_array());
+        assert!(json["pre_install"].is_array());
+        assert!(json["post_install"].is_array());
+        assert!(json["shortcuts"].is_array());
+    }
+
+    // -----------------------------------------------------------------------
+    // skip_upload tests (reuses should_skip_upload from homebrew)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_publish_to_scoop_skip_upload_true() {
+        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
+
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "skipped".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    scoop: Some(ScoopConfig {
+                        bucket: Some(BucketConfig {
+                            owner: "myorg".to_string(),
+                            name: "scoop-bucket".to_string(),
+                        }),
+                        skip_upload: Some("true".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+        assert!(publish_to_scoop(&ctx, "skipped", &log).is_ok());
+    }
+
+    #[test]
+    fn test_publish_to_scoop_skip_upload_auto_prerelease() {
+        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
+
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "pre".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    scoop: Some(ScoopConfig {
+                        bucket: Some(BucketConfig {
+                            owner: "myorg".to_string(),
+                            name: "scoop-bucket".to_string(),
+                        }),
+                        skip_upload: Some("auto".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Prerelease", "alpha.1");
+        let log = StageLogger::new("publish", Verbosity::Normal);
+        assert!(publish_to_scoop(&ctx, "pre", &log).is_ok());
     }
 }

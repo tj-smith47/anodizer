@@ -1,5 +1,6 @@
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
@@ -27,6 +28,213 @@ pub(crate) fn run_cmd_in(dir: &Path, program: &str, args: &[&str], label: &str) 
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Publisher config lookup
+// ---------------------------------------------------------------------------
+
+use anodize_core::config::{CrateConfig, PublishConfig};
+
+/// Look up a crate's config and its `publish` section by name, returning a
+/// descriptive error when either is missing.
+pub(crate) fn get_publish_config<'a>(
+    ctx: &'a Context,
+    crate_name: &str,
+    label: &str,
+) -> Result<(&'a CrateConfig, &'a PublishConfig)> {
+    let crate_cfg = ctx
+        .config
+        .crates
+        .iter()
+        .find(|c| c.name == crate_name)
+        .ok_or_else(|| anyhow::anyhow!("{label}: crate '{crate_name}' not found in config"))?;
+
+    let publish = crate_cfg
+        .publish
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("{label}: no publish config for '{crate_name}'"))?;
+
+    Ok((crate_cfg, publish))
+}
+
+// ---------------------------------------------------------------------------
+// Token resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve an auth token from the context, then a publisher-specific env var,
+/// then the generic `GITHUB_TOKEN` env var.
+pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
+    ctx.options
+        .token
+        .clone()
+        .or_else(|| env_var.and_then(|v| std::env::var(v).ok()))
+        .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+}
+
+// ---------------------------------------------------------------------------
+// Git repo helpers  (clone, configure auth, commit, push)
+// ---------------------------------------------------------------------------
+
+/// Clone a git repo into `tmp_dir` using `http.extraheader` for auth (avoids
+/// leaking tokens in URLs).  Also configures auth on the clone for subsequent
+/// push operations.
+pub(crate) fn clone_repo_with_auth(
+    repo_url: &str,
+    token: Option<&str>,
+    tmp_dir: &Path,
+    label: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let auth_header;
+    let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
+    if let Some(tok) = token {
+        auth_header = format!("http.extraheader=Authorization: bearer {}", tok);
+        clone_args.extend_from_slice(&["-c", &auth_header]);
+    }
+    clone_args.push(repo_url);
+    let repo_path_str = tmp_dir.to_string_lossy();
+    clone_args.push(&repo_path_str);
+
+    let output = Command::new("git")
+        .args(&clone_args)
+        .output()
+        .with_context(|| format!("{label}: git clone: spawn"))?;
+    log.check_output(output, &format!("{label}: git clone"))?;
+
+    // Configure auth for subsequent push operations in this repo clone.
+    if let Some(tok) = token {
+        run_cmd_in(
+            tmp_dir,
+            "git",
+            &[
+                "config",
+                "http.extraheader",
+                &format!("Authorization: bearer {}", tok),
+            ],
+            &format!("{label}: git config auth"),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Stage files, commit, and push. Optionally creates a new branch first.
+pub(crate) fn commit_and_push(
+    repo_path: &Path,
+    files: &[&str],
+    message: &str,
+    branch: Option<&str>,
+    label: &str,
+) -> Result<()> {
+    if let Some(branch_name) = branch {
+        run_cmd_in(
+            repo_path,
+            "git",
+            &["checkout", "-b", branch_name],
+            &format!("{label}: git checkout"),
+        )?;
+    }
+
+    for file in files {
+        run_cmd_in(
+            repo_path,
+            "git",
+            &["add", file],
+            &format!("{label}: git add"),
+        )?;
+    }
+
+    run_cmd_in(
+        repo_path,
+        "git",
+        &["commit", "-m", message],
+        &format!("{label}: git commit"),
+    )?;
+
+    let push_args: Vec<&str> = if let Some(branch_name) = branch {
+        vec!["push", "-u", "origin", branch_name]
+    } else {
+        vec!["push"]
+    };
+
+    run_cmd_in(repo_path, "git", &push_args, &format!("{label}: git push"))
+}
+
+// ---------------------------------------------------------------------------
+// PR submission via `gh` CLI
+// ---------------------------------------------------------------------------
+
+/// Submit a pull request via the GitHub CLI. Logs a warning instead of failing
+/// if `gh` is not available or the command exits non-zero.
+pub(crate) fn submit_pr_via_gh(
+    repo_path: &Path,
+    upstream_repo: &str,
+    head: &str,
+    title: &str,
+    body: &str,
+    label: &str,
+    log: &StageLogger,
+) {
+    let pr_result = Command::new("gh")
+        .current_dir(repo_path)
+        .args([
+            "pr",
+            "create",
+            "--repo",
+            upstream_repo,
+            "--title",
+            title,
+            "--body",
+            body,
+            "--head",
+            head,
+        ])
+        .output();
+
+    match pr_result {
+        Ok(output) if output.status.success() => {
+            log.status(&format!("{label}: PR submitted"));
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log.warn(&format!(
+                "{label}: gh pr create exited with {} — you may need to create the PR manually{}",
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
+            ));
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "{label}: could not run gh to create PR: {} — you may need to create the PR manually",
+                e
+            ));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows artifact helper
+// ---------------------------------------------------------------------------
+
+/// Find a Windows Archive artifact and return `(url, sha256)`, or bail with a
+/// descriptive error.
+pub(crate) fn require_windows_artifact(
+    ctx: &Context,
+    crate_name: &str,
+    label: &str,
+) -> Result<(String, String)> {
+    find_windows_artifact(ctx, crate_name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}: no Windows archive artifact found for crate '{}'",
+            label,
+            crate_name
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -147,28 +355,10 @@ pub(crate) fn find_all_platform_artifacts(ctx: &Context, crate_name: &str) -> Ve
 ///
 /// Returns `None` when no matching artifact exists.
 pub(crate) fn find_windows_artifact(ctx: &Context, crate_name: &str) -> Option<(String, String)> {
-    let artifact = ctx
-        .artifacts
-        .by_kind_and_crate(ArtifactKind::Archive, crate_name)
+    let a = find_artifacts_by_os(ctx, crate_name, "windows")
         .into_iter()
-        .find(|a| {
-            a.target
-                .as_deref()
-                .map(|t| t.contains("windows") || t.contains("pc-windows"))
-                .unwrap_or(false)
-                || a.path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("windows")
-        })?;
-
-    let url = artifact
-        .metadata
-        .get("url")
-        .cloned()
-        .unwrap_or_else(|| artifact.path.to_string_lossy().into_owned());
-    let hash = artifact.metadata.get("sha256").cloned().unwrap_or_default();
-    Some((url, hash))
+        .next()?;
+    Some((a.url, a.sha256))
 }
 
 // ---------------------------------------------------------------------------

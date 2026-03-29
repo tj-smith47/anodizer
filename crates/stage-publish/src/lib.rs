@@ -384,8 +384,8 @@ mod tests {
         ctx.template_vars_mut().set("Tag", "v1.0.0-rc.1");
 
         // The publish stage should succeed in dry-run mode even with
-        // a prerelease version. It does NOT currently skip homebrew/scoop
-        // for prereleases (unlike GoReleaser which does by default).
+        // a prerelease version. With skip_upload: "auto", homebrew/scoop
+        // will skip for prereleases (matching GoReleaser behavior).
         let result = PublishStage.run(&mut ctx);
         assert!(
             result.is_ok(),
@@ -393,9 +393,7 @@ mod tests {
             result.err()
         );
 
-        // NOTE: Known limitation — there is no prerelease-skip logic in the
-        // publish stage. GoReleaser's `brews[].skip_upload` defaults to "auto"
-        // which skips for prereleases. Anodize currently publishes regardless.
+        // skip_upload is supported: "true" always skips, "auto" skips for prereleases.
     }
 
     // -----------------------------------------------------------------------

@@ -2,6 +2,7 @@ use anodize_core::config::ChangelogGroup;
 use anodize_core::context::Context;
 use anodize_core::git::{find_latest_tag_matching, get_all_commits, get_commits_between};
 use anodize_core::stage::Stage;
+use anodize_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use regex::Regex;
 use std::sync::LazyLock;
@@ -10,7 +11,7 @@ use std::sync::LazyLock;
 // Data structures
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct CommitInfo {
     pub raw_message: String,
     /// Conventional commit type (feat, fix, chore, etc.). Used in tests for
@@ -19,6 +20,9 @@ pub(crate) struct CommitInfo {
     pub kind: String,
     pub description: String,
     pub hash: String,
+    pub full_hash: String,
+    pub author_name: String,
+    pub author_email: String,
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +50,9 @@ pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
             kind: caps[1].to_string(),
             description: caps[2].to_string(),
             hash: String::new(),
+            full_hash: String::new(),
+            author_name: String::new(),
+            author_email: String::new(),
         }
     } else {
         CommitInfo {
@@ -53,6 +60,9 @@ pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
             kind: "other".to_string(),
             description: msg.to_string(),
             hash: String::new(),
+            full_hash: String::new(),
+            author_name: String::new(),
+            author_email: String::new(),
         }
     }
 }
@@ -207,21 +217,39 @@ pub(crate) fn group_commits(
 // ---------------------------------------------------------------------------
 
 /// Render grouped commits as a Markdown string. Each group becomes a `## Title`
-/// section, and each commit is a `- description (short_hash)` bullet.
+/// section, and each commit is a bullet formatted according to `format_template`.
 ///
 /// `abbrev` controls the hash abbreviation length (default 7).
-pub(crate) fn render_changelog(grouped: &[GroupedCommits], abbrev: usize) -> String {
+///
+/// If `format_template` is `None`, the default format `{{ ShortSHA }} {{ Message }}`
+/// is used (matching GoReleaser defaults). Available template variables:
+/// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`.
+pub(crate) fn render_changelog(
+    grouped: &[GroupedCommits],
+    abbrev: usize,
+    format_template: Option<&str>,
+) -> String {
     let abbrev = abbrev.max(1); // Enforce minimum of 1 to avoid empty hashes
+    let default_format = "{{ ShortSHA }} {{ Message }}";
+    let tmpl = format_template.unwrap_or(default_format);
     let mut out = String::new();
     for group in grouped {
         out.push_str(&format!("## {}\n\n", group.title));
         for commit in &group.commits {
-            let short = if commit.hash.len() > abbrev {
+            let short_sha = if commit.hash.len() > abbrev {
                 &commit.hash[..abbrev]
             } else {
                 &commit.hash
             };
-            out.push_str(&format!("- {} ({})\n", commit.description, short));
+            let mut vars = TemplateVars::new();
+            vars.set("SHA", &commit.full_hash);
+            vars.set("ShortSHA", short_sha);
+            vars.set("Message", &commit.description);
+            vars.set("AuthorName", &commit.author_name);
+            vars.set("AuthorEmail", &commit.author_email);
+            let rendered = template::render(tmpl, &vars)
+                .unwrap_or_else(|_| format!("{} {}", short_sha, commit.description));
+            out.push_str(&format!("- {}\n", rendered));
         }
         out.push('\n');
     }
@@ -319,27 +347,20 @@ impl Stage for ChangelogStage {
             return Ok(());
         }
 
-        let sort_order = changelog_cfg
-            .as_ref()
+        let cfg = changelog_cfg.as_ref();
+        let sort_order = cfg
             .and_then(|c| c.sort.clone())
             .unwrap_or_else(|| "asc".to_string());
-        let exclude_filters: Vec<String> = changelog_cfg
-            .as_ref()
-            .and_then(|c| c.filters.as_ref())
-            .and_then(|f| f.exclude.clone())
-            .unwrap_or_default();
-        let include_filters: Vec<String> = changelog_cfg
-            .as_ref()
-            .and_then(|c| c.filters.as_ref())
-            .and_then(|f| f.include.clone())
-            .unwrap_or_default();
-        let groups: Vec<ChangelogGroup> = changelog_cfg
-            .as_ref()
-            .and_then(|c| c.groups.clone())
-            .unwrap_or_default();
-        let header: Option<String> = changelog_cfg.as_ref().and_then(|c| c.header.clone());
-        let footer: Option<String> = changelog_cfg.as_ref().and_then(|c| c.footer.clone());
-        let abbrev: usize = changelog_cfg.as_ref().and_then(|c| c.abbrev).unwrap_or(7);
+        let filters = cfg.and_then(|c| c.filters.as_ref());
+        let exclude_filters: Vec<String> =
+            filters.and_then(|f| f.exclude.clone()).unwrap_or_default();
+        let include_filters: Vec<String> =
+            filters.and_then(|f| f.include.clone()).unwrap_or_default();
+        let groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
+        let header: Option<String> = cfg.and_then(|c| c.header.clone());
+        let footer: Option<String> = cfg.and_then(|c| c.footer.clone());
+        let abbrev: usize = cfg.and_then(|c| c.abbrev).unwrap_or(7);
+        let format_template: Option<String> = cfg.and_then(|c| c.format.clone());
 
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
@@ -382,6 +403,9 @@ impl Stage for ChangelogStage {
             for commit in raw_commits {
                 let mut info = parse_commit_message(&commit.message);
                 info.hash = commit.short_hash.clone();
+                info.full_hash = commit.hash.clone();
+                info.author_name = commit.author_name.clone();
+                info.author_email = commit.author_email.clone();
                 all_commit_infos.push(info);
             }
 
@@ -409,7 +433,7 @@ impl Stage for ChangelogStage {
             };
 
             // Render the markdown for this crate.
-            let markdown = render_changelog(&grouped, abbrev);
+            let markdown = render_changelog(&grouped, abbrev, format_template.as_deref());
 
             // Store per-crate changelog in context for the release stage.
             ctx.changelogs.insert(crate_name.clone(), markdown.clone());
@@ -461,6 +485,18 @@ mod tests {
         StageLogger::new("changelog", Verbosity::Normal)
     }
 
+    /// Build a test `CommitInfo` with just the fields tests typically set.
+    /// New fields (`full_hash`, `author_name`, `author_email`) default to empty.
+    fn ci(raw_message: &str, kind: &str, description: &str, hash: &str) -> CommitInfo {
+        CommitInfo {
+            raw_message: raw_message.into(),
+            kind: kind.into(),
+            description: description.into(),
+            hash: hash.into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn test_parse_conventional_commit() {
         let info = parse_commit_message("feat: add new feature");
@@ -485,24 +521,9 @@ mod tests {
     #[test]
     fn test_group_commits() {
         let commits = vec![
-            CommitInfo {
-                raw_message: "feat: new thing".into(),
-                kind: "feat".into(),
-                description: "new thing".into(),
-                hash: "abc".into(),
-            },
-            CommitInfo {
-                raw_message: "fix: broken thing".into(),
-                kind: "fix".into(),
-                description: "broken thing".into(),
-                hash: "def".into(),
-            },
-            CommitInfo {
-                raw_message: "feat: another thing".into(),
-                kind: "feat".into(),
-                description: "another thing".into(),
-                hash: "ghi".into(),
-            },
+            ci("feat: new thing", "feat", "new thing", "abc"),
+            ci("fix: broken thing", "fix", "broken thing", "def"),
+            ci("feat: another thing", "feat", "another thing", "ghi"),
         ];
         let groups = vec![
             ChangelogGroup {
@@ -527,24 +548,9 @@ mod tests {
     #[test]
     fn test_apply_filters() {
         let commits = vec![
-            CommitInfo {
-                raw_message: "docs: update readme".into(),
-                kind: "docs".into(),
-                description: "update readme".into(),
-                hash: "a".into(),
-            },
-            CommitInfo {
-                raw_message: "feat: new feature".into(),
-                kind: "feat".into(),
-                description: "new feature".into(),
-                hash: "b".into(),
-            },
-            CommitInfo {
-                raw_message: "ci: fix pipeline".into(),
-                kind: "ci".into(),
-                description: "fix pipeline".into(),
-                hash: "c".into(),
-            },
+            ci("docs: update readme", "docs", "update readme", "a"),
+            ci("feat: new feature", "feat", "new feature", "b"),
+            ci("ci: fix pipeline", "ci", "fix pipeline", "c"),
         ];
         let filters = vec!["^docs:".to_string(), "^ci:".to_string()];
         let filtered = apply_filters(&commits, &filters, &test_logger());
@@ -557,24 +563,14 @@ mod tests {
         let grouped = vec![
             GroupedCommits {
                 title: "Features".into(),
-                commits: vec![CommitInfo {
-                    raw_message: "feat: add X".into(),
-                    kind: "feat".into(),
-                    description: "add X".into(),
-                    hash: "abc1234".into(),
-                }],
+                commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
             },
             GroupedCommits {
                 title: "Bug Fixes".into(),
-                commits: vec![CommitInfo {
-                    raw_message: "fix: fix Y".into(),
-                    kind: "fix".into(),
-                    description: "fix Y".into(),
-                    hash: "def5678".into(),
-                }],
+                commits: vec![ci("fix: fix Y", "fix", "fix Y", "def5678")],
             },
         ];
-        let md = render_changelog(&grouped, 7);
+        let md = render_changelog(&grouped, 7, None);
         assert!(md.contains("## Features"));
         assert!(md.contains("add X"));
         assert!(md.contains("## Bug Fixes"));
@@ -584,40 +580,14 @@ mod tests {
 
     #[test]
     fn test_sort_asc() {
-        let mut commits = vec![
-            CommitInfo {
-                raw_message: "b".into(),
-                kind: "feat".into(),
-                description: "b".into(),
-                hash: "2".into(),
-            },
-            CommitInfo {
-                raw_message: "a".into(),
-                kind: "feat".into(),
-                description: "a".into(),
-                hash: "1".into(),
-            },
-        ];
+        let mut commits = vec![ci("b", "feat", "b", "2"), ci("a", "feat", "a", "1")];
         sort_commits(&mut commits, "asc");
         assert_eq!(commits[0].description, "a");
     }
 
     #[test]
     fn test_sort_desc() {
-        let mut commits = vec![
-            CommitInfo {
-                raw_message: "a".into(),
-                kind: "feat".into(),
-                description: "a".into(),
-                hash: "1".into(),
-            },
-            CommitInfo {
-                raw_message: "b".into(),
-                kind: "feat".into(),
-                description: "b".into(),
-                hash: "2".into(),
-            },
-        ];
+        let mut commits = vec![ci("a", "feat", "a", "1"), ci("b", "feat", "b", "2")];
         sort_commits(&mut commits, "desc");
         assert_eq!(commits[0].description, "b");
     }
@@ -625,18 +595,8 @@ mod tests {
     #[test]
     fn test_group_commits_others_bucket() {
         let commits = vec![
-            CommitInfo {
-                raw_message: "feat: new thing".into(),
-                kind: "feat".into(),
-                description: "new thing".into(),
-                hash: "abc".into(),
-            },
-            CommitInfo {
-                raw_message: "chore: update deps".into(),
-                kind: "chore".into(),
-                description: "update deps".into(),
-                hash: "xyz".into(),
-            },
+            ci("feat: new thing", "feat", "new thing", "abc"),
+            ci("chore: update deps", "chore", "update deps", "xyz"),
         ];
         let groups = vec![ChangelogGroup {
             title: "Features".into(),
@@ -653,12 +613,7 @@ mod tests {
 
     #[test]
     fn test_group_commits_empty_group_omitted() {
-        let commits = vec![CommitInfo {
-            raw_message: "feat: only feat".into(),
-            kind: "feat".into(),
-            description: "only feat".into(),
-            hash: "abc".into(),
-        }];
+        let commits = vec![ci("feat: only feat", "feat", "only feat", "abc")];
         let groups = vec![
             ChangelogGroup {
                 title: "Features".into(),
@@ -682,15 +637,15 @@ mod tests {
         // When hash is exactly 7 chars, it should appear as-is
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: short hash test".into(),
-                kind: "feat".into(),
-                description: "short hash test".into(),
-                hash: "abc1234".into(),
-            }],
+            commits: vec![ci(
+                "feat: short hash test",
+                "feat",
+                "short hash test",
+                "abc1234",
+            )],
         }];
-        let md = render_changelog(&grouped, 7);
-        assert!(md.contains("(abc1234)"));
+        let md = render_changelog(&grouped, 7, None);
+        assert!(md.contains("abc1234 short hash test"));
     }
 
     #[test]
@@ -703,12 +658,7 @@ mod tests {
 
     #[test]
     fn test_apply_filters_empty_exclude() {
-        let commits = vec![CommitInfo {
-            raw_message: "feat: something".into(),
-            kind: "feat".into(),
-            description: "something".into(),
-            hash: "a".into(),
-        }];
+        let commits = vec![ci("feat: something", "feat", "something", "a")];
         let filtered = apply_filters(&commits, &[], &test_logger());
         assert_eq!(filtered.len(), 1);
     }
@@ -717,14 +667,9 @@ mod tests {
     fn test_render_changelog_with_header_and_footer() {
         let grouped = vec![GroupedCommits {
             title: "Features".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: add X".into(),
-                kind: "feat".into(),
-                description: "add X".into(),
-                hash: "abc1234".into(),
-            }],
+            commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
         }];
-        let body = render_changelog(&grouped, 7);
+        let body = render_changelog(&grouped, 7, None);
 
         // Simulate the header/footer wrapping logic from ChangelogStage::run
         let header = "# My Release Notes";
@@ -746,14 +691,9 @@ mod tests {
     fn test_render_changelog_with_header_only() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "fix: bug".into(),
-                kind: "fix".into(),
-                description: "bug".into(),
-                hash: "def5678".into(),
-            }],
+            commits: vec![ci("fix: bug", "fix", "bug", "def5678")],
         }];
-        let body = render_changelog(&grouped, 7);
+        let body = render_changelog(&grouped, 7, None);
 
         let header = "# Changelog";
         let mut final_md = String::new();
@@ -768,14 +708,9 @@ mod tests {
     fn test_render_changelog_with_footer_only() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "fix: bug".into(),
-                kind: "fix".into(),
-                description: "bug".into(),
-                hash: "def5678".into(),
-            }],
+            commits: vec![ci("fix: bug", "fix", "bug", "def5678")],
         }];
-        let body = render_changelog(&grouped, 7);
+        let body = render_changelog(&grouped, 7, None);
 
         let footer = "-- end --";
         let mut final_md = String::new();
@@ -796,13 +731,7 @@ mod tests {
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
             disable: Some(true),
-            sort: None,
-            filters: None,
-            groups: None,
-            header: None,
-            footer: None,
-            use_source: None,
-            abbrev: None,
+            ..Default::default()
         });
         config.crates = vec![CrateConfig {
             name: "test".to_string(),
@@ -828,30 +757,10 @@ mod tests {
     #[test]
     fn test_apply_include_filters_matching() {
         let commits = vec![
-            CommitInfo {
-                raw_message: "feat: add login".into(),
-                kind: "feat".into(),
-                description: "add login".into(),
-                hash: "a".into(),
-            },
-            CommitInfo {
-                raw_message: "fix: crash on start".into(),
-                kind: "fix".into(),
-                description: "crash on start".into(),
-                hash: "b".into(),
-            },
-            CommitInfo {
-                raw_message: "docs: update readme".into(),
-                kind: "docs".into(),
-                description: "update readme".into(),
-                hash: "c".into(),
-            },
-            CommitInfo {
-                raw_message: "chore: bump deps".into(),
-                kind: "chore".into(),
-                description: "bump deps".into(),
-                hash: "d".into(),
-            },
+            ci("feat: add login", "feat", "add login", "a"),
+            ci("fix: crash on start", "fix", "crash on start", "b"),
+            ci("docs: update readme", "docs", "update readme", "c"),
+            ci("chore: bump deps", "chore", "bump deps", "d"),
         ];
         let include = vec!["^feat".to_string(), "^fix".to_string()];
         let result = apply_include_filters(&commits, &include, &test_logger());
@@ -863,18 +772,8 @@ mod tests {
     #[test]
     fn test_apply_include_filters_no_match() {
         let commits = vec![
-            CommitInfo {
-                raw_message: "docs: update readme".into(),
-                kind: "docs".into(),
-                description: "update readme".into(),
-                hash: "a".into(),
-            },
-            CommitInfo {
-                raw_message: "chore: bump deps".into(),
-                kind: "chore".into(),
-                description: "bump deps".into(),
-                hash: "b".into(),
-            },
+            ci("docs: update readme", "docs", "update readme", "a"),
+            ci("chore: bump deps", "chore", "bump deps", "b"),
         ];
         let include = vec!["^feat".to_string()];
         let result = apply_include_filters(&commits, &include, &test_logger());
@@ -884,18 +783,8 @@ mod tests {
     #[test]
     fn test_apply_include_filters_empty_keeps_all() {
         let commits = vec![
-            CommitInfo {
-                raw_message: "feat: something".into(),
-                kind: "feat".into(),
-                description: "something".into(),
-                hash: "a".into(),
-            },
-            CommitInfo {
-                raw_message: "fix: something else".into(),
-                kind: "fix".into(),
-                description: "something else".into(),
-                hash: "b".into(),
-            },
+            ci("feat: something", "feat", "something", "a"),
+            ci("fix: something else", "fix", "something else", "b"),
         ];
         let result = apply_include_filters(&commits, &[], &test_logger());
         assert_eq!(result.len(), 2);
@@ -903,12 +792,7 @@ mod tests {
 
     #[test]
     fn test_apply_include_filters_invalid_regex_skipped() {
-        let commits = vec![CommitInfo {
-            raw_message: "feat: good".into(),
-            kind: "feat".into(),
-            description: "good".into(),
-            hash: "a".into(),
-        }];
+        let commits = vec![ci("feat: good", "feat", "good", "a")];
         // Invalid regex is skipped; valid one still works.
         let include = vec!["[invalid".to_string(), "^feat".to_string()];
         let result = apply_include_filters(&commits, &include, &test_logger());
@@ -923,16 +807,20 @@ mod tests {
     fn test_abbrev_controls_hash_length() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: test abbrev".into(),
-                kind: "feat".into(),
-                description: "test abbrev".into(),
-                hash: "abc1234567890".into(),
-            }],
+            commits: vec![ci(
+                "feat: test abbrev",
+                "feat",
+                "test abbrev",
+                "abc1234567890",
+            )],
         }];
         // abbrev = 5 should truncate to "abc12"
-        let md = render_changelog(&grouped, 5);
-        assert!(md.contains("(abc12)"), "expected (abc12) in: {}", md);
+        let md = render_changelog(&grouped, 5, None);
+        assert!(
+            md.contains("abc12 test abbrev"),
+            "expected 'abc12 test abbrev' in: {}",
+            md
+        );
         assert!(!md.contains("abc1234"), "should not contain full hash");
     }
 
@@ -940,31 +828,30 @@ mod tests {
     fn test_abbrev_longer_than_hash_uses_full_hash() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: short".into(),
-                kind: "feat".into(),
-                description: "short".into(),
-                hash: "abc".into(),
-            }],
+            commits: vec![ci("feat: short", "feat", "short", "abc")],
         }];
         // abbrev = 10, but hash is only 3 chars — use full hash
-        let md = render_changelog(&grouped, 10);
-        assert!(md.contains("(abc)"), "expected (abc) in: {}", md);
+        let md = render_changelog(&grouped, 10, None);
+        assert!(md.contains("abc short"), "expected 'abc short' in: {}", md);
     }
 
     #[test]
     fn test_abbrev_default_is_seven() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: default abbrev".into(),
-                kind: "feat".into(),
-                description: "default abbrev".into(),
-                hash: "abc1234def5678".into(),
-            }],
+            commits: vec![ci(
+                "feat: default abbrev",
+                "feat",
+                "default abbrev",
+                "abc1234def5678",
+            )],
         }];
-        let md = render_changelog(&grouped, 7);
-        assert!(md.contains("(abc1234)"), "expected (abc1234) in: {}", md);
+        let md = render_changelog(&grouped, 7, None);
+        assert!(
+            md.contains("abc1234 default abbrev"),
+            "expected 'abc1234 default abbrev' in: {}",
+            md
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1029,6 +916,7 @@ abbrev: 10
             footer: None,
             use_source: Some("github-native".to_string()),
             abbrev: None,
+            format: None,
         });
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
@@ -1054,30 +942,15 @@ abbrev: 10
     fn test_include_and_exclude_together() {
         // Exclude runs first, then include further restricts.
         let commits = vec![
-            CommitInfo {
-                raw_message: "feat: good feature".into(),
-                kind: "feat".into(),
-                description: "good feature".into(),
-                hash: "a".into(),
-            },
-            CommitInfo {
-                raw_message: "feat(wip): work in progress".into(),
-                kind: "feat".into(),
-                description: "work in progress".into(),
-                hash: "b".into(),
-            },
-            CommitInfo {
-                raw_message: "fix: important fix".into(),
-                kind: "fix".into(),
-                description: "important fix".into(),
-                hash: "c".into(),
-            },
-            CommitInfo {
-                raw_message: "docs: update readme".into(),
-                kind: "docs".into(),
-                description: "update readme".into(),
-                hash: "d".into(),
-            },
+            ci("feat: good feature", "feat", "good feature", "a"),
+            ci(
+                "feat(wip): work in progress",
+                "feat",
+                "work in progress",
+                "b",
+            ),
+            ci("fix: important fix", "fix", "important fix", "c"),
+            ci("docs: update readme", "docs", "update readme", "d"),
         ];
 
         // Exclude WIP commits
@@ -1216,7 +1089,7 @@ abbrev: 10
         }
 
         // Render
-        let md = render_changelog(&grouped, 7);
+        let md = render_changelog(&grouped, 7, None);
 
         // Verify structural output
         assert!(
@@ -1260,12 +1133,12 @@ abbrev: 10
             "ci commit should be filtered out"
         );
 
-        // Verify hash abbreviations are present
+        // Verify hash abbreviations are present (default format: "ShortSHA Message")
         assert!(
-            md.contains("(a1b2c3d)"),
+            md.contains("a1b2c3d "),
             "hash should be abbreviated to 7 chars"
         );
-        assert!(md.contains("(b2c3d4e)"));
+        assert!(md.contains("b2c3d4e "));
 
         // Verify bullets
         let bullet_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("- ")).collect();
@@ -1323,7 +1196,7 @@ abbrev: 10
         ];
         let grouped = group_commits(&sorted, &groups, &test_logger());
 
-        let md = render_changelog(&grouped, 7);
+        let md = render_changelog(&grouped, 7, None);
 
         // Features and Bug Fixes should appear, but not chore or refactor
         assert!(md.contains("## Features"));
@@ -1357,7 +1230,7 @@ abbrev: 10
             commits,
         }];
 
-        let body = render_changelog(&grouped, 7);
+        let body = render_changelog(&grouped, 7, None);
 
         // Simulate header/footer wrapping as ChangelogStage.run does
         let header = "# Release v1.0.0";
@@ -1372,8 +1245,8 @@ abbrev: 10
 
         // Verify structure
         assert!(final_md.starts_with("# Release v1.0.0\n## Changes"));
-        assert!(final_md.contains("- initial release (abc1234)"));
-        assert!(final_md.contains("- typo in config (def5678)"));
+        assert!(final_md.contains("- abc1234 initial release"));
+        assert!(final_md.contains("- def5678 typo in config"));
         assert!(final_md.ends_with("compare/v0.9.0...v1.0.0\n"));
     }
 
@@ -1381,18 +1254,8 @@ abbrev: 10
     fn test_integration_changelog_empty_after_filters() {
         // When all commits are filtered out, output should be empty
         let commits = vec![
-            CommitInfo {
-                raw_message: "ci: fix build".into(),
-                kind: "ci".into(),
-                description: "fix build".into(),
-                hash: "aaa".into(),
-            },
-            CommitInfo {
-                raw_message: "docs: update guide".into(),
-                kind: "docs".into(),
-                description: "update guide".into(),
-                hash: "bbb".into(),
-            },
+            ci("ci: fix build", "ci", "fix build", "aaa"),
+            ci("docs: update guide", "docs", "update guide", "bbb"),
         ];
 
         let filtered = apply_filters(
@@ -1413,7 +1276,7 @@ abbrev: 10
         );
         assert!(grouped.is_empty());
 
-        let md = render_changelog(&grouped, 7);
+        let md = render_changelog(&grouped, 7, None);
         assert!(
             md.is_empty(),
             "changelog should be empty when all commits are filtered"
@@ -1501,6 +1364,7 @@ abbrev: 10
                 footer: None,
                 use_source: None,
                 abbrev: Some(7),
+                format: None,
             }),
             crates: vec![CrateConfig {
                 name: "test-project".to_string(),
@@ -1580,14 +1444,9 @@ abbrev: 10
     fn test_header_appears_before_changelog_body() {
         let grouped = vec![GroupedCommits {
             title: "Features".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: new feature".into(),
-                kind: "feat".into(),
-                description: "new feature".into(),
-                hash: "abc1234".into(),
-            }],
+            commits: vec![ci("feat: new feature", "feat", "new feature", "abc1234")],
         }];
-        let body = render_changelog(&grouped, 7);
+        let body = render_changelog(&grouped, 7, None);
 
         // Simulate the stage's header/footer assembly
         let mut final_md = String::new();
@@ -1608,14 +1467,9 @@ abbrev: 10
     fn test_footer_appears_after_changelog_body() {
         let grouped = vec![GroupedCommits {
             title: "Bug Fixes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "fix: crash".into(),
-                kind: "fix".into(),
-                description: "crash".into(),
-                hash: "def5678".into(),
-            }],
+            commits: vec![ci("fix: crash", "fix", "crash", "def5678")],
         }];
-        let body = render_changelog(&grouped, 7);
+        let body = render_changelog(&grouped, 7, None);
 
         let mut final_md = String::new();
         final_md.push_str(&body);
@@ -1634,30 +1488,10 @@ abbrev: 10
     fn test_include_filters_restrict_commits_to_matching_patterns() {
         // Only feat and fix should survive the include filter
         let commits = vec![
-            CommitInfo {
-                raw_message: "feat: add login".into(),
-                kind: "feat".into(),
-                description: "add login".into(),
-                hash: "a".into(),
-            },
-            CommitInfo {
-                raw_message: "fix: crash".into(),
-                kind: "fix".into(),
-                description: "crash".into(),
-                hash: "b".into(),
-            },
-            CommitInfo {
-                raw_message: "chore: deps".into(),
-                kind: "chore".into(),
-                description: "deps".into(),
-                hash: "c".into(),
-            },
-            CommitInfo {
-                raw_message: "refactor: cleanup".into(),
-                kind: "refactor".into(),
-                description: "cleanup".into(),
-                hash: "d".into(),
-            },
+            ci("feat: add login", "feat", "add login", "a"),
+            ci("fix: crash", "fix", "crash", "b"),
+            ci("chore: deps", "chore", "deps", "c"),
+            ci("refactor: cleanup", "refactor", "cleanup", "d"),
         ];
 
         let result = apply_include_filters(
@@ -1676,23 +1510,22 @@ abbrev: 10
     fn test_abbrev_truncates_to_specified_length() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: test".into(),
-                kind: "feat".into(),
-                description: "test".into(),
-                hash: "abcdef1234567890".into(),
-            }],
+            commits: vec![ci("feat: test", "feat", "test", "abcdef1234567890")],
         }];
 
-        // abbrev = 3 should produce "(abc)"
-        let md = render_changelog(&grouped, 3);
-        assert!(md.contains("(abc)"), "abbrev=3 expected (abc), got: {}", md);
-
-        // abbrev = 10 should produce "(abcdef1234)"
-        let md10 = render_changelog(&grouped, 10);
+        // abbrev = 3 should produce "abc test"
+        let md = render_changelog(&grouped, 3, None);
         assert!(
-            md10.contains("(abcdef1234)"),
-            "abbrev=10 expected (abcdef1234), got: {}",
+            md.contains("abc test"),
+            "abbrev=3 expected 'abc test', got: {}",
+            md
+        );
+
+        // abbrev = 10 should produce "abcdef1234 test"
+        let md10 = render_changelog(&grouped, 10, None);
+        assert!(
+            md10.contains("abcdef1234 test"),
+            "abbrev=10 expected 'abcdef1234 test', got: {}",
             md10
         );
     }
@@ -1701,18 +1534,13 @@ abbrev: 10
     fn test_abbrev_zero_uses_minimum_one() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: test".into(),
-                kind: "feat".into(),
-                description: "test".into(),
-                hash: "abcdef".into(),
-            }],
+            commits: vec![ci("feat: test", "feat", "test", "abcdef")],
         }];
 
         // abbrev = 0 should be clamped to 1 (minimum)
-        let md = render_changelog(&grouped, 0);
+        let md = render_changelog(&grouped, 0, None);
         assert!(
-            md.contains("(a)"),
+            md.contains("a test"),
             "abbrev=0 should clamp to 1, got: {}",
             md
         );
@@ -1727,13 +1555,7 @@ abbrev: 10
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
             disable: Some(true),
-            sort: None,
-            filters: None,
-            groups: None,
-            header: None,
-            footer: None,
-            use_source: None,
-            abbrev: None,
+            ..Default::default()
         });
         config.crates = vec![CrateConfig {
             name: "test".to_string(),
@@ -1753,19 +1575,14 @@ abbrev: 10
 
     #[test]
     fn test_empty_changelog_when_all_commits_filtered() {
-        let commits = vec![CommitInfo {
-            raw_message: "ci: pipeline fix".into(),
-            kind: "ci".into(),
-            description: "pipeline fix".into(),
-            hash: "a".into(),
-        }];
+        let commits = vec![ci("ci: pipeline fix", "ci", "pipeline fix", "a")];
 
         // Include filter that matches nothing
         let result = apply_include_filters(&commits, &["^feat".to_string()], &test_logger());
         assert!(result.is_empty());
 
         let grouped = group_commits(&result, &[], &test_logger());
-        let md = render_changelog(&grouped, 7);
+        let md = render_changelog(&grouped, 7, None);
         assert!(
             md.is_empty(),
             "changelog should be empty when no commits match"
@@ -1815,6 +1632,7 @@ abbrev: 10
                 footer: None,
                 use_source: None,
                 abbrev: None,
+                format: None,
             }),
             crates: vec![CrateConfig {
                 name: "test".to_string(),
@@ -1846,12 +1664,7 @@ abbrev: 10
 
     #[test]
     fn test_invalid_exclude_regex_warns_but_does_not_crash() {
-        let commits = vec![CommitInfo {
-            raw_message: "feat: new feature".into(),
-            kind: "feat".into(),
-            description: "new feature".into(),
-            hash: "abc".into(),
-        }];
+        let commits = vec![ci("feat: new feature", "feat", "new feature", "abc")];
         // Invalid regex: unclosed group
         let filters = vec!["^feat(".to_string()];
         // apply_filters logs a warning but does not panic or error
@@ -1866,12 +1679,7 @@ abbrev: 10
 
     #[test]
     fn test_invalid_include_regex_warns_but_does_not_crash() {
-        let commits = vec![CommitInfo {
-            raw_message: "fix: a bug".into(),
-            kind: "fix".into(),
-            description: "a bug".into(),
-            hash: "def".into(),
-        }];
+        let commits = vec![ci("fix: a bug", "fix", "a bug", "def")];
         let filters = vec!["[invalid".to_string()];
         let result = apply_include_filters(&commits, &filters, &test_logger());
         // Invalid regex is skipped, no valid patterns remain, so nothing matches
@@ -1884,12 +1692,7 @@ abbrev: 10
 
     #[test]
     fn test_invalid_group_regex_warns_and_commits_go_to_others() {
-        let commits = vec![CommitInfo {
-            raw_message: "feat: new thing".into(),
-            kind: "feat".into(),
-            description: "new thing".into(),
-            hash: "abc".into(),
-        }];
+        let commits = vec![ci("feat: new thing", "feat", "new thing", "abc")];
         let groups = vec![ChangelogGroup {
             title: "Features".into(),
             regexp: Some("^feat(".into()), // invalid regex
@@ -1917,18 +1720,8 @@ abbrev: 10
     #[test]
     fn test_sort_commits_unknown_order_defaults_to_asc() {
         let mut commits = vec![
-            CommitInfo {
-                raw_message: "b: second".into(),
-                kind: "other".into(),
-                description: "second".into(),
-                hash: "1".into(),
-            },
-            CommitInfo {
-                raw_message: "a: first".into(),
-                kind: "other".into(),
-                description: "first".into(),
-                hash: "2".into(),
-            },
+            ci("b: second", "other", "second", "1"),
+            ci("a: first", "other", "first", "2"),
         ];
         sort_commits(&mut commits, "invalid_order");
         assert_eq!(commits[0].description, "first");
@@ -1938,7 +1731,7 @@ abbrev: 10
     #[test]
     fn test_render_changelog_empty_groups() {
         let grouped: Vec<GroupedCommits> = vec![];
-        let result = render_changelog(&grouped, 7);
+        let result = render_changelog(&grouped, 7, None);
         assert_eq!(
             result, "",
             "rendering empty groups should produce empty string"
@@ -1949,17 +1742,12 @@ abbrev: 10
     fn test_render_changelog_very_short_hash_preserved() {
         let grouped = vec![GroupedCommits {
             title: "Test".into(),
-            commits: vec![CommitInfo {
-                raw_message: "feat: x".into(),
-                kind: "feat".into(),
-                description: "x".into(),
-                hash: "ab".into(), // shorter than abbrev
-            }],
+            commits: vec![ci("feat: x", "feat", "x", "ab")], // shorter than abbrev
         }];
-        let result = render_changelog(&grouped, 7);
+        let result = render_changelog(&grouped, 7, None);
         // Short hash should be used as-is without truncation
         assert!(
-            result.contains("(ab)"),
+            result.contains("ab x"),
             "short hash should be kept intact, got: {result}"
         );
     }
@@ -2146,6 +1934,72 @@ abbrev: 10
         assert!(
             result.is_ok(),
             "dry-run should skip fs write and succeed even with bad dist path"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for changelog format template
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_custom_format_template_renders_correctly() {
+        let grouped = vec![GroupedCommits {
+            title: "Features".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: add auth".into(),
+                kind: "feat".into(),
+                description: "add auth".into(),
+                hash: "abc1234".into(),
+                full_hash: "abc1234567890abcdef1234567890abcdef123456".into(),
+                author_name: "Alice".into(),
+                author_email: "alice@example.com".into(),
+            }],
+        }];
+        let md = render_changelog(
+            &grouped,
+            7,
+            Some("{{ SHA }} {{ Message }} ({{ AuthorName }} <{{ AuthorEmail }}>)"),
+        );
+        assert!(
+            md.contains(
+                "abc1234567890abcdef1234567890abcdef123456 add auth (Alice <alice@example.com>)"
+            ),
+            "custom format should render all variables, got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_default_format_unchanged() {
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "fix: bug".into(),
+                kind: "fix".into(),
+                description: "bug".into(),
+                hash: "def5678".into(),
+                full_hash: "def5678abcdef".into(),
+                author_name: "Bob".into(),
+                author_email: "bob@example.com".into(),
+            }],
+        }];
+        // Default format: "{{ ShortSHA }} {{ Message }}"
+        let md = render_changelog(&grouped, 7, None);
+        assert!(
+            md.contains("- def5678 bug"),
+            "default format should be 'ShortSHA Message', got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_changelog_format() {
+        let yaml = r#"
+sort: asc
+format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.format.as_deref(),
+            Some("{{ ShortSHA }} {{ Message }} by {{ AuthorName }}")
         );
     }
 }

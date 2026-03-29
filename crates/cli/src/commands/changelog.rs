@@ -34,6 +34,7 @@ pub fn run(
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();
+    ctx.populate_runtime_vars();
 
     // Resolve git info (shared with release.rs and build.rs)
     helpers::resolve_git_context(&mut ctx, &config, &log);

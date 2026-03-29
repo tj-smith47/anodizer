@@ -59,6 +59,33 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
+    // envOrDefault(name="VAR", default="fallback") — return env var value or default
+    tera.register_function(
+        "envOrDefault",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("envOrDefault requires `name` argument"))?;
+            let default = args.get("default").and_then(|v| v.as_str()).unwrap_or("");
+            let value = std::env::var(name).unwrap_or_else(|_| default.to_string());
+            Ok(Value::String(value))
+        },
+    );
+
+    // isEnvSet(name="VAR") — return true if env var is set and non-empty
+    tera.register_function(
+        "isEnvSet",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("isEnvSet requires `name` argument"))?;
+            let is_set = std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false);
+            Ok(Value::Bool(is_set))
+        },
+    );
+
     tera
 });
 
@@ -554,5 +581,102 @@ mod tests {
             result.is_err(),
             "empty if condition should produce an error"
         );
+    }
+
+    // ---- envOrDefault and isEnvSet function tests ----
+
+    #[test]
+    fn test_env_or_default_returns_env_value_when_set() {
+        let vars = test_vars();
+        // SAFETY: Test-only; no other threads read this env var.
+        unsafe { std::env::set_var("ANODIZE_TEST_ENV_OR_DEFAULT", "from-env") };
+        let result = render(
+            "{{ envOrDefault(name=\"ANODIZE_TEST_ENV_OR_DEFAULT\", default=\"fallback\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "from-env");
+        unsafe { std::env::remove_var("ANODIZE_TEST_ENV_OR_DEFAULT") };
+    }
+
+    #[test]
+    fn test_env_or_default_returns_default_when_unset() {
+        let vars = test_vars();
+        // SAFETY: Test-only; no other threads read this env var.
+        unsafe { std::env::remove_var("ANODIZE_TEST_UNSET_VAR_XYZ") };
+        let result = render(
+            "{{ envOrDefault(name=\"ANODIZE_TEST_UNSET_VAR_XYZ\", default=\"fallback\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "fallback");
+    }
+
+    #[test]
+    fn test_env_or_default_returns_empty_when_no_default() {
+        let vars = test_vars();
+        // SAFETY: Test-only; no other threads read this env var.
+        unsafe { std::env::remove_var("ANODIZE_TEST_UNSET_VAR_XYZ2") };
+        let result = render(
+            "{{ envOrDefault(name=\"ANODIZE_TEST_UNSET_VAR_XYZ2\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_env_or_default_missing_name_error() {
+        let vars = test_vars();
+        let result = render("{{ envOrDefault(default=\"x\") }}", &vars);
+        assert!(result.is_err(), "envOrDefault without name should error");
+    }
+
+    #[test]
+    fn test_is_env_set_true_when_set() {
+        let vars = test_vars();
+        // SAFETY: Test-only; no other threads read this env var.
+        unsafe { std::env::set_var("ANODIZE_TEST_IS_SET", "yes") };
+        let result = render(
+            "{% if isEnvSet(name=\"ANODIZE_TEST_IS_SET\") %}SET{% else %}UNSET{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "SET");
+        unsafe { std::env::remove_var("ANODIZE_TEST_IS_SET") };
+    }
+
+    #[test]
+    fn test_is_env_set_false_when_unset() {
+        let vars = test_vars();
+        // SAFETY: Test-only; no other threads read this env var.
+        unsafe { std::env::remove_var("ANODIZE_TEST_NOT_SET_XYZ") };
+        let result = render(
+            "{% if isEnvSet(name=\"ANODIZE_TEST_NOT_SET_XYZ\") %}SET{% else %}UNSET{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "UNSET");
+    }
+
+    #[test]
+    fn test_is_env_set_false_when_empty() {
+        let vars = test_vars();
+        // SAFETY: Test-only; no other threads read this env var.
+        unsafe { std::env::set_var("ANODIZE_TEST_EMPTY_VAR", "") };
+        let result = render(
+            "{% if isEnvSet(name=\"ANODIZE_TEST_EMPTY_VAR\") %}SET{% else %}UNSET{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "UNSET");
+        unsafe { std::env::remove_var("ANODIZE_TEST_EMPTY_VAR") };
+    }
+
+    #[test]
+    fn test_is_env_set_missing_name_error() {
+        let vars = test_vars();
+        let result = render("{{ isEnvSet() }}", &vars);
+        assert!(result.is_err(), "isEnvSet without name should error");
     }
 }

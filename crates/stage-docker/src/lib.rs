@@ -36,6 +36,7 @@ pub fn platform_to_arch(platform: &str) -> &str {
 /// * `extra_flags` – rendered `build_flag_templates`.
 /// * `push` – when `true`, adds `--push` to the command.
 /// * `push_flags` – additional flags added to the command when pushing.
+/// * `labels` – OCI labels added as `--label key=value` flags.
 pub fn build_docker_command(
     staging_dir: &str,
     platforms: &[&str],
@@ -43,6 +44,7 @@ pub fn build_docker_command(
     extra_flags: &[String],
     push: bool,
     push_flags: &[String],
+    labels: &[(String, String)],
 ) -> Vec<String> {
     let mut cmd: Vec<String> = vec![
         "docker".to_string(),
@@ -58,6 +60,12 @@ pub fn build_docker_command(
     for tag in tags {
         cmd.push("--tag".to_string());
         cmd.push(tag.to_string());
+    }
+
+    // --label key=value for each OCI label
+    for (key, value) in labels {
+        cmd.push("--label".to_string());
+        cmd.push(format!("{}={}", key, value));
     }
 
     // Extra build flags (rendered build_flag_templates)
@@ -149,6 +157,7 @@ impl Stage for DockerStage {
 
                     // Determine which binary names this docker config cares about
                     let binary_filter = docker_cfg.binaries.as_ref();
+                    let ids_filter = docker_cfg.ids.as_ref();
 
                     // Find Binary artifacts whose target maps to this arch
                     let matching_binaries: Vec<_> = ctx
@@ -164,6 +173,14 @@ impl Stage for DockerStage {
                                 .unwrap_or_default();
                             if artifact_arch != arch {
                                 return false;
+                            }
+                            // Apply optional IDs filter
+                            if let Some(ids) = ids_filter {
+                                let artifact_id =
+                                    b.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+                                if !ids.iter().any(|id| id == artifact_id) {
+                                    return false;
+                                }
                             }
                             // Apply optional binary name filter
                             match binary_filter {
@@ -329,6 +346,19 @@ impl Stage for DockerStage {
                     }
                 }
 
+                // Render labels (template-aware)
+                let mut rendered_labels: Vec<(String, String)> = Vec::new();
+                if let Some(ref label_map) = docker_cfg.labels {
+                    for (key, value_tmpl) in label_map {
+                        let rendered_value = ctx
+                            .render_template(value_tmpl)
+                            .with_context(|| format!("docker: render label value for '{}'", key))?;
+                        rendered_labels.push((key.clone(), rendered_value));
+                    }
+                    // Sort for deterministic command output
+                    rendered_labels.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+
                 let cmd_args = build_docker_command(
                     &staging_str,
                     &platform_refs,
@@ -336,6 +366,7 @@ impl Stage for DockerStage {
                     &extra_flags,
                     should_push,
                     &push_flags,
+                    &rendered_labels,
                 );
 
                 if dry_run {
@@ -362,6 +393,9 @@ impl Stage for DockerStage {
                     let mut meta = HashMap::new();
                     meta.insert("tag".to_string(), tag.clone());
                     meta.insert("platforms".to_string(), platforms.join(","));
+                    if let Some(ref id) = docker_cfg.id {
+                        meta.insert("id".to_string(), id.clone());
+                    }
 
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::DockerImage,
@@ -408,6 +442,7 @@ mod tests {
             &[],
             true,
             &[],
+            &[],
         );
         assert!(cmd.contains(&"buildx".to_string()));
         assert!(cmd.contains(&"build".to_string()));
@@ -424,6 +459,7 @@ mod tests {
             &["ghcr.io/owner/app:v1.0.0"],
             &[],
             false,
+            &[],
             &[],
         );
         // When push=false, neither --push nor --load
@@ -456,6 +492,7 @@ mod tests {
             &[],
             true,
             &[],
+            &[],
         );
         assert_eq!(cmd[0], "docker");
         assert_eq!(cmd[1], "buildx");
@@ -472,6 +509,7 @@ mod tests {
             &["repo/img:v1.0.0", "repo/img:latest"],
             &[],
             true,
+            &[],
             &[],
         );
         // Both tags should appear after --tag flags
@@ -515,6 +553,9 @@ mod tests {
             skip_push: None,
             extra_files: None,
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -619,6 +660,7 @@ push_flags:
             &[],
             false,
             &[],
+            &[],
         );
         assert!(!cmd.contains(&"--push".to_string()));
 
@@ -629,6 +671,7 @@ push_flags:
             &["ghcr.io/owner/app:v1.0.0"],
             &[],
             true,
+            &[],
             &[],
         );
         assert!(cmd_push.contains(&"--push".to_string()));
@@ -647,6 +690,7 @@ push_flags:
             &[],
             true,
             &push_flags,
+            &[],
         );
         assert!(cmd.contains(&"--push".to_string()));
         assert!(cmd.contains(&"--cache-to=type=registry,ref=ghcr.io/owner/app:cache".to_string()));
@@ -660,6 +704,7 @@ push_flags:
             &[],
             false,
             &push_flags,
+            &[],
         );
         assert!(!cmd_no_push.contains(&"--push".to_string()));
         assert!(!cmd_no_push.contains(&"--provenance=true".to_string()));
@@ -695,6 +740,9 @@ push_flags:
                 extra2.to_string_lossy().into_owned(),
             ]),
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -759,6 +807,9 @@ push_flags:
                 extra2.to_string_lossy().into_owned(),
             ]),
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -842,6 +893,7 @@ dockerfile: Dockerfile
             &[],
             false, // push=false (because skip_push=true or dry_run)
             &["--provenance=true".to_string()],
+            &[],
         );
         assert!(!cmd.contains(&"--push".to_string()));
         // push_flags should also NOT be included when push=false
@@ -858,6 +910,7 @@ dockerfile: Dockerfile
             &[],
             true,
             &push_flags,
+            &[],
         );
         assert!(cmd.contains(&"--push".to_string()));
         assert!(cmd.contains(&"--provenance=true".to_string()));
@@ -876,6 +929,7 @@ dockerfile: Dockerfile
             &["img:latest"],
             &[],
             false,
+            &[],
             &[],
         );
         assert!(cmd.contains(&"--platform=linux/amd64,linux/arm64,linux/arm/v7".to_string()));
@@ -912,6 +966,9 @@ dockerfile: Dockerfile
             skip_push: None,
             extra_files: None,
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -980,6 +1037,9 @@ dockerfile: Dockerfile
             skip_push: Some(true),
             extra_files: None,
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let dist = tmp.path().join("dist");
@@ -1060,6 +1120,7 @@ dockerfile: Dockerfile
             &extra,
             false,
             &[],
+            &[],
         );
         assert!(cmd.contains(&"--build-arg=APP_VERSION=1.0.0".to_string()));
         assert!(cmd.contains(&"--label=org.opencontainers.image.version=1.0.0".to_string()));
@@ -1073,6 +1134,7 @@ dockerfile: Dockerfile
             &["img:latest"],
             &[],
             false,
+            &[],
             &[],
         );
         assert_eq!(cmd.last().unwrap(), "/my/staging/dir");
@@ -1096,6 +1158,9 @@ dockerfile: Dockerfile
             skip_push: None,
             extra_files: None,
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -1148,6 +1213,9 @@ dockerfile: Dockerfile
             skip_push: None,
             extra_files: None,
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -1206,6 +1274,9 @@ dockerfile: Dockerfile
             skip_push: None,
             extra_files: Some(vec![extra_dir.to_string_lossy().into_owned()]),
             push_flags: None,
+            id: None,
+            ids: None,
+            labels: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -1242,5 +1313,88 @@ dockerfile: Dockerfile
             err.contains("directory") || err.contains("some_directory"),
             "error should mention that directories are not supported, got: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for id, ids, labels config fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_docker_config_parses_id_ids_labels() {
+        let yaml = r#"
+image_templates:
+  - "ghcr.io/owner/app:latest"
+dockerfile: Dockerfile
+id: my-docker
+ids:
+  - linux-build
+  - windows-build
+labels:
+  org.opencontainers.image.title: "MyApp"
+  org.opencontainers.image.version: "{{ .Version }}"
+"#;
+        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.id.as_deref(), Some("my-docker"));
+        let ids = cfg.ids.as_ref().unwrap();
+        assert_eq!(ids, &["linux-build", "windows-build"]);
+        let labels = cfg.labels.as_ref().unwrap();
+        assert_eq!(
+            labels.get("org.opencontainers.image.title").unwrap(),
+            "MyApp"
+        );
+        assert_eq!(
+            labels.get("org.opencontainers.image.version").unwrap(),
+            "{{ .Version }}"
+        );
+    }
+
+    #[test]
+    fn test_labels_appear_in_docker_build_command() {
+        let labels = vec![
+            (
+                "org.opencontainers.image.source".to_string(),
+                "https://github.com/owner/app".to_string(),
+            ),
+            (
+                "org.opencontainers.image.version".to_string(),
+                "1.0.0".to_string(),
+            ),
+        ];
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            false,
+            &[],
+            &labels,
+        );
+        assert!(
+            cmd.contains(&"--label".to_string()),
+            "command should contain --label flag"
+        );
+        assert!(
+            cmd.contains(
+                &"org.opencontainers.image.source=https://github.com/owner/app".to_string()
+            ),
+            "label key=value should appear in command"
+        );
+        assert!(
+            cmd.contains(&"org.opencontainers.image.version=1.0.0".to_string()),
+            "label key=value should appear in command"
+        );
+    }
+
+    #[test]
+    fn test_docker_config_new_fields_default_to_none_extended() {
+        let yaml = r#"
+image_templates:
+  - "ghcr.io/owner/app:latest"
+dockerfile: Dockerfile
+"#;
+        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.id, None);
+        assert_eq!(cfg.ids, None);
+        assert!(cfg.labels.is_none());
     }
 }

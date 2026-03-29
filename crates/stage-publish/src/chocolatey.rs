@@ -2,7 +2,7 @@ use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
-use crate::util::{find_windows_artifact, run_cmd_in};
+use crate::util;
 
 // ---------------------------------------------------------------------------
 // NuspecParams
@@ -141,17 +141,7 @@ pub fn generate_install_script(name: &str, url: &str, hash: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .ok_or_else(|| anyhow::anyhow!("chocolatey: crate '{}' not found in config", crate_name))?;
-
-    let publish = crate_cfg
-        .publish
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("chocolatey: no publish config for '{}'", crate_name))?;
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "chocolatey")?;
 
     let choco_cfg = publish
         .chocolatey
@@ -170,12 +160,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         return Ok(());
     }
 
-    // Resolve version.
-    let version = ctx
-        .template_vars()
-        .get("Version")
-        .cloned()
-        .unwrap_or_default();
+    let version = ctx.version();
 
     let description = choco_cfg
         .description
@@ -199,7 +184,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     let tags = choco_cfg.tags.clone().unwrap_or_default();
 
     // Find the windows Archive artifact.
-    let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
+    let (url, hash) = if let Some(found) = util::find_windows_artifact(ctx, crate_name) {
         found
     } else {
         log.warn(&format!(
@@ -257,7 +242,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     ));
 
     // choco pack
-    run_cmd_in(
+    util::run_cmd_in(
         pkg_dir,
         "choco",
         &["pack", &nuspec_path.to_string_lossy()],
@@ -273,7 +258,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 
     // choco push
     let nupkg = pkg_dir.join(format!("{}.{}.nupkg", crate_name, version));
-    run_cmd_in(
+    util::run_cmd_in(
         pkg_dir,
         "choco",
         &[

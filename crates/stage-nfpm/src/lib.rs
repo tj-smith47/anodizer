@@ -164,13 +164,6 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
         .filter(|m| !m.is_empty())
         .cloned();
 
-    fn unwrap_or_empty(opt: &Option<Vec<String>>) -> Vec<String> {
-        match opt {
-            Some(v) => v.clone(),
-            None => Vec::new(),
-        }
-    }
-
     let yaml_config = NfpmYamlConfig {
         name: config.package_name.clone(),
         version: version.to_string(),
@@ -180,11 +173,11 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
         description: config.description.clone(),
         license: config.license.clone(),
         scripts,
-        recommends: unwrap_or_empty(&config.recommends),
-        suggests: unwrap_or_empty(&config.suggests),
-        conflicts: unwrap_or_empty(&config.conflicts),
-        replaces: unwrap_or_empty(&config.replaces),
-        provides: unwrap_or_empty(&config.provides),
+        recommends: config.recommends.clone().unwrap_or_default(),
+        suggests: config.suggests.clone().unwrap_or_default(),
+        conflicts: config.conflicts.clone().unwrap_or_default(),
+        replaces: config.replaces.clone().unwrap_or_default(),
+        provides: config.provides.clone().unwrap_or_default(),
         contents,
         overrides,
         dependencies,
@@ -333,11 +326,7 @@ impl Stage for NfpmStage {
                                 path: pkg_path,
                                 target: target.clone(),
                                 crate_name: krate.name.clone(),
-                                metadata: {
-                                    let mut m = HashMap::new();
-                                    m.insert("format".to_string(), format.clone());
-                                    m
-                                },
+                                metadata: HashMap::from([("format".to_string(), format.clone())]),
                             });
                             continue;
                         }
@@ -374,11 +363,7 @@ impl Stage for NfpmStage {
                             path: pkg_path,
                             target: target.clone(),
                             crate_name: krate.name.clone(),
-                            metadata: {
-                                let mut m = HashMap::new();
-                                m.insert("format".to_string(), format.clone());
-                                m
-                            },
+                            metadata: HashMap::from([("format".to_string(), format.clone())]),
                         });
                     }
                 }

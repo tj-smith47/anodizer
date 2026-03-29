@@ -99,6 +99,15 @@ impl Context {
         self.options.nightly
     }
 
+    /// Return the current `Version` template variable, or an empty string if
+    /// not yet populated.
+    pub fn version(&self) -> String {
+        self.template_vars
+            .get("Version")
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Derive the verbosity level from context options.
     pub fn verbosity(&self) -> Verbosity {
         Verbosity::from_flags(self.options.quiet, self.options.verbose, self.options.debug)
@@ -121,9 +130,17 @@ impl Context {
     /// - `CommitDate` — ISO 8601 author date of HEAD commit
     /// - `CommitTimestamp` — unix timestamp of HEAD commit
     /// - `IsGitDirty` — "true"/"false"
+    /// - `IsGitClean` — "true"/"false" (inverse of `IsGitDirty`)
     /// - `GitTreeState` — "clean"/"dirty"
+    /// - `GitURL` — git remote URL
+    /// - `Summary` — git describe summary
+    /// - `TagSubject` — annotated tag subject or commit subject
+    /// - `TagContents` — full annotated tag message or commit message
+    /// - `TagBody` — tag message body or commit message body
     /// - `IsSnapshot` — from context options
+    /// - `IsNightly` — from context options
     /// - `IsDraft` — "false" (stages may override to "true")
+    /// - `IsSingleTarget` — "true"/"false" based on single_target option
     /// - `PreviousTag` — previous matching tag (or empty)
     ///
     /// **Stage-scoped variables** (NOT set here; set per-artifact during stage execution):
@@ -169,7 +186,14 @@ impl Context {
             self.template_vars
                 .set("IsGitDirty", if info.dirty { "true" } else { "false" });
             self.template_vars
+                .set("IsGitClean", if info.dirty { "false" } else { "true" });
+            self.template_vars
                 .set("GitTreeState", if info.dirty { "dirty" } else { "clean" });
+            self.template_vars.set("GitURL", &info.remote_url);
+            self.template_vars.set("Summary", &info.summary);
+            self.template_vars.set("TagSubject", &info.tag_subject);
+            self.template_vars.set("TagContents", &info.tag_contents);
+            self.template_vars.set("TagBody", &info.tag_body);
             self.template_vars
                 .set("PreviousTag", info.previous_tag.as_deref().unwrap_or(""));
         }
@@ -191,6 +215,14 @@ impl Context {
             },
         );
         self.template_vars.set("IsDraft", "false");
+        self.template_vars.set(
+            "IsSingleTarget",
+            if self.options.single_target.is_some() {
+                "true"
+            } else {
+                "false"
+            },
+        );
     }
 
     /// Populate time-related template variables using the current UTC time.
@@ -206,6 +238,35 @@ impl Context {
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());
         self.template_vars.set("Now", &now.to_rfc3339());
+    }
+
+    /// Populate runtime environment variables.
+    ///
+    /// Sets:
+    /// - `RuntimeGoos` — host OS (e.g. "linux", "macos", "windows")
+    /// - `RuntimeGoarch` — host architecture (e.g. "x86_64", "aarch64")
+    pub fn populate_runtime_vars(&mut self) {
+        self.template_vars.set("RuntimeGoos", std::env::consts::OS);
+        self.template_vars
+            .set("RuntimeGoarch", std::env::consts::ARCH);
+    }
+
+    /// Populate the `ReleaseNotes` template variable from stored changelogs.
+    ///
+    /// Should be called after the changelog stage has run and populated
+    /// `self.changelogs`. Uses the first crate (by config order) whose
+    /// changelog is present, or an empty string if no changelogs exist.
+    /// Config order is deterministic, unlike HashMap iteration order.
+    pub fn populate_release_notes_var(&mut self) {
+        // Look up changelogs in config-defined crate order for determinism.
+        let notes = self
+            .config
+            .crates
+            .iter()
+            .find_map(|c| self.changelogs.get(&c.name))
+            .cloned()
+            .unwrap_or_default();
+        self.template_vars.set("ReleaseNotes", &notes);
     }
 }
 
@@ -232,6 +293,11 @@ mod tests {
             commit_date: "2026-03-25T10:30:00+00:00".to_string(),
             commit_timestamp: "1774463400".to_string(),
             previous_tag: Some("v1.2.2".to_string()),
+            remote_url: "https://github.com/test/repo.git".to_string(),
+            summary: "v1.2.3-0-gabc123d".to_string(),
+            tag_subject: "Release v1.2.3".to_string(),
+            tag_contents: "Release v1.2.3\n\nFull release notes here.".to_string(),
+            tag_body: "Full release notes here.".to_string(),
         }
     }
 
@@ -506,6 +572,23 @@ mod tests {
     }
 
     #[test]
+    fn test_version_returns_populated_value() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(ctx.version(), "1.2.3");
+    }
+
+    #[test]
+    fn test_version_returns_empty_when_not_set() {
+        let config = Config::default();
+        let ctx = Context::new(config, ContextOptions::default());
+        assert_eq!(ctx.version(), "");
+    }
+
+    #[test]
     fn test_is_nightly_without_git_info() {
         let config = Config::default();
         let opts = ContextOptions {
@@ -520,6 +603,205 @@ mod tests {
             ctx.template_vars().get("IsNightly"),
             Some(&"true".to_string()),
             "IsNightly should be set even without git info"
+        );
+    }
+
+    #[test]
+    fn test_is_git_clean_when_not_dirty() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsGitClean"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_git_clean_when_dirty() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(true, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsGitClean"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_git_url_set_from_git_info() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("GitURL"),
+            Some(&"https://github.com/test/repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn test_summary_set_from_git_info() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("Summary"),
+            Some(&"v1.2.3-0-gabc123d".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tag_subject_set_from_git_info() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("TagSubject"),
+            Some(&"Release v1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tag_contents_set_from_git_info() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("TagContents"),
+            Some(&"Release v1.2.3\n\nFull release notes here.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_tag_body_set_from_git_info() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("TagBody"),
+            Some(&"Full release notes here.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_single_target_false_by_default() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsSingleTarget"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_single_target_true_when_set() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            single_target: Some("x86_64-unknown-linux-gnu".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsSingleTarget"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_populate_runtime_vars() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_runtime_vars();
+
+        let v = ctx.template_vars();
+
+        let goos = v.get("RuntimeGoos").expect("RuntimeGoos should be set");
+        assert!(
+            !goos.is_empty(),
+            "RuntimeGoos should not be empty, got: {goos}"
+        );
+        assert_eq!(goos, std::env::consts::OS);
+
+        let goarch = v.get("RuntimeGoarch").expect("RuntimeGoarch should be set");
+        assert!(
+            !goarch.is_empty(),
+            "RuntimeGoarch should not be empty, got: {goarch}"
+        );
+        assert_eq!(goarch, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn test_populate_release_notes_var_with_changelogs() {
+        let mut config = Config::default();
+        config.crates.push(crate::config::CrateConfig {
+            name: "my-crate".to_string(),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.changelogs
+            .insert("my-crate".to_string(), "## Changes\n- fix bug".to_string());
+        ctx.populate_release_notes_var();
+
+        assert_eq!(
+            ctx.template_vars().get("ReleaseNotes"),
+            Some(&"## Changes\n- fix bug".to_string())
+        );
+    }
+
+    #[test]
+    fn test_populate_release_notes_var_empty_when_no_changelogs() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_release_notes_var();
+
+        assert_eq!(
+            ctx.template_vars().get("ReleaseNotes"),
+            Some(&"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_populate_release_notes_var_deterministic_with_multiple_crates() {
+        let mut config = Config::default();
+        config.crates.push(crate::config::CrateConfig {
+            name: "crate-a".to_string(),
+            ..Default::default()
+        });
+        config.crates.push(crate::config::CrateConfig {
+            name: "crate-b".to_string(),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.changelogs
+            .insert("crate-a".to_string(), "notes-a".to_string());
+        ctx.changelogs
+            .insert("crate-b".to_string(), "notes-b".to_string());
+        ctx.populate_release_notes_var();
+
+        // Should always pick the first crate in config order, not arbitrary HashMap order
+        assert_eq!(
+            ctx.template_vars().get("ReleaseNotes"),
+            Some(&"notes-a".to_string())
         );
     }
 }

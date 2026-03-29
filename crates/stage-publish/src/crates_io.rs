@@ -1,73 +1,9 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
+use anodize_core::util::topological_sort;
 use anyhow::{Context as _, Result};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 use std::process::Command;
-
-// ---------------------------------------------------------------------------
-// topo_sort
-// ---------------------------------------------------------------------------
-
-/// Topological sort of crates by their `depends_on` lists.
-///
-/// Input: slice of `(crate_name, depends_on_names)`.
-/// Output: names in publish order (dependencies before dependents).
-/// If a crate listed in `depends_on` is not in the input set it is ignored.
-pub fn topo_sort(crates: &[(String, Vec<String>)]) -> Vec<String> {
-    // Build adjacency (dependency → dependent) and in-degree maps.
-    let names: HashSet<&str> = crates.iter().map(|(n, _)| n.as_str()).collect();
-
-    // in_degree: how many unresolved deps each node has
-    let mut in_degree: HashMap<&str, usize> = crates
-        .iter()
-        .map(|(n, deps)| {
-            let deg = deps.iter().filter(|d| names.contains(d.as_str())).count();
-            (n.as_str(), deg)
-        })
-        .collect();
-
-    // edges: dep → list of nodes that depend on dep
-    let mut edges: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (n, deps) in crates {
-        for dep in deps {
-            if names.contains(dep.as_str()) {
-                edges.entry(dep.as_str()).or_default().push(n.as_str());
-            }
-        }
-    }
-
-    // Kahn's algorithm — deterministic: sort the initial zero-in-degree queue
-    let mut queue: VecDeque<&str> = {
-        let mut v: Vec<&str> = in_degree
-            .iter()
-            .filter(|(_, d)| **d == 0)
-            .map(|(&n, _)| n)
-            .collect();
-        v.sort_unstable();
-        VecDeque::from(v)
-    };
-
-    let mut result = Vec::with_capacity(crates.len());
-    while let Some(node) = queue.pop_front() {
-        result.push(node.to_string());
-        if let Some(dependents) = edges.get(node) {
-            let mut next: Vec<&str> = dependents
-                .iter()
-                .filter_map(|&dep| {
-                    let deg = in_degree.get_mut(dep)?;
-                    *deg -= 1;
-                    if *deg == 0 { Some(dep) } else { None }
-                })
-                .collect();
-            next.sort_unstable();
-            for n in next {
-                queue.push_back(n);
-            }
-        }
-    }
-
-    result
-}
 
 // ---------------------------------------------------------------------------
 // publish_command
@@ -207,7 +143,7 @@ pub fn publish_to_crates_io(
         return Ok(());
     }
 
-    let sorted_names = topo_sort(&publishable);
+    let sorted_names = topological_sort(&publishable);
 
     // Build a quick lookup: name → index_timeout
     let timeout_map: HashMap<String, u64> = ctx
@@ -237,12 +173,7 @@ pub fn publish_to_crates_io(
         return Ok(());
     }
 
-    // Resolve the version from template vars (best-effort).
-    let version = ctx
-        .template_vars()
-        .get("Version")
-        .cloned()
-        .unwrap_or_default();
+    let version = ctx.version();
 
     for (i, name) in sorted_names.iter().enumerate() {
         let cmd = publish_command(name);
@@ -293,14 +224,14 @@ mod tests {
             ("cfgd-core".to_string(), vec![]),
             ("cfgd".to_string(), vec!["cfgd-core".to_string()]),
         ];
-        let sorted = topo_sort(&order);
+        let sorted = topological_sort(&order);
         assert_eq!(sorted, vec!["cfgd-core", "cfgd"]);
     }
 
     #[test]
     fn test_topo_sort_no_deps() {
         let order = vec![("a".to_string(), vec![]), ("b".to_string(), vec![])];
-        let sorted = topo_sort(&order);
+        let sorted = topological_sort(&order);
         assert_eq!(sorted.len(), 2);
     }
 

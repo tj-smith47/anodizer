@@ -57,6 +57,31 @@ fn append_tar_entry<W: std::io::Write>(
 // create_tar_gz
 // ---------------------------------------------------------------------------
 
+/// Shared tar archive creation: adds files to a tar builder, then finishes it.
+fn write_tar_entries<W: std::io::Write>(
+    tar: &mut tar::Builder<W>,
+    files: &[&Path],
+    base_dir: Option<&Path>,
+    wrap_dir: Option<&str>,
+    mtime: Option<u64>,
+    label: &str,
+) -> Result<()> {
+    for &src in files {
+        if !src.exists() {
+            continue;
+        }
+        let archive_name = compute_archive_name(src, base_dir, wrap_dir);
+        append_tar_entry(tar, src, &archive_name, mtime).with_context(|| {
+            format!(
+                "{label}: adding {} as {}",
+                src.display(),
+                archive_name.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 /// Create a tar.gz archive containing the given files.
 /// Each file is stored under its own filename (no directory prefix) unless
 /// `base_dir` is provided, in which case files are stored relative to it.
@@ -73,32 +98,11 @@ pub fn create_tar_gz(
         File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
     let enc = GzEncoder::new(out_file, Compression::default());
     let mut tar = tar::Builder::new(enc);
-
-    for &src in files {
-        if !src.exists() {
-            continue;
-        }
-        let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        append_tar_entry(&mut tar, src, &archive_name, mtime).with_context(|| {
-            format!(
-                "tar.gz: adding {} as {}",
-                src.display(),
-                archive_name.display()
-            )
-        })?;
-    }
-
-    tar.finish().context("tar.gz: finish")?;
-    Ok(())
+    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, "tar.gz")?;
+    tar.finish().context("tar.gz: finish")
 }
 
-// ---------------------------------------------------------------------------
-// create_tar_xz
-// ---------------------------------------------------------------------------
-
 /// Create a tar.xz archive containing the given files.
-/// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
-/// If `mtime` is provided, all entries are stored with that unix timestamp as mtime.
 pub fn create_tar_xz(
     files: &[&Path],
     output: &Path,
@@ -110,32 +114,11 @@ pub fn create_tar_xz(
         File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
     let enc = xz2::write::XzEncoder::new(out_file, 6);
     let mut tar = tar::Builder::new(enc);
-
-    for &src in files {
-        if !src.exists() {
-            continue;
-        }
-        let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        append_tar_entry(&mut tar, src, &archive_name, mtime).with_context(|| {
-            format!(
-                "tar.xz: adding {} as {}",
-                src.display(),
-                archive_name.display()
-            )
-        })?;
-    }
-
-    tar.finish().context("tar.xz: finish")?;
-    Ok(())
+    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, "tar.xz")?;
+    tar.finish().context("tar.xz: finish")
 }
 
-// ---------------------------------------------------------------------------
-// create_tar_zst
-// ---------------------------------------------------------------------------
-
 /// Create a tar.zst archive containing the given files.
-/// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
-/// If `mtime` is provided, all entries are stored with that unix timestamp as mtime.
 pub fn create_tar_zst(
     files: &[&Path],
     output: &Path,
@@ -147,21 +130,7 @@ pub fn create_tar_zst(
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
     let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
     let mut tar = tar::Builder::new(enc);
-
-    for &src in files {
-        if !src.exists() {
-            continue;
-        }
-        let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        append_tar_entry(&mut tar, src, &archive_name, mtime).with_context(|| {
-            format!(
-                "tar.zst: adding {} as {}",
-                src.display(),
-                archive_name.display()
-            )
-        })?;
-    }
-
+    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, "tar.zst")?;
     let enc = tar.into_inner().context("tar.zst: finish tar")?;
     enc.finish().context("tar.zst: finish zstd")?;
     Ok(())
@@ -564,12 +533,10 @@ impl Stage for ArchiveStage {
                         path: archive_path,
                         target: Some(target.clone()),
                         crate_name: crate_name.clone(),
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert("format".to_string(), format.clone());
-                            m.insert("name".to_string(), archive_stem.clone());
-                            m
-                        },
+                        metadata: HashMap::from([
+                            ("format".to_string(), format.clone()),
+                            ("name".to_string(), archive_stem.clone()),
+                        ]),
                     });
                 }
             }

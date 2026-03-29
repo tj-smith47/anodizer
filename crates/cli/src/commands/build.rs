@@ -49,6 +49,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();
+    ctx.populate_runtime_vars();
 
     // Populate user-defined env vars
     helpers::setup_env(&mut ctx, &config, &log)?;

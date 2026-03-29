@@ -2,9 +2,8 @@ use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
-use std::process::Command;
 
-use crate::util::{OsArtifact, find_all_platform_artifacts, run_cmd_in};
+use crate::util::{self, OsArtifact, find_all_platform_artifacts};
 
 // ---------------------------------------------------------------------------
 // KrewManifestParams
@@ -191,17 +190,7 @@ fn artifacts_to_platforms(artifacts: &[OsArtifact], binary_name: &str) -> Vec<Kr
 // ---------------------------------------------------------------------------
 
 pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .ok_or_else(|| anyhow::anyhow!("krew: crate '{}' not found in config", crate_name))?;
-
-    let publish = crate_cfg
-        .publish
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("krew: no publish config for '{}'", crate_name))?;
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "krew")?;
 
     let krew_cfg = publish
         .krew
@@ -221,12 +210,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         return Ok(());
     }
 
-    // Resolve version.
-    let version = ctx
-        .template_vars()
-        .get("Version")
-        .cloned()
-        .unwrap_or_default();
+    let version = ctx.version();
 
     let description = krew_cfg
         .description
@@ -275,12 +259,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     });
 
     // Clone the krew-index fork, write the plugin manifest, commit, push.
-    let token = ctx
-        .options
-        .token
-        .clone()
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
-
+    let token = util::resolve_token(ctx, None);
     let repo_url = format!(
         "https://github.com/{}/{}.git",
         manifests_repo.owner, manifests_repo.name
@@ -289,34 +268,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     let tmp_dir = tempfile::tempdir().context("krew: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    let auth_header;
-    let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
-    if let Some(ref tok) = token {
-        auth_header = format!("http.extraheader=Authorization: bearer {}", tok);
-        clone_args.extend_from_slice(&["-c", &auth_header]);
-    }
-    clone_args.push(&repo_url);
-    let repo_path_str = repo_path.to_string_lossy();
-    clone_args.push(&repo_path_str);
-
-    let output = Command::new("git")
-        .args(&clone_args)
-        .output()
-        .context("krew: git clone: spawn")?;
-    log.check_output(output, "krew: git clone")?;
-
-    if let Some(ref tok) = token {
-        run_cmd_in(
-            repo_path,
-            "git",
-            &[
-                "config",
-                "http.extraheader",
-                &format!("Authorization: bearer {}", tok),
-            ],
-            "krew: git config auth",
-        )?;
-    }
+    util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "krew", log)?;
 
     // Write plugin manifest under plugins/<name>.yaml.
     let plugins_dir = repo_path.join("plugins");
@@ -333,28 +285,12 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     ));
 
     let branch_name = format!("{}-v{}", crate_name, version);
-    run_cmd_in(
+    util::commit_and_push(
         repo_path,
-        "git",
-        &["checkout", "-b", &branch_name],
-        "krew: git checkout",
-    )?;
-    run_cmd_in(repo_path, "git", &["add", "."], "krew: git add")?;
-    run_cmd_in(
-        repo_path,
-        "git",
-        &[
-            "commit",
-            "-m",
-            &format!("Add/update {} plugin to v{}", crate_name, version),
-        ],
-        "krew: git commit",
-    )?;
-    run_cmd_in(
-        repo_path,
-        "git",
-        &["push", "-u", "origin", &branch_name],
-        "krew: git push",
+        &["."],
+        &format!("Add/update {} plugin to v{}", crate_name, version),
+        Some(&branch_name),
+        "krew",
     )?;
 
     log.status(&format!(
@@ -363,58 +299,21 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     ));
 
     // Determine the upstream repo to submit the PR against.
-    // Use the configured upstream_repo if available, otherwise fall back to
-    // the manifests_repo itself (which works when it is the canonical repo
-    // rather than a fork).
     let upstream = krew_cfg.upstream_repo.as_ref().unwrap_or(manifests_repo);
     let upstream_slug = format!("{}/{}", upstream.owner, upstream.name);
 
-    // Submit PR via GitHub CLI (gh) if available.
-    let pr_result = Command::new("gh")
-        .current_dir(repo_path)
-        .args([
-            "pr",
-            "create",
-            "--repo",
-            &upstream_slug,
-            "--title",
-            &format!("Add/update {} plugin to v{}", crate_name, version),
-            "--body",
-            &format!(
-                "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\nAutomatically submitted by anodize.",
-                crate_name, version
-            ),
-            "--head",
-            &format!("{}:{}", manifests_repo.owner, branch_name),
-        ])
-        .output();
-
-    match pr_result {
-        Ok(output) if output.status.success() => {
-            log.status(&format!(
-                "Krew PR submitted for {} v{}",
-                crate_name, version
-            ));
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log.warn(&format!(
-                "krew: gh pr create exited with {} -- you may need to create the PR manually{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
-            ));
-        }
-        Err(e) => {
-            log.warn(&format!(
-                "krew: could not run gh to create PR: {} -- you may need to create the PR manually",
-                e
-            ));
-        }
-    }
+    util::submit_pr_via_gh(
+        repo_path,
+        &upstream_slug,
+        &format!("{}:{}", manifests_repo.owner, branch_name),
+        &format!("Add/update {} plugin to v{}", crate_name, version),
+        &format!(
+            "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\nAutomatically submitted by anodize.",
+            crate_name, version
+        ),
+        "krew",
+        log,
+    );
 
     Ok(())
 }

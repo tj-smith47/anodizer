@@ -125,46 +125,25 @@ impl Stage for ChecksumStage {
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
 
-        // Check global disable flag
-        let global_disabled = ctx
+        // Extract global checksum defaults once
+        let global_cksum = ctx
             .config
             .defaults
             .as_ref()
-            .and_then(|d| d.checksum.as_ref())
-            .and_then(|c| c.disable)
-            .unwrap_or(false);
+            .and_then(|d| d.checksum.as_ref());
 
-        if global_disabled {
+        if global_cksum.and_then(|c| c.disable).unwrap_or(false) {
             log.status("globally disabled, skipping");
             return Ok(());
         }
 
-        // Global checksum defaults
-        let global_algorithm = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.checksum.as_ref())
+        let global_algorithm = global_cksum
             .and_then(|c| c.algorithm.clone())
             .unwrap_or_else(|| "sha256".to_string());
-        let global_name_template = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.checksum.as_ref())
-            .and_then(|c| c.name_template.clone());
-        let global_extra_files = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.checksum.as_ref())
-            .and_then(|c| c.extra_files.clone());
-        let global_ids = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.checksum.as_ref())
-            .and_then(|c| c.ids.clone());
+        let global_name_template = global_cksum.and_then(|c| c.name_template.clone());
+        let global_extra_files = global_cksum.and_then(|c| c.extra_files.clone());
+        let global_ids = global_cksum.and_then(|c| c.ids.clone());
+        let global_split = global_cksum.and_then(|c| c.split);
 
         // Collect crate configs up-front to avoid borrow conflicts
         let crates: Vec<_> = ctx
@@ -199,64 +178,42 @@ impl Stage for ChecksumStage {
                 continue;
             }
 
-            // Per-crate overrides
-            let algorithm = crate_cfg
-                .checksum
-                .as_ref()
+            // Per-crate overrides (fall back to global defaults)
+            let crate_cksum = crate_cfg.checksum.as_ref();
+            let algorithm = crate_cksum
                 .and_then(|c| c.algorithm.clone())
                 .unwrap_or_else(|| global_algorithm.clone());
-
-            let name_template = crate_cfg
-                .checksum
-                .as_ref()
+            let name_template = crate_cksum
                 .and_then(|c| c.name_template.clone())
                 .or_else(|| global_name_template.clone());
-
-            let extra_files = crate_cfg
-                .checksum
-                .as_ref()
+            let extra_files = crate_cksum
                 .and_then(|c| c.extra_files.clone())
                 .or_else(|| global_extra_files.clone());
-
-            let ids_filter = crate_cfg
-                .checksum
-                .as_ref()
+            let ids_filter = crate_cksum
                 .and_then(|c| c.ids.clone())
                 .or_else(|| global_ids.clone());
+            let split = crate_cksum
+                .and_then(|c| c.split)
+                .or(global_split)
+                .unwrap_or(false);
 
             // Gather Archive and LinuxPackage artifacts for this crate
             let mut source_artifacts: Vec<Artifact> = Vec::new();
-
-            let archive_artifacts = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Archive, crate_name)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>();
-            let package_artifacts = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::LinuxPackage, crate_name)
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>();
-
-            // Apply ids filter: only include artifacts whose metadata "id" is in the list
-            if let Some(ref ids) = ids_filter {
-                source_artifacts.extend(archive_artifacts.into_iter().filter(|a| {
-                    a.metadata
-                        .get("id")
-                        .map(|id| ids.contains(id))
-                        .unwrap_or(false)
-                }));
-                source_artifacts.extend(package_artifacts.into_iter().filter(|a| {
-                    a.metadata
-                        .get("id")
-                        .map(|id| ids.contains(id))
-                        .unwrap_or(false)
-                }));
-            } else {
-                source_artifacts.extend(archive_artifacts);
-                source_artifacts.extend(package_artifacts);
+            for kind in [ArtifactKind::Archive, ArtifactKind::LinuxPackage] {
+                let artifacts = ctx
+                    .artifacts
+                    .by_kind_and_crate(kind, crate_name)
+                    .into_iter()
+                    .cloned();
+                if let Some(ref ids) = ids_filter {
+                    source_artifacts.extend(
+                        artifacts.filter(
+                            |a| matches!(a.metadata.get("id"), Some(id) if ids.contains(id)),
+                        ),
+                    );
+                } else {
+                    source_artifacts.extend(artifacts);
+                }
             }
 
             // Resolve extra_files globs and create synthetic artifacts for them
@@ -268,11 +225,7 @@ impl Stage for ChecksumStage {
                         path: ep,
                         target: None,
                         crate_name: crate_name.clone(),
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert("extra_file".to_string(), "true".to_string());
-                            m
-                        },
+                        metadata: HashMap::from([("extra_file".to_string(), "true".to_string())]),
                     });
                 }
             }
@@ -333,56 +286,59 @@ impl Stage for ChecksumStage {
                     path: sidecar_path,
                     target: artifact.target.clone(),
                     crate_name: crate_name.clone(),
-                    metadata: {
-                        let mut m = HashMap::new();
-                        m.insert("algorithm".to_string(), algorithm.clone());
-                        m.insert(
+                    metadata: HashMap::from([
+                        ("algorithm".to_string(), algorithm.clone()),
+                        (
                             "source".to_string(),
                             artifact.path.to_string_lossy().into_owned(),
-                        );
-                        m
-                    },
+                        ),
+                    ]),
                 });
             }
 
-            // Write combined checksums file
-            let combined_filename = if let Some(tmpl) = &name_template {
-                ctx.render_template(tmpl)
-                    .with_context(|| format!("checksum: render name_template for {crate_name}"))?
-            } else {
-                format!("{}_checksums.{}", crate_name, ext)
-            };
+            // Write combined checksums file (skip when split mode is enabled)
+            if !split {
+                let combined_filename = if let Some(tmpl) = &name_template {
+                    ctx.render_template(tmpl).with_context(|| {
+                        format!("checksum: render name_template for {crate_name}")
+                    })?
+                } else {
+                    format!("{}_checksums.{}", crate_name, ext)
+                };
 
-            let combined_path = dist.join(&combined_filename);
-            std::fs::create_dir_all(&dist)
-                .with_context(|| format!("checksum: create dist dir {}", dist.display()))?;
+                let combined_path = dist.join(&combined_filename);
+                std::fs::create_dir_all(&dist)
+                    .with_context(|| format!("checksum: create dist dir {}", dist.display()))?;
 
-            let mut combined_file = File::create(&combined_path).with_context(|| {
-                format!("checksum: create combined file {}", combined_path.display())
-            })?;
-            for line in &combined_lines {
-                writeln!(combined_file, "{}", line).with_context(|| {
-                    format!("checksum: write combined file {}", combined_path.display())
+                let mut combined_file = File::create(&combined_path).with_context(|| {
+                    format!("checksum: create combined file {}", combined_path.display())
                 })?;
+                for line in &combined_lines {
+                    writeln!(combined_file, "{}", line).with_context(|| {
+                        format!("checksum: write combined file {}", combined_path.display())
+                    })?;
+                }
+
+                log.status(&format!(
+                    "combined checksums -> {}",
+                    combined_path.display()
+                ));
+
+                new_artifacts.push(Artifact {
+                    kind: ArtifactKind::Checksum,
+                    path: combined_path,
+                    target: None,
+                    crate_name: crate_name.clone(),
+                    metadata: HashMap::from([
+                        ("algorithm".to_string(), algorithm.clone()),
+                        ("combined".to_string(), "true".to_string()),
+                    ]),
+                });
+            } else {
+                log.status(&format!(
+                    "split mode: skipping combined checksums file for crate {crate_name}"
+                ));
             }
-
-            log.status(&format!(
-                "combined checksums -> {}",
-                combined_path.display()
-            ));
-
-            new_artifacts.push(Artifact {
-                kind: ArtifactKind::Checksum,
-                path: combined_path,
-                target: None,
-                crate_name: crate_name.clone(),
-                metadata: {
-                    let mut m = HashMap::new();
-                    m.insert("algorithm".to_string(), algorithm.clone());
-                    m.insert("combined".to_string(), "true".to_string());
-                    m
-                },
-            });
         }
 
         for artifact in new_artifacts {
@@ -1570,5 +1526,251 @@ ids:
                 err
             );
         }
+    }
+
+    // -- split mode tests ---------------------------------------------------
+
+    #[test]
+    fn test_split_config_parsing() {
+        let yaml = r#"
+algorithm: "sha256"
+split: true
+"#;
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.split, Some(true));
+    }
+
+    #[test]
+    fn test_split_config_parsing_false() {
+        let yaml = r#"
+algorithm: "sha256"
+split: false
+"#;
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.split, Some(false));
+    }
+
+    #[test]
+    fn test_split_config_parsing_absent() {
+        let yaml = r#"
+algorithm: "sha256"
+"#;
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.split, None);
+    }
+
+    #[test]
+    fn test_checksum_stage_split_true_no_combined_file() {
+        use anodize_core::config::{ChecksumConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive_path = dist.join("myapp-1.0.0-linux-amd64.tar.gz");
+        fs::write(&archive_path, b"fake archive content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    split: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive_path.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Only sidecar file should be created (no combined)
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(
+            checksums.len(),
+            1,
+            "split=true should create only 1 sidecar artifact, got {}",
+            checksums.len()
+        );
+
+        // Sidecar file should exist
+        let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
+        assert!(sidecar.exists(), "sidecar file should exist");
+
+        // Combined file should NOT exist
+        let combined = dist.join("myapp_checksums.sha256");
+        assert!(
+            !combined.exists(),
+            "combined checksums file should NOT exist in split mode"
+        );
+    }
+
+    #[test]
+    fn test_checksum_stage_split_false_creates_both() {
+        use anodize_core::config::{ChecksumConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive_path = dist.join("myapp-1.0.0-linux-amd64.tar.gz");
+        fs::write(&archive_path, b"fake archive content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    split: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive_path.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Both sidecar and combined should be created
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(
+            checksums.len(),
+            2,
+            "split=false should create sidecar + combined artifacts, got {}",
+            checksums.len()
+        );
+
+        let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
+        assert!(sidecar.exists(), "sidecar file should exist");
+
+        let combined = dist.join("myapp_checksums.sha256");
+        assert!(
+            combined.exists(),
+            "combined checksums file should exist when split=false"
+        );
+    }
+
+    #[test]
+    fn test_checksum_stage_default_split_creates_both() {
+        // When split is not set (None), default behavior creates both
+        use anodize_core::config::CrateConfig;
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive_path = dist.join("myapp.tar.gz");
+        fs::write(&archive_path, b"content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(
+            checksums.len(),
+            2,
+            "default (no split) should create sidecar + combined"
+        );
+    }
+
+    #[test]
+    fn test_checksum_stage_global_split_cascades_to_crate() {
+        // When defaults.checksum.split = true and crate has no per-crate checksum config,
+        // the global split setting should cascade down.
+        use anodize_core::config::{ChecksumConfig, CrateConfig, Defaults};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive_path = dist.join("myapp.tar.gz");
+        fs::write(&archive_path, b"content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .defaults(Defaults {
+                checksum: Some(ChecksumConfig {
+                    split: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                // No per-crate checksum config — should inherit global split: true
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(
+            checksums.len(),
+            1,
+            "global split: true should cascade to crate — only sidecar, no combined"
+        );
     }
 }

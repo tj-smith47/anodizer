@@ -311,6 +311,11 @@ impl TestContextBuilder {
             commit_date: self.commit_date,
             commit_timestamp: self.commit_timestamp,
             previous_tag: self.previous_tag,
+            remote_url: String::new(),
+            summary: String::new(),
+            tag_subject: String::new(),
+            tag_contents: String::new(),
+            tag_body: String::new(),
         });
 
         if self.populate_git_vars {
@@ -456,6 +461,11 @@ pub fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
         commit_date: "2026-03-25T10:30:00+00:00".to_string(),
         commit_timestamp: "1774463400".to_string(),
         previous_tag: Some("v1.2.2".to_string()),
+        remote_url: String::new(),
+        summary: String::new(),
+        tag_subject: String::new(),
+        tag_contents: String::new(),
+        tag_body: String::new(),
     }
 }
 

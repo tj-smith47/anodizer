@@ -220,49 +220,19 @@ fn extract_workspace_deps(cargo: &CargoToml, member_names: &HashSet<String>) -> 
 // ---------------------------------------------------------------------------
 
 fn topological_sort(crates: &[CrateInfo]) -> Vec<&CrateInfo> {
-    let name_to_idx: HashMap<&str, usize> = crates
+    let items: Vec<(String, Vec<String>)> = crates
         .iter()
-        .enumerate()
-        .map(|(i, c)| (c.name.as_str(), i))
+        .map(|c| (c.name.clone(), c.depends_on.clone()))
         .collect();
+    let sorted_names = anodize_core::util::topological_sort(&items);
 
-    let mut in_degree = vec![0usize; crates.len()];
-    let mut adj: Vec<Vec<usize>> = vec![vec![]; crates.len()];
+    let name_to_crate: HashMap<&str, &CrateInfo> =
+        crates.iter().map(|c| (c.name.as_str(), c)).collect();
 
-    for (i, c) in crates.iter().enumerate() {
-        for dep in &c.depends_on {
-            if let Some(&j) = name_to_idx.get(dep.as_str()) {
-                // i depends on j → j must come before i
-                adj[j].push(i);
-                in_degree[i] += 1;
-            }
-        }
-    }
-
-    let mut queue: std::collections::VecDeque<usize> =
-        (0..crates.len()).filter(|&i| in_degree[i] == 0).collect();
-    let mut result = vec![];
-
-    while let Some(node) = queue.pop_front() {
-        result.push(node);
-        for &next in &adj[node] {
-            in_degree[next] -= 1;
-            if in_degree[next] == 0 {
-                queue.push_back(next);
-            }
-        }
-    }
-
-    // If we couldn't sort all (cycle), just append remaining in original order
-    if result.len() < crates.len() {
-        for i in 0..crates.len() {
-            if !result.contains(&i) {
-                result.push(i);
-            }
-        }
-    }
-
-    result.iter().map(|&i| &crates[i]).collect()
+    sorted_names
+        .iter()
+        .filter_map(|name| name_to_crate.get(name.as_str()).copied())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

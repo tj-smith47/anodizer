@@ -2,9 +2,8 @@ use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
-use std::process::Command;
 
-use crate::util::{find_windows_artifact, run_cmd_in};
+use crate::util;
 
 // ---------------------------------------------------------------------------
 // WingetManifestParams
@@ -95,17 +94,7 @@ pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .ok_or_else(|| anyhow::anyhow!("winget: crate '{}' not found in config", crate_name))?;
-
-    let publish = crate_cfg
-        .publish
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("winget: no publish config for '{}'", crate_name))?;
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "winget")?;
 
     let winget_cfg = publish
         .winget
@@ -129,12 +118,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         return Ok(());
     }
 
-    // Resolve version.
-    let version = ctx
-        .template_vars()
-        .get("Version")
-        .cloned()
-        .unwrap_or_default();
+    let version = ctx.version();
 
     let description = winget_cfg
         .description
@@ -151,14 +135,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let publisher_url = winget_cfg.publisher_url.clone().unwrap_or_default();
 
     // Find the windows Archive artifact.
-    let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
-        found
-    } else {
-        anyhow::bail!(
-            "winget: no Windows archive artifact found for crate '{}'",
-            crate_name
-        );
-    };
+    let (url, hash) = util::require_windows_artifact(ctx, crate_name, "winget")?;
 
     let manifest = generate_manifest(&WingetManifestParams {
         package_id,
@@ -172,15 +149,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         hash: &hash,
     });
 
-    // Clone the winget-pkgs fork using http.extraheader for auth instead of
-    // embedding the token in the URL (avoids leaking secrets in process lists
-    // and logs).
-    let token = ctx
-        .options
-        .token
-        .clone()
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
-
+    let token = util::resolve_token(ctx, None);
     let repo_url = format!(
         "https://github.com/{}/{}.git",
         manifests_repo.owner, manifests_repo.name
@@ -189,37 +158,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let tmp_dir = tempfile::tempdir().context("winget: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    // Build git clone command with optional auth header.
-    let auth_header;
-    let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
-    if let Some(ref tok) = token {
-        auth_header = format!("http.extraheader=Authorization: bearer {}", tok);
-        clone_args.extend_from_slice(&["-c", &auth_header]);
-    }
-    clone_args.push(&repo_url);
-    let repo_path_str = repo_path.to_string_lossy();
-    clone_args.push(&repo_path_str);
-
-    let output = Command::new("git")
-        .args(&clone_args)
-        .output()
-        .context("winget: git clone: spawn")?;
-    log.check_output(output, "winget: git clone")?;
-
-    // If we used a token, also configure it for subsequent push operations
-    // in this repo clone so that push uses the same auth mechanism.
-    if let Some(ref tok) = token {
-        run_cmd_in(
-            repo_path,
-            "git",
-            &[
-                "config",
-                "http.extraheader",
-                &format!("Authorization: bearer {}", tok),
-            ],
-            "winget: git config auth",
-        )?;
-    }
+    util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "winget", log)?;
 
     // Build the manifest path: manifests/<first_char>/<Publisher>/<PackageName>/<version>/
     let first_char = package_id
@@ -245,28 +184,12 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     ));
 
     let branch_name = format!("{}-{}", package_id, version);
-    run_cmd_in(
+    util::commit_and_push(
         repo_path,
-        "git",
-        &["checkout", "-b", &branch_name],
-        "winget: git checkout",
-    )?;
-    run_cmd_in(repo_path, "git", &["add", "."], "winget: git add")?;
-    run_cmd_in(
-        repo_path,
-        "git",
-        &[
-            "commit",
-            "-m",
-            &format!("New version: {} version {}", package_id, version),
-        ],
-        "winget: git commit",
-    )?;
-    run_cmd_in(
-        repo_path,
-        "git",
-        &["push", "-u", "origin", &branch_name],
-        "winget: git push",
+        &["."],
+        &format!("New version: {} version {}", package_id, version),
+        Some(&branch_name),
+        "winget",
     )?;
 
     log.status(&format!(
@@ -274,52 +197,18 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         manifests_repo.owner, manifests_repo.name, branch_name
     ));
 
-    // Submit PR via GitHub CLI (gh) if available.
-    let pr_result = Command::new("gh")
-        .current_dir(repo_path)
-        .args([
-            "pr",
-            "create",
-            "--repo",
-            "microsoft/winget-pkgs",
-            "--title",
-            &format!("New version: {} version {}", package_id, version),
-            "--body",
-            &format!(
-                "## Package\n- **Package**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
-                package_id, version
-            ),
-            "--head",
-            &format!("{}:{}", manifests_repo.owner, branch_name),
-        ])
-        .output();
-
-    match pr_result {
-        Ok(output) if output.status.success() => {
-            log.status(&format!(
-                "WinGet PR submitted for {} version {}",
-                package_id, version
-            ));
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log.warn(&format!(
-                "winget: gh pr create exited with {} — you may need to create the PR manually{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
-            ));
-        }
-        Err(e) => {
-            log.warn(&format!(
-                "winget: could not run gh to create PR: {} — you may need to create the PR manually",
-                e
-            ));
-        }
-    }
+    util::submit_pr_via_gh(
+        repo_path,
+        "microsoft/winget-pkgs",
+        &format!("{}:{}", manifests_repo.owner, branch_name),
+        &format!("New version: {} version {}", package_id, version),
+        &format!(
+            "## Package\n- **Package**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+            package_id, version
+        ),
+        "winget",
+        log,
+    );
 
     Ok(())
 }

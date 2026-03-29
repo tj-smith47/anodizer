@@ -261,13 +261,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
 fn resolve_config_path(opts: &TagOpts) -> Option<std::path::PathBuf> {
     opts.config_override
         .as_deref()
-        .and_then(|p| {
-            if p.exists() {
-                Some(p.to_path_buf())
-            } else {
-                None
-            }
-        })
+        .filter(|p| p.exists())
+        .map(|p| p.to_path_buf())
         .or_else(|| crate::pipeline::find_config(None).ok())
 }
 

@@ -299,16 +299,15 @@ fn build_universal_binary(
     }
 
     // Register the universal binary artifact
-    let mut metadata = HashMap::new();
-    metadata.insert("binary".to_string(), binary_name);
-    metadata.insert("universal".to_string(), "true".to_string());
-
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Binary,
         path: out_path,
         target: Some("darwin-universal".to_string()),
         crate_name: crate_name.to_string(),
-        metadata,
+        metadata: HashMap::from([
+            ("binary".to_string(), binary_name),
+            ("universal".to_string(), "true".to_string()),
+        ]),
     });
 
     // When `replace` is true, remove the source arm64/x86_64 artifacts from
@@ -378,30 +377,16 @@ impl Stage for BuildStage {
         let parallelism = ctx.options.parallelism.max(1);
 
         // Collect global defaults
-        let default_targets: Vec<String> = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.targets.clone())
-            .unwrap_or_default();
-        let default_strategy = ctx
-            .config
-            .defaults
-            .as_ref()
+        let defaults = ctx.config.defaults.as_ref();
+        let default_targets: Vec<String> =
+            defaults.and_then(|d| d.targets.clone()).unwrap_or_default();
+        let default_strategy = defaults
             .and_then(|d| d.cross.clone())
             .unwrap_or(CrossStrategy::Auto);
-        let default_flags: Option<String> =
-            ctx.config.defaults.as_ref().and_then(|d| d.flags.clone());
-        let build_ignores: Vec<BuildIgnore> = ctx
-            .config
-            .defaults
-            .as_ref()
-            .and_then(|d| d.ignore.clone())
-            .unwrap_or_default();
-        let build_overrides: Vec<BuildOverride> = ctx
-            .config
-            .defaults
-            .as_ref()
+        let default_flags: Option<String> = defaults.and_then(|d| d.flags.clone());
+        let build_ignores: Vec<BuildIgnore> =
+            defaults.and_then(|d| d.ignore.clone()).unwrap_or_default();
+        let build_overrides: Vec<BuildOverride> = defaults
             .and_then(|d| d.overrides.clone())
             .unwrap_or_default();
 
@@ -495,10 +480,11 @@ impl Stage for BuildStage {
 
             // Detect crate type for cdylib/wasm awareness (once per crate)
             let crate_type = detect_crate_type(&crate_cfg.path);
-            let is_wasm_crate = crate_type.as_deref() == Some("cdylib");
-            let is_library = crate_type.as_deref() == Some("cdylib")
-                || crate_type.as_deref() == Some("staticlib")
-                || crate_type.as_deref() == Some("dylib");
+            let is_wasm_crate = matches!(crate_type.as_deref(), Some("cdylib"));
+            let is_library = matches!(
+                crate_type.as_deref(),
+                Some("cdylib" | "staticlib" | "dylib")
+            );
 
             for build in &builds {
                 // Targets: per-build override, else global defaults, else host only
@@ -748,11 +734,7 @@ impl Stage for BuildStage {
                     path: job.bin_path.clone(),
                     target: Some(job.target.clone()),
                     crate_name: job.crate_name.clone(),
-                    metadata: {
-                        let mut m = HashMap::new();
-                        m.insert("binary".to_string(), job.binary_name.clone());
-                        m
-                    },
+                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
                 });
             }
         } else if parallelism <= 1 || build_jobs.len() <= 1 {
@@ -774,11 +756,7 @@ impl Stage for BuildStage {
                     path: job.bin_path.clone(),
                     target: Some(job.target.clone()),
                     crate_name: job.crate_name.clone(),
-                    metadata: {
-                        let mut m = HashMap::new();
-                        m.insert("binary".to_string(), job.binary_name.clone());
-                        m
-                    },
+                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
                 });
             }
 
@@ -808,11 +786,7 @@ impl Stage for BuildStage {
                     path: job.bin_path.clone(),
                     target: Some(job.target.clone()),
                     crate_name: job.crate_name.clone(),
-                    metadata: {
-                        let mut m = HashMap::new();
-                        m.insert("binary".to_string(), job.binary_name.clone());
-                        m
-                    },
+                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
                 });
             }
         } else {
@@ -898,11 +872,7 @@ impl Stage for BuildStage {
                         path: r.bin_path,
                         target: Some(r.target),
                         crate_name: r.crate_name,
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert("binary".to_string(), r.binary_name);
-                            m
-                        },
+                        metadata: HashMap::from([("binary".to_string(), r.binary_name)]),
                     });
                 }
             }
@@ -932,11 +902,7 @@ impl Stage for BuildStage {
                     path: job.bin_path.clone(),
                     target: Some(job.target.clone()),
                     crate_name: job.crate_name.clone(),
-                    metadata: {
-                        let mut m = HashMap::new();
-                        m.insert("binary".to_string(), job.binary_name.clone());
-                        m
-                    },
+                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
                 });
             }
         }
