@@ -15,8 +15,8 @@ pub struct Config {
     pub version: Option<u32>,
     /// Human-readable project name used in templates and release titles.
     pub project_name: String,
-    #[serde(default = "default_dist")]
     /// Output directory for build artifacts (default: ./dist).
+    #[serde(default = "default_dist")]
     pub dist: PathBuf,
     /// Additional config files to merge into this config (glob patterns supported).
     pub includes: Option<Vec<String>>,
@@ -32,6 +32,7 @@ pub struct Config {
     pub crates: Vec<CrateConfig>,
     /// Changelog generation configuration.
     pub changelog: Option<ChangelogConfig>,
+    /// Signing configurations for binaries, archives, and checksums.
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
@@ -43,6 +44,7 @@ pub struct Config {
     pub docker_signs: Option<Vec<DockerSignConfig>>,
     // No `alias` attribute needed: unlike `signs`/`sign`, "upx" is already
     // both singular and plural, so a separate alias adds no value.
+    /// UPX binary compression configurations.
     #[serde(default, deserialize_with = "deserialize_upx")]
     #[schemars(schema_with = "upx_schema")]
     pub upx: Vec<UpxConfig>,
@@ -1361,7 +1363,7 @@ pub struct ChocolateyConfig {
     pub name: Option<String>,
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
-    /// The GitHub project repo (owner/name). Used to derive download URLs.
+    /// GitHub project repo (owner/name). Used to derive download URLs.
     pub project_repo: Option<ChocolateyRepoConfig>,
     /// URL shown as the package source in the Chocolatey gallery.
     pub package_source_url: Option<String>,
@@ -1853,8 +1855,8 @@ pub struct NfpmContent {
     pub src: String,
     /// Destination path inside the package (absolute path).
     pub dst: String,
-    #[serde(rename = "type")]
     /// Content entry type: "config", "config|noreplace", "doc", "dir", "symlink", "ghost", or empty for regular file.
+    #[serde(rename = "type")]
     pub content_type: Option<String>,
     /// File ownership and permission metadata.
     pub file_info: Option<NfpmFileInfo>,
@@ -2009,7 +2011,7 @@ pub struct SnapcraftConfig {
     pub id: Option<String>,
     /// Build IDs to include. Empty means all builds.
     pub ids: Option<Vec<String>>,
-    /// The snap package name in the store.
+    /// Snap package name in the store.
     pub name: Option<String>,
     /// Canonical application title (user-facing in store).
     pub title: Option<String>,
@@ -2273,7 +2275,7 @@ impl SourceConfig {
         self.enabled.unwrap_or(false)
     }
 
-    /// The archive format to use (default: "tar.gz").
+    /// Archive format to use (default: "tar.gz").
     pub fn archive_format(&self) -> &str {
         self.format.as_deref().unwrap_or("tar.gz")
     }
@@ -2298,7 +2300,7 @@ impl SbomConfig {
         self.enabled.unwrap_or(false)
     }
 
-    /// The SBOM format to use (default: "cyclonedx"). Also supports "spdx".
+    /// SBOM format to use (default: "cyclonedx"). Also supports "spdx".
     pub fn sbom_format(&self) -> &str {
         self.format.as_deref().unwrap_or("cyclonedx")
     }
@@ -2537,7 +2539,7 @@ pub struct SnapshotConfig {
 pub struct NightlyConfig {
     /// Template for the release name. Default: "{{ .ProjectName }}-nightly"
     pub name_template: Option<String>,
-    /// Tag name used for the nightly release. Default: "nightly"
+    /// Tag name used for the nightly release. Default: "nightly".
     pub tag_name: Option<String>,
 }
 
@@ -2586,7 +2588,7 @@ pub struct AnnounceConfig {
 pub struct BlueskyAnnounce {
     /// Enable Bluesky announcements.
     pub enabled: Option<bool>,
-    /// Bluesky handle/username (e.g. "user.bsky.social")
+    /// Bluesky handle/username (e.g. "user.bsky.social").
     pub username: Option<String>,
     /// Message template for the post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
@@ -2597,11 +2599,11 @@ pub struct BlueskyAnnounce {
 pub struct DiscourseAnnounce {
     /// Enable Discourse announcements.
     pub enabled: Option<bool>,
-    /// Discourse forum URL (e.g. "https://forum.example.com")
+    /// Discourse forum URL (e.g. "https://forum.example.com").
     pub server: Option<String>,
-    /// Category ID to post in (required, must be non-zero)
+    /// Category ID to post in (required, must be non-zero).
     pub category_id: Option<u64>,
-    /// Username for the API request (default: "system")
+    /// Username for the API request (default: "system").
     pub username: Option<String>,
     /// Title template for the forum topic. Default: "{{ .ProjectName }} {{ .Tag }} is out!"
     pub title_template: Option<String>,
@@ -2623,7 +2625,7 @@ pub struct LinkedInAnnounce {
 pub struct OpenCollectiveAnnounce {
     /// Enable OpenCollective announcements. Requires OPENCOLLECTIVE_TOKEN env var.
     pub enabled: Option<bool>,
-    /// Collective slug (e.g. "my-project")
+    /// Collective slug (e.g. "my-project").
     pub slug: Option<String>,
     /// Title template for the update. Default: "{{ .Tag }}"
     pub title_template: Option<String>,
@@ -2645,7 +2647,7 @@ pub struct TwitterAnnounce {
 pub struct MastodonAnnounce {
     /// Enable Mastodon announcements. Requires MASTODON_CLIENT_ID, MASTODON_CLIENT_SECRET, MASTODON_ACCESS_TOKEN env vars.
     pub enabled: Option<bool>,
-    /// Mastodon instance URL (e.g. "https://mastodon.social")
+    /// Mastodon instance URL (e.g. "https://mastodon.social").
     pub server: Option<String>,
     /// Toot message template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
@@ -2660,11 +2662,11 @@ pub struct DiscordAnnounce {
     pub webhook_url: Option<String>,
     /// Message template for the Discord embed. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
-    /// Author name displayed in the embed (optional)
+    /// Author name displayed in the embed.
     pub author: Option<String>,
-    /// Embed color as a decimal integer (default: 3553599, GoReleaser blue)
+    /// Embed color as a decimal integer (default: 3553599, GoReleaser blue).
     pub color: Option<u32>,
-    /// Icon URL for the embed footer (optional)
+    /// Icon URL for the embed footer.
     pub icon_url: Option<String>,
 }
 
@@ -2681,9 +2683,9 @@ pub struct WebhookConfig {
     pub content_type: Option<String>,
     /// Message body template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
-    /// When true, skip TLS certificate verification for the webhook endpoint
+    /// When true, skip TLS certificate verification for the webhook endpoint.
     pub skip_tls_verify: Option<bool>,
-    /// HTTP status codes to accept as success (default: [200, 201, 202, 204])
+    /// HTTP status codes to accept as success (default: [200, 201, 202, 204]).
     #[serde(default)]
     pub expected_status_codes: Vec<u16>,
 }
@@ -2699,9 +2701,9 @@ pub struct TelegramAnnounce {
     pub chat_id: Option<String>,
     /// Message template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
-    /// Optional parse mode: "MarkdownV2" or "HTML" (defaults to "MarkdownV2")
+    /// Parse mode: "MarkdownV2" or "HTML" (defaults to "MarkdownV2").
     pub parse_mode: Option<String>,
-    /// Optional message thread ID for sending to a specific topic in a forum group
+    /// Message thread ID for sending to a specific topic in a forum group.
     pub message_thread_id: Option<i64>,
 }
 
@@ -2714,11 +2716,11 @@ pub struct TeamsAnnounce {
     pub webhook_url: Option<String>,
     /// Message template for the Adaptive Card body. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
-    /// Optional title template for the Adaptive Card header
+    /// Title template for the Adaptive Card header.
     pub title_template: Option<String>,
-    /// Optional theme color for the card (hex string, e.g. "0076D7")
+    /// Theme color for the card (hex string, e.g. "0076D7").
     pub color: Option<String>,
-    /// Optional icon URL displayed in the card header
+    /// Icon URL displayed in the card header.
     pub icon_url: Option<String>,
 }
 
@@ -2729,19 +2731,19 @@ pub struct MattermostAnnounce {
     pub enabled: Option<bool>,
     /// Mattermost incoming webhook URL.
     pub webhook_url: Option<String>,
-    /// Optional channel override (e.g. "town-square")
+    /// Channel override (e.g. "town-square").
     pub channel: Option<String>,
-    /// Optional username override for the bot post
+    /// Username override for the bot post.
     pub username: Option<String>,
-    /// Optional icon URL for the bot post
+    /// Icon URL for the bot post.
     pub icon_url: Option<String>,
-    /// Optional icon emoji for the bot post (e.g. ":rocket:")
+    /// Icon emoji for the bot post (e.g. ":rocket:").
     pub icon_emoji: Option<String>,
-    /// Optional attachment color (hex string, e.g. "#36a64f")
+    /// Attachment color (hex string, e.g. "#36a64f").
     pub color: Option<String>,
     /// Message template for the Mattermost post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
-    /// Optional title template for the Mattermost attachment
+    /// Title template for the Mattermost attachment.
     pub title_template: Option<String>,
 }
 
@@ -2753,20 +2755,20 @@ pub struct EmailAnnounce {
     /// SMTP server hostname. When set, uses SMTP transport.
     /// When absent, falls back to sendmail/msmtp.
     pub host: Option<String>,
-    /// SMTP server port (default: 587 for STARTTLS)
+    /// SMTP server port (default: 587 for STARTTLS).
     pub port: Option<u16>,
-    /// SMTP username (can also be set via SMTP_USERNAME env var)
+    /// SMTP username (can also be set via SMTP_USERNAME env var).
     pub username: Option<String>,
-    /// Sender email address
+    /// Sender email address.
     pub from: Option<String>,
-    /// Recipient email addresses
+    /// Recipient email addresses.
     #[serde(default)]
     pub to: Vec<String>,
     /// Email subject template. Default: "{{ .ProjectName }} {{ .Tag }} released"
     pub subject_template: Option<String>,
-    /// Body template (called body_template in GoReleaser, message_template here for consistency)
+    /// Body template (called body_template in GoReleaser, message_template here for consistency).
     pub message_template: Option<String>,
-    /// Skip TLS certificate verification (default: false)
+    /// Skip TLS certificate verification (default: false).
     pub insecure_skip_verify: Option<bool>,
 }
 
@@ -2775,11 +2777,11 @@ pub struct EmailAnnounce {
 pub struct RedditAnnounce {
     /// Enable Reddit announcements. Requires REDDIT_SECRET and REDDIT_PASSWORD env vars.
     pub enabled: Option<bool>,
-    /// Reddit application (OAuth client) ID
+    /// Reddit application (OAuth client) ID.
     pub application_id: Option<String>,
-    /// Reddit username for posting
+    /// Reddit username for posting.
     pub username: Option<String>,
-    /// Subreddit to post to (without /r/ prefix)
+    /// Subreddit to post to (without /r/ prefix).
     pub sub: Option<String>,
     /// Title template for the Reddit link post. Default: "{{ .ProjectName }} {{ .Tag }} is out!"
     pub title_template: Option<String>,
@@ -2820,7 +2822,7 @@ pub struct SlackBlock {
     /// Text object for the block (used by header, section, context types).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<SlackTextObject>,
-    /// Optional block ID.
+    /// Block ID for interactive payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub block_id: Option<String>,
     /// Additional block-specific fields (elements, accessory, fields, etc.).
@@ -2834,7 +2836,7 @@ pub struct SlackTextObject {
     /// Text type: "plain_text" or "mrkdwn".
     #[serde(rename = "type")]
     pub text_type: String,
-    /// The text content (supports template variables).
+    /// Text content (supports template variables).
     pub text: String,
     /// Whether to render emoji shortcodes (plain_text only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2848,23 +2850,23 @@ pub struct SlackTextObject {
 /// Common fields are typed; additional fields are captured via flatten.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct SlackAttachment {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Attachment sidebar color (hex string, e.g., "#36a64f" for green).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Main body text of the attachment (supports template variables).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Bold title text at the top of the attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Plain-text summary shown in notifications that cannot render attachments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fallback: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Text shown above the attachment block.
-    pub pretext: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pretext: Option<String>,
     /// Small text shown at the bottom of the attachment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub footer: Option<String>,
     /// Additional attachment-specific fields.
     #[serde(flatten)]
@@ -3024,6 +3026,7 @@ pub struct WorkspaceConfig {
     pub crates: Vec<CrateConfig>,
     /// Changelog configuration for this workspace.
     pub changelog: Option<ChangelogConfig>,
+    /// Signing configurations for binaries, archives, and checksums.
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
