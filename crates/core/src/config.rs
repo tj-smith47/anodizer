@@ -2357,6 +2357,8 @@ pub struct TeamsAnnounce {
     pub title_template: Option<String>,
     /// Optional theme color for the card (hex string, e.g. "0076D7")
     pub color: Option<String>,
+    /// Optional icon URL displayed in the card header
+    pub icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

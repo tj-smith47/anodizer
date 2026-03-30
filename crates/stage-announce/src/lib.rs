@@ -204,9 +204,11 @@ impl Stage for AnnounceStage {
             let message = render_message(ctx, cfg.message_template.as_deref())?;
             let title = render_optional(ctx, cfg.title_template.as_deref())?;
             let color = cfg.color.clone();
+            let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
             let opts = teams::TeamsOptions {
                 title: title.as_deref(),
                 color: color.as_deref(),
+                icon_url: icon_url.as_deref(),
             };
             dispatch(ctx, "teams", &message, || {
                 teams::send_teams(&url, &message, &opts)
