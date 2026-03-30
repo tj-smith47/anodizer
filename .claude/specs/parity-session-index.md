@@ -132,6 +132,7 @@ GoReleaser source: `internal/pipe/custompublishers/`, `cmd/`
 - [ ] if conditional on hooks
 
 ### Session D: New Stages + Subsystems
+<!-- NOTE: This session is too large for a single conversation. Split into D1 (NSIS, App Bundles, SBOM rewrite, Source archive improvements) and D2 (Flatpak, Notarization, DMG, MSI, PKG) before starting. Update this plan to reflect the split. -->
 GoReleaser source: `internal/pipe/flatpak/`, `internal/pipe/notary/`, `internal/pipe/sourcearchive/`, `internal/pipe/sbom/`, `internal/pipe/dmg/`, `internal/pipe/msi/`, `internal/pipe/nsis/`, `internal/pipe/pkg/`, `internal/pipe/appbundle/`
 
 - [ ] Flatpak stage (new crate): app_id, runtime, runtime_version, sdk, command, finish_args, name_template, disable
@@ -145,6 +146,7 @@ GoReleaser source: `internal/pipe/flatpak/`, `internal/pipe/notary/`, `internal/
 - [ ] Source archive improvements (prefix_template, object-form files, templated_files)
 
 ### Session E: Cross-Cutting Concerns
+<!-- NOTE: This session is too large for a single conversation. Split into E1 (Config infrastructure + Pervasive patterns) and E2 (Template additions + Stage-specific extras) before starting. Update this plan to reflect the split. -->
 GoReleaser source: `internal/pipe/git/`, `internal/pipe/metadata/`, `internal/pipe/env/`, `internal/pipe/defaults/`
 
 **Config infrastructure** (from fresh-gap B1-B6)
