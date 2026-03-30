@@ -2306,6 +2306,7 @@ pub struct AnnounceConfig {
     pub teams: Option<TeamsAnnounce>,
     pub mattermost: Option<MattermostAnnounce>,
     pub email: Option<EmailAnnounce>,
+    pub reddit: Option<RedditAnnounce>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2405,6 +2406,20 @@ pub struct EmailAnnounce {
     pub message_template: Option<String>,
     /// Skip TLS certificate verification (default: false)
     pub insecure_skip_verify: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct RedditAnnounce {
+    pub enabled: Option<bool>,
+    /// Reddit application (OAuth client) ID
+    pub application_id: Option<String>,
+    /// Reddit username for posting
+    pub username: Option<String>,
+    /// Subreddit to post to (without /r/ prefix)
+    pub sub: Option<String>,
+    pub title_template: Option<String>,
+    pub url_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

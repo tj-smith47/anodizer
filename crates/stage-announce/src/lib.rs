@@ -8,6 +8,7 @@ pub mod discord;
 pub mod email;
 mod http;
 pub mod mattermost;
+pub mod reddit;
 pub mod slack;
 pub mod teams;
 pub mod telegram;
@@ -272,6 +273,39 @@ impl Stage for AnnounceStage {
         }
 
         // ----------------------------------------------------------------
+        // Reddit
+        // ----------------------------------------------------------------
+        if let Some(cfg) = &announce.reddit
+            && cfg.enabled.unwrap_or(false)
+        {
+            let app_id =
+                require_rendered(ctx, cfg.application_id.as_deref(), "reddit", "application_id")?;
+            let username =
+                require_rendered(ctx, cfg.username.as_deref(), "reddit", "username")?;
+            let sub = require_rendered(ctx, cfg.sub.as_deref(), "reddit", "sub")?;
+            let title = ctx.render_template(
+                cfg.title_template
+                    .as_deref()
+                    .unwrap_or("{{ .ProjectName }} {{ .Tag }} is out!"),
+            )?;
+            let url = ctx.render_template(
+                cfg.url_template
+                    .as_deref()
+                    .unwrap_or("{{ .ReleaseURL }}"),
+            )?;
+            let secret = std::env::var("REDDIT_SECRET").map_err(|_| {
+                anyhow::anyhow!("announce.reddit: REDDIT_SECRET env var is required")
+            })?;
+            let password = std::env::var("REDDIT_PASSWORD").map_err(|_| {
+                anyhow::anyhow!("announce.reddit: REDDIT_PASSWORD env var is required")
+            })?;
+
+            dispatch(ctx, "reddit", &format!("r/{sub}: {title}"), || {
+                reddit::send_reddit(&app_id, &secret, &username, &password, &sub, &title, &url)
+            })?;
+        }
+
+        // ----------------------------------------------------------------
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
@@ -351,8 +385,9 @@ impl Stage for AnnounceStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MattermostAnnounce, SlackAnnounce,
-        SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce, TelegramAnnounce, WebhookConfig,
+        AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MattermostAnnounce,
+        RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce,
+        TelegramAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
 
@@ -1081,5 +1116,56 @@ blocks:
             config.blocks[1].text.as_ref().unwrap().text_type,
             "mrkdwn"
         );
+    }
+
+    // ----------------------------------------------------------------
+    // Reddit tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_skips_disabled_reddit() {
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(false),
+                application_id: Some("app123".to_string()),
+                username: Some("testuser".to_string()),
+                sub: Some("rust".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_reddit() {
+        unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
+        unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(true),
+                application_id: Some("app123".to_string()),
+                username: Some("testuser".to_string()),
+                sub: Some("rust".to_string()),
+                title_template: Some("{{ .ProjectName }} {{ .Tag }}".to_string()),
+                url_template: Some("{{ .ReleaseURL }}".to_string()),
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut()
+            .set("ReleaseURL", "https://github.com/org/myapp/releases/tag/v1.0.0");
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("REDDIT_SECRET") };
+        unsafe { std::env::remove_var("REDDIT_PASSWORD") };
     }
 }
