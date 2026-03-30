@@ -13,16 +13,24 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub struct Config {
     /// Schema version. Currently supports 1 (implicit default) and 2.
     pub version: Option<u32>,
+    /// Human-readable project name used in templates and release titles.
     pub project_name: String,
     #[serde(default = "default_dist")]
+    /// Output directory for build artifacts (default: ./dist).
     pub dist: PathBuf,
+    /// Additional config files to merge into this config (glob patterns supported).
     pub includes: Option<Vec<String>>,
     /// List of .env files to load before template expansion.
     pub env_files: Option<Vec<String>>,
+    /// Default values applied to all crates unless overridden.
     pub defaults: Option<Defaults>,
+    /// Hooks run before the release pipeline starts.
     pub before: Option<HooksConfig>,
+    /// Hooks run after the release pipeline completes.
     pub after: Option<HooksConfig>,
+    /// List of crates in this project.
     pub crates: Vec<CrateConfig>,
+    /// Changelog generation configuration.
     pub changelog: Option<ChangelogConfig>,
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
@@ -31,34 +39,55 @@ pub struct Config {
     #[serde(default, alias = "binary_sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,
+    /// Docker image signing configurations.
     pub docker_signs: Option<Vec<DockerSignConfig>>,
     // No `alias` attribute needed: unlike `signs`/`sign`, "upx" is already
     // both singular and plural, so a separate alias adds no value.
     #[serde(default, deserialize_with = "deserialize_upx")]
     #[schemars(schema_with = "upx_schema")]
     pub upx: Vec<UpxConfig>,
+    /// Snapshot release configuration (local/non-tag builds).
     pub snapshot: Option<SnapshotConfig>,
+    /// Nightly release configuration.
     pub nightly: Option<NightlyConfig>,
+    /// Announcement configuration (Slack, Discord, email, etc.).
     pub announce: Option<AnnounceConfig>,
+    /// When true, log artifact file sizes after building.
     pub report_sizes: Option<bool>,
+    /// Environment variables available to all template expressions.
     pub env: Option<HashMap<String, String>>,
+    /// Generic artifact publisher configurations.
     pub publishers: Option<Vec<PublisherConfig>>,
+    /// Automatic semantic version tagging configuration.
     pub tag: Option<TagConfig>,
+    /// Partial/split build configuration for fan-out CI pipelines.
     pub partial: Option<PartialConfig>,
+    /// Independent workspace roots in a monorepo.
     pub workspaces: Option<Vec<WorkspaceConfig>>,
+    /// Source archive configuration.
     pub source: Option<SourceConfig>,
+    /// Software bill of materials (SBOM) generation configuration.
     pub sbom: Option<SbomConfig>,
+    /// GitHub release configuration shared by all crates.
     pub release: Option<ReleaseConfig>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
 fn signs_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-    generator.subschema_for::<Vec<SignConfig>>()
+    let mut schema = generator.subschema_for::<Vec<SignConfig>>();
+    if let schemars::schema::Schema::Object(ref mut obj) = schema {
+        obj.metadata().description = Some("Artifact signing configurations (cosign, GPG, etc.). Accepts a single object or array.".to_owned());
+    }
+    schema
 }
 
 /// Helper schema function for the upx field (accepts object or array).
 fn upx_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-    generator.subschema_for::<Vec<UpxConfig>>()
+    let mut schema = generator.subschema_for::<Vec<UpxConfig>>();
+    if let schemars::schema::Schema::Object(ref mut obj) = schema {
+        obj.metadata().description = Some("UPX binary compression configurations. Accepts a single object or array.".to_owned());
+    }
+    schema
 }
 
 fn default_dist() -> PathBuf {
@@ -169,10 +198,15 @@ pub fn load_env_files(
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
+    /// Default build targets (e.g., ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]).
     pub targets: Option<Vec<String>>,
+    /// Default cross-compilation strategy: auto, zigbuild, cross, or cargo.
     pub cross: Option<CrossStrategy>,
+    /// Default extra flags passed to cargo build.
     pub flags: Option<String>,
+    /// Default archive settings applied to all crates.
     pub archives: Option<DefaultArchiveConfig>,
+    /// Default checksum settings applied to all crates.
     pub checksum: Option<ChecksumConfig>,
     /// Exclude specific os/arch combinations from builds.
     pub ignore: Option<Vec<BuildIgnore>>,
@@ -183,7 +217,9 @@ pub struct Defaults {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DefaultArchiveConfig {
+    /// Default archive format for all crates: tar.gz, tar.xz, tar.zst, zip, or binary.
     pub format: Option<String>,
+    /// Per-OS format overrides applied by default to all crates.
     pub format_overrides: Option<Vec<FormatOverride>>,
 }
 
@@ -194,7 +230,9 @@ pub struct DefaultArchiveConfig {
 /// Exclude a specific os/arch combination from the build matrix.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BuildIgnore {
+    /// Operating system to exclude (e.g., "linux", "darwin", "windows").
     pub os: String,
+    /// Architecture to exclude (e.g., "amd64", "arm64", "386").
     pub arch: String,
 }
 
@@ -236,28 +274,48 @@ pub enum CrossStrategy {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct CrateConfig {
+    /// Crate name as published (must match the Cargo.toml package name).
     pub name: String,
+    /// Relative path to the crate directory from the project root.
     pub path: String,
+    /// Git tag template used to tag and identify releases (supports templates).
     pub tag_template: String,
+    /// Other crates this crate depends on; ensures release ordering.
     pub depends_on: Option<Vec<String>>,
+    /// Build configurations for this crate. One entry per binary by default.
     pub builds: Option<Vec<BuildConfig>>,
+    /// Cross-compilation strategy for this crate: auto, zigbuild, cross, or cargo.
     pub cross: Option<CrossStrategy>,
     #[serde(default, deserialize_with = "deserialize_archives_config")]
     #[schemars(schema_with = "archives_schema")]
     pub archives: ArchivesConfig,
+    /// Checksum configuration for this crate.
     pub checksum: Option<ChecksumConfig>,
+    /// GitHub release configuration for this crate.
     pub release: Option<ReleaseConfig>,
+    /// Publishing targets (Homebrew, Scoop, AUR, etc.) for this crate.
     pub publish: Option<PublishConfig>,
+    /// Docker image build configurations for this crate.
     pub docker: Option<Vec<DockerConfig>>,
+    /// Docker multi-platform manifest configurations for this crate.
     pub docker_manifests: Option<Vec<DockerManifestConfig>>,
+    /// Linux package (deb, rpm, apk) configurations for this crate.
     pub nfpm: Option<Vec<NfpmConfig>>,
+    /// Snapcraft package configurations for this crate.
     pub snapcrafts: Option<Vec<SnapcraftConfig>>,
+    /// macOS DMG disk image configurations for this crate.
     pub dmgs: Option<Vec<DmgConfig>>,
+    /// Windows MSI installer configurations for this crate.
     pub msis: Option<Vec<MsiConfig>>,
+    /// macOS PKG installer configurations for this crate.
     pub pkgs: Option<Vec<PkgConfig>>,
+    /// Cloud storage (S3/GCS/Azure) upload configurations for this crate.
     pub blobs: Option<Vec<BlobConfig>>,
+    /// cargo-binstall metadata configuration for this crate.
     pub binstall: Option<BinstallConfig>,
+    /// Automatic version number synchronization configuration for this crate.
     pub version_sync: Option<VersionSyncConfig>,
+    /// macOS universal binary (fat binary) configurations for this crate.
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
     /// When true, all build outputs are placed in a flat `dist/` directory
     /// instead of `dist/{target}/`.
@@ -266,7 +324,11 @@ pub struct CrateConfig {
 
 /// Helper schema function for archives (accepts false or array).
 fn archives_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-    generator.subschema_for::<Option<Vec<ArchiveConfig>>>()
+    let mut schema = generator.subschema_for::<Option<Vec<ArchiveConfig>>>();
+    if let schemars::schema::Schema::Object(ref mut obj) = schema {
+        obj.metadata().description = Some("Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs.".to_owned());
+    }
+    schema
 }
 
 impl Default for CrateConfig {
@@ -305,8 +367,11 @@ impl Default for CrateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct UniversalBinaryConfig {
+    /// Output filename template for the universal binary (supports templates).
     pub name_template: Option<String>,
+    /// When true, remove the individual arch binaries after creating the universal binary.
     pub replace: Option<bool>,
+    /// Build IDs filter: only combine artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
 }
 
@@ -317,15 +382,25 @@ pub struct UniversalBinaryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BuildConfig {
+    /// Unique identifier for this build, used to reference it from archives and other configs.
     pub id: Option<String>,
+    /// Binary name to build (must match a Cargo binary target in the crate).
     pub binary: String,
+    /// When true, skip this build entirely.
     pub skip: Option<bool>,
+    /// Target triples to build for (overrides defaults.targets for this build).
     pub targets: Option<Vec<String>>,
+    /// Cargo features to enable for this build.
     pub features: Option<Vec<String>>,
+    /// When true, pass --no-default-features to cargo build.
     pub no_default_features: Option<bool>,
+    /// Per-target environment variables keyed as {target: {KEY: VALUE}}.
     pub env: Option<HashMap<String, HashMap<String, String>>>,
+    /// Copy the binary from another build ID instead of building it.
     pub copy_from: Option<String>,
+    /// Extra flags passed to cargo build (e.g., "--locked").
     pub flags: Option<String>,
+    /// When true, enable reproducible builds by stripping timestamps.
     pub reproducible: Option<bool>,
     /// Per-build hooks executed before and after compilation.
     pub hooks: Option<BuildHooksConfig>,
@@ -349,7 +424,9 @@ pub struct BuildConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BuildHooksConfig {
+    /// Commands to run before the build (or archive) step.
     pub pre: Option<Vec<HookEntry>>,
+    /// Commands to run after the build (or archive) step.
     pub post: Option<Vec<HookEntry>>,
 }
 
@@ -486,13 +563,19 @@ where
 pub struct ArchiveConfig {
     /// Unique identifier for cross-referencing this archive from other configs.
     pub id: Option<String>,
+    /// Archive filename template (supports templates, e.g., "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}").
     pub name_template: Option<String>,
+    /// Archive format: tar.gz, tar.xz, tar.zst, zip, or binary.
     pub format: Option<String>,
     /// Produce multiple archive formats per config (plural, in addition to singular `format`).
     pub formats: Option<Vec<String>>,
+    /// Per-OS format overrides for this archive config.
     pub format_overrides: Option<Vec<FormatOverride>>,
+    /// Extra files to include in the archive (glob patterns or detailed src/dst specs).
     pub files: Option<Vec<ArchiveFileSpec>>,
+    /// Binary names to include (defaults to all binaries from matched builds).
     pub binaries: Option<Vec<String>>,
+    /// When set, wrap archive contents in a top-level directory with this name (supports templates).
     pub wrap_in_directory: Option<String>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
@@ -510,7 +593,9 @@ pub struct ArchiveConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FormatOverride {
+    /// Operating system this override applies to (e.g., "windows", "darwin", "linux").
     pub os: String,
+    /// Archive format override for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.
     pub format: Option<String>,
     /// Plural format overrides (v2.6+). Takes priority over singular format.
     pub formats: Option<Vec<String>>,
@@ -552,9 +637,13 @@ impl PartialEq<&str> for ArchiveFileSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct FileInfo {
+    /// File owner name (e.g., "root").
     pub owner: Option<String>,
+    /// File group name (e.g., "root").
     pub group: Option<String>,
+    /// File permission mode in octal (e.g., "0755" or "0o755").
     pub mode: Option<String>,
+    /// File modification time in RFC3339 format (e.g., "2024-01-01T00:00:00Z").
     pub mtime: Option<String>,
 }
 
@@ -615,13 +704,18 @@ impl ExtraFileSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChecksumConfig {
+    /// Checksum filename template (default: "{{ .ProjectName }}_{{ .Version }}_checksums.txt").
     pub name_template: Option<String>,
+    /// Hash algorithm: sha256, sha512, sha1, md5, crc32 (default: sha256).
     pub algorithm: Option<String>,
     /// Disable checksums. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
+    /// Extra files to include in the checksum file (beyond build artifacts).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Build IDs filter: only checksum artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// When true, produce one checksum file per artifact instead of a combined file.
     pub split: Option<bool>,
 }
 
@@ -664,18 +758,29 @@ impl PartialEq for ContentSource {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ReleaseConfig {
+    /// GitHub repository to release to (owner and name).
     pub github: Option<GitHubConfig>,
+    /// When true, create the release as a draft (unpublished).
     pub draft: Option<bool>,
     #[schemars(schema_with = "prerelease_schema")]
+    /// Mark release as pre-release: true, false, or "auto" (inferred from tag).
     pub prerelease: Option<PrereleaseConfig>,
     #[schemars(schema_with = "make_latest_schema")]
+    /// Mark release as latest: true, false, or "auto" (latest non-prerelease).
     pub make_latest: Option<MakeLatestConfig>,
+    /// Release title template (supports templates).
     pub name_template: Option<String>,
+    /// Text prepended to the release body (inline string, from_file, or from_url).
     pub header: Option<ContentSource>,
+    /// Text appended to the release body (inline string, from_file, or from_url).
     pub footer: Option<ContentSource>,
+    /// Extra files to upload to the release beyond build artifacts.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// When true, skip uploading artifacts to the release.
     pub skip_upload: Option<bool>,
+    /// When true, replace an existing draft release instead of failing.
     pub replace_existing_draft: Option<bool>,
+    /// When true, replace existing release artifacts with the same name.
     pub replace_existing_artifacts: Option<bool>,
     /// Disable the release stage. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
@@ -770,7 +875,9 @@ fn skip_push_schema(
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GitHubConfig {
+    /// GitHub repository owner (user or organization).
     pub owner: String,
+    /// GitHub repository name.
     pub name: String,
 }
 
@@ -875,7 +982,9 @@ impl_auto_or_bool_serde!(
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct RepositoryConfig {
+    /// Repository owner (GitHub user or organization).
     pub owner: Option<String>,
+    /// Repository name.
     pub name: Option<String>,
     /// Auth token for the repository. Falls back to env-based resolution.
     pub token: Option<String>,
@@ -919,8 +1028,11 @@ pub struct PullRequestConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct PullRequestBaseConfig {
+    /// Owner of the upstream repository to PR against.
     pub owner: Option<String>,
+    /// Name of the upstream repository to PR against.
     pub name: Option<String>,
+    /// Base branch of the upstream repository to target with the PR.
     pub branch: Option<String>,
 }
 
@@ -929,7 +1041,9 @@ pub struct PullRequestBaseConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct CommitAuthorConfig {
+    /// Git commit author display name.
     pub name: Option<String>,
+    /// Git commit author email address.
     pub email: Option<String>,
     /// Commit signing configuration.
     pub signing: Option<CommitSigningConfig>,
@@ -957,13 +1071,21 @@ pub struct CommitSigningConfig {
 #[serde(default)]
 pub struct PublishConfig {
     #[schemars(schema_with = "crates_publish_schema")]
+    /// Publish to crates.io: true/false or object with enabled and index_timeout fields.
     pub crates: Option<CratesPublishConfig>,
+    /// Homebrew formula publishing configuration.
     pub homebrew: Option<HomebrewConfig>,
+    /// Scoop manifest publishing configuration.
     pub scoop: Option<ScoopConfig>,
+    /// Chocolatey package publishing configuration.
     pub chocolatey: Option<ChocolateyConfig>,
+    /// WinGet manifest publishing configuration.
     pub winget: Option<WingetConfig>,
+    /// AUR (Arch User Repository) package publishing configuration.
     pub aur: Option<AurConfig>,
+    /// Krew (kubectl plugin manager) manifest publishing configuration.
     pub krew: Option<KrewConfig>,
+    /// Nix derivation publishing configuration.
     pub nix: Option<NixConfig>,
 }
 
@@ -1043,13 +1165,17 @@ pub struct HomebrewConfig {
     pub folder: Option<String>,
     /// Override the formula name (default: crate name).
     pub name: Option<String>,
+    /// Short description of the formula (shown in `brew info`).
     pub description: Option<String>,
+    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
     pub license: Option<String>,
+    /// Ruby `install` block content for the formula.
     pub install: Option<String>,
     /// Additional install commands appended after the main install block.
     pub extra_install: Option<String>,
     /// Post-install commands (separate `def post_install` block in formula).
     pub post_install: Option<String>,
+    /// Ruby `test` block content for the formula (run by `brew test`).
     pub test: Option<String>,
     /// Project homepage URL. Falls back to the GitHub release URL when unset.
     pub homepage: Option<String>,
@@ -1092,6 +1218,7 @@ pub struct HomebrewConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
 #[serde(default)]
 pub struct HomebrewDependency {
+    /// Homebrew formula name of the dependency.
     pub name: String,
     /// Restrict to a specific OS: `"mac"` or `"linux"`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1173,7 +1300,9 @@ pub struct ScoopConfig {
     pub name: Option<String>,
     /// Subdirectory in the bucket repo for manifest placement.
     pub directory: Option<String>,
+    /// Short description of the package (shown in `scoop info`).
     pub description: Option<String>,
+    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
     pub license: Option<String>,
     /// Project homepage URL. Falls back to the GitHub-derived URL when unset.
     pub homepage: Option<String>,
@@ -1207,13 +1336,17 @@ pub struct ScoopConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TapConfig {
+    /// GitHub owner of the Homebrew tap repository.
     pub owner: String,
+    /// Name of the Homebrew tap repository (e.g., "homebrew-tap").
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct BucketConfig {
+    /// GitHub owner of the Scoop bucket repository.
     pub owner: String,
+    /// Name of the Scoop bucket repository (e.g., "scoop-bucket").
     pub name: String,
 }
 
@@ -1236,14 +1369,19 @@ pub struct ChocolateyConfig {
     pub owners: Option<String>,
     /// Package title (default: project name).
     pub title: Option<String>,
+    /// Package author(s) displayed in the Chocolatey gallery.
     pub authors: Option<String>,
+    /// Project homepage URL.
     pub project_url: Option<String>,
     /// Custom URL template for download URLs (overrides release URL).
     pub url_template: Option<String>,
+    /// URL to the package icon image shown in the Chocolatey gallery.
     pub icon_url: Option<String>,
     /// Copyright notice.
     pub copyright: Option<String>,
+    /// Package description (supports markdown).
     pub description: Option<String>,
+    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
     pub license: Option<String>,
     /// Optional explicit license URL. Falls back to
     /// `https://opensource.org/licenses/<license>` when not set.
@@ -1281,13 +1419,17 @@ pub struct ChocolateyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChocolateyDependency {
+    /// Chocolatey package ID of the dependency.
     pub id: String,
+    /// Minimum version constraint for the dependency (e.g., "[1.0.0,)").
     pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ChocolateyRepoConfig {
+    /// GitHub owner of the project repository.
     pub owner: String,
+    /// GitHub repository name of the project.
     pub name: String,
 }
 
@@ -1306,6 +1448,7 @@ pub struct WingetConfig {
     pub package_identifier: Option<String>,
     /// Publisher name (required).
     pub publisher: Option<String>,
+    /// Publisher homepage URL shown in the WinGet manifest.
     pub publisher_url: Option<String>,
     /// Publisher support URL.
     pub publisher_support_url: Option<String>,
@@ -1323,6 +1466,7 @@ pub struct WingetConfig {
     pub license_url: Option<String>,
     /// Short description (required, max 256 chars).
     pub short_description: Option<String>,
+    /// Full package description displayed in the WinGet gallery.
     pub description: Option<String>,
     /// Project homepage URL.
     pub homepage: Option<String>,
@@ -1363,13 +1507,17 @@ pub struct WingetConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct WingetDependency {
+    /// WinGet package identifier of the dependency (e.g., "Publisher.App").
     pub package_identifier: String,
+    /// Minimum required version of the dependency.
     pub minimum_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WingetManifestsRepoConfig {
+    /// GitHub owner of the WinGet community repository fork.
     pub owner: String,
+    /// GitHub repository name of the WinGet community repository fork.
     pub name: String,
 }
 
@@ -1389,20 +1537,27 @@ pub struct AurConfig {
     pub commit_author: Option<CommitAuthorConfig>,
     /// Custom commit message template. Default: "Update to {{ version }}".
     pub commit_msg_template: Option<String>,
+    /// Short description of the package for PKGBUILD.
     pub description: Option<String>,
     /// Project homepage URL.
     pub homepage: Option<String>,
+    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
     pub license: Option<String>,
     /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
     pub skip_upload: Option<String>,
     /// Custom URL template for download URLs (overrides release URL).
     pub url_template: Option<String>,
+    /// PKGBUILD maintainer entries (e.g., "Name <email@example.com>").
     pub maintainers: Option<Vec<String>>,
     /// Contributors listed in PKGBUILD comments.
     pub contributors: Option<Vec<String>>,
+    /// Packages this PKGBUILD provides (virtual package names).
     pub provides: Option<Vec<String>>,
+    /// Packages this PKGBUILD conflicts with.
     pub conflicts: Option<Vec<String>>,
+    /// Runtime dependencies required by this package.
     pub depends: Option<Vec<String>>,
+    /// Optional dependencies with descriptions (e.g., "fzf: fuzzy finder support").
     pub optdepends: Option<Vec<String>>,
     /// List of config files to preserve on upgrade (relative to `/`).
     pub backup: Option<Vec<String>>,
@@ -1425,6 +1580,7 @@ pub struct AurConfig {
     pub install: Option<String>,
     /// Legacy project URL field.
     pub url: Option<String>,
+    /// Packages this PKGBUILD replaces (for upgrade paths from old package names).
     pub replaces: Option<Vec<String>>,
 }
 
@@ -1447,8 +1603,11 @@ pub struct KrewConfig {
     pub commit_author: Option<CommitAuthorConfig>,
     /// Custom commit message template.
     pub commit_msg_template: Option<String>,
+    /// Full description of the kubectl plugin.
     pub description: Option<String>,
+    /// One-line summary of the kubectl plugin (max 255 chars).
     pub short_description: Option<String>,
+    /// Project homepage URL for the plugin.
     pub homepage: Option<String>,
     /// Custom URL template for download URLs (overrides release URL).
     pub url_template: Option<String>,
@@ -1462,7 +1621,9 @@ pub struct KrewConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct KrewManifestsRepoConfig {
+    /// GitHub owner of the krew-index fork.
     pub owner: String,
+    /// GitHub repository name of the krew-index fork.
     pub name: String,
 }
 
@@ -1495,6 +1656,7 @@ pub struct NixConfig {
     pub extra_install: Option<String>,
     /// Post-install commands (postInstall phase).
     pub post_install: Option<String>,
+    /// Short description of the Nix derivation.
     pub description: Option<String>,
     /// Project homepage URL.
     pub homepage: Option<String>,
@@ -1510,6 +1672,7 @@ pub struct NixConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NixDependency {
+    /// Nix attribute path for the dependency (e.g., "openssl", "pkgs.libgit2").
     pub name: String,
     /// OS restriction: "linux", "darwin", or empty for all.
     pub os: Option<String>,
@@ -1522,16 +1685,24 @@ pub struct NixDependency {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerConfig {
+    /// Unique identifier for this Docker config.
     pub id: Option<String>,
+    /// Image tags to build and push (supports templates, e.g., "ghcr.io/owner/app:{{ .Version }}").
     pub image_templates: Vec<String>,
+    /// Path to the Dockerfile relative to the project root.
     pub dockerfile: String,
+    /// Target platforms for multi-arch builds (e.g., ["linux/amd64", "linux/arm64"]).
     pub platforms: Option<Vec<String>>,
+    /// Binary names to copy into the image (defaults to all binaries from matched builds).
     pub binaries: Option<Vec<String>>,
+    /// Extra `--build-arg` and `--label` flags as templates (e.g., "--build-arg VERSION={{ .Version }}").
     pub build_flag_templates: Option<Vec<String>>,
     /// Skip push: true, false, or "auto" (skip for prereleases).
     #[schemars(schema_with = "skip_push_schema")]
     pub skip_push: Option<SkipPushConfig>,
+    /// Extra files to copy into the Docker build context.
     pub extra_files: Option<Vec<String>>,
+    /// Extra flags passed to `docker push`.
     pub push_flags: Option<Vec<String>>,
     /// Build IDs filter: only include binary artifacts whose metadata `id` is in this list.
     pub ids: Option<Vec<String>>,
@@ -1547,6 +1718,7 @@ pub struct DockerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerRetryConfig {
+    /// Number of retry attempts for failed docker push operations (default: 3).
     pub attempts: Option<u32>,
     /// Duration string, e.g. "1s", "500ms".
     pub delay: Option<String>,
@@ -1588,23 +1760,41 @@ pub struct DockerManifestConfig {
 pub struct NfpmConfig {
     /// Unique identifier for cross-referencing this nFPM config.
     pub id: Option<String>,
+    /// Package name (defaults to crate name).
     pub package_name: Option<String>,
+    /// Package formats to produce: deb, rpm, apk, archlinux (at least one required).
     pub formats: Vec<String>,
+    /// Package vendor name.
     pub vendor: Option<String>,
+    /// Project homepage URL.
     pub homepage: Option<String>,
+    /// Package maintainer in "Name <email>" format.
     pub maintainer: Option<String>,
+    /// Package description (multiline supported).
     pub description: Option<String>,
+    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
     pub license: Option<String>,
+    /// Installation directory for binaries (default: /usr/bin).
     pub bindir: Option<String>,
+    /// Files to include in the package beyond the main binary.
     pub contents: Option<Vec<NfpmContent>>,
+    /// Runtime package dependencies keyed by format (e.g., {"deb": ["libc6"], "rpm": ["glibc"]}).
     pub dependencies: Option<HashMap<String, Vec<String>>>,
+    /// Per-format setting overrides (e.g., {"deb": {compression: "xz"}}).
     pub overrides: Option<HashMap<String, serde_json::Value>>,
+    /// Package filename template (supports templates).
     pub file_name_template: Option<String>,
+    /// Package lifecycle scripts (preinstall, postinstall, preremove, postremove).
     pub scripts: Option<NfpmScripts>,
+    /// Packages recommended (soft dependency) by this package.
     pub recommends: Option<Vec<String>>,
+    /// Packages suggested (weaker than recommends) by this package.
     pub suggests: Option<Vec<String>>,
+    /// Packages this package conflicts with.
     pub conflicts: Option<Vec<String>>,
+    /// Packages this package replaces (for upgrade paths from old package names).
     pub replaces: Option<Vec<String>>,
+    /// Virtual packages provided by this package.
     pub provides: Option<Vec<String>>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
@@ -1639,9 +1829,13 @@ pub struct NfpmConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmScripts {
+    /// Path to script run before package installation.
     pub preinstall: Option<String>,
+    /// Path to script run after package installation.
     pub postinstall: Option<String>,
+    /// Path to script run before package removal.
     pub preremove: Option<String>,
+    /// Path to script run after package removal.
     pub postremove: Option<String>,
 }
 
@@ -1655,10 +1849,14 @@ pub type NfpmFileInfo = FileInfo;
 /// them explicitly prevents accidentally packaging empty paths.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NfpmContent {
+    /// Source path on the build machine (supports glob patterns).
     pub src: String,
+    /// Destination path inside the package (absolute path).
     pub dst: String,
     #[serde(rename = "type")]
+    /// Content entry type: "config", "config|noreplace", "doc", "dir", "symlink", "ghost", or empty for regular file.
     pub content_type: Option<String>,
+    /// File ownership and permission metadata.
     pub file_info: Option<NfpmFileInfo>,
 }
 
@@ -1732,11 +1930,17 @@ impl NfpmDebConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmDebTriggers {
+    /// Deb interest triggers: package waits for these triggers to complete.
     pub interest: Option<Vec<String>>,
+    /// Deb interest-await triggers: package waits with synchronous trigger processing.
     pub interest_await: Option<Vec<String>>,
+    /// Deb interest-noawait triggers: package registers interest without waiting.
     pub interest_noawait: Option<Vec<String>>,
+    /// Deb activate triggers: package activates these triggers after install.
     pub activate: Option<Vec<String>>,
+    /// Deb activate-await triggers: activate and wait for synchronous trigger processing.
     pub activate_await: Option<Vec<String>>,
+    /// Deb activate-noawait triggers: activate without waiting.
     pub activate_noawait: Option<Vec<String>>,
 }
 
@@ -2036,9 +2240,13 @@ pub struct PartialConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BinstallConfig {
+    /// When true, generate a .cargo/config.toml binstall section for cargo-binstall.
     pub enabled: Option<bool>,
+    /// Custom download URL template for cargo-binstall (supports templates).
     pub pkg_url: Option<String>,
+    /// Directory within the archive where binaries are located.
     pub bin_dir: Option<String>,
+    /// Package format hint for cargo-binstall: tgz, tar.gz, tar.xz, zip, bin, etc.
     pub pkg_fmt: Option<String>,
 }
 
@@ -2049,9 +2257,13 @@ pub struct BinstallConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SourceConfig {
+    /// When true, generate a source code archive for the release.
     pub enabled: Option<bool>,
+    /// Archive format for the source tarball: tar.gz, tar.xz, tar.zst, or zip (default: tar.gz).
     pub format: Option<String>,
+    /// Filename template for the source archive (supports templates).
     pub name_template: Option<String>,
+    /// Extra files to include in the source archive (glob patterns).
     pub files: Option<Vec<String>>,
 }
 
@@ -2074,7 +2286,9 @@ impl SourceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SbomConfig {
+    /// When true, generate an SBOM (software bill of materials) for the release.
     pub enabled: Option<bool>,
+    /// SBOM format: "cyclonedx" (default) or "spdx".
     pub format: Option<String>,
 }
 
@@ -2097,7 +2311,9 @@ impl SbomConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct VersionSyncConfig {
+    /// When true, synchronize the crate version with the git tag during release.
     pub enabled: Option<bool>,
+    /// Sync mode: "cargo" (updates Cargo.toml) or "tag" (derives version from tag).
     pub mode: Option<String>,
 }
 
@@ -2108,10 +2324,15 @@ pub struct VersionSyncConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChangelogConfig {
+    /// Sort order for changelog entries: "asc" or "desc" (default: "asc").
     pub sort: Option<String>,
+    /// Commit message filters to include or exclude from the changelog.
     pub filters: Option<ChangelogFilters>,
+    /// Groups for organizing changelog entries by commit message prefix.
     pub groups: Option<Vec<ChangelogGroup>>,
+    /// Text prepended to the changelog (inline string or path).
     pub header: Option<String>,
+    /// Text appended to the changelog (inline string or path).
     pub footer: Option<String>,
     /// Disable changelog generation. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
@@ -2136,15 +2357,20 @@ pub struct ChangelogConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChangelogFilters {
+    /// Regex patterns: commits matching any of these are excluded from the changelog.
     pub exclude: Option<Vec<String>>,
+    /// Regex patterns: only commits matching at least one of these are included.
     pub include: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChangelogGroup {
+    /// Section heading for this group (e.g., "Features", "Bug Fixes").
     pub title: String,
+    /// Regex pattern matching commit messages to include in this group.
     pub regexp: Option<String>,
+    /// Sort order for this group relative to other groups (lower = first).
     pub order: Option<i32>,
     /// Nested subgroups within this group. Rendered as sub-sections (e.g. `###`).
     pub groups: Option<Vec<ChangelogGroup>>,
@@ -2157,15 +2383,25 @@ pub struct ChangelogGroup {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SignConfig {
+    /// Unique identifier for this sign config.
     pub id: Option<String>,
+    /// Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none").
     pub artifacts: Option<String>,
+    /// Signing command to invoke (default: "cosign" or "gpg").
     pub cmd: Option<String>,
+    /// Arguments passed to the signing command (supports templates with ${artifact} and ${signature}).
     pub args: Option<Vec<String>>,
+    /// Signature output filename template (supports templates).
     pub signature: Option<String>,
+    /// Content written to the signing command's stdin.
     pub stdin: Option<String>,
+    /// Path to a file whose content is written to the signing command's stdin.
     pub stdin_file: Option<String>,
+    /// Build IDs filter: only sign artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// Environment variables passed to the signing command.
     pub env: Option<HashMap<String, String>>,
+    /// Certificate file to embed in the signature (Cosign bundle signing).
     pub certificate: Option<String>,
     /// Capture and log stdout/stderr of the signing command.
     pub output: Option<bool>,
@@ -2177,13 +2413,21 @@ pub struct SignConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerSignConfig {
+    /// Unique identifier for this docker sign config.
     pub id: Option<String>,
+    /// Docker artifact types to sign: "all", "image", or "manifest" (default: "none").
     pub artifacts: Option<String>,
+    /// Signing command to invoke (default: "cosign").
     pub cmd: Option<String>,
+    /// Arguments passed to the signing command (supports templates).
     pub args: Option<Vec<String>>,
+    /// Docker config IDs filter: only sign images from configs whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// Content written to the signing command's stdin.
     pub stdin: Option<String>,
+    /// Path to a file whose content is written to the signing command's stdin.
     pub stdin_file: Option<String>,
+    /// Environment variables passed to the signing command.
     pub env: Option<HashMap<String, String>>,
     /// Capture and log stdout/stderr of the docker signing command.
     pub output: Option<bool>,
@@ -2199,12 +2443,19 @@ pub struct DockerSignConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct UpxConfig {
+    /// Unique identifier for this UPX config.
     pub id: Option<String>,
+    /// Build IDs filter: only compress binaries from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// When true, compress binaries with UPX (default: true).
     pub enabled: bool,
+    /// UPX executable path or name (default: "upx").
     pub binary: String,
+    /// Extra arguments passed to UPX (e.g., ["-9", "--brute"]).
     pub args: Vec<String>,
+    /// When true, fail the build if UPX is not found.
     pub required: bool,
+    /// Target triples to compress binaries for (empty means all targets).
     pub targets: Option<Vec<String>>,
 }
 
@@ -2273,6 +2524,7 @@ where
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotConfig {
+    /// Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT").
     pub name_template: String,
 }
 
@@ -2597,16 +2849,22 @@ pub struct SlackTextObject {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 pub struct SlackAttachment {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Attachment sidebar color (hex string, e.g., "#36a64f" for green).
     pub color: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Main body text of the attachment (supports template variables).
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Bold title text at the top of the attachment.
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Plain-text summary shown in notifications that cannot render attachments.
     pub fallback: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Text shown above the attachment block.
     pub pretext: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Small text shown at the bottom of the attachment.
     pub footer: Option<String>,
     /// Additional attachment-specific fields.
     #[serde(flatten)]
@@ -2620,11 +2878,17 @@ pub struct SlackAttachment {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct PublisherConfig {
+    /// Human-readable name for this publisher (used in logs).
     pub name: Option<String>,
+    /// Command to invoke for publishing.
     pub cmd: String,
+    /// Arguments passed to the publish command (supports templates).
     pub args: Option<Vec<String>>,
+    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// Artifact type filter: only publish artifacts of these types (e.g., "archive", "binary").
     pub artifact_types: Option<Vec<String>>,
+    /// Environment variables passed to the publish command.
     pub env: Option<HashMap<String, String>>,
     /// Working directory for the publisher command.
     pub dir: Option<String>,
@@ -2646,16 +2910,22 @@ pub struct PublisherConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct HooksConfig {
+    /// Commands to run before the pipeline or stage starts.
     pub pre: Option<Vec<HookEntry>>,
+    /// Commands to run after the pipeline or stage completes.
     pub post: Option<Vec<HookEntry>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct StructuredHook {
+    /// Command to run (passed through the shell).
     pub cmd: String,
+    /// Working directory for the command (defaults to project root).
     pub dir: Option<String>,
+    /// Environment variables for the command.
     pub env: Option<HashMap<String, String>>,
+    /// When true, capture and log stdout/stderr of the command.
     pub output: Option<bool>,
 }
 
@@ -2702,22 +2972,39 @@ impl<'de> Deserialize<'de> for HookEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TagConfig {
+    /// Default version bump type when no conventional commit token is found: "major", "minor", "patch", or "none".
     pub default_bump: Option<String>,
+    /// Prefix prepended to version tags (e.g., "v" produces "v1.2.3").
     pub tag_prefix: Option<String>,
+    /// Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]).
     pub release_branches: Option<Vec<String>>,
+    /// Custom version tag to use instead of auto-incrementing.
     pub custom_tag: Option<String>,
+    /// Source for determining the previous tag: "repo" (default) or "branch".
     pub tag_context: Option<String>,
+    /// Branch history mode for determining the previous tag: "full" or "last".
     pub branch_history: Option<String>,
+    /// Version string to use when no previous tag exists (default: "0.1.0").
     pub initial_version: Option<String>,
+    /// When true, apply a pre-release suffix to the generated version.
     pub prerelease: Option<bool>,
+    /// Suffix appended to pre-release versions (e.g., "beta").
     pub prerelease_suffix: Option<String>,
+    /// When true, create a new tag even if no commits have changed since the last tag.
     pub force_without_changes: Option<bool>,
+    /// Like force_without_changes but only for pre-release versions.
     pub force_without_changes_pre: Option<bool>,
+    /// Conventional commit token triggering a major bump (default: "major").
     pub major_string_token: Option<String>,
+    /// Conventional commit token triggering a minor bump (default: "minor" or "feat").
     pub minor_string_token: Option<String>,
+    /// Conventional commit token triggering a patch bump (default: "patch" or "fix").
     pub patch_string_token: Option<String>,
+    /// Conventional commit token suppressing a version bump entirely (default: "none").
     pub none_string_token: Option<String>,
+    /// When true, use the GitHub/GitLab API for tagging instead of git CLI.
     pub git_api_tagging: Option<bool>,
+    /// When true, print verbose tag calculation output.
     pub verbose: Option<bool>,
 }
 
@@ -2731,8 +3018,11 @@ pub struct TagConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct WorkspaceConfig {
+    /// Workspace identifier used in logs and template variables.
     pub name: String,
+    /// Crates belonging to this workspace.
     pub crates: Vec<CrateConfig>,
+    /// Changelog configuration for this workspace.
     pub changelog: Option<ChangelogConfig>,
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
@@ -2741,8 +3031,11 @@ pub struct WorkspaceConfig {
     #[serde(default, alias = "binary_sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,
+    /// Hooks run before this workspace's pipeline starts.
     pub before: Option<HooksConfig>,
+    /// Hooks run after this workspace's pipeline completes.
     pub after: Option<HooksConfig>,
+    /// Environment variables scoped to this workspace.
     pub env: Option<HashMap<String, String>>,
 }
 
