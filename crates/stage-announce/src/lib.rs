@@ -124,8 +124,20 @@ impl Stage for AnnounceStage {
             let username = render_optional(ctx, cfg.username.as_deref())?;
             let icon_emoji = cfg.icon_emoji.clone();
             let icon_url = cfg.icon_url.clone();
-            let blocks = cfg.blocks.clone();
-            let attachments = cfg.attachments.clone();
+            let blocks = match &cfg.blocks {
+                Some(val) => {
+                    let rendered = ctx.render_template(&val.to_string())?;
+                    Some(serde_json::from_str::<serde_json::Value>(&rendered)?)
+                }
+                None => None,
+            };
+            let attachments = match &cfg.attachments {
+                Some(val) => {
+                    let rendered = ctx.render_template(&val.to_string())?;
+                    Some(serde_json::from_str::<serde_json::Value>(&rendered)?)
+                }
+                None => None,
+            };
             dispatch(ctx, "slack", &message, || {
                 let opts = slack::SlackOptions {
                     channel: channel.as_deref(),
@@ -426,6 +438,38 @@ mod tests {
         };
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_slack_blocks_template_rendering() {
+        let blocks_json = serde_json::json!([{
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "{{ .ProjectName }} {{ .Tag }} is out!"
+            }
+        }]);
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(true),
+                webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
+                message_template: None,
+                blocks: Some(blocks_json),
+                attachments: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_ok());
     }
 
