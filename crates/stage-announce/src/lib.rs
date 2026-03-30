@@ -1971,8 +1971,10 @@ blocks:
         unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
     }
 
+    #[serial]
     #[test]
     fn test_missing_discourse_server_returns_error() {
+        unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
                 enabled: Some(true),
@@ -1988,6 +1990,7 @@ blocks:
             err.to_string().contains("missing server"),
             "expected 'missing server' error, got: {err}"
         );
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
     }
 
     #[serial]

@@ -40,17 +40,17 @@ pub fn send_discourse(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #[test]
+    fn test_url_construction_strips_trailing_slash() {
+        let server = "https://forum.example.com/";
+        let url = format!("{}/posts.json", server.trim_end_matches('/'));
+        assert_eq!(url, "https://forum.example.com/posts.json");
+    }
 
     #[test]
-    fn test_post_payload_structure() {
-        let body = json!({
-            "title": "myapp v1.0 is out!",
-            "raw": "Check it out",
-            "category": 5,
-        });
-        assert_eq!(body["title"], "myapp v1.0 is out!");
-        assert_eq!(body["raw"], "Check it out");
-        assert_eq!(body["category"], 5);
+    fn test_url_construction_no_trailing_slash() {
+        let server = "https://forum.example.com";
+        let url = format!("{}/posts.json", server.trim_end_matches('/'));
+        assert_eq!(url, "https://forum.example.com/posts.json");
     }
 }
