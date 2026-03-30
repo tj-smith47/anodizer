@@ -378,7 +378,17 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         util::clone_repo_with_auth(git_url, None, repo_path, "aur", log)?;
     }
 
-    let pkgbuild_path = repo_path.join("PKGBUILD");
+    // Determine output directory (optional subdirectory in the repo).
+    let output_dir = if let Some(ref dir) = aur_cfg.directory {
+        let d = repo_path.join(dir);
+        std::fs::create_dir_all(&d)
+            .with_context(|| format!("aur: create directory {}", d.display()))?;
+        d
+    } else {
+        repo_path.to_path_buf()
+    };
+
+    let pkgbuild_path = output_dir.join("PKGBUILD");
     std::fs::write(&pkgbuild_path, &pkgbuild)
         .with_context(|| format!("aur: write PKGBUILD {}", pkgbuild_path.display()))?;
 
@@ -386,7 +396,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     // Write .install file if configured (post-install hooks).
     if let Some(ref install_content) = aur_cfg.install {
-        let install_path = repo_path.join(&install_filename);
+        let install_path = output_dir.join(&install_filename);
         std::fs::write(&install_path, install_content)
             .with_context(|| format!("aur: write {} {}", install_filename, install_path.display()))?;
         log.status(&format!("wrote AUR install file: {}", install_path.display()));
@@ -394,7 +404,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     // Generate .SRCINFO from a Tera template (no makepkg dependency).
     let srcinfo = generate_srcinfo(&pkgbuild_params);
-    let srcinfo_path = repo_path.join(".SRCINFO");
+    let srcinfo_path = output_dir.join(".SRCINFO");
     std::fs::write(&srcinfo_path, &srcinfo)
         .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
     log.status(&format!("wrote AUR .SRCINFO: {}", srcinfo_path.display()));

@@ -650,13 +650,20 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // Optionally format with alejandra or nixfmt
     // (only if the formatter binary is available)
 
-    // Clone repo, write nix expression, commit, push.
+    // Clone repo (SSH-aware), write nix expression, commit, push.
     let token = util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), None);
-    let repo_url = format!("https://github.com/{}/{}.git", repo_owner, repo_name);
 
     let tmp_dir = tempfile::tempdir().context("nix: create temp dir")?;
     let repo_path = tmp_dir.path();
-    util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "nix", log)?;
+    util::clone_repo(
+        nix_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        token.as_deref(),
+        repo_path,
+        "nix",
+        log,
+    )?;
 
     // Write nix file at configured path or default
     let nix_path = nix_cfg
@@ -718,6 +725,18 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         "nix",
         &commit_opts,
     )?;
+
+    // Submit PR if configured.
+    util::maybe_submit_pr(
+        repo_path,
+        nix_cfg.repository.as_ref(),
+        &repo_owner,
+        branch.unwrap_or("main"),
+        &commit_msg,
+        &format!("Update Nix package for {} to {}", name, version),
+        "nix",
+        log,
+    );
 
     log.status(&format!(
         "Nix expression pushed to {}/{} for '{}'",
