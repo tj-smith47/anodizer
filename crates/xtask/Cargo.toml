@@ -6,6 +6,9 @@ publish = false
 
 [dependencies]
 anodize = { path = "../cli" }
+anodize-core.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
+schemars.workspace = true
+serde_json.workspace = true
 tera.workspace = true
