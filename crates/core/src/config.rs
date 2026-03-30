@@ -2300,6 +2300,7 @@ pub struct AnnounceConfig {
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     pub discord: Option<DiscordAnnounce>,
+    pub discourse: Option<DiscourseAnnounce>,
     pub slack: Option<SlackAnnounce>,
     pub webhook: Option<WebhookConfig>,
     pub telegram: Option<TelegramAnnounce>,
@@ -2320,6 +2321,20 @@ pub struct BlueskyAnnounce {
     pub enabled: Option<bool>,
     /// Bluesky handle/username (e.g. "user.bsky.social")
     pub username: Option<String>,
+    pub message_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DiscourseAnnounce {
+    pub enabled: Option<bool>,
+    /// Discourse forum URL (e.g. "https://forum.example.com")
+    pub server: Option<String>,
+    /// Category ID to post in (required, must be non-zero)
+    pub category_id: Option<u64>,
+    /// Username for the API request (default: "system")
+    pub username: Option<String>,
+    pub title_template: Option<String>,
     pub message_template: Option<String>,
 }
 

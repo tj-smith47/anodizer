@@ -6,6 +6,7 @@ use anyhow::Result;
 
 pub mod bluesky;
 pub mod discord;
+pub mod discourse;
 pub mod email;
 mod http;
 pub mod linkedin;
@@ -130,6 +131,38 @@ impl Stage for AnnounceStage {
             };
             dispatch(ctx, "discord", &message, || {
                 discord::send_discord(&url, &message, &opts)
+            })?;
+        }
+
+        // ----------------------------------------------------------------
+        // Discourse
+        // ----------------------------------------------------------------
+        if let Some(cfg) = &announce.discourse
+            && cfg.enabled.unwrap_or(false)
+        {
+            let server = require_rendered(ctx, cfg.server.as_deref(), "discourse", "server")?;
+            if server.is_empty() {
+                anyhow::bail!("announce.discourse: server must not be empty");
+            }
+            let category_id = cfg.category_id.ok_or_else(|| {
+                anyhow::anyhow!("announce.discourse: missing category_id")
+            })?;
+            if category_id == 0 {
+                anyhow::bail!("announce.discourse: category_id must be non-zero");
+            }
+            let username = cfg.username.as_deref().unwrap_or("system");
+            let title = ctx.render_template(
+                cfg.title_template.as_deref().unwrap_or("{{ .ProjectName }} {{ .Tag }} is out!"),
+            )?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let api_key = std::env::var("DISCOURSE_API_KEY")
+                .map_err(|_| anyhow::anyhow!("announce.discourse: DISCOURSE_API_KEY env var is required"))?;
+            if api_key.is_empty() {
+                anyhow::bail!("announce.discourse: DISCOURSE_API_KEY env var must not be empty");
+            }
+
+            dispatch(ctx, "discourse", &title, || {
+                discourse::send_discourse(&server, &api_key, username, category_id, &title, &message)
             })?;
         }
 
@@ -546,10 +579,10 @@ impl Stage for AnnounceStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, EmailAnnounce, LinkedInAnnounce,
-        MastodonAnnounce, MattermostAnnounce, OpenCollectiveAnnounce, RedditAnnounce,
-        SlackAnnounce, SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce,
-        TelegramAnnounce, TwitterAnnounce, WebhookConfig,
+        AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, DiscourseAnnounce,
+        EmailAnnounce, LinkedInAnnounce, MastodonAnnounce, MattermostAnnounce,
+        OpenCollectiveAnnounce, RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject,
+        StringOrBool, TeamsAnnounce, TelegramAnnounce, TwitterAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
     use serial_test::serial;
@@ -1882,5 +1915,173 @@ blocks:
             "expected 'must not be empty' error, got: {err}"
         );
         unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
+    }
+
+    // ----------------------------------------------------------------
+    // Discourse tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_skips_disabled_discourse() {
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(false),
+                server: Some("https://forum.example.com".to_string()),
+                category_id: Some(5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[serial]
+    #[test]
+    fn test_dry_run_discourse() {
+        unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(true),
+                server: Some("https://forum.example.com".to_string()),
+                category_id: Some(5),
+                username: Some("release-bot".to_string()),
+                title_template: Some("{{ .ProjectName }} {{ .Tag }} is out!".to_string()),
+                message_template: Some(
+                    "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+                        .to_string(),
+                ),
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
+    }
+
+    #[test]
+    fn test_missing_discourse_server_returns_error() {
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(true),
+                server: None,
+                category_id: Some(5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing server"),
+            "expected 'missing server' error, got: {err}"
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn test_missing_discourse_category_id_returns_error() {
+        unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(true),
+                server: Some("https://forum.example.com".to_string()),
+                category_id: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing category_id"),
+            "expected 'missing category_id' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_zero_discourse_category_id_returns_error() {
+        unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(true),
+                server: Some("https://forum.example.com".to_string()),
+                category_id: Some(0),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("category_id must be non-zero"),
+            "expected 'category_id must be non-zero' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_discourse_missing_env_var_errors() {
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(true),
+                server: Some("https://forum.example.com".to_string()),
+                category_id: Some(5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("DISCOURSE_API_KEY"),
+            "expected DISCOURSE_API_KEY error, got: {err}"
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn test_discourse_empty_env_var_errors() {
+        unsafe { std::env::set_var("DISCOURSE_API_KEY", "") };
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(true),
+                server: Some("https://forum.example.com".to_string()),
+                category_id: Some(5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "expected 'must not be empty' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
     }
 }
