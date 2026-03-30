@@ -2297,7 +2297,8 @@ pub struct NightlyConfig {
 #[serde(default)]
 pub struct AnnounceConfig {
     /// Template-conditional skip: if rendered to "true", skip the entire announce stage.
-    pub skip: Option<String>,
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip: Option<StringOrBool>,
     pub discord: Option<DiscordAnnounce>,
     pub slack: Option<SlackAnnounce>,
     pub webhook: Option<WebhookConfig>,

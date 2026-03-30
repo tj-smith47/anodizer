@@ -83,9 +83,9 @@ impl Stage for AnnounceStage {
         };
 
         // Evaluate template-conditional skip.
-        if let Some(ref skip_tmpl) = announce.skip {
-            let rendered = ctx.render_template(skip_tmpl)?;
-            if matches!(rendered.trim(), "true" | "1") {
+        if let Some(ref skip_val) = announce.skip {
+            let should_skip = skip_val.is_disabled(|tmpl| ctx.render_template(tmpl));
+            if should_skip {
                 log.status("announce.skip evaluated to true — skipping");
                 return Ok(());
             }
@@ -291,7 +291,7 @@ mod tests {
     use super::*;
     use anodize_core::config::{
         AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MattermostAnnounce, SlackAnnounce,
-        TeamsAnnounce, TelegramAnnounce, WebhookConfig,
+        StringOrBool, TeamsAnnounce, TelegramAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
 
@@ -881,7 +881,7 @@ mod tests {
     #[test]
     fn test_announce_skip_true_skips_all() {
         let announce = AnnounceConfig {
-            skip: Some("true".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
             discord: Some(DiscordAnnounce {
                 enabled: Some(true),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn test_announce_skip_false_does_not_skip() {
         let announce = AnnounceConfig {
-            skip: Some("false".to_string()),
+            skip: Some(StringOrBool::Bool(false)),
             ..Default::default()
         };
         let mut ctx = make_ctx(Some(announce));
@@ -908,7 +908,13 @@ mod tests {
     #[test]
     fn test_announce_skip_template_evaluated() {
         let announce = AnnounceConfig {
-            skip: Some("{{ .IsNightly }}".to_string()),
+            skip: Some(StringOrBool::String("{{ .IsNightly }}".to_string())),
+            discord: Some(DiscordAnnounce {
+                enabled: Some(true),
+                webhook_url: Some("https://discord.invalid/webhook".to_string()),
+                message_template: Some("test".to_string()),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let mut config = Config::default();
@@ -918,6 +924,7 @@ mod tests {
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         ctx.template_vars_mut().set("IsNightly", "true");
         // Should skip because IsNightly renders to "true".
+        // Discord would fail on the invalid URL if skip didn't work.
         assert!(AnnounceStage.run(&mut ctx).is_ok());
     }
 }
