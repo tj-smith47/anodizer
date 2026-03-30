@@ -4,6 +4,7 @@ use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anyhow::Result;
 
+pub mod bluesky;
 pub mod discord;
 pub mod email;
 mod http;
@@ -381,6 +382,30 @@ impl Stage for AnnounceStage {
         }
 
         // ----------------------------------------------------------------
+        // Bluesky
+        // ----------------------------------------------------------------
+        if let Some(cfg) = &announce.bluesky
+            && cfg.enabled.unwrap_or(false)
+        {
+            let username = require_rendered(ctx, cfg.username.as_deref(), "bluesky", "username")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let app_password = std::env::var("BLUESKY_APP_PASSWORD").map_err(|_| {
+                anyhow::anyhow!("announce.bluesky: BLUESKY_APP_PASSWORD env var is required")
+            })?;
+            if app_password.is_empty() {
+                anyhow::bail!("announce.bluesky: BLUESKY_APP_PASSWORD env var must not be empty");
+            }
+            let release_url = ctx
+                .template_vars()
+                .get("ReleaseURL")
+                .map(|s| s.to_string());
+
+            dispatch(ctx, "bluesky", &message, || {
+                bluesky::send_bluesky(&username, &app_password, &message, release_url.as_deref())
+            })?;
+        }
+
+        // ----------------------------------------------------------------
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
@@ -460,7 +485,7 @@ impl Stage for AnnounceStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MastodonAnnounce,
+        AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, EmailAnnounce, MastodonAnnounce,
         MattermostAnnounce, RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject,
         StringOrBool, TeamsAnnounce, TelegramAnnounce, TwitterAnnounce, WebhookConfig,
     };
@@ -1459,5 +1484,114 @@ blocks:
         let mut ctx = make_ctx(Some(announce));
         // Empty server should cause a silent skip, not an error
         assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    // ----------------------------------------------------------------
+    // Bluesky tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_skips_disabled_bluesky() {
+        let announce = AnnounceConfig {
+            bluesky: Some(BlueskyAnnounce {
+                enabled: Some(false),
+                username: Some("user.bsky.social".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[serial]
+    #[test]
+    fn test_dry_run_bluesky() {
+        unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
+        let announce = AnnounceConfig {
+            bluesky: Some(BlueskyAnnounce {
+                enabled: Some(true),
+                username: Some("user.bsky.social".to_string()),
+                message_template: Some("{{ .ProjectName }} {{ .Tag }}".to_string()),
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_bluesky_missing_username_errors() {
+        unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
+        let announce = AnnounceConfig {
+            bluesky: Some(BlueskyAnnounce {
+                enabled: Some(true),
+                username: None,
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing username"),
+            "expected 'missing username' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_bluesky_missing_env_var_errors() {
+        unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
+        let announce = AnnounceConfig {
+            bluesky: Some(BlueskyAnnounce {
+                enabled: Some(true),
+                username: Some("user.bsky.social".to_string()),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("BLUESKY_APP_PASSWORD"),
+            "expected BLUESKY_APP_PASSWORD error, got: {err}"
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn test_bluesky_empty_env_var_errors() {
+        unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "") };
+        let announce = AnnounceConfig {
+            bluesky: Some(BlueskyAnnounce {
+                enabled: Some(true),
+                username: Some("user.bsky.social".to_string()),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "expected 'must not be empty' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
     }
 }

@@ -2309,6 +2309,16 @@ pub struct AnnounceConfig {
     pub reddit: Option<RedditAnnounce>,
     pub twitter: Option<TwitterAnnounce>,
     pub mastodon: Option<MastodonAnnounce>,
+    pub bluesky: Option<BlueskyAnnounce>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct BlueskyAnnounce {
+    pub enabled: Option<bool>,
+    /// Bluesky handle/username (e.g. "user.bsky.social")
+    pub username: Option<String>,
+    pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
