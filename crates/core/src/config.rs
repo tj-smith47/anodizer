@@ -2405,8 +2405,65 @@ pub struct SlackAnnounce {
     pub username: Option<String>,
     pub icon_emoji: Option<String>,
     pub icon_url: Option<String>,
-    pub blocks: Option<serde_json::Value>,
-    pub attachments: Option<serde_json::Value>,
+    /// Slack Block Kit blocks (typed for schema validation).
+    pub blocks: Option<Vec<SlackBlock>>,
+    /// Slack legacy attachments (typed for schema validation).
+    pub attachments: Option<Vec<SlackAttachment>>,
+}
+
+/// A Slack Block Kit block element.
+/// Common fields are typed; additional block-type-specific fields are captured via flatten.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+pub struct SlackBlock {
+    /// Block type (e.g., "header", "section", "divider", "actions", "context", "image").
+    #[serde(rename = "type")]
+    pub block_type: String,
+    /// Text object for the block (used by header, section, context types).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<SlackTextObject>,
+    /// Optional block ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<String>,
+    /// Additional block-specific fields (elements, accessory, fields, etc.).
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// A Slack text composition object.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+pub struct SlackTextObject {
+    /// Text type: "plain_text" or "mrkdwn".
+    #[serde(rename = "type")]
+    pub text_type: String,
+    /// The text content (supports template variables).
+    pub text: String,
+    /// Whether to render emoji shortcodes (plain_text only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<bool>,
+    /// Whether to render verbatim (mrkdwn only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbatim: Option<bool>,
+}
+
+/// A Slack legacy attachment.
+/// Common fields are typed; additional fields are captured via flatten.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+pub struct SlackAttachment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pretext: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer: Option<String>,
+    /// Additional attachment-specific fields.
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

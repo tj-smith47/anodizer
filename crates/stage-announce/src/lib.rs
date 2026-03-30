@@ -139,8 +139,15 @@ impl Stage for AnnounceStage {
             let username = render_optional(ctx, cfg.username.as_deref())?;
             let icon_emoji = cfg.icon_emoji.clone();
             let icon_url = cfg.icon_url.clone();
-            let blocks = render_json_template(ctx, cfg.blocks.as_ref())?;
-            let attachments = render_json_template(ctx, cfg.attachments.as_ref())?;
+            // Convert typed blocks/attachments to serde_json::Value for template rendering
+            let blocks_val = cfg.blocks.as_ref()
+                .map(|b| serde_json::to_value(b))
+                .transpose()?;
+            let blocks = render_json_template(ctx, blocks_val.as_ref())?;
+            let attachments_val = cfg.attachments.as_ref()
+                .map(|a| serde_json::to_value(a))
+                .transpose()?;
+            let attachments = render_json_template(ctx, attachments_val.as_ref())?;
             dispatch(ctx, "slack", &message, || {
                 let opts = slack::SlackOptions {
                     channel: channel.as_deref(),
@@ -315,7 +322,7 @@ mod tests {
     use super::*;
     use anodize_core::config::{
         AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MattermostAnnounce, SlackAnnounce,
-        StringOrBool, TeamsAnnounce, TelegramAnnounce, WebhookConfig,
+        SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce, TelegramAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
 
@@ -446,19 +453,21 @@ mod tests {
 
     #[test]
     fn test_slack_blocks_template_rendering() {
-        let blocks_json = serde_json::json!([{
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "{{ .ProjectName }} {{ .Tag }} is out!"
-            }
-        }]);
+        let blocks = vec![SlackBlock {
+            block_type: "section".to_string(),
+            text: Some(SlackTextObject {
+                text_type: "mrkdwn".to_string(),
+                text: "{{ .ProjectName }} {{ .Tag }} is out!".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
         let announce = AnnounceConfig {
             slack: Some(SlackAnnounce {
                 enabled: Some(true),
                 webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
                 message_template: None,
-                blocks: Some(blocks_json),
+                blocks: Some(blocks),
                 attachments: None,
                 ..Default::default()
             }),
@@ -478,13 +487,16 @@ mod tests {
 
     #[test]
     fn test_slack_blocks_template_vars_are_expanded() {
-        let blocks_json = serde_json::json!([{
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": "{{ .ProjectName }} {{ .Tag }} is out!"
-            }
-        }]);
+        let blocks = vec![SlackBlock {
+            block_type: "section".to_string(),
+            text: Some(SlackTextObject {
+                text_type: "mrkdwn".to_string(),
+                text: "{{ .ProjectName }} {{ .Tag }} is out!".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let blocks_json = serde_json::to_value(&blocks).unwrap();
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1003,5 +1015,40 @@ mod tests {
         // Should skip because IsNightly renders to "true".
         // Discord would fail on the invalid URL if skip didn't work.
         assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    // ----------------------------------------------------------------
+    // Slack typed blocks YAML deserialization test
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_slack_blocks_yaml_deserialization() {
+        let yaml = r#"
+blocks:
+  - type: header
+    text:
+      type: plain_text
+      text: "{{ .ProjectName }} {{ .Tag }} released!"
+  - type: section
+    text:
+      type: mrkdwn
+      text: ":github:  <{{ .ReleaseURL }}|Go to Github Release>  :rocket:"
+"#;
+        #[derive(serde::Deserialize)]
+        struct TestConfig {
+            blocks: Vec<SlackBlock>,
+        }
+        let config: TestConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.blocks.len(), 2);
+        assert_eq!(config.blocks[0].block_type, "header");
+        assert_eq!(
+            config.blocks[0].text.as_ref().unwrap().text_type,
+            "plain_text"
+        );
+        assert_eq!(config.blocks[1].block_type, "section");
+        assert_eq!(
+            config.blocks[1].text.as_ref().unwrap().text_type,
+            "mrkdwn"
+        );
     }
 }
