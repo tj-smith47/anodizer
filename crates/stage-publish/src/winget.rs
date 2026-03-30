@@ -6,6 +6,33 @@ use serde::Serialize;
 use crate::util;
 
 // ---------------------------------------------------------------------------
+// PackageIdentifier validation
+// ---------------------------------------------------------------------------
+
+/// Validate a WinGet PackageIdentifier against the required pattern.
+///
+/// The identifier must have at least 2 dot-separated segments, and each
+/// segment must not contain whitespace or the characters `\`, `/`, `:`, `*`,
+/// `?`, `"`, `<`, `>`, `|`.
+///
+/// Pattern: `^[^\.\s\\\/:\*\?"<>\|]+(\.[^\.\s\\\/:\*\?"<>\|]+){1,7}$`
+pub fn validate_package_identifier(id: &str) -> Result<()> {
+    let re = regex::Regex::new(
+        r#"^[^\.\s\\/:\*\?"<>\|]+(\.[^\.\s\\/:\*\?"<>\|]+){1,7}$"#
+    ).expect("winget: compile PackageIdentifier regex");
+
+    if re.is_match(id) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "winget: invalid PackageIdentifier '{}'. Must have 2-8 dot-separated segments \
+             with no whitespace or special characters (\\/:*?\"<>|).",
+            id
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WingetManifestParams
 // ---------------------------------------------------------------------------
 
@@ -351,6 +378,9 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         .package_identifier
         .as_deref()
         .unwrap_or(&auto_pkg_id);
+
+    // Validate PackageIdentifier format before proceeding.
+    validate_package_identifier(package_id)?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -939,5 +969,50 @@ mod tests {
         assert!(locale.contains("InstallationNotes: Run 'mytool --help' to get started"));
         assert!(locale.contains("cli"));
         assert!(locale.contains("devops"));
+    }
+
+    // -----------------------------------------------------------------------
+    // PackageIdentifier validation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_package_identifier_valid() {
+        assert!(validate_package_identifier("Org.Tool").is_ok());
+        assert!(validate_package_identifier("Microsoft.VisualStudioCode").is_ok());
+        assert!(validate_package_identifier("My.Multi.Segment.Id").is_ok());
+        assert!(validate_package_identifier("A.B.C.D.E.F.G.H").is_ok()); // 8 segments max
+    }
+
+    #[test]
+    fn test_validate_package_identifier_invalid_single_segment() {
+        assert!(validate_package_identifier("JustOneName").is_err());
+    }
+
+    #[test]
+    fn test_validate_package_identifier_invalid_special_chars() {
+        assert!(validate_package_identifier("Org.Tool:Bad").is_err());
+        assert!(validate_package_identifier("Org.Tool<Bad>").is_err());
+        assert!(validate_package_identifier("Org.Tool|Bad").is_err());
+        assert!(validate_package_identifier("Org.Tool*Bad").is_err());
+        assert!(validate_package_identifier("Org.Tool?Bad").is_err());
+    }
+
+    #[test]
+    fn test_validate_package_identifier_invalid_whitespace() {
+        assert!(validate_package_identifier("Org.Tool Name").is_err());
+        assert!(validate_package_identifier("Org .Tool").is_err());
+    }
+
+    #[test]
+    fn test_validate_package_identifier_too_many_segments() {
+        // 9 segments (more than 8) should fail
+        assert!(validate_package_identifier("A.B.C.D.E.F.G.H.I").is_err());
+    }
+
+    #[test]
+    fn test_validate_package_identifier_empty_segment() {
+        assert!(validate_package_identifier("Org..Tool").is_err());
+        assert!(validate_package_identifier(".Org.Tool").is_err());
+        assert!(validate_package_identifier("Org.Tool.").is_err());
     }
 }

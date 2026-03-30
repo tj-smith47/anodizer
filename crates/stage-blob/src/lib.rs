@@ -493,8 +493,13 @@ impl Stage for BlobStage {
                     anyhow::bail!("blobs: bucket is required for crate '{}'", krate.name);
                 }
 
-                let provider = Provider::parse(&blob_cfg.provider)?;
-                let config_label = blob_cfg.id.as_deref().unwrap_or(&blob_cfg.provider);
+                let provider_str = ctx.render_template(&blob_cfg.provider)
+                    .with_context(|| {
+                        format!("blobs: render provider template '{}' for crate '{}'",
+                            blob_cfg.provider, krate.name)
+                    })?;
+                let provider = Provider::parse(&provider_str)?;
+                let config_label = blob_cfg.id.as_deref().unwrap_or(&provider_str);
 
                 // Render template fields
                 let rendered_bucket =
@@ -544,16 +549,9 @@ impl Stage for BlobStage {
                     upload_items.extend(resolved);
                 }
 
-                // Upload metadata files if include_meta is set
-                if blob_cfg.include_meta.unwrap_or(false) {
-                    let dist = &ctx.config.dist;
-                    for meta_name in &["metadata.json", "artifacts.json"] {
-                        let meta_path = dist.join(meta_name);
-                        if meta_path.exists() {
-                            upload_items.push((meta_path, (*meta_name).to_string()));
-                        }
-                    }
-                }
+                // Note: metadata files are already handled by collect_artifacts()
+                // when include_meta is true — it includes ArtifactKind::Metadata
+                // in its filter. No separate scan needed here.
 
                 if upload_items.is_empty() {
                     log.warn(&format!(

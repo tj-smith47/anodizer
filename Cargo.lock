@@ -112,6 +112,7 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+ "chrono",
  "flate2",
  "glob",
  "serde_yaml_ng",
@@ -239,6 +240,8 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+ "base64",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -3686,8 +3689,11 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anodize",
+ "anodize-core",
  "clap",
+ "schemars",
  "serde",
+ "serde_json",
  "tera",
 ]
 

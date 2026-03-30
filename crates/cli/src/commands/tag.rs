@@ -220,6 +220,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 minor: 0,
                 patch: 0,
                 prerelease: None,
+                build_metadata: None,
             },
         ),
     };

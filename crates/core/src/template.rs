@@ -20,6 +20,16 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Expand a leading `~/` to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return format!("{}/{}", home, rest);
+    }
+    path.to_string()
+}
+
 enum VersionPart {
     Major,
     Minor,
@@ -43,11 +53,11 @@ fn increment_version(v: &str, part: VersionPart) -> String {
     }
 }
 
-/// Regex to find Go-style dot-prefixed references inside `{{ }}` blocks.
-/// Matches `{{ .Field }}`, `{{.Field}}`, `{{ .Env.VAR }}`, and also expressions
-/// like `{{ .Field | filter }}`. We only strip the dot from the variable name.
+/// Regex to match `{{ ... }}` and `{% ... %}` blocks for Go-style dot preprocessing.
 // SAFETY: This is a compile-time regex literal; it is known to be valid.
-static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{(\s*)\.(\w+)").unwrap());
+static GO_BLOCK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{.*?\}\}|\{%.*?%\}").unwrap());
+
 
 /// Base Tera instance with custom filters pre-registered.
 /// Cloned per render() call (cheap — no templates to clone).
@@ -170,7 +180,10 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                         .ok_or_else(|| {
                             tera::Error::msg(format!("{} requires `s` argument", $name))
                         })?;
-                    Ok(Value::String($hash_fn(s.as_bytes())))
+                    // GoReleaser behavior: if the argument is a valid file path that
+                    // exists, hash the file contents; otherwise hash the string itself.
+                    let bytes = std::fs::read(s).unwrap_or_else(|_| s.as_bytes().to_vec());
+                    Ok(Value::String($hash_fn(&bytes)))
                 },
             );
         };
@@ -247,6 +260,7 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     // readFile(path="file.txt") — reads file, returns empty string on error.
     // Intentionally returns empty on all errors (not just ENOENT) for GoReleaser-compatible behavior.
+    // GoReleaser trims whitespace from the result (strings.TrimSpace).
     tera.register_function(
         "readFile",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -254,12 +268,14 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("readFile requires `path` argument"))?;
-            let content = std::fs::read_to_string(path).unwrap_or_default();
-            Ok(Value::String(content))
+            let resolved = expand_tilde(path);
+            let content = std::fs::read_to_string(resolved).unwrap_or_default();
+            Ok(Value::String(content.trim().to_string()))
         },
     );
 
     // mustReadFile(path="file.txt") — reads file, errors if file doesn't exist
+    // GoReleaser trims whitespace from the result (strings.TrimSpace).
     tera.register_function(
         "mustReadFile",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -267,9 +283,10 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("mustReadFile requires `path` argument"))?;
-            let content = std::fs::read_to_string(path)
-                .map_err(|e| tera::Error::msg(format!("mustReadFile: {}: {}", path, e)))?;
-            Ok(Value::String(content))
+            let resolved = expand_tilde(path);
+            let content = std::fs::read_to_string(&resolved)
+                .map_err(|e| tera::Error::msg(format!("mustReadFile: {}: {}", resolved, e)))?;
+            Ok(Value::String(content.trim().to_string()))
         },
     );
 
@@ -330,8 +347,8 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         "urlPathEscape",
         |value: &Value, _: &HashMap<String, Value>| {
             let s = tera::try_get_value!("urlPathEscape", "value", String, value);
-            // Percent-encode all non-unreserved characters per RFC 3986,
-            // preserving forward slashes (GoReleaser urlPathEscape compat).
+            // Percent-encode all non-unreserved characters per RFC 3986.
+            // GoReleaser's url.PathEscape encodes `/` as `%2F`.
             let encoded: String = s
                 .bytes()
                 .map(|b| {
@@ -340,7 +357,6 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                         || b == b'_'
                         || b == b'.'
                         || b == b'~'
-                        || b == b'/'
                     {
                         (b as char).to_string()
                     } else {
@@ -547,10 +563,69 @@ impl Default for TemplateVars {
 /// Preprocess a template: convert Go-style `{{ .Field }}` to Tera-style `{{ Field }}`.
 /// Handles both `{{ .Field }}` and `{{.Field}}` (no spaces).
 /// Also handles chained access like `{{ .Env.VAR }}` → `{{ Env.VAR }}`.
+/// Works inside both `{{ }}` and `{% %}` blocks, and handles multiple
+/// dot-variables in a single block (e.g., `{{ .Field1 ~ .Field2 }}`).
 fn preprocess(template: &str) -> String {
-    // Replace `{{<optional whitespace>.<word>` with `{{<optional whitespace><word>`
-    // This strips the leading dot while preserving whitespace and the rest of the expression.
-    GO_DOT_RE.replace_all(template, "{{${1}${2}").to_string()
+    // For each `{{ ... }}` or `{% ... %}` block, replace all Go-style
+    // `.VarName` references with `VarName`. We skip over quoted strings
+    // so that dots inside string literals (e.g., file paths) are preserved.
+    GO_BLOCK_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let block = &caps[0];
+            let open = &block[..2]; // "{{" or "{%"
+            let close = &block[block.len() - 2..]; // "}}" or "%}"
+            let inner = &block[2..block.len() - 2];
+
+            let mut result = String::with_capacity(block.len());
+            result.push_str(open);
+
+            let bytes = inner.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                // Skip over quoted strings entirely
+                if bytes[i] == b'"' || bytes[i] == b'\'' {
+                    let quote = bytes[i];
+                    result.push(quote as char);
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                            result.push(bytes[i] as char);
+                            result.push(bytes[i + 1] as char);
+                            i += 2;
+                        } else {
+                            result.push(bytes[i] as char);
+                            i += 1;
+                        }
+                    }
+                    if i < bytes.len() {
+                        result.push(bytes[i] as char); // closing quote
+                        i += 1;
+                    }
+                    continue;
+                }
+
+                if bytes[i] == b'.'
+                    && i + 1 < bytes.len()
+                    && (bytes[i + 1].is_ascii_alphanumeric() || bytes[i + 1] == b'_')
+                {
+                    // Check if the preceding character is a word char — if so,
+                    // this is chained access (e.g., `Env.VAR`) and we keep the dot.
+                    let prev_is_word = i > 0
+                        && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+                    if prev_is_word {
+                        result.push('.');
+                    }
+                    // else: Go-style leading dot — skip it
+                } else {
+                    result.push(bytes[i] as char);
+                }
+                i += 1;
+            }
+
+            result.push_str(close);
+            result
+        })
+        .to_string()
 }
 
 /// Build a `tera::Context` from `TemplateVars`.
@@ -1301,11 +1376,11 @@ mod tests {
     }
 
     #[test]
-    fn test_url_path_escape_preserves_slashes() {
+    fn test_url_path_escape_encodes_slashes() {
         let mut vars = test_vars();
         vars.set("Input", "foo/bar");
         let result = render("{{ Input | urlPathEscape }}", &vars).unwrap();
-        assert_eq!(result, "foo/bar");
+        assert_eq!(result, "foo%2Fbar");
     }
 
     // ---- mdv2escape tests ----

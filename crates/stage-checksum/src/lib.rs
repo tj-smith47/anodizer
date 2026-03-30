@@ -11,7 +11,7 @@ use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{ArchivesConfig, ExtraFileSpec, StringOrBool};
+use anodize_core::config::{ExtraFileSpec, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
@@ -266,14 +266,6 @@ impl Stage for ChecksumStage {
                 continue;
             }
 
-            // Skip crates that have archives explicitly disabled
-            if matches!(crate_cfg.archives, ArchivesConfig::Disabled) {
-                log.verbose(&format!(
-                    "archives disabled for crate {crate_name}, skipping"
-                ));
-                continue;
-            }
-
             // Per-crate overrides (fall back to global defaults)
             let crate_cksum = crate_cfg.checksum.as_ref();
             let algorithm = crate_cksum
@@ -293,9 +285,19 @@ impl Stage for ChecksumStage {
                 .or(global_split)
                 .unwrap_or(false);
 
-            // Gather Archive and LinuxPackage artifacts for this crate
+            // Gather checksummable artifacts for this crate
             let mut source_artifacts: Vec<Artifact> = Vec::new();
-            for kind in [ArtifactKind::Archive, ArtifactKind::LinuxPackage] {
+            for kind in [
+                ArtifactKind::Archive,
+                ArtifactKind::LinuxPackage,
+                ArtifactKind::Binary,
+                ArtifactKind::SourceArchive,
+                ArtifactKind::Sbom,
+                ArtifactKind::Snap,
+                ArtifactKind::DiskImage,
+                ArtifactKind::Installer,
+                ArtifactKind::MacOsPackage,
+            ] {
                 let artifacts = ctx
                     .artifacts
                     .by_kind_and_crate(kind, crate_name)
@@ -333,7 +335,7 @@ impl Stage for ChecksumStage {
 
             if source_artifacts.is_empty() {
                 log.verbose(&format!(
-                    "no Archive/LinuxPackage artifacts for crate {crate_name}, skipping"
+                    "no checksummable artifacts for crate {crate_name}, skipping"
                 ));
                 continue;
             }
@@ -431,6 +433,14 @@ impl Stage for ChecksumStage {
                     });
                 }
             }
+
+            // Sort combined lines by filename (the part after "  ") for
+            // deterministic output and reproducible builds.
+            combined_lines.sort_by(|a, b| {
+                let name_a = a.split_once("  ").map(|(_, n)| n).unwrap_or(a);
+                let name_b = b.split_once("  ").map(|(_, n)| n).unwrap_or(b);
+                name_a.cmp(name_b)
+            });
 
             // Write combined checksums file (only when NOT in split mode)
             if !split {

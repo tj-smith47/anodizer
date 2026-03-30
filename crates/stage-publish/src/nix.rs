@@ -1,8 +1,45 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
+use base64::Engine as _;
 
 use crate::util;
+
+// ---------------------------------------------------------------------------
+// SRI hash conversion
+// ---------------------------------------------------------------------------
+
+/// Convert a hex-encoded SHA256 hash to SRI format (`sha256-{base64}`).
+///
+/// Nix's `fetchurl` expects SRI hashes, not raw hex.  GoReleaser converts
+/// hashes using `nix-hash --type sha256 --flat --base32`; the modern
+/// equivalent is the SRI format that Nix also accepts.
+pub fn hex_sha256_to_sri(hex: &str) -> Result<String> {
+    let bytes = hex_to_bytes(hex)?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "nix: expected 32 bytes for SHA256 hash, got {} (hex: '{}')",
+            bytes.len(),
+            hex
+        );
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("sha256-{}", b64))
+}
+
+/// Decode a hex string into raw bytes.
+fn hex_to_bytes(hex: &str) -> Result<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        anyhow::bail!("nix: hex string has odd length: '{}'", hex);
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("nix: invalid hex at offset {}: {}", i, e))
+        })
+        .collect()
+}
 
 // ---------------------------------------------------------------------------
 // Nix expression template
@@ -543,7 +580,22 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             } else {
                 a.url.clone()
             };
-            Some((system, download_url, a.sha256.clone()))
+            // Convert hex SHA256 to SRI format for Nix's fetchurl.
+            let sri_hash = if a.sha256.is_empty() {
+                a.sha256.clone()
+            } else {
+                match hex_sha256_to_sri(&a.sha256) {
+                    Ok(sri) => sri,
+                    Err(e) => {
+                        log.warn(&format!(
+                            "nix: failed to convert SHA256 to SRI for {}: {}; using raw hex",
+                            a.url, e
+                        ));
+                        a.sha256.clone()
+                    }
+                }
+            };
+            Some((system, download_url, sri_hash))
         })
         .collect();
 
@@ -604,15 +656,15 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             // Build lib.makeBinPath argument list with optional platform guards.
             let mut list_parts: Vec<String> = Vec::new();
             if !darwin_deps.is_empty() {
-                let items = darwin_deps.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join(" ");
+                let items = darwin_deps.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ");
                 list_parts.push(format!("lib.optionals stdenvNoCC.isDarwin [ {items} ]"));
             }
             if !linux_deps.is_empty() {
-                let items = linux_deps.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join(" ");
+                let items = linux_deps.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ");
                 list_parts.push(format!("lib.optionals stdenvNoCC.isLinux [ {items} ]"));
             }
             if !all_os_deps.is_empty() {
-                let items = all_os_deps.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join(" ");
+                let items = all_os_deps.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ");
                 list_parts.push(format!("[ {items} ]"));
             }
 
@@ -992,6 +1044,28 @@ mod tests {
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("not-a-real-license"), "error should contain the bad license name");
         assert!(msg.contains("unknown license"), "error should say unknown license");
+    }
+
+    #[test]
+    fn test_hex_sha256_to_sri_valid() {
+        // SHA256 of empty string: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        let sri = hex_sha256_to_sri(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        .unwrap();
+        assert!(sri.starts_with("sha256-"), "SRI hash should start with 'sha256-'");
+        assert_eq!(sri, "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
+    }
+
+    #[test]
+    fn test_hex_sha256_to_sri_invalid_hex() {
+        assert!(hex_sha256_to_sri("not-valid-hex").is_err());
+    }
+
+    #[test]
+    fn test_hex_sha256_to_sri_wrong_length() {
+        // Valid hex but not 32 bytes
+        assert!(hex_sha256_to_sri("abcd").is_err());
     }
 
     #[test]

@@ -86,19 +86,19 @@ pub fn parse_duration_string(s: &str) -> Result<Duration> {
 /// Resolve retry parameters from an optional [`DockerRetryConfig`].
 ///
 /// Returns `(attempts, base_delay, max_delay)` with sensible defaults:
-/// - attempts defaults to 1 (single attempt, no retry)
-/// - delay defaults to 1s
+/// - attempts defaults to 10 (matching GoReleaser's default)
+/// - delay defaults to 10s
 /// - max_delay defaults to None (no cap)
 pub fn resolve_retry_params(
     retry: &Option<DockerRetryConfig>,
 ) -> Result<(u32, Duration, Option<Duration>)> {
     match retry {
-        None => Ok((1, Duration::from_secs(1), None)),
+        None => Ok((10, Duration::from_secs(10), None)),
         Some(cfg) => {
-            let attempts = cfg.attempts.unwrap_or(1);
+            let attempts = cfg.attempts.unwrap_or(10);
             let base_delay = match &cfg.delay {
                 Some(d) => parse_duration_string(d)?,
-                None => Duration::from_secs(1),
+                None => Duration::from_secs(10),
             };
             let max_delay = match &cfg.max_delay {
                 Some(d) => Some(parse_duration_string(d)?),
@@ -154,6 +154,7 @@ pub fn resolve_backend(use_backend: Option<&str>, multi_platform: bool) -> Resul
 /// * `push_flags` – additional flags added to the command when pushing.
 /// * `labels` – OCI labels added as `--label key=value` flags.
 /// * `use_backend` – backend selection: `"docker"`, `"buildx"`, or `"podman"`.
+#[allow(clippy::too_many_arguments)]
 pub fn build_docker_command(
     staging_dir: &str,
     platforms: &[&str],
@@ -416,10 +417,18 @@ impl Stage for DockerStage {
                                 file_path
                             );
                         }
-                        let file_name = src
-                            .file_name()
-                            .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
-                        let dest = staging_dir.join(file_name);
+                        // Preserve relative directory structure instead of
+                        // flattening to just the filename.  For absolute paths,
+                        // fall back to just the filename (no relative structure
+                        // to preserve).
+                        let dest = if src.is_absolute() {
+                            let file_name = src
+                                .file_name()
+                                .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
+                            staging_dir.join(file_name)
+                        } else {
+                            staging_dir.join(file_path)
+                        };
 
                         if dry_run {
                             log.status(&format!(
@@ -428,6 +437,15 @@ impl Stage for DockerStage {
                                 dest.display()
                             ));
                         } else {
+                            // Ensure parent directories exist
+                            if let Some(parent) = dest.parent() {
+                                fs::create_dir_all(parent).with_context(|| {
+                                    format!(
+                                        "docker: create parent dirs for extra file {}",
+                                        dest.display()
+                                    )
+                                })?;
+                            }
                             log.status(&format!(
                                 "copying extra file {} → {}",
                                 src.display(),
@@ -455,6 +473,10 @@ impl Stage for DockerStage {
                             tmpl, krate.name
                         )
                     })?;
+                    // Skip empty rendered templates (GoReleaser behavior)
+                    if tag.is_empty() {
+                        continue;
+                    }
                     rendered_tags.push(tag);
                 }
 
@@ -629,29 +651,29 @@ impl Stage for DockerStage {
                                 ])
                                 .output();
 
-                            if let Ok(output) = digest_output {
-                                if output.status.success() {
-                                    let digest =
-                                        String::from_utf8_lossy(&output.stdout).trim().to_string();
-                                    if !digest.is_empty() {
-                                        tag_digests.insert(tag.clone(), digest.clone());
-                                        // Sanitize image name for filename
-                                        let safe_name =
-                                            tag.replace(['/', ':'], "_");
-                                        let digest_file =
-                                            dist.join(format!("{}.digest", safe_name));
-                                        if let Err(e) = fs::write(&digest_file, &digest) {
-                                            log.warn(&format!(
-                                                "failed to write digest file {}: {}",
-                                                digest_file.display(),
-                                                e
-                                            ));
-                                        } else {
-                                            log.status(&format!(
-                                                "saved digest to {}",
-                                                digest_file.display()
-                                            ));
-                                        }
+                            if let Ok(output) = digest_output
+                                && output.status.success()
+                            {
+                                let digest =
+                                    String::from_utf8_lossy(&output.stdout).trim().to_string();
+                                if !digest.is_empty() {
+                                    tag_digests.insert(tag.clone(), digest.clone());
+                                    // Sanitize image name for filename
+                                    let safe_name =
+                                        tag.replace(['/', ':'], "_");
+                                    let digest_file =
+                                        dist.join(format!("{}.digest", safe_name));
+                                    if let Err(e) = fs::write(&digest_file, &digest) {
+                                        log.warn(&format!(
+                                            "failed to write digest file {}: {}",
+                                            digest_file.display(),
+                                            e
+                                        ));
+                                    } else {
+                                        log.status(&format!(
+                                            "saved digest to {}",
+                                            digest_file.display()
+                                        ));
                                     }
                                 }
                             }
@@ -766,6 +788,10 @@ impl Stage for DockerStage {
 
                     if dry_run {
                         log.status(&format!(
+                            "(dry-run) would run: {} manifest rm {}",
+                            manifest_bin, manifest_name
+                        ));
+                        log.status(&format!(
                             "(dry-run) would run: {}",
                             create_cmd.join(" ")
                         ));
@@ -785,6 +811,12 @@ impl Stage for DockerStage {
                             ));
                         }
                     } else {
+                        // Remove any existing manifest to prevent stale manifest
+                        // failures on re-runs (GoReleaser does this too).
+                        let _ = Command::new(manifest_bin)
+                            .args(["manifest", "rm", &manifest_name])
+                            .output();
+
                         log.status(&format!("running: {}", create_cmd.join(" ")));
                         let output = Command::new(&create_cmd[0])
                             .args(&create_cmd[1..])
@@ -1229,7 +1261,7 @@ push_flags:
 
     #[test]
     fn test_extra_files_copied_to_staging_live() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -1259,7 +1291,11 @@ push_flags:
             id: None,
             ids: None,
             labels: None,
-            retry: None,
+            retry: Some(DockerRetryConfig {
+                attempts: Some(1),
+                delay: None,
+                max_delay: None,
+            }),
             use_backend: None,
         };
 
@@ -1470,7 +1506,7 @@ dockerfile: Dockerfile
     #[test]
     fn test_binary_staging_per_architecture_subdirectory() {
         use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -1497,7 +1533,11 @@ dockerfile: Dockerfile
             id: None,
             ids: None,
             labels: None,
-            retry: None,
+            retry: Some(DockerRetryConfig {
+                attempts: Some(1),
+                delay: None,
+                max_delay: None,
+            }),
             use_backend: None,
         };
 
@@ -1916,8 +1956,8 @@ dockerfile: Dockerfile
     #[test]
     fn test_resolve_retry_params_none() {
         let (attempts, delay, max_delay) = resolve_retry_params(&None).unwrap();
-        assert_eq!(attempts, 1);
-        assert_eq!(delay, Duration::from_secs(1));
+        assert_eq!(attempts, 10);
+        assert_eq!(delay, Duration::from_secs(10));
         assert!(max_delay.is_none());
     }
 
@@ -1930,8 +1970,8 @@ dockerfile: Dockerfile
             max_delay: None,
         });
         let (attempts, delay, max_delay) = resolve_retry_params(&cfg).unwrap();
-        assert_eq!(attempts, 1);
-        assert_eq!(delay, Duration::from_secs(1));
+        assert_eq!(attempts, 10);
+        assert_eq!(delay, Duration::from_secs(10));
         assert!(max_delay.is_none());
     }
 
@@ -2065,7 +2105,7 @@ retry:
             id: None,
             ids: None,
             labels: None,
-            retry: None, // No retry config = single attempt
+            retry: None, // No retry config = default 10 attempts
             use_backend: None,
         };
 

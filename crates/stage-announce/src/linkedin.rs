@@ -33,16 +33,15 @@ pub fn send_linkedin(access_token: &str, message: &str) -> Result<()> {
         anyhow::bail!("linkedin: share failed ({status}): {body}");
     }
 
-    // Extract activity URL from response if available (matches GoReleaser behavior).
-    // We don't have a logger here, so just consume the response body silently.
+    // Extract activity URL from response (matches GoReleaser behavior).
     let resp_text = resp.text().unwrap_or_default();
-    if let Ok(resp_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
-        if let Some(activity) = resp_json.get("activity").and_then(|a| a.as_str()) {
-            eprintln!(
-                "linkedin: post available at https://www.linkedin.com/feed/update/{activity}"
-            );
-        }
-    }
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
+        .map_err(|e| anyhow::anyhow!("linkedin: failed to parse share response: {e}"))?;
+    let activity = resp_json
+        .get("activity")
+        .and_then(|a| a.as_str())
+        .ok_or_else(|| anyhow::anyhow!("linkedin: could not find 'activity' in share response"))?;
+    eprintln!("linkedin: post available at https://www.linkedin.com/feed/update/{activity}");
 
     Ok(())
 }

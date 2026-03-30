@@ -191,14 +191,12 @@ fn crate_has_binary_target(crate_path: &str) -> bool {
     }
     // Check for [[bin]] section in Cargo.toml
     let cargo_toml = path.join("Cargo.toml");
-    if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-        if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
-            if let Some(bins) = doc.get("bin") {
-                if let Some(arr) = bins.as_array_of_tables() {
-                    return !arr.is_empty();
-                }
-            }
-        }
+    if let Ok(content) = std::fs::read_to_string(&cargo_toml)
+        && let Ok(doc) = content.parse::<toml_edit::DocumentMut>()
+        && let Some(bins) = doc.get("bin")
+        && let Some(arr) = bins.as_array_of_tables()
+    {
+        return !arr.is_empty();
     }
     false
 }
@@ -213,6 +211,56 @@ pub(crate) fn detect_crate_type(crate_path: &str) -> Option<String> {
     let crate_types = lib.get("crate-type").or_else(|| lib.get("crate_type"))?;
     let arr = crate_types.as_array()?;
     arr.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// detect_cargo_profile — parse --release / --profile flags from cargo flags
+// ---------------------------------------------------------------------------
+
+/// Detect the effective cargo profile from a flags string.
+///
+/// Handles `--release`, `--profile release`, and `--profile=release` (or any
+/// other profile name like `--profile=bench`).  Falls back to `"debug"` when
+/// no profile flag is found.
+///
+/// Returns a `&str` that borrows from the input flags string for custom
+/// profile names, or a static string for well-known profiles.
+fn detect_cargo_profile(flags: Option<&str>) -> &str {
+    let flags = match flags {
+        Some(f) => f,
+        None => return "debug",
+    };
+
+    let tokens: Vec<&str> = flags.split_whitespace().collect();
+
+    // Check for --profile=<name> (equals form)
+    for token in &tokens {
+        if let Some(name) = token.strip_prefix("--profile=")
+            && !name.is_empty() {
+                return match name {
+                    "dev" => "debug",
+                    _ => name,
+                };
+            }
+    }
+
+    // Check for --profile <name> (space-separated form)
+    for i in 0..tokens.len() {
+        if tokens[i] == "--profile"
+            && let Some(&name) = tokens.get(i + 1) {
+                return match name {
+                    "dev" => "debug",
+                    _ => name,
+                };
+            }
+    }
+
+    // Check for --release flag
+    if tokens.contains(&"--release") {
+        return "release";
+    }
+
+    "debug"
 }
 
 // ---------------------------------------------------------------------------
@@ -296,12 +344,13 @@ fn build_universal_binary(
             x86_64_path.display()
         ));
     } else {
-        // Check lipo is available
+        // Check lipo is available — this is an error since the user
+        // explicitly configured universal_binaries.
         if !find_binary("lipo") {
-            log.warn(&format!(
-                "lipo not found, skipping universal binary for {crate_name}"
-            ));
-            return Ok(());
+            anyhow::bail!(
+                "lipo not found but universal_binaries is configured for {crate_name}; \
+                 install Xcode command-line tools or ensure lipo is on PATH"
+            );
         }
 
         log.status(&format!(
@@ -323,10 +372,11 @@ fn build_universal_binary(
             .with_context(|| format!("failed to spawn lipo for {crate_name}"))?;
 
         if !output.status.success() {
-            log.warn(&format!(
-                "lipo failed for {crate_name}, skipping universal binary"
-            ));
-            return Ok(());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "lipo failed for {crate_name}: {}",
+                stderr.trim()
+            );
         }
     }
 
@@ -757,16 +807,9 @@ impl Stage for BuildStage {
                     };
 
                     // Determine the binary path
-                    // Flags may contain --release; check for it
-                    let effective_flags_ref = effective_flags.as_deref();
-                    let profile = if effective_flags_ref
-                        .map(|f| f.contains("--release"))
-                        .unwrap_or(false)
-                    {
-                        "release"
-                    } else {
-                        "debug"
-                    };
+                    // Flags may contain --release, --profile release, or
+                    // --profile=<name>; detect the effective cargo profile.
+                    let profile = detect_cargo_profile(effective_flags.as_deref());
 
                     let is_wasm_target = target.contains("wasm32");
                     let (os, _arch) = map_target(target);
@@ -897,7 +940,7 @@ impl Stage for BuildStage {
                             &crate_cfg.path,
                             target,
                             &strategy,
-                            effective_flags_ref,
+                            effective_flags.as_deref(),
                             &effective_features,
                             no_default_features,
                             &target_env,
@@ -909,7 +952,7 @@ impl Stage for BuildStage {
                             &crate_cfg.path,
                             target,
                             &strategy,
-                            effective_flags_ref,
+                            effective_flags.as_deref(),
                             &effective_features,
                             no_default_features,
                             &target_env,

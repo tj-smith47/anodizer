@@ -219,8 +219,8 @@ pub(crate) fn clone_repo(
 ) -> Result<()> {
     // Warn when token_type is set to a non-GitHub value, since anodize
     // currently only supports GitHub-based repository publishing.
-    if let Some(r) = repo {
-        if let Some(ref tt) = r.token_type {
+    if let Some(r) = repo
+        && let Some(ref tt) = r.token_type {
             let tt_lower = tt.to_lowercase();
             if tt_lower != "github" && !tt_lower.is_empty() {
                 log.warn(&format!(
@@ -228,23 +228,20 @@ pub(crate) fn clone_repo(
                 ));
             }
         }
-    }
 
     // Check if RepositoryConfig specifies a Git SSH URL.
-    if let Some(r) = repo {
-        if let Some(ref git) = r.git {
-            if let Some(ref url) = git.url {
-                return clone_repo_ssh(
-                    url,
-                    git.private_key.as_deref(),
-                    git.ssh_command.as_deref(),
-                    tmp_dir,
-                    label,
-                    log,
-                );
-            }
+    if let Some(r) = repo
+        && let Some(ref git) = r.git
+        && let Some(ref url) = git.url {
+            return clone_repo_ssh(
+                url,
+                git.private_key.as_deref(),
+                git.ssh_command.as_deref(),
+                tmp_dir,
+                label,
+                log,
+            );
         }
-    }
 
     // Fall back to HTTPS clone.
     let repo_url = format!(
@@ -258,6 +255,7 @@ pub(crate) fn clone_repo(
 ///
 /// Uses `pull_request.base` for the upstream target when available,
 /// falling back to `repo_owner/repo_name`.  Supports `pull_request.draft`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn maybe_submit_pr(
     repo_path: &Path,
     repo: Option<&RepositoryConfig>,
@@ -369,11 +367,10 @@ pub(crate) fn resolve_repo_owner_name(
     legacy_owner: Option<&str>,
     legacy_name: Option<&str>,
 ) -> Option<(String, String)> {
-    if let Some(r) = repo {
-        if let (Some(o), Some(n)) = (r.owner.as_deref(), r.name.as_deref()) {
+    if let Some(r) = repo
+        && let (Some(o), Some(n)) = (r.owner.as_deref(), r.name.as_deref()) {
             return Some((o.to_string(), n.to_string()));
         }
-    }
     if let (Some(o), Some(n)) = (legacy_owner, legacy_name) {
         return Some((o.to_string(), n.to_string()));
     }
@@ -410,13 +407,11 @@ pub(crate) fn resolve_repo_token(
     env_var: Option<&str>,
 ) -> Option<String> {
     // 1. Token from repository config
-    if let Some(r) = repo {
-        if let Some(ref tok) = r.token {
-            if !tok.is_empty() {
-                return Some(tok.clone());
-            }
+    if let Some(r) = repo
+        && let Some(ref tok) = r.token
+        && !tok.is_empty() {
+            return Some(tok.clone());
         }
-    }
     // 2. Fall back to context + env
     resolve_token(ctx, env_var)
 }

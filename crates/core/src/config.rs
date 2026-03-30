@@ -573,7 +573,7 @@ pub fn parse_octal_mode(s: &str) -> Option<u32> {
 /// Used for early validation so typos are caught at config load time rather
 /// than mid-pipeline.
 pub const VALID_ARCHIVE_FORMATS: &[&str] = &[
-    "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar", "zip", "gz", "binary",
+    "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar", "zip", "gz", "binary", "none",
 ];
 
 // ---------------------------------------------------------------------------
@@ -2404,7 +2404,7 @@ pub struct MastodonAnnounce {
 pub struct DiscordAnnounce {
     /// Enable Discord announcements.
     pub enabled: Option<bool>,
-    /// Discord webhook URL. Can use DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN env vars instead.
+    /// Discord webhook URL. Use templates like `{{ Env.DISCORD_WEBHOOK_ID }}` to reference environment variables.
     pub webhook_url: Option<String>,
     /// Message template for the Discord embed. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
@@ -2540,7 +2540,7 @@ pub struct RedditAnnounce {
 pub struct SlackAnnounce {
     /// Enable Slack announcements.
     pub enabled: Option<bool>,
-    /// Slack incoming webhook URL. Can also use SLACK_WEBHOOK env var.
+    /// Slack incoming webhook URL. Use template `{{ Env.SLACK_WEBHOOK }}` to reference an environment variable.
     pub webhook_url: Option<String>,
     /// Message template for the Slack post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,

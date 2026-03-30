@@ -4,6 +4,7 @@ use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
+use chrono::DateTime;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
@@ -18,6 +19,21 @@ use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
 
 // ---------------------------------------------------------------------------
+// parse_mtime  (helper)
+// ---------------------------------------------------------------------------
+
+/// Parse an mtime string as either RFC3339 or a raw unix timestamp (u64).
+/// Returns the unix timestamp as `u64`, or `None` if neither format matches.
+fn parse_mtime(s: &str) -> Option<u64> {
+    // Try RFC3339 first (e.g. "2023-11-14T22:13:20+00:00")
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.timestamp() as u64);
+    }
+    // Fall back to raw unix timestamp
+    s.parse::<u64>().ok()
+}
+
+// ---------------------------------------------------------------------------
 // append_tar_entry  (helper)
 // ---------------------------------------------------------------------------
 
@@ -26,10 +42,10 @@ fn apply_file_info_to_header(
     header: &mut tar::Header,
     info: &anodize_core::config::ArchiveFileInfo,
 ) {
-    if let Some(mode_str) = &info.mode {
-        if let Some(mode) = parse_octal_mode(mode_str) {
-            header.set_mode(mode);
-        }
+    if let Some(mode_str) = &info.mode
+        && let Some(mode) = parse_octal_mode(mode_str)
+    {
+        header.set_mode(mode);
     }
     if let Some(ref owner) = info.owner {
         header.set_username(owner).ok();
@@ -37,8 +53,15 @@ fn apply_file_info_to_header(
     if let Some(ref group) = info.group {
         header.set_groupname(group).ok();
     }
-    if let Some(Ok(ts)) = info.mtime.as_ref().map(|s| s.parse::<u64>()) {
-        header.set_mtime(ts);
+    if let Some(ref mtime_str) = info.mtime {
+        if let Some(ts) = parse_mtime(mtime_str) {
+            header.set_mtime(ts);
+        } else {
+            eprintln!(
+                "Warning: [archive] could not parse mtime '{}' as RFC3339 or unix timestamp, ignoring",
+                mtime_str
+            );
+        }
     }
 }
 
@@ -132,7 +155,7 @@ pub fn create_tar_gz(
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
-    let enc = GzEncoder::new(out_file, Compression::default());
+    let enc = GzEncoder::new(out_file, Compression::best());
     let mut tar = tar::Builder::new(enc);
     write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.gz")?;
     tar.finish().context("tar.gz: finish")
@@ -149,7 +172,7 @@ pub fn create_tar_xz(
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
-    let enc = xz2::write::XzEncoder::new(out_file, 6);
+    let enc = xz2::write::XzEncoder::new(out_file, 9);
     let mut tar = tar::Builder::new(enc);
     write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.xz")?;
     tar.finish().context("tar.xz: finish")
@@ -166,7 +189,7 @@ pub fn create_tar_zst(
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
-    let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
+    let enc = zstd::Encoder::new(out_file, 19).context("tar.zst: create zstd encoder")?;
     let mut tar = tar::Builder::new(enc);
     write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.zst")?;
     let enc = tar.into_inner().context("tar.zst: finish tar")?;
@@ -203,7 +226,7 @@ pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
     }
     let out_file =
         File::create(output).with_context(|| format!("create gz: {}", output.display()))?;
-    let mut enc = GzEncoder::new(out_file, Compression::default());
+    let mut enc = GzEncoder::new(out_file, Compression::best());
     let data = fs::read(file).with_context(|| format!("gz: read {}", file.display()))?;
     enc.write_all(&data)
         .context("gz: write compressed data")?;
@@ -232,12 +255,11 @@ pub fn create_zip(
         .compression_method(zip::CompressionMethod::Deflated);
 
     // Apply unix permissions from file_info if set
-    if let Some(info) = file_info {
-        if let Some(mode_str) = &info.mode {
-            if let Some(mode) = parse_octal_mode(mode_str) {
-                options = options.unix_permissions(mode);
-            }
-        }
+    if let Some(info) = file_info
+        && let Some(mode_str) = &info.mode
+        && let Some(mode) = parse_octal_mode(mode_str)
+    {
+        options = options.unix_permissions(mode);
     }
 
     for &src in files {
@@ -367,6 +389,40 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
 }
 
 // ---------------------------------------------------------------------------
+// resolve_default_extra_files — auto-include common files when none configured
+// ---------------------------------------------------------------------------
+
+/// When no extra files are explicitly configured, glob for common project files
+/// (LICENSE, README, CHANGELOG) in the current directory, matching GoReleaser's
+/// Default() behavior. Non-matching patterns are silently skipped.
+fn resolve_default_extra_files() -> Vec<ResolvedExtraFile> {
+    let patterns = [
+        "LICENSE*",
+        "license*",
+        "README*",
+        "readme*",
+        "CHANGELOG*",
+        "changelog*",
+    ];
+    let mut results = Vec::new();
+    for pattern in &patterns {
+        if let Ok(entries) = glob::glob(pattern) {
+            for entry in entries.flatten() {
+                // Avoid duplicates (e.g. LICENSE matched by both LICENSE* and license*)
+                if !results.iter().any(|r: &ResolvedExtraFile| r.src == entry) {
+                    results.push(ResolvedExtraFile {
+                        src: entry,
+                        dst: None,
+                        info: None,
+                    });
+                }
+            }
+        }
+    }
+    results
+}
+
+// ---------------------------------------------------------------------------
 // compute_archive_name  (helper)
 // ---------------------------------------------------------------------------
 
@@ -428,26 +484,48 @@ fn write_archive_entries<W: std::io::Write>(
     Ok(())
 }
 
+/// Convert a unix timestamp to a `zip::DateTime` for setting zip entry mtime.
+fn unix_timestamp_to_zip_datetime(ts: u64) -> Option<zip::DateTime> {
+    use chrono::{TimeZone, Utc};
+    let dt = Utc.timestamp_opt(ts as i64, 0).single()?;
+    zip::DateTime::from_date_and_time(
+        dt.format("%Y").to_string().parse::<u16>().ok()?,
+        dt.format("%m").to_string().parse::<u8>().ok()?,
+        dt.format("%d").to_string().parse::<u8>().ok()?,
+        dt.format("%H").to_string().parse::<u8>().ok()?,
+        dt.format("%M").to_string().parse::<u8>().ok()?,
+        dt.format("%S").to_string().parse::<u8>().ok()?,
+    )
+    .ok()
+}
+
 /// Write a list of `ArchiveEntry` items into a zip writer, applying per-entry
-/// file info (unix permissions from mode).
+/// file info (unix permissions from mode) and optional mtime for reproducible builds.
 fn write_zip_entries<W: std::io::Write + std::io::Seek>(
     zip: &mut zip::ZipWriter<W>,
     entries: &[ArchiveEntry],
+    mtime: Option<u64>,
 ) -> Result<()> {
-    let base_options = zip::write::SimpleFileOptions::default()
+    let mut base_options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
+
+    // Apply mtime for reproducible builds
+    if let Some(ts) = mtime
+        && let Some(zip_dt) = unix_timestamp_to_zip_datetime(ts)
+    {
+        base_options = base_options.last_modified_time(zip_dt);
+    }
 
     for entry in entries {
         if !entry.src.exists() {
             continue;
         }
         let mut options = base_options;
-        if let Some(ref info) = entry.info {
-            if let Some(mode_str) = &info.mode {
-                if let Some(mode) = parse_octal_mode(mode_str) {
-                    options = options.unix_permissions(mode);
-                }
-            }
+        if let Some(ref info) = entry.info
+            && let Some(mode_str) = &info.mode
+            && let Some(mode) = parse_octal_mode(mode_str)
+        {
+            options = options.unix_permissions(mode);
         }
         let name = entry.archive_name.to_string_lossy().to_string();
         zip.start_file(&name, options)
@@ -477,10 +555,10 @@ pub fn formats_for_target(
     for ov in overrides {
         if ov.os == os {
             // Plural takes priority over singular
-            if let Some(ref fmts) = ov.formats {
-                if !fmts.is_empty() {
-                    return fmts.clone();
-                }
+            if let Some(ref fmts) = ov.formats
+                && !fmts.is_empty()
+            {
+                return fmts.clone();
             }
             if let Some(ref fmt) = ov.format {
                 return vec![fmt.clone()];
@@ -576,13 +654,13 @@ impl Stage for ArchiveStage {
         // any I/O so typos are surfaced immediately.
         for (_crate_name, archive_cfgs) in &work {
             for cfg in archive_cfgs {
-                if let Some(ref fmt) = cfg.format {
-                    if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
-                        bail!(
-                            "unsupported archive format: {fmt} (valid: {})",
-                            VALID_ARCHIVE_FORMATS.join(", ")
-                        );
-                    }
+                if let Some(ref fmt) = cfg.format
+                    && !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str())
+                {
+                    bail!(
+                        "unsupported archive format: {fmt} (valid: {})",
+                        VALID_ARCHIVE_FORMATS.join(", ")
+                    );
                 }
                 if let Some(ref fmts) = cfg.formats {
                     for fmt in fmts {
@@ -596,13 +674,13 @@ impl Stage for ArchiveStage {
                 }
                 if let Some(ref overrides) = cfg.format_overrides {
                     for ov in overrides {
-                        if let Some(ref fmt) = ov.format {
-                            if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
-                                bail!(
-                                    "unsupported archive format: {fmt} (valid: {})",
-                                    VALID_ARCHIVE_FORMATS.join(", ")
-                                );
-                            }
+                        if let Some(ref fmt) = ov.format
+                            && !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str())
+                        {
+                            bail!(
+                                "unsupported archive format: {fmt} (valid: {})",
+                                VALID_ARCHIVE_FORMATS.join(", ")
+                            );
                         }
                         if let Some(ref fmts) = ov.formats {
                             for fmt in fmts {
@@ -773,21 +851,29 @@ impl Stage for ArchiveStage {
                         tvars.set("Binary", bin_name);
                     }
 
-                    // Render wrap_in_directory (template-aware)
-                    let wrap_dir_rendered =
-                        if let Some(tmpl) = archive_cfg.wrap_in_directory.as_deref() {
-                            Some(ctx.render_template(tmpl).with_context(|| {
-                                format!("render wrap_in_directory for {crate_name}/{target}")
-                            })?)
-                        } else {
-                            None
-                        };
-                    let wrap_dir = wrap_dir_rendered.as_deref();
-
                     // Render name
                     let archive_stem = ctx.render_template(name_tmpl).with_context(|| {
                         format!("render archive name for {crate_name}/{target}")
                     })?;
+
+                    // Render wrap_in_directory (template-aware)
+                    // GoReleaser interprets:
+                    //   "true"  -> use the archive name (without extension) as the wrap dir
+                    //   "false" -> no wrapping
+                    //   other   -> treat as a template string to render
+                    let wrap_dir_rendered =
+                        if let Some(tmpl) = archive_cfg.wrap_in_directory.as_deref() {
+                            match tmpl {
+                                "false" => None,
+                                "true" => Some(archive_stem.clone()),
+                                _ => Some(ctx.render_template(tmpl).with_context(|| {
+                                    format!("render wrap_in_directory for {crate_name}/{target}")
+                                })?),
+                            }
+                        } else {
+                            None
+                        };
+                    let wrap_dir = wrap_dir_rendered.as_deref();
 
                     // Collect binary files — unless meta archive
                     let mut binary_paths: Vec<PathBuf> = Vec::new();
@@ -804,18 +890,27 @@ impl Stage for ArchiveStage {
                         }
                     }
 
-                    // Extra files (LICENSE, README, etc.) — with ArchiveFileSpec support
+                    // Extra files (LICENSE, README, etc.) — with ArchiveFileSpec support.
+                    // When no files are configured, auto-include common files
+                    // (LICENSE*, README*, CHANGELOG*) matching GoReleaser defaults.
                     let extra_files: Vec<ResolvedExtraFile> =
                         if let Some(file_specs) = &archive_cfg.files {
                             resolve_file_specs(file_specs).with_context(|| {
                                 format!("resolve file specs for {crate_name}/{target}")
                             })?
                         } else {
-                            Vec::new()
+                            resolve_default_extra_files()
                         };
 
-                    // builds_info: permissions applied to binary entries
-                    let builds_info = archive_cfg.builds_info.as_ref();
+                    // builds_info: permissions applied to binary entries.
+                    // Default binary permissions to 0o755 (executable) when no
+                    // explicit builds_info is configured, matching GoReleaser.
+                    let binary_info = archive_cfg.builds_info.clone().unwrap_or_else(|| {
+                        anodize_core::config::ArchiveFileInfo {
+                            mode: Some("0755".to_string()),
+                            ..Default::default()
+                        }
+                    });
 
                     // Build ArchiveEntry items for binaries.
                     // strip_binary_directory: when true, binaries skip the
@@ -827,15 +922,17 @@ impl Stage for ArchiveStage {
                                 .file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_else(|| "unknown".to_string());
-                            let archive_name = if strip_bin_dir || wrap_dir.is_none() {
+                            let archive_name = if strip_bin_dir {
                                 PathBuf::from(&file_name)
+                            } else if let Some(dir) = wrap_dir {
+                                PathBuf::from(dir).join(&file_name)
                             } else {
-                                PathBuf::from(wrap_dir.unwrap()).join(&file_name)
+                                PathBuf::from(&file_name)
                             };
                             ArchiveEntry {
                                 src: bp.clone(),
                                 archive_name,
-                                info: builds_info.cloned(),
+                                info: Some(binary_info.clone()),
                             }
                         })
                         .collect();
@@ -900,6 +997,14 @@ impl Stage for ArchiveStage {
                     };
 
                     for format in &formats_to_produce {
+                        // "none" format: skip archive creation entirely for this target
+                        if format == "none" {
+                            log.status(&format!(
+                                "skipping archive for {crate_name}/{target} (format: none)"
+                            ));
+                            continue;
+                        }
+
                         // For binary format, no extension; otherwise append format
                         let archive_filename = if format == "binary" {
                             archive_stem.clone()
@@ -907,6 +1012,14 @@ impl Stage for ArchiveStage {
                             format!("{archive_stem}.{format}")
                         };
                         let archive_path = dist.join(&archive_filename);
+
+                        // Duplicate archive name detection: prevent silent overwrites
+                        if archive_path.exists() {
+                            bail!(
+                                "archive named '{}' already exists. Check your archive name template.",
+                                archive_filename
+                            );
+                        }
 
                         if dry_run {
                             log.status(&format!(
@@ -926,13 +1039,13 @@ impl Stage for ArchiveStage {
                                         archive_name: e.archive_name.clone(),
                                         info: e.info.clone(),
                                     }).collect();
-                                    write_zip_entries(&mut zip, &owned)?;
+                                    write_zip_entries(&mut zip, &owned, source_date_epoch)?;
                                     zip.finish().context("zip: finish")?;
                                 }
                                 "tar.gz" | "tgz" => {
                                     let out_file = File::create(&archive_path)
                                         .with_context(|| format!("create tar.gz: {}", archive_path.display()))?;
-                                    let enc = GzEncoder::new(out_file, Compression::default());
+                                    let enc = GzEncoder::new(out_file, Compression::best());
                                     let mut tar = tar::Builder::new(enc);
                                     let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
                                         src: e.src.clone(),
@@ -945,7 +1058,7 @@ impl Stage for ArchiveStage {
                                 "tar.xz" | "txz" => {
                                     let out_file = File::create(&archive_path)
                                         .with_context(|| format!("create tar.xz: {}", archive_path.display()))?;
-                                    let enc = xz2::write::XzEncoder::new(out_file, 6);
+                                    let enc = xz2::write::XzEncoder::new(out_file, 9);
                                     let mut tar = tar::Builder::new(enc);
                                     let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
                                         src: e.src.clone(),
@@ -958,7 +1071,7 @@ impl Stage for ArchiveStage {
                                 "tar.zst" | "tzst" => {
                                     let out_file = File::create(&archive_path)
                                         .with_context(|| format!("create tar.zst: {}", archive_path.display()))?;
-                                    let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
+                                    let enc = zstd::Encoder::new(out_file, 19).context("tar.zst: create zstd encoder")?;
                                     let mut tar = tar::Builder::new(enc);
                                     let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
                                         src: e.src.clone(),

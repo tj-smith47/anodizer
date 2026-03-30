@@ -180,11 +180,11 @@ impl Stage for AnnounceStage {
             let icon_url = cfg.icon_url.clone();
             // Convert typed blocks/attachments to serde_json::Value for template rendering
             let blocks_val = cfg.blocks.as_ref()
-                .map(|b| serde_json::to_value(b))
+                .map(serde_json::to_value)
                 .transpose()?;
             let blocks = render_json_template(ctx, blocks_val.as_ref())?;
             let attachments_val = cfg.attachments.as_ref()
-                .map(|a| serde_json::to_value(a))
+                .map(serde_json::to_value)
                 .transpose()?;
             let attachments = render_json_template(ctx, attachments_val.as_ref())?;
             dispatch(ctx, "slack", &message, || {
@@ -208,6 +208,13 @@ impl Stage for AnnounceStage {
         {
             let url =
                 require_rendered(ctx, cfg.endpoint_url.as_deref(), "webhook", "endpoint_url")?;
+            // Validate the endpoint URL before attempting the request.
+            if reqwest::Url::parse(&url).is_err() {
+                anyhow::bail!(
+                    "announce.webhook: endpoint_url {:?} is not a valid URL",
+                    url
+                );
+            }
             let message = render_message(ctx, cfg.message_template.as_deref())?;
 
             let raw_headers = cfg.headers.clone().unwrap_or_default();
@@ -215,6 +222,22 @@ impl Stage for AnnounceStage {
             for (k, v) in &raw_headers {
                 headers.insert(k.clone(), ctx.render_template(v)?);
             }
+
+            // GoReleaser reads BASIC_AUTH_HEADER_VALUE and BEARER_TOKEN_HEADER_VALUE
+            // from env vars.  Basic auth takes priority over bearer token.
+            if let Ok(basic) = std::env::var("BASIC_AUTH_HEADER_VALUE") {
+                if !basic.is_empty() {
+                    headers.insert("Authorization".to_string(), format!("Basic {basic}"));
+                }
+            } else if let Ok(bearer) = std::env::var("BEARER_TOKEN_HEADER_VALUE")
+                && !bearer.is_empty() {
+                    headers.insert("Authorization".to_string(), format!("Bearer {bearer}"));
+                }
+
+            // Identify ourselves to webhook receivers.
+            headers.entry("User-Agent".to_string())
+                .or_insert_with(|| "anodize/1.0".to_string());
+
             let content_type = cfg
                 .content_type
                 .clone()
@@ -240,13 +263,31 @@ impl Stage for AnnounceStage {
             let bot_token =
                 require_rendered(ctx, cfg.bot_token.as_deref(), "telegram", "bot_token")?;
             let chat_id = require_rendered(ctx, cfg.chat_id.as_deref(), "telegram", "chat_id")?;
-            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            // Telegram defaults to MarkdownV2 parse mode, so the default
+            // message template must apply the mdv2escape filter.
+            const TELEGRAM_DEFAULT_TEMPLATE: &str =
+                "{{ ProjectName ~ \" \" ~ Tag ~ \" is out! Check it out at \" ~ ReleaseURL | mdv2escape }}";
+            let message = ctx.render_template(
+                cfg.message_template.as_deref().unwrap_or(TELEGRAM_DEFAULT_TEMPLATE),
+            )?;
             // Default parse_mode to "MarkdownV2" to match GoReleaser behaviour.
+            // Validate against known values; default to MarkdownV2 with a warning for unknowns.
             let parse_mode_raw = cfg
                 .parse_mode
                 .as_deref()
-                .or(Some("MarkdownV2"));
-            let parse_mode = render_optional(ctx, parse_mode_raw)?;
+                .unwrap_or("MarkdownV2");
+            let parse_mode_validated = match parse_mode_raw {
+                "MarkdownV2" | "HTML" => parse_mode_raw,
+                other => {
+                    let log = ctx.logger("announce");
+                    log.warn(&format!(
+                        "telegram: unknown parse_mode {:?}, defaulting to \"MarkdownV2\"",
+                        other
+                    ));
+                    "MarkdownV2"
+                }
+            };
+            let parse_mode = render_optional(ctx, Some(parse_mode_validated))?;
             let message_thread_id = cfg.message_thread_id;
 
             dispatch(ctx, "telegram", &message, || {
@@ -268,12 +309,16 @@ impl Stage for AnnounceStage {
         {
             let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "teams", "webhook_url")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            let title = render_optional(ctx, cfg.title_template.as_deref())?;
-            let color = cfg.color.clone();
+            // Default title to "{{ .ProjectName }} {{ .Tag }} is out!" (GoReleaser default).
+            let title_template = cfg.title_template.as_deref()
+                .unwrap_or("{{ .ProjectName }} {{ .Tag }} is out!");
+            let title = Some(ctx.render_template(title_template)?);
+            // Default color to "#2D313E" (GoReleaser default). Skip icon (no anodize avatar URL yet).
+            let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
             let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
             let opts = teams::TeamsOptions {
                 title: title.as_deref(),
-                color: color.as_deref(),
+                color: Some(color_val.as_str()),
                 icon_url: icon_url.as_deref(),
             };
             dispatch(ctx, "teams", &message, || {
@@ -291,18 +336,23 @@ impl Stage for AnnounceStage {
                 require_rendered(ctx, cfg.webhook_url.as_deref(), "mattermost", "webhook_url")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
             let channel = render_optional(ctx, cfg.channel.as_deref())?;
-            let username = render_optional(ctx, cfg.username.as_deref())?;
+            // Default username to "anodize" (GoReleaser defaults to "GoReleaser").
+            let username = render_optional(ctx, cfg.username.as_deref().or(Some("anodize")))?;
             let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
             let icon_emoji = render_optional(ctx, cfg.icon_emoji.as_deref())?;
-            let color = cfg.color.clone();
-            let title = render_optional(ctx, cfg.title_template.as_deref())?;
+            // Default color to "#2D313E" (GoReleaser default).
+            let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
+            // Default title to "{{ .ProjectName }} {{ .Tag }} is out!" (GoReleaser default).
+            let title_template = cfg.title_template.as_deref()
+                .unwrap_or("{{ .ProjectName }} {{ .Tag }} is out!");
+            let title = Some(ctx.render_template(title_template)?);
 
             let opts = mattermost::MattermostOptions {
                 channel: channel.as_deref(),
                 username: username.as_deref(),
                 icon_url: icon_url.as_deref(),
                 icon_emoji: icon_emoji.as_deref(),
-                color: color.as_deref(),
+                color: Some(color_val.as_str()),
                 title: title.as_deref(),
             };
             dispatch(ctx, "mattermost", &message, || {
@@ -396,7 +446,11 @@ impl Stage for AnnounceStage {
                 log.status("mastodon: server is empty — skipping");
             } else {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                // GoReleaser requires all three env vars even though only access_token is used
+                // GoReleaser's go-mastodon client accepts client_id, client_secret, and
+                // access_token (mastodon.go lines 47-52).  The Mastodon API only requires
+                // the access_token (Bearer auth) for posting statuses, but we validate all
+                // three env vars for GoReleaser parity and forward-compatibility with a
+                // full OAuth flow.
                 let _client_id = std::env::var("MASTODON_CLIENT_ID").map_err(|_| {
                     anyhow::anyhow!("announce.mastodon: MASTODON_CLIENT_ID env var is required")
                 })?;
@@ -533,19 +587,30 @@ impl Stage for AnnounceStage {
             };
             let log_line = format!("to {}: {}", cfg.to.join(", "), subject);
 
-            if let Some(host) = &cfg.host {
+            // Support SMTP_HOST and SMTP_PORT env vars as fallbacks (like GoReleaser).
+            let smtp_host = cfg.host.clone()
+                .or_else(|| std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty()));
+            let smtp_port = cfg.port.or_else(|| {
+                std::env::var("SMTP_PORT").ok()
+                    .and_then(|s| s.parse::<u16>().ok())
+            });
+
+            if let Some(host) = &smtp_host {
                 // SMTP transport
                 let smtp_username = cfg
                     .username
                     .clone()
                     .or_else(|| std::env::var("SMTP_USERNAME").ok())
                     .unwrap_or_default();
+                if smtp_username.is_empty() {
+                    anyhow::bail!("announce.email: SMTP username is required");
+                }
                 let smtp_password = std::env::var("SMTP_PASSWORD").map_err(|_| {
                     anyhow::anyhow!(
                         "announce.email: SMTP_PASSWORD env var is required for SMTP transport"
                     )
                 })?;
-                let port = cfg.port.unwrap_or(587);
+                let port = smtp_port.unwrap_or(587);
                 let insecure = cfg.insecure_skip_verify.unwrap_or(false);
 
                 let smtp_params = email::SmtpParams {

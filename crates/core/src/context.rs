@@ -104,6 +104,14 @@ impl Context {
         self.options.nightly
     }
 
+    /// Set the `ReleaseURL` template variable.
+    ///
+    /// Should be called after a GitHub release is created, with the URL of
+    /// the created release (e.g. `https://github.com/owner/repo/releases/tag/v1.0.0`).
+    pub fn set_release_url(&mut self, url: &str) {
+        self.template_vars.set("ReleaseURL", url);
+    }
+
     /// Return the current `Version` template variable, or an empty string if
     /// not yet populated.
     pub fn version(&self) -> String {
@@ -168,9 +176,14 @@ impl Context {
                     .unwrap_or_default()
             );
 
+            let raw_version = format!(
+                "{}.{}.{}",
+                info.semver.major, info.semver.minor, info.semver.patch
+            );
+
             self.template_vars.set("Tag", &info.tag);
             self.template_vars.set("Version", &version);
-            self.template_vars.set("RawVersion", &version);
+            self.template_vars.set("RawVersion", &raw_version);
             self.template_vars
                 .set("Major", &info.semver.major.to_string());
             self.template_vars
@@ -233,13 +246,12 @@ impl Context {
     /// Populate time-related template variables using the current UTC time.
     ///
     /// Sets:
-    /// - `Date` — current date as YYYY-MM-DD
+    /// - `Date` — current UTC time as RFC 3339
     /// - `Timestamp` — current unix timestamp as string
     /// - `Now` — current UTC time as ISO 8601
     pub fn populate_time_vars(&mut self) {
         let now = Utc::now();
-        self.template_vars
-            .set("Date", &now.format("%Y-%m-%d").to_string());
+        self.template_vars.set("Date", &now.to_rfc3339());
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());
         self.template_vars.set("Now", &now.to_rfc3339());
@@ -301,6 +313,7 @@ mod tests {
                 minor: 2,
                 patch: 3,
                 prerelease: prerelease.map(|s| s.to_string()),
+                build_metadata: None,
             },
             commit_date: "2026-03-25T10:30:00+00:00".to_string(),
             commit_timestamp: "1774463400".to_string(),
@@ -395,6 +408,7 @@ mod tests {
 
         let v = ctx.template_vars();
         assert_eq!(v.get("Version"), Some(&"1.2.3-rc.1".to_string()));
+        assert_eq!(v.get("RawVersion"), Some(&"1.2.3".to_string()));
         assert_eq!(v.get("Prerelease"), Some(&"rc.1".to_string()));
     }
 
@@ -490,11 +504,11 @@ mod tests {
 
         let v = ctx.template_vars();
 
-        // Date should be YYYY-MM-DD format
+        // Date should be RFC 3339 format (e.g. 2026-03-30T12:00:00+00:00)
         let date = v.get("Date").expect("Date should be set");
         assert!(
-            date.len() == 10 && date.chars().nth(4) == Some('-'),
-            "Date should be YYYY-MM-DD, got: {date}"
+            date.contains('T') && date.len() > 10,
+            "Date should be RFC 3339, got: {date}"
         );
 
         // Timestamp should be numeric

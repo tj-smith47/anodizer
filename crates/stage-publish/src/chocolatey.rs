@@ -5,6 +5,35 @@ use anyhow::{Context as _, Result};
 use crate::util;
 
 // ---------------------------------------------------------------------------
+// XML escaping helper
+// ---------------------------------------------------------------------------
+
+/// Escape XML special characters in a string.
+///
+/// This ensures text content is safe for inclusion in XML elements and
+/// attributes.  The five predefined XML entities are escaped:
+///
+/// - `&` -> `&amp;`
+/// - `<` -> `&lt;`
+/// - `>` -> `&gt;`
+/// - `"` -> `&quot;`
+/// - `'` -> `&apos;`
+fn escape_xml(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // NuspecParams
 // ---------------------------------------------------------------------------
 
@@ -37,8 +66,8 @@ pub struct NuspecParams<'a> {
 // ---------------------------------------------------------------------------
 
 /// Nuspec XML template.  Auto-escaping is disabled because URLs contain `/`
-/// which Tera escapes to `&#x2F;`.  The `description` field uses the
-/// `xml_escape` filter for safety.
+/// which Tera escapes to `&#x2F;`.  All text content fields are pre-escaped
+/// via [`escape_xml`] before being inserted into the Tera context.
 const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
@@ -57,9 +86,9 @@ const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 {% endif %}{% if docs_url %}    <docsUrl>{{ docs_url }}</docsUrl>
 {% endif %}{% if bug_tracker_url %}    <bugTrackerUrl>{{ bug_tracker_url }}</bugTrackerUrl>
 {% endif %}    <tags>{{ tags_str }}</tags>
-{% if summary %}    <summary>{{ summary | escape }}</summary>
-{% endif %}    <description>{{ description | escape }}</description>
-{% if release_notes %}    <releaseNotes>{{ release_notes | escape }}</releaseNotes>
+{% if summary %}    <summary>{{ summary }}</summary>
+{% endif %}    <description>{{ description }}</description>
+{% if release_notes %}    <releaseNotes>{{ release_notes }}</releaseNotes>
 {% endif %}{% if has_dependencies %}    <dependencies>
 {% for dep in dependencies %}      <dependency id="{{ dep.id }}"{% if dep.version %} version="{{ dep.version }}"{% endif %} />
 {% endfor %}    </dependencies>
@@ -113,27 +142,29 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     tera.autoescape_on(vec![]);
 
     let mut ctx = tera::Context::new();
-    ctx.insert("name", params.name);
-    ctx.insert("version", params.version);
-    ctx.insert("title", title);
-    ctx.insert("authors", params.authors);
-    ctx.insert("description", params.description);
+    // XML-escape all text content fields to prevent injection.
+    // URL fields are left unescaped since they are valid URI strings.
+    ctx.insert("name", &escape_xml(params.name));
+    ctx.insert("version", &escape_xml(params.version));
+    ctx.insert("title", &escape_xml(title));
+    ctx.insert("authors", &escape_xml(params.authors));
+    ctx.insert("description", &escape_xml(params.description));
     ctx.insert("project_url", params.project_url);
     ctx.insert(
         "icon_url",
         &(!params.icon_url.is_empty()).then_some(params.icon_url),
     );
     ctx.insert("license_url", &license_url);
-    ctx.insert("tags_str", &tags_str);
+    ctx.insert("tags_str", &escape_xml(&tags_str));
     ctx.insert("package_source_url", &params.package_source_url.unwrap_or(""));
-    ctx.insert("owners", &params.owners.unwrap_or(""));
-    ctx.insert("copyright", &params.copyright.unwrap_or(""));
+    ctx.insert("owners", &escape_xml(params.owners.unwrap_or("")));
+    ctx.insert("copyright", &escape_xml(params.copyright.unwrap_or("")));
     ctx.insert("require_license_acceptance", &params.require_license_acceptance);
     ctx.insert("project_source_url", &params.project_source_url.unwrap_or(""));
     ctx.insert("docs_url", &params.docs_url.unwrap_or(""));
     ctx.insert("bug_tracker_url", &params.bug_tracker_url.unwrap_or(""));
-    ctx.insert("summary", &params.summary.unwrap_or(""));
-    ctx.insert("release_notes", &params.release_notes.unwrap_or(""));
+    ctx.insert("summary", &escape_xml(params.summary.unwrap_or("")));
+    ctx.insert("release_notes", &escape_xml(params.release_notes.unwrap_or("")));
 
     // Dependencies
     #[derive(serde::Serialize)]
@@ -145,8 +176,8 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
         .dependencies
         .iter()
         .map(|d| DepEntry {
-            id: d.id.clone(),
-            version: d.version.clone(),
+            id: escape_xml(&d.id),
+            version: d.version.as_ref().map(|v| escape_xml(v)),
         })
         .collect();
     ctx.insert("has_dependencies", &!dep_entries.is_empty());
@@ -242,27 +273,24 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 
     let win_artifact = all_artifacts
         .into_iter()
-        .filter(|a| {
-            a.target
+        .find(|a| {
+            (a.target
                 .as_deref()
                 .map(|t| t.to_ascii_lowercase().contains("windows"))
                 .unwrap_or(false)
                 || a.path
                     .to_string_lossy()
                     .to_ascii_lowercase()
-                    .contains("windows")
-        })
-        .filter(|a| {
-            if let Some(ids) = ids_filter {
-                a.metadata
-                    .get("id")
-                    .map(|id| ids.iter().any(|i| i == id))
-                    .unwrap_or(false)
-            } else {
-                true
-            }
-        })
-        .next();
+                    .contains("windows"))
+                && if let Some(ids) = ids_filter {
+                    a.metadata
+                        .get("id")
+                        .map(|id| ids.iter().any(|i| i == id))
+                        .unwrap_or(false)
+                } else {
+                    true
+                }
+        });
 
     let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
 
@@ -484,6 +512,38 @@ mod tests {
         assert!(nuspec.contains("&quot;stuff&quot;"));
         assert!(nuspec.contains("<?xml version=\"1.0\""));
         assert!(nuspec.contains("</package>"));
+    }
+
+    #[test]
+    fn test_generate_nuspec_xml_escaping_authors_and_apostrophe() {
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "my-tool",
+            authors: "O'Brien & Associates",
+            description: "Tool for <things> & 'stuff'",
+            ..default_nuspec_params()
+        });
+
+        // Authors should be escaped (apostrophe, ampersand)
+        assert!(
+            nuspec.contains("<authors>O&apos;Brien &amp; Associates</authors>"),
+            "authors field should have XML-escaped apostrophe and ampersand"
+        );
+        // Description should also escape apostrophes
+        assert!(nuspec.contains("&apos;stuff&apos;"));
+    }
+
+    #[test]
+    fn test_generate_nuspec_xml_escaping_title_and_tags() {
+        let tags = vec!["c++ & c#".to_string()];
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "my-tool",
+            title: Some("My \"Special\" Tool"),
+            tags: &tags,
+            ..default_nuspec_params()
+        });
+
+        assert!(nuspec.contains("<title>My &quot;Special&quot; Tool</title>"));
+        assert!(nuspec.contains("<tags>c++ &amp; c#</tags>"));
     }
 
     #[test]

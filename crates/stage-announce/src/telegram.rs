@@ -1,7 +1,5 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde_json::json;
-
-use crate::http::post_json;
 
 // ---------------------------------------------------------------------------
 // Payload builder
@@ -31,6 +29,10 @@ pub(crate) fn telegram_payload(
 // ---------------------------------------------------------------------------
 
 /// POST to the Telegram Bot API `sendMessage` endpoint.
+///
+/// Even on HTTP 200, the Telegram API returns `{"ok": false, ...}` for logical
+/// errors.  We parse the response body and surface `error_code` + `description`
+/// when `ok` is false (matches GoReleaser telegram.go lines 87-94).
 pub fn send_telegram(
     bot_token: &str,
     chat_id: &str,
@@ -40,7 +42,40 @@ pub fn send_telegram(
 ) -> Result<()> {
     let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
     let payload = telegram_payload(chat_id, message, parse_mode, message_thread_id);
-    post_json(&url, &payload, "telegram")
+
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .body(payload)
+        .send()
+        .with_context(|| "telegram: failed to send POST request")?;
+
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+
+    if !status.is_success() {
+        anyhow::bail!("telegram: HTTP {} — {}", status, body);
+    }
+
+    // Telegram can return HTTP 200 with ok:false for logical errors.
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
+        && json.get("ok") == Some(&serde_json::Value::Bool(false)) {
+            let error_code = json.get("error_code")
+                .and_then(|v| v.as_i64())
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let description = json.get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("no description");
+            anyhow::bail!(
+                "telegram: API error (code {}): {}",
+                error_code,
+                description
+            );
+        }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

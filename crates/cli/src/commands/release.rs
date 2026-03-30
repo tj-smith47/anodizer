@@ -108,9 +108,19 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     let selected_sorted = topo_sort_selected(&config.crates, &selected);
 
     // Run hooks before pipeline
-    if let Some(before) = &config.before {
-        if let Some(ref hooks) = before.pre {
+    if let Some(before) = &config.before
+        && let Some(ref hooks) = before.pre {
             pipeline::run_hooks(hooks, "before", opts.dry_run, &log)?;
+        }
+
+    let mut skip_stages = opts.skip;
+    // Snapshot mode automatically skips publish, announce, and release stages
+    // (like GoReleaser) since there is no real tag to release against.
+    if opts.snapshot {
+        for stage in &["publish", "announce", "release"] {
+            if !skip_stages.iter().any(|s| s == stage) {
+                skip_stages.push(stage.to_string());
+            }
         }
     }
 
@@ -121,7 +131,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         quiet: opts.quiet,
         verbose: opts.verbose,
         debug: opts.debug,
-        skip_stages: opts.skip,
+        skip_stages,
         selected_crates: selected_sorted,
         token: opts.token,
         parallelism: opts.parallelism,
@@ -266,11 +276,10 @@ fn run_post_pipeline(
     }
 
     // Run after hooks
-    if let Some(after) = &config.after {
-        if let Some(ref hooks) = after.post {
+    if let Some(after) = &config.after
+        && let Some(ref hooks) = after.post {
             pipeline::run_hooks(hooks, "after", dry_run, log)?;
         }
-    }
 
     Ok(())
 }

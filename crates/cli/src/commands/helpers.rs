@@ -69,14 +69,28 @@ pub fn resolve_git_context(ctx: &mut Context, config: &Config, log: &StageLogger
     }
 }
 
-/// Load `.env` files and populate user-defined env vars into the context's
-/// template variables.
+/// Load process environment variables, `.env` files, and user-defined env vars
+/// into the context's template variables.
+///
+/// Loading order (later wins):
+/// 1. All process environment variables (`std::env::vars()`)
+/// 2. Variables from `.env` files specified in config
+/// 3. Explicit `env:` map entries from config
+///
+/// This ensures config-defined env vars always take precedence over process
+/// environment, matching GoReleaser's behavior where all process env vars are
+/// accessible in templates via `{{ .Env.VAR }}`.
 pub fn setup_env(
     ctx: &mut Context,
     config: &Config,
     log: &anodize_core::log::StageLogger,
 ) -> anyhow::Result<()> {
-    // Load .env files into template context (not the process environment)
+    // Load ALL process environment variables first (lowest priority)
+    for (key, value) in std::env::vars() {
+        ctx.template_vars_mut().set_env(&key, &value);
+    }
+
+    // Load .env files into template context (overrides process env)
     if let Some(ref env_files) = config.env_files {
         let env_vars = anodize_core::config::load_env_files(env_files, log)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -85,7 +99,7 @@ pub fn setup_env(
         }
     }
 
-    // Populate user-defined env vars into template context
+    // Populate user-defined env vars into template context (highest priority)
     if let Some(ref env_map) = config.env {
         for (key, value) in env_map {
             ctx.template_vars_mut().set_env(key, value);

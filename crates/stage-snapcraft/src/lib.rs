@@ -37,6 +37,8 @@ struct SnapcraftYaml {
     icon: Option<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     assumes: Vec<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    architectures: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     apps: HashMap<String, SnapcraftYamlApp>,
     #[serde(skip_serializing_if = "is_empty_vec")]
@@ -87,20 +89,51 @@ struct SnapcraftYamlPart {
 }
 
 // ---------------------------------------------------------------------------
+// triple_to_snap_arch — map target triple to snapcraft architecture name
+// ---------------------------------------------------------------------------
+
+/// Map a Rust target triple to a snapcraft architecture name.
+fn triple_to_snap_arch(triple: &str) -> &'static str {
+    if triple.contains("x86_64") || triple.contains("amd64") {
+        "amd64"
+    } else if triple.contains("aarch64") || triple.contains("arm64") {
+        "arm64"
+    } else if triple.contains("armv7") {
+        "armhf"
+    } else if triple.contains("i686") || triple.contains("i386") || triple.contains("i586") {
+        "i386"
+    } else if triple.contains("s390x") {
+        "s390x"
+    } else if triple.contains("ppc64le") || triple.contains("powerpc64le") {
+        "ppc64el"
+    } else if triple.contains("riscv64") {
+        "riscv64"
+    } else {
+        "amd64"
+    }
+}
+
+// ---------------------------------------------------------------------------
 // generate_snapcraft_yaml
 // ---------------------------------------------------------------------------
 
 /// Generate a snapcraft.yaml string from the anodize snapcraft config.
+///
+/// `binary_names` is the list of binary filenames to include in this snap.
+/// The first binary is used as the default app name when no apps are configured.
+/// `target` is the optional target triple, used to set the architectures field.
 pub fn generate_snapcraft_yaml(
     config: &SnapcraftConfig,
     version: &str,
-    binary_name: &str,
+    binary_names: &[&str],
     extra_files: Option<&[String]>,
+    target: Option<&str>,
 ) -> Result<String> {
+    let primary_binary = binary_names.first().copied().unwrap_or("binary");
     let name = config
         .name
         .clone()
-        .unwrap_or_else(|| binary_name.to_string());
+        .unwrap_or_else(|| primary_binary.to_string());
     let summary = config
         .summary
         .clone()
@@ -108,38 +141,53 @@ pub fn generate_snapcraft_yaml(
     let description = config
         .description
         .clone()
-        .unwrap_or_else(|| format!("{name} — built with anodize"));
+        .unwrap_or_else(|| format!("{name} ��� built with anodize"));
     let base = config.base.clone().unwrap_or_else(|| "core22".to_string());
     let confinement = config
         .confinement
         .clone()
         .unwrap_or_else(|| "strict".to_string());
 
-    // Build apps section — if args is set, append it to command
-    let apps: HashMap<String, SnapcraftYamlApp> = config
-        .apps
-        .as_ref()
-        .map(|app_map| {
-            app_map
-                .iter()
-                .map(|(app_name, app_cfg)| {
-                    let command = match (&app_cfg.command, &app_cfg.args) {
-                        (Some(cmd), Some(args)) => Some(format!("{cmd} {args}")),
-                        (cmd, _) => cmd.clone(),
-                    };
-                    let yaml_app = SnapcraftYamlApp {
-                        command,
-                        daemon: app_cfg.daemon.clone(),
-                        stop_mode: app_cfg.stop_mode.clone(),
-                        restart_condition: app_cfg.restart_condition.clone(),
-                        plugs: app_cfg.plugs.clone().unwrap_or_default(),
-                        environment: app_cfg.environment.clone().unwrap_or_default(),
-                    };
-                    (app_name.clone(), yaml_app)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // Build apps section — if args is set, append it to command.
+    // When no apps are configured, generate a default app entry using the
+    // first binary's name (like GoReleaser does).
+    let apps: HashMap<String, SnapcraftYamlApp> = if let Some(app_map) = config.apps.as_ref()
+        && !app_map.is_empty()
+    {
+        app_map
+            .iter()
+            .map(|(app_name, app_cfg)| {
+                let command = match (&app_cfg.command, &app_cfg.args) {
+                    (Some(cmd), Some(args)) => Some(format!("{cmd} {args}")),
+                    (cmd, _) => cmd.clone(),
+                };
+                let yaml_app = SnapcraftYamlApp {
+                    command,
+                    daemon: app_cfg.daemon.clone(),
+                    stop_mode: app_cfg.stop_mode.clone(),
+                    restart_condition: app_cfg.restart_condition.clone(),
+                    plugs: app_cfg.plugs.clone().unwrap_or_default(),
+                    environment: app_cfg.environment.clone().unwrap_or_default(),
+                };
+                (app_name.clone(), yaml_app)
+            })
+            .collect()
+    } else {
+        // Default app entry: use primary binary name as both app name and command
+        let mut default_apps = HashMap::new();
+        default_apps.insert(
+            primary_binary.to_string(),
+            SnapcraftYamlApp {
+                command: Some(format!("bin/{primary_binary}")),
+                daemon: None,
+                stop_mode: None,
+                restart_condition: None,
+                plugs: Vec::new(),
+                environment: HashMap::new(),
+            },
+        );
+        default_apps
+    };
 
     // Build layouts section
     let layouts: HashMap<String, SnapcraftYamlLayout> = config
@@ -159,11 +207,15 @@ pub fn generate_snapcraft_yaml(
         })
         .unwrap_or_default();
 
-    // Build parts section — a single "binary" part that copies the binary in
+    // Build parts section — a single "binary" part that copies all binaries in
     let mut organize = HashMap::new();
-    organize.insert(binary_name.to_string(), format!("bin/{binary_name}"));
-    let mut stage_files = vec![format!("bin/{binary_name}")];
-    let mut prime_files = vec![format!("bin/{binary_name}")];
+    let mut stage_files = Vec::new();
+    let mut prime_files = Vec::new();
+    for bin_name in binary_names {
+        organize.insert(bin_name.to_string(), format!("bin/{bin_name}"));
+        stage_files.push(format!("bin/{bin_name}"));
+        prime_files.push(format!("bin/{bin_name}"));
+    }
 
     // Include extra files in organize/stage/prime
     if let Some(files) = extra_files {
@@ -190,6 +242,14 @@ pub fn generate_snapcraft_yaml(
         },
     );
 
+    // Map target triple to snapcraft architecture name
+    let architectures: Vec<String> = if let Some(triple) = target {
+        let snap_arch = triple_to_snap_arch(triple);
+        vec![snap_arch.to_string()]
+    } else {
+        Vec::new()
+    };
+
     let yaml_model = SnapcraftYaml {
         name,
         version: version.to_string(),
@@ -202,6 +262,7 @@ pub fn generate_snapcraft_yaml(
         title: config.title.clone(),
         icon: config.icon.clone(),
         assumes: config.assumes.clone().unwrap_or_default(),
+        architectures,
         apps,
         plugs: config.plugs.clone().unwrap_or_default(),
         slots: config.slots.clone().unwrap_or_default(),
@@ -217,27 +278,35 @@ pub fn generate_snapcraft_yaml(
 // snapcraft_command
 // ---------------------------------------------------------------------------
 
-/// Construct the snapcraft CLI command arguments.
-pub fn snapcraft_command(
-    output_path: &str,
-    publish: bool,
-    dry_run: bool,
-    channel_templates: Option<&[String]>,
-) -> Vec<String> {
-    let mut args = vec![
+/// Construct the snapcraft pack CLI command arguments.
+/// This only builds the snap; publishing is handled separately via
+/// `snapcraft_upload_command`.
+pub fn snapcraft_command(output_path: &str) -> Vec<String> {
+    vec![
         "snapcraft".to_string(),
         "pack".to_string(),
         "--output".to_string(),
         output_path.to_string(),
+    ]
+}
+
+/// Construct the snapcraft upload CLI command arguments.
+/// When `channels` is non-empty, adds `--release=<comma-separated channels>`.
+pub fn snapcraft_upload_command(
+    snap_path: &str,
+    channels: Option<&[String]>,
+) -> Vec<String> {
+    let mut args = vec![
+        "snapcraft".to_string(),
+        "upload".to_string(),
+        snap_path.to_string(),
     ];
 
-    if publish && !dry_run {
-        args.push("--publish".to_string());
-    }
-
-    if let Some(channels) = channel_templates {
-        for channel in channels {
-            args.push(format!("--channel={channel}"));
+    if let Some(ch) = channels {
+        let non_empty: Vec<&String> = ch.iter().filter(|c| !c.is_empty()).collect();
+        if !non_empty.is_empty() {
+            let joined: Vec<&str> = non_empty.iter().map(|s| s.as_str()).collect();
+            args.push(format!("--release={}", joined.join(",")));
         }
     }
 
@@ -358,24 +427,20 @@ impl Stage for SnapcraftStage {
                     continue;
                 }
 
-                let effective_binaries: Vec<(Option<String>, String)> = filtered_binaries
-                    .iter()
-                    .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
-                    .collect();
+                // Group binaries by target triple (platform) — one snap per platform
+                let mut by_target: HashMap<String, Vec<&Artifact>> = HashMap::new();
+                for b in &filtered_binaries {
+                    let target = b.target.clone().unwrap_or_else(|| "unknown".to_string());
+                    by_target.entry(target).or_default().push(b);
+                }
 
-                for (target, binary_path) in &effective_binaries {
+                for (target_key, target_binaries) in &by_target {
+                    let target = if target_key == "unknown" { None } else { Some(target_key.clone()) };
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = target
                         .as_deref()
                         .map(anodize_core::target::map_target)
                         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
-
-                    // Extract binary name from path
-                    let binary_name = PathBuf::from(binary_path)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("binary")
-                        .to_string();
 
                     // Ensure output directory exists
                     let output_dir = dist.join("linux");
@@ -452,23 +517,46 @@ impl Stage for SnapcraftStage {
                     fs::create_dir_all(&snap_dir)
                         .with_context(|| format!("create snap dir: {}", snap_dir.display()))?;
 
+                    // Collect all binary names for this platform group
+                    let all_binary_names: Vec<String> = target_binaries
+                        .iter()
+                        .map(|b| {
+                            b.path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("binary")
+                                .to_string()
+                        })
+                        .collect();
+                    let binary_name_refs: Vec<&str> =
+                        all_binary_names.iter().map(|s| s.as_str()).collect();
+
                     // Generate and write snapcraft.yaml
                     let yaml_content = generate_snapcraft_yaml(
                         snap_cfg,
                         &version,
-                        &binary_name,
+                        &binary_name_refs,
                         snap_cfg.extra_files.as_deref(),
+                        target.as_deref(),
                     )?;
                     let yaml_path = snap_dir.join("snapcraft.yaml");
                     fs::write(&yaml_path, &yaml_content).with_context(|| {
                         format!("write snapcraft.yaml to {}", yaml_path.display())
                     })?;
 
-                    // Copy binary into temp directory
-                    let binary_dest = tmp_dir.path().join(&binary_name);
-                    fs::copy(binary_path, &binary_dest).with_context(|| {
-                        format!("copy binary {} to {}", binary_path, binary_dest.display())
-                    })?;
+                    // Copy all binaries for this platform into temp directory
+                    for bin_artifact in target_binaries {
+                        let bin_name = bin_artifact
+                            .path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("binary");
+                        let binary_dest = tmp_dir.path().join(bin_name);
+                        let bin_path_str = bin_artifact.path.to_string_lossy();
+                        fs::copy(&bin_artifact.path, &binary_dest).with_context(|| {
+                            format!("copy binary {} to {}", bin_path_str, binary_dest.display())
+                        })?;
+                    }
 
                     // Copy extra files into temp directory
                     if let Some(extra_files) = &snap_cfg.extra_files {
@@ -489,12 +577,8 @@ impl Stage for SnapcraftStage {
                     }
 
                     // Run snapcraft pack
-                    let publish = snap_cfg.publish.unwrap_or(false);
                     let cmd_args = snapcraft_command(
                         &snap_path.to_string_lossy(),
-                        publish,
-                        dry_run,
-                        snap_cfg.channel_templates.as_deref(),
                     );
 
                     log.status(&format!("running: {}", cmd_args.join(" ")));
@@ -509,7 +593,27 @@ impl Stage for SnapcraftStage {
                                 krate.name, target
                             )
                         })?;
-                    log.check_output(output, "snapcraft")?;
+                    log.check_output(output, "snapcraft pack")?;
+
+                    // Publish: run `snapcraft upload` as a separate step
+                    let publish = snap_cfg.publish.unwrap_or(false);
+                    if publish {
+                        let upload_args = snapcraft_upload_command(
+                            &snap_path.to_string_lossy(),
+                            snap_cfg.channel_templates.as_deref(),
+                        );
+                        log.status(&format!("running: {}", upload_args.join(" ")));
+                        let upload_output = Command::new(&upload_args[0])
+                            .args(&upload_args[1..])
+                            .output()
+                            .with_context(|| {
+                                format!(
+                                    "execute snapcraft upload for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })?;
+                        log.check_output(upload_output, "snapcraft upload")?;
+                    }
 
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::Snap,
@@ -574,7 +678,7 @@ mod tests {
             license: Some("MIT".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.2.3", "myapp", None).unwrap();
+        let yaml = generate_snapcraft_yaml(&cfg, "1.2.3", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("name: mysnap"), "missing name");
         assert!(yaml.contains("version: 1.2.3"), "missing version");
         assert!(yaml.contains("summary: A test snap"), "missing summary");
@@ -613,7 +717,7 @@ mod tests {
             apps: Some(apps),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", "myapp", None).unwrap();
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("apps:"), "missing apps section");
         assert!(yaml.contains("myapp:"), "missing app name");
         // S4: args should be appended to command, not a separate field
@@ -648,7 +752,7 @@ mod tests {
             slots: Some(vec!["dbus-slot".to_string()]),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", "myapp", None).unwrap();
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("plugs:"), "missing plugs section");
         assert!(yaml.contains("- network"), "missing network plug");
         assert!(yaml.contains("- home"), "missing home plug");
@@ -683,7 +787,7 @@ mod tests {
             layouts: Some(layouts),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", "myapp", None).unwrap();
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("layouts:"), "missing layouts section");
         assert!(
             yaml.contains("/usr/share/myapp"),
@@ -711,7 +815,7 @@ mod tests {
                 confinement: Some(mode.to_string()),
                 ..Default::default()
             };
-            let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", "myapp", None).unwrap();
+            let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
             assert!(
                 yaml.contains(&format!("confinement: {mode}")),
                 "missing confinement: {mode}"
@@ -725,7 +829,7 @@ mod tests {
             name: Some("mysnap".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", "myapp", None).unwrap();
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         // Default base should be core22
         assert!(yaml.contains("base: core22"), "default base not core22");
         // Default confinement should be strict
@@ -739,7 +843,7 @@ mod tests {
     fn test_generate_snapcraft_yaml_minimal() {
         // Completely default config — only binary_name is used
         let cfg = SnapcraftConfig::default();
-        let yaml = generate_snapcraft_yaml(&cfg, "0.1.0", "mytool", None).unwrap();
+        let yaml = generate_snapcraft_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
         // Name falls back to binary_name
         assert!(yaml.contains("name: mytool"), "missing fallback name");
         assert!(yaml.contains("version: 0.1.0"), "missing version");
@@ -761,7 +865,7 @@ mod tests {
 
     #[test]
     fn test_snapcraft_command_basic() {
-        let cmd = snapcraft_command("/tmp/output/mysnap_1.0.0_amd64.snap", false, false, None);
+        let cmd = snapcraft_command("/tmp/output/mysnap_1.0.0_amd64.snap");
         assert_eq!(cmd[0], "snapcraft");
         assert_eq!(cmd[1], "pack");
         assert_eq!(cmd[2], "--output");
@@ -770,26 +874,33 @@ mod tests {
     }
 
     #[test]
-    fn test_snapcraft_command_with_publish() {
-        let cmd = snapcraft_command("/tmp/out.snap", true, false, None);
-        assert!(cmd.contains(&"--publish".to_string()));
-    }
-
-    #[test]
-    fn test_snapcraft_command_publish_suppressed_in_dry_run() {
-        let cmd = snapcraft_command("/tmp/out.snap", true, true, None);
+    fn test_snapcraft_command_no_publish_flag() {
+        // snapcraft pack should never contain --publish
+        let cmd = snapcraft_command("/tmp/out.snap");
         assert!(
             !cmd.contains(&"--publish".to_string()),
-            "should not publish in dry_run"
+            "pack command should not have --publish"
         );
     }
 
     #[test]
-    fn test_snapcraft_command_with_channels() {
+    fn test_snapcraft_upload_command_no_channels() {
+        let cmd = snapcraft_upload_command("/tmp/out.snap", None);
+        assert_eq!(cmd[0], "snapcraft");
+        assert_eq!(cmd[1], "upload");
+        assert_eq!(cmd[2], "/tmp/out.snap");
+        assert_eq!(cmd.len(), 3);
+    }
+
+    #[test]
+    fn test_snapcraft_upload_command_with_channels() {
         let channels = vec!["edge".to_string(), "beta".to_string()];
-        let cmd = snapcraft_command("/tmp/out.snap", false, false, Some(&channels));
-        assert!(cmd.contains(&"--channel=edge".to_string()));
-        assert!(cmd.contains(&"--channel=beta".to_string()));
+        let cmd = snapcraft_upload_command("/tmp/out.snap", Some(&channels));
+        assert_eq!(cmd[0], "snapcraft");
+        assert_eq!(cmd[1], "upload");
+        assert_eq!(cmd[2], "/tmp/out.snap");
+        assert_eq!(cmd[3], "--release=edge,beta");
+        assert_eq!(cmd.len(), 4);
     }
 
     // -----------------------------------------------------------------------
@@ -1138,7 +1249,7 @@ mod tests {
             ..Default::default()
         };
         let extra = vec!["README.md".to_string(), "config/defaults.yaml".to_string()];
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", "myapp", Some(&extra)).unwrap();
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], Some(&extra), None).unwrap();
         // Extra files should appear in the organize mapping
         assert!(
             yaml.contains("README.md"),

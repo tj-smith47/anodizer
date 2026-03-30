@@ -22,6 +22,7 @@ fn create_source_archive(
     prefix: &str,
     extra_files: &[String],
     repo_root: &Path,
+    commit: &str,
 ) -> Result<PathBuf> {
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
@@ -44,13 +45,13 @@ fn create_source_archive(
         .arg("--output")
         .arg(&output_path);
 
-    // Add extra files if specified (must come before HEAD)
+    // Add extra files if specified (must come before the commit ref)
     // Note: git archive --add-file is available in Git 2.25+
     for file in extra_files {
         cmd.arg("--add-file").arg(file);
     }
 
-    cmd.arg("HEAD");
+    cmd.arg(commit);
 
     let output = cmd
         .output()
@@ -392,7 +393,13 @@ impl SourceStage {
         log.status(&format!("creating {}.{} archive...", prefix, format));
 
         let repo_root = get_repo_root()?;
-        let output_path = create_source_archive(dist, &format, &prefix, &extra_files, &repo_root)?;
+        let commit = ctx
+            .git_info
+            .as_ref()
+            .map(|info| info.commit.as_str())
+            .unwrap_or("HEAD");
+        let output_path =
+            create_source_archive(dist, &format, &prefix, &extra_files, &repo_root, commit)?;
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format);
@@ -1222,8 +1229,17 @@ dependencies = [
         std::fs::write(tmp.path().join("Cargo.lock"), "version = 4\n").unwrap();
         init_git_repo(tmp.path());
 
+        // Get the real commit hash from the test repo so git archive can resolve it
+        let real_commit = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git rev-parse HEAD should succeed");
+        let real_commit = String::from_utf8_lossy(&real_commit.stdout).trim().to_string();
+
         let mut ctx = TestContextBuilder::new()
             .project_name("test-project")
+            .commit(&real_commit)
             .source(SourceConfig {
                 enabled: Some(true),
                 format: Some("tar.gz".to_string()),

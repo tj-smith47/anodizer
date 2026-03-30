@@ -206,12 +206,12 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
     p.add(Box::new(SourceStage));
-    p.add(Box::new(ChecksumStage));
     p.add(Box::new(ChangelogStage));
+    p.add(Box::new(ChecksumStage));
+    p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(DockerStage));
-    p.add(Box::new(SignStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(AnnounceStage));
     p
@@ -276,12 +276,12 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
     p.add(Box::new(SourceStage));
-    p.add(Box::new(ChecksumStage));
     p.add(Box::new(ChangelogStage));
+    p.add(Box::new(ChecksumStage));
+    p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(DockerStage));
-    p.add(Box::new(SignStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(AnnounceStage));
     p

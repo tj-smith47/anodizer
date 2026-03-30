@@ -25,6 +25,10 @@ pub struct ManifestOptions<'a> {
     pub post_install: Option<&'a [String]>,
     /// Start menu shortcuts.
     pub shortcuts: Option<&'a [Vec<String>]>,
+    /// Binary names (without `.exe` extension) to use in the `bin` field.
+    /// When set, these are used instead of deriving from the manifest name.
+    /// Multiple entries produce a JSON array in the `bin` field.
+    pub bin: Option<&'a [String]>,
 }
 
 /// A single architecture entry for the Scoop manifest.
@@ -79,8 +83,19 @@ pub fn generate_manifest_with_opts(
         .unwrap_or_else(|| format!("https://github.com/{}", name));
     let homepage = opts.homepage.unwrap_or(&default_homepage);
 
-    // Scoop bin entry should include .exe for Windows.
-    let bin_name = format!("{}.exe", name);
+    // Scoop bin entry: use explicit binary names when provided, otherwise
+    // derive from the manifest name.  Each name gets `.exe` appended.
+    let bin_value: serde_json::Value = match opts.bin {
+        Some(bins) if !bins.is_empty() => {
+            let exe_names: Vec<String> = bins.iter().map(|b| format!("{}.exe", b)).collect();
+            if exe_names.len() == 1 {
+                serde_json::json!(exe_names[0])
+            } else {
+                serde_json::json!(exe_names)
+            }
+        }
+        _ => serde_json::json!(format!("{}.exe", name)),
+    };
 
     // Build the architecture block from entries.
     let mut arch_obj = serde_json::Map::new();
@@ -90,7 +105,7 @@ pub fn generate_manifest_with_opts(
             serde_json::json!({
                 "url": entry.url,
                 "hash": entry.hash,
-                "bin": bin_name
+                "bin": bin_value
             }),
         );
     }
@@ -286,6 +301,32 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         anyhow::bail!("scoop: no Windows archive artifact found for crate '{}'", crate_name);
     }
 
+    // Collect binary names from artifact metadata.  The archive stage stores
+    // the binary name in the `"binary"` metadata key.  We deduplicate to get
+    // a unique set of binary names across all architecture variants.
+    let bin_names: Vec<String> = {
+        let mut names = Vec::new();
+        let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
+        let all_win = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
+        for a in &all_win {
+            let is_win = a.target.as_deref()
+                .map(|t| t.to_ascii_lowercase().contains("windows"))
+                .unwrap_or(false)
+                || a.path.to_string_lossy().to_ascii_lowercase().contains("windows");
+            if !is_win { continue; }
+            if let Some(bin) = a.metadata.get("binary")
+                && !names.contains(bin) {
+                    names.push(bin.clone());
+                }
+        }
+        names
+    };
+    let bin_names_ref: Option<&[String]> = if bin_names.is_empty() {
+        None
+    } else {
+        Some(&bin_names)
+    };
+
     // Derive GitHub slug (owner/repo) for homepage fallback.
     let github_slug = _crate_cfg
         .release
@@ -301,6 +342,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         pre_install: scoop_cfg.pre_install.as_deref(),
         post_install: scoop_cfg.post_install.as_deref(),
         shortcuts: scoop_cfg.shortcuts.as_deref(),
+        bin: bin_names_ref,
     };
 
     let manifest = generate_manifest_with_opts(
@@ -961,6 +1003,7 @@ mod tests {
             pre_install: Some(&pre),
             post_install: Some(&post),
             shortcuts: Some(&shortcuts),
+            bin: None,
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(

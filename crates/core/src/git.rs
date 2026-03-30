@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result, bail};
 use regex::Regex;
 use std::process::Command;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone)]
 pub struct SemVer {
@@ -8,6 +9,7 @@ pub struct SemVer {
     pub minor: u64,
     pub patch: u64,
     pub prerelease: Option<String>,
+    pub build_metadata: Option<String>,
 }
 
 impl SemVer {
@@ -48,10 +50,17 @@ impl Ord for SemVer {
     }
 }
 
-/// Parse a semver version from a tag string like "v1.2.3", "v1.0.0-rc.1", or "cfgd-core-v2.1.0"
+/// Compiled once and reused across all calls to [`parse_semver`].
+///
+/// Captures: 1=major, 2=minor, 3=patch, 4=prerelease (optional), 5=build metadata (optional).
+/// Prerelease is after `-` but before `+`. Build metadata is after `+`.
+static SEMVER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"v?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+(.+))?$").unwrap());
+
+/// Parse a semver version from a tag string like "v1.2.3", "v1.0.0-rc.1", "v1.0.0+build.42",
+/// "v1.0.0-rc.1+build.42", or "cfgd-core-v2.1.0"
 pub fn parse_semver(tag: &str) -> Result<SemVer> {
-    let re = Regex::new(r"v?(\d+)\.(\d+)\.(\d+)(?:-(.+))?$")?;
-    let caps = re
+    let caps = SEMVER_RE
         .captures(tag)
         .ok_or_else(|| anyhow::anyhow!("not a valid semver tag: {}", tag))?;
     Ok(SemVer {
@@ -59,6 +68,7 @@ pub fn parse_semver(tag: &str) -> Result<SemVer> {
         minor: caps[2].parse()?,
         patch: caps[3].parse()?,
         prerelease: caps.get(4).map(|m| m.as_str().to_string()),
+        build_metadata: caps.get(5).map(|m| m.as_str().to_string()),
     })
 }
 
@@ -115,30 +125,46 @@ pub fn is_git_dirty() -> bool {
         .unwrap_or(false)
 }
 
+/// Strip userinfo (credentials) from an HTTPS URL.
+///
+/// If the URL starts with `https://` and contains `@`, everything between
+/// `://` and `@` is removed (e.g. `https://user:token@github.com/...` becomes
+/// `https://github.com/...`). Non-HTTPS URLs are returned unchanged.
+fn strip_url_credentials(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("https://")
+        && let Some(at_pos) = rest.find('@')
+    {
+        return format!("https://{}", &rest[at_pos + 1..]);
+    }
+    url.to_string()
+}
+
 /// Detect git info for a given tag.
 pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     let commit = git_output(&["rev-parse", "HEAD"])?;
     let short_commit = git_output(&["rev-parse", "--short", "HEAD"])?;
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let dirty = is_git_dirty();
-    let commit_date = git_output(&["log", "-1", "--format=%aI"]).unwrap_or_default();
-    let commit_timestamp = git_output(&["log", "-1", "--format=%at"]).unwrap_or_default();
-    let remote_url = git_output(&["remote", "get-url", "origin"]).unwrap_or_default();
-    let summary = git_output(&["describe", "--tags", "--always"]).unwrap_or_default();
+    let commit_date = git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%aI"]).unwrap_or_default();
+    let commit_timestamp = git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%at"]).unwrap_or_default();
+    let remote_url_raw = git_output(&["remote", "get-url", "origin"]).unwrap_or_default();
+    // Strip credentials from HTTPS URLs (e.g. https://user:token@github.com/... → https://github.com/...)
+    let remote_url = strip_url_credentials(&remote_url_raw);
+    let summary = git_output(&["-c", "log.showSignature=false", "describe", "--tags", "--always"]).unwrap_or_default();
 
     // Try annotated tag message fields first; fall back to commit message fields.
     let tag_subject = git_output(&["tag", "-l", "--format=%(subject)", tag])
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| git_output(&["log", "-1", "--format=%s"]).unwrap_or_default());
+        .unwrap_or_else(|| git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%s"]).unwrap_or_default());
     let tag_contents = git_output(&["tag", "-l", "--format=%(contents)", tag])
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| git_output(&["log", "-1", "--format=%B"]).unwrap_or_default());
+        .unwrap_or_else(|| git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%B"]).unwrap_or_default());
     let tag_body = git_output(&["tag", "-l", "--format=%(body)", tag])
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| git_output(&["log", "-1", "--format=%b"]).unwrap_or_default());
+        .unwrap_or_else(|| git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%b"]).unwrap_or_default());
 
     let semver = parse_semver(tag)?;
     Ok(GitInfo {
@@ -244,7 +270,7 @@ fn parse_commit_output(output: &str) -> Vec<Commit> {
 /// Get commits between two refs, optionally filtered to a path.
 pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> Result<Vec<Commit>> {
     let range = format!("{}..{}", from, to);
-    let mut args = vec!["log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", &range];
+    let mut args = vec!["-c", "log.showSignature=false", "log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", &range];
     if let Some(path) = path_filter {
         args.push("--");
         args.push(path);
@@ -256,7 +282,7 @@ pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> R
 /// Get all commits reachable from HEAD, optionally filtered to a path.
 /// Used for initial releases where there is no previous tag.
 pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
-    let mut args = vec!["log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", "HEAD"];
+    let mut args = vec!["-c", "log.showSignature=false", "log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", "HEAD"];
     if let Some(path) = path_filter {
         args.push("--");
         args.push(path);
@@ -506,13 +532,13 @@ pub fn create_tag_via_github_api(
 
 /// Get last N commit subjects.
 pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
-    let output = git_output(&["log", &format!("-{count}"), "--pretty=format:%s"])?;
+    let output = git_output(&["-c", "log.showSignature=false", "log", &format!("-{count}"), "--pretty=format:%s"])?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Get commit subjects between two refs.
 pub fn get_commit_messages_between(from: &str, to: &str) -> Result<Vec<String>> {
-    let output = git_output(&["log", "--pretty=format:%s", &format!("{from}..{to}")])?;
+    let output = git_output(&["-c", "log.showSignature=false", "log", "--pretty=format:%s", &format!("{from}..{to}")])?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
@@ -524,7 +550,7 @@ pub fn get_current_branch() -> Result<String> {
 /// Check if there are any commits since a given tag.
 pub fn has_commits_since_tag(tag: &str) -> Result<bool> {
     let range = format!("{}..HEAD", tag);
-    let output = git_output(&["log", "--oneline", &range])?;
+    let output = git_output(&["-c", "log.showSignature=false", "log", "--oneline", &range])?;
     Ok(!output.is_empty())
 }
 
@@ -588,6 +614,7 @@ mod tests {
         assert_eq!(v.minor, 2);
         assert_eq!(v.patch, 3);
         assert_eq!(v.prerelease, None);
+        assert_eq!(v.build_metadata, None);
     }
 
     #[test]
@@ -595,6 +622,25 @@ mod tests {
         let v = parse_semver("v1.0.0-rc.1").unwrap();
         assert_eq!(v.major, 1);
         assert_eq!(v.prerelease, Some("rc.1".to_string()));
+        assert_eq!(v.build_metadata, None);
+    }
+
+    #[test]
+    fn test_parse_semver_build_metadata() {
+        let v = parse_semver("v1.0.0+build.42").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 0);
+        assert_eq!(v.patch, 0);
+        assert_eq!(v.prerelease, None);
+        assert_eq!(v.build_metadata, Some("build.42".to_string()));
+    }
+
+    #[test]
+    fn test_parse_semver_prerelease_and_build_metadata() {
+        let v = parse_semver("v1.0.0-rc.1+build.42").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.prerelease, Some("rc.1".to_string()));
+        assert_eq!(v.build_metadata, Some("build.42".to_string()));
     }
 
     #[test]
@@ -608,6 +654,8 @@ mod tests {
     fn test_is_prerelease() {
         assert!(parse_semver("v1.0.0-rc.1").unwrap().is_prerelease());
         assert!(!parse_semver("v1.0.0").unwrap().is_prerelease());
+        // Build metadata only is NOT a prerelease
+        assert!(!parse_semver("v1.0.0+build.42").unwrap().is_prerelease());
     }
 
     #[test]
@@ -647,5 +695,37 @@ mod tests {
     fn test_parse_github_remote_empty() {
         let result = parse_github_remote("");
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_strip_url_credentials_with_userinfo() {
+        assert_eq!(
+            strip_url_credentials("https://user:token@github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_strip_url_credentials_no_userinfo() {
+        assert_eq!(
+            strip_url_credentials("https://github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_strip_url_credentials_ssh_unchanged() {
+        assert_eq!(
+            strip_url_credentials("git@github.com:owner/repo.git"),
+            "git@github.com:owner/repo.git"
+        );
+    }
+
+    #[test]
+    fn test_strip_url_credentials_user_only() {
+        assert_eq!(
+            strip_url_credentials("https://user@github.com/owner/repo.git"),
+            "https://github.com/owner/repo.git"
+        );
     }
 }

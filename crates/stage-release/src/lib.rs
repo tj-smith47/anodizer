@@ -88,23 +88,20 @@ pub(crate) fn collect_extra_files(
                 }
             }
             ExtraFileSpec::Detailed { glob: pattern, name_template } => {
-                match glob::glob(pattern) {
-                    Ok(entries) => {
-                        for entry in entries.flatten() {
-                            if entry.is_file() {
-                                let name = name_template.as_ref().and_then(|tmpl| {
-                                    let filename = entry.file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy();
-                                    let mut vars = ctx.template_vars().clone();
-                                    vars.set("ArtifactName", &filename);
-                                    anodize_core::template::render(tmpl, &vars).ok()
-                                });
-                                results.push((entry, name));
-                            }
+                if let Ok(entries) = glob::glob(pattern) {
+                    for entry in entries.flatten() {
+                        if entry.is_file() {
+                            let name = name_template.as_ref().and_then(|tmpl| {
+                                let filename = entry.file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy();
+                                let mut vars = ctx.template_vars().clone();
+                                vars.set("ArtifactName", &filename);
+                                anodize_core::template::render(tmpl, &vars).ok()
+                            });
+                            results.push((entry, name));
                         }
                     }
-                    Err(_) => {}
                 }
             }
         }
@@ -201,26 +198,26 @@ pub(crate) fn compose_body_for_mode(
 ) -> String {
     match mode {
         "keep-existing" => {
-            if let Some(existing) = existing_body {
-                if !existing.is_empty() {
-                    return existing.to_string();
-                }
+            if let Some(existing) = existing_body
+                && !existing.is_empty()
+            {
+                return existing.to_string();
             }
             new_body.to_string()
         }
         "append" => {
-            if let Some(existing) = existing_body {
-                if !existing.is_empty() {
-                    return format!("{}\n\n{}", existing, new_body);
-                }
+            if let Some(existing) = existing_body
+                && !existing.is_empty()
+            {
+                return format!("{}\n\n{}", existing, new_body);
             }
             new_body.to_string()
         }
         "prepend" => {
-            if let Some(existing) = existing_body {
-                if !existing.is_empty() {
-                    return format!("{}\n\n{}", new_body, existing);
-                }
+            if let Some(existing) = existing_body
+                && !existing.is_empty()
+            {
+                return format!("{}\n\n{}", new_body, existing);
             }
             new_body.to_string()
         }
@@ -233,9 +230,13 @@ pub(crate) fn compose_body_for_mode(
 // build_release_json
 // ---------------------------------------------------------------------------
 
+/// GitHub's maximum release body length in characters.
+const GITHUB_RELEASE_BODY_MAX_CHARS: usize = 125_000;
+
 /// Build the JSON body for GitHub release create/update API calls.
 /// Extracts the common construction shared by PATCH (update existing draft)
 /// and POST (create new release) paths.
+#[allow(clippy::too_many_arguments)]
 fn build_release_json(
     tag: &str,
     name: &str,
@@ -254,7 +255,14 @@ fn build_release_json(
         "prerelease": prerelease_flag,
     });
     if !body.is_empty() {
-        json["body"] = serde_json::Value::String(body.to_string());
+        let truncated_body = if body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
+            let mut truncated = body[..GITHUB_RELEASE_BODY_MAX_CHARS].to_string();
+            truncated.push_str("\n\n...(truncated)");
+            truncated
+        } else {
+            body.to_string()
+        };
+        json["body"] = serde_json::Value::String(truncated_body);
     }
     if let Some(ml) = make_latest {
         json["make_latest"] = serde_json::Value::String(ml.to_string());
@@ -314,14 +322,14 @@ impl Stage for ReleaseStage {
             let release_cfg = crate_cfg.release.as_ref().unwrap();
 
             // Skip crates where release is explicitly disabled (supports template strings).
-            if let Some(ref d) = release_cfg.disable {
-                if d.is_disabled(|s| ctx.render_template(s)) {
-                    log.status(&format!(
-                        "release disabled for crate '{}', skipping",
-                        crate_cfg.name
-                    ));
-                    continue;
-                }
+            if let Some(ref d) = release_cfg.disable
+                && d.is_disabled(|s| ctx.render_template(s))
+            {
+                log.status(&format!(
+                    "release disabled for crate '{}', skipping",
+                    crate_cfg.name
+                ));
+                continue;
             }
 
             let crate_name = crate_cfg.name.clone();
@@ -633,11 +641,16 @@ impl Stage for ReleaseStage {
                 // Create or update the release. We use raw API calls for all paths
                 // to support target_commitish and discussion_category_name, which
                 // are not fully exposed by octocrab's builder API.
+                //
+                // Draft-then-publish: always create as draft first so users never
+                // see a release with missing artifacts. After all uploads succeed,
+                // we PATCH draft=false if the user wanted a non-draft release.
+                let user_wants_draft = draft;
                 let json_body = build_release_json(
                     &tag,
                     &release_name,
                     &final_body,
-                    draft,
+                    true, // always create as draft first
                     prerelease,
                     &make_latest,
                     &target_commitish,
@@ -727,30 +740,150 @@ impl Stage for ReleaseStage {
                             }
                         }
 
-                        let data = std::fs::read(path).with_context(|| {
-                            format!("release: read artifact {}", path.display())
-                        })?;
+                        // Retry loop: up to 3 attempts with a 2-second delay.
+                        // Retries on HTTP 5xx and network errors. On HTTP 422
+                        // with "already_exists", deletes the existing asset and
+                        // retries if replace_existing_artifacts is true.
+                        const MAX_UPLOAD_ATTEMPTS: u32 = 3;
+                        const UPLOAD_RETRY_DELAY: std::time::Duration =
+                            std::time::Duration::from_secs(2);
 
-                        octo.repos(&github.owner, &github.name)
-                            .releases()
-                            .upload_asset(release.id.into_inner(), &file_name, data.into())
-                            .send()
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "release: upload artifact '{}' to release '{}'",
-                                    file_name, tag
-                                )
+                        let mut last_err: Option<anyhow::Error> = None;
+                        for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
+                            let data = std::fs::read(path).with_context(|| {
+                                format!("release: read artifact {}", path.display())
                             })?;
+
+                            match octo
+                                .repos(&github.owner, &github.name)
+                                .releases()
+                                .upload_asset(release.id.into_inner(), &file_name, data.into())
+                                .send()
+                                .await
+                            {
+                                Ok(_) => {
+                                    last_err = None;
+                                    break;
+                                }
+                                Err(err) => {
+                                    let err_str = err.to_string();
+                                    let is_server_error = matches!(
+                                        &err,
+                                        octocrab::Error::GitHub { source, .. }
+                                            if source.status_code.is_server_error()
+                                    );
+                                    let is_already_exists = matches!(
+                                        &err,
+                                        octocrab::Error::GitHub { source, .. }
+                                            if source.status_code.as_u16() == 422
+                                    ) && err_str.contains("already_exists");
+
+                                    if is_already_exists && replace_existing_artifacts {
+                                        // Delete the conflicting asset and retry.
+                                        log.verbose(&format!(
+                                            "artifact '{}' already exists, deleting before retry (attempt {}/{})",
+                                            file_name, attempt, MAX_UPLOAD_ATTEMPTS
+                                        ));
+                                        // List current assets to find the one to delete.
+                                        let current_release = octo
+                                            .repos(&github.owner, &github.name)
+                                            .releases()
+                                            .get(release.id.into_inner())
+                                            .await
+                                            .with_context(|| {
+                                                format!(
+                                                    "release: fetch release to find duplicate asset '{}'",
+                                                    file_name
+                                                )
+                                            })?;
+                                        for asset in &current_release.assets {
+                                            if asset.name == file_name {
+                                                octo.repos(&github.owner, &github.name)
+                                                    .release_assets()
+                                                    .delete(asset.id.into_inner())
+                                                    .await
+                                                    .with_context(|| {
+                                                        format!(
+                                                            "release: delete duplicate artifact '{}' from release '{}'",
+                                                            file_name, tag
+                                                        )
+                                                    })?;
+                                                break;
+                                            }
+                                        }
+                                        last_err = Some(anyhow::anyhow!(err));
+                                        if attempt < MAX_UPLOAD_ATTEMPTS {
+                                            tokio::time::sleep(UPLOAD_RETRY_DELAY).await;
+                                        }
+                                        continue;
+                                    } else if is_server_error
+                                        || matches!(&err, octocrab::Error::Hyper { .. })
+                                        || matches!(&err, octocrab::Error::Http { .. })
+                                    {
+                                        // Retryable server/network error.
+                                        log.warn(&format!(
+                                            "upload of '{}' failed (attempt {}/{}): {}",
+                                            file_name, attempt, MAX_UPLOAD_ATTEMPTS, err_str
+                                        ));
+                                        last_err = Some(anyhow::anyhow!(err));
+                                        if attempt < MAX_UPLOAD_ATTEMPTS {
+                                            tokio::time::sleep(UPLOAD_RETRY_DELAY).await;
+                                        }
+                                        continue;
+                                    } else {
+                                        // Non-retryable error — fail immediately.
+                                        return Err(anyhow::anyhow!(err)).with_context(|| {
+                                            format!(
+                                                "release: upload artifact '{}' to release '{}'",
+                                                file_name, tag
+                                            )
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(err) = last_err {
+                            return Err(err).with_context(|| {
+                                format!(
+                                    "release: upload artifact '{}' to release '{}' failed after {} attempts",
+                                    file_name, tag, MAX_UPLOAD_ATTEMPTS
+                                )
+                            });
+                        }
 
                         log.verbose(&format!("uploaded artifact: {}", file_name));
                     }
                 }
 
+                // Draft-then-publish: if the user's config has draft=false,
+                // un-draft the release now that all assets are uploaded.
+                if !user_wants_draft {
+                    let publish_route = format!(
+                        "/repos/{}/{}/releases/{}",
+                        github.owner, github.name, release.id
+                    );
+                    let publish_body = serde_json::json!({ "draft": false });
+                    octo.patch::<octocrab::models::repos::Release, _, _>(
+                        publish_route,
+                        Some(&publish_body),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "release: publish (un-draft) release '{}' on {}/{}",
+                            tag, github.owner, github.name
+                        )
+                    })?;
+                    log.status(&format!(
+                        "published release '{}' (draft -> live)",
+                        release_name
+                    ));
+                }
+
                 Ok::<String, anyhow::Error>(html_url)
             })?;
 
-            ctx.template_vars_mut().set("ReleaseURL", &url);
+            ctx.set_release_url(&url);
         }
 
         Ok(())
@@ -2660,5 +2793,70 @@ draft: true
 
         let stage = ReleaseStage;
         assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // ---- body truncation tests ----
+
+    #[test]
+    fn test_build_release_json_body_within_limit() {
+        let body = "a".repeat(1000);
+        let json = build_release_json(
+            "v1.0.0", "Release v1.0.0", &body,
+            false, false, &None, &None, &None, false,
+        );
+        assert_eq!(json["body"].as_str().unwrap(), &body);
+    }
+
+    #[test]
+    fn test_build_release_json_body_at_limit() {
+        let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS);
+        let json = build_release_json(
+            "v1.0.0", "Release v1.0.0", &body,
+            false, false, &None, &None, &None, false,
+        );
+        assert_eq!(json["body"].as_str().unwrap(), &body);
+    }
+
+    #[test]
+    fn test_build_release_json_body_exceeds_limit_is_truncated() {
+        let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS + 500);
+        let json = build_release_json(
+            "v1.0.0", "Release v1.0.0", &body,
+            false, false, &None, &None, &None, false,
+        );
+        let result = json["body"].as_str().unwrap();
+        // The truncated body should start with GITHUB_RELEASE_BODY_MAX_CHARS 'a's
+        // and end with the truncation marker.
+        assert!(result.starts_with(&"a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS)));
+        assert!(result.ends_with("\n\n...(truncated)"));
+    }
+
+    #[test]
+    fn test_build_release_json_empty_body_not_set() {
+        let json = build_release_json(
+            "v1.0.0", "Release v1.0.0", "",
+            false, false, &None, &None, &None, false,
+        );
+        assert!(json.get("body").is_none());
+    }
+
+    // ---- draft-then-publish: build_release_json always uses draft as passed ----
+
+    #[test]
+    fn test_build_release_json_draft_true() {
+        let json = build_release_json(
+            "v1.0.0", "Release v1.0.0", "body",
+            true, false, &None, &None, &None, false,
+        );
+        assert_eq!(json["draft"].as_bool().unwrap(), true);
+    }
+
+    #[test]
+    fn test_build_release_json_draft_false() {
+        let json = build_release_json(
+            "v1.0.0", "Release v1.0.0", "body",
+            false, false, &None, &None, &None, false,
+        );
+        assert_eq!(json["draft"].as_bool().unwrap(), false);
     }
 }

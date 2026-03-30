@@ -220,20 +220,32 @@ pub fn generate_nfpm_yaml(
     binary_path: &str,
     format: Option<&str>,
 ) -> String {
-    // Build the binary content entry
-    let bindir = config.bindir.as_deref().unwrap_or("/usr/local/bin");
+    let is_meta = config.meta == Some(true);
+
+    // Build the binary content entry (skip for meta packages)
+    let bindir = config.bindir.as_deref().unwrap_or("/usr/bin");
     let binary_name = PathBuf::from(binary_path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("binary")
         .to_string();
 
-    let mut contents = vec![NfpmYamlContent {
-        src: binary_path.to_string(),
-        dst: format!("{bindir}/{binary_name}"),
-        content_type: None,
-        file_info: None,
-    }];
+    let mut contents = if is_meta {
+        // Meta packages have no binary contents — only dependencies
+        Vec::new()
+    } else {
+        vec![NfpmYamlContent {
+            src: binary_path.to_string(),
+            dst: format!("{bindir}/{binary_name}"),
+            content_type: None,
+            file_info: Some(NfpmYamlFileInfo {
+                owner: None,
+                group: None,
+                mode: Some("0755".to_string()),
+                mtime: None,
+            }),
+        }]
+    };
 
     // Extra contents from config
     if let Some(cfg_contents) = &config.contents {
@@ -455,7 +467,7 @@ pub fn nfpm_command(config_path: &str, format: &str, output_dir: &str) -> Vec<St
 // ---------------------------------------------------------------------------
 
 /// Recognized nfpm packager format names.
-const KNOWN_FORMATS: &[&str] = &["deb", "rpm", "apk", "archlinux", "termux-deb", "ipk"];
+const KNOWN_FORMATS: &[&str] = &["deb", "rpm", "apk", "archlinux", "termux.deb", "ipk"];
 
 /// Validate that a format string is a known nfpm packager.
 fn validate_format(format: &str) -> Result<()> {
@@ -467,6 +479,34 @@ fn validate_format(format: &str) -> Result<()> {
             format,
             KNOWN_FORMATS.join(", ")
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Architecture validation per format
+// ---------------------------------------------------------------------------
+
+/// Check if a target triple's architecture is supported for the given nfpm
+/// packager format. Returns `true` for formats with no restrictions or when
+/// the architecture is in the supported set.
+fn is_arch_supported_for_format(triple: &str, format: &str) -> bool {
+    // Extract architecture component from triple
+    let first = triple.split('-').next().unwrap_or("");
+
+    match format {
+        "archlinux" => {
+            // Archlinux only supports: x86_64, i686, aarch64, armv7h
+            matches!(first, "x86_64" | "i686" | "aarch64" | "armv7" | "armv7l")
+        }
+        "termux.deb" => {
+            // Termux (Android): aarch64, arm, i686, x86_64
+            matches!(
+                first,
+                "aarch64" | "arm" | "armv7" | "armv7l" | "armv6" | "armv6l" | "i686" | "x86_64"
+            )
+        }
+        // All other formats (deb, rpm, apk, ipk) have broad arch support
+        _ => true,
     }
 }
 
@@ -528,36 +568,57 @@ impl Stage for NfpmStage {
                 .collect();
 
             for nfpm_cfg in nfpm_configs {
-                // Apply ids filter: when the nfpm config specifies `ids`,
-                // only include binaries whose metadata "id" is in the list.
-                let filtered_binaries: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
-                    linux_binaries
-                        .iter()
-                        .filter(|b| {
-                            b.metadata
-                                .get("id")
-                                .map(|bid| ids.contains(bid))
-                                .unwrap_or(false)
-                        })
-                        .collect()
+                let is_meta = nfpm_cfg.meta == Some(true);
+
+                // Meta packages have no binary contents — use a synthetic entry
+                // so the loop below runs once per target (or once with no target).
+                let effective_binaries: Vec<(Option<String>, String)> = if is_meta {
+                    // For meta packages, produce one package per unique target
+                    // from all linux binaries (for arch), or a single default
+                    // entry if no binaries exist.
+                    if linux_binaries.is_empty() {
+                        vec![(None, String::new())]
+                    } else {
+                        let mut seen = std::collections::HashSet::new();
+                        linux_binaries
+                            .iter()
+                            .filter(|b| {
+                                let key = b.target.clone().unwrap_or_default();
+                                seen.insert(key)
+                            })
+                            .map(|b| (b.target.clone(), String::new()))
+                            .collect()
+                    }
                 } else {
-                    linux_binaries.iter().collect()
-                };
+                    // Apply ids filter: when the nfpm config specifies `ids`,
+                    // only include binaries whose metadata "id" is in the list.
+                    let filtered_binaries: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
+                        linux_binaries
+                            .iter()
+                            .filter(|b| {
+                                b.metadata
+                                    .get("id")
+                                    .map(|bid| ids.contains(bid))
+                                    .unwrap_or(false)
+                            })
+                            .collect()
+                    } else {
+                        linux_binaries.iter().collect()
+                    };
 
-                // If the ids filter matched nothing but there ARE linux
-                // binaries, warn and skip — the user likely misconfigured ids.
-                if filtered_binaries.is_empty() && !linux_binaries.is_empty() {
-                    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-                    log.warn(&format!(
-                        "nfpm config '{}': ids filter matched no binaries, skipping",
-                        nfpm_id
-                    ));
-                    continue;
-                }
+                    // If the ids filter matched nothing but there ARE linux
+                    // binaries, warn and skip — the user likely misconfigured ids.
+                    if filtered_binaries.is_empty() && !linux_binaries.is_empty() {
+                        let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+                        log.warn(&format!(
+                            "nfpm config '{}': ids filter matched no binaries, skipping",
+                            nfpm_id
+                        ));
+                        continue;
+                    }
 
-                // If no linux binaries found at all, use a single synthetic
-                // entry with a default path.
-                let effective_binaries: Vec<(Option<String>, String)> =
+                    // If no linux binaries found at all, use a single synthetic
+                    // entry with a default path.
                     if filtered_binaries.is_empty() {
                         vec![(None, format!("dist/{}", krate.name))]
                     } else {
@@ -565,7 +626,8 @@ impl Stage for NfpmStage {
                             .iter()
                             .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
                             .collect()
-                    };
+                    }
+                };
 
                 for (target, binary_path) in &effective_binaries {
                     // Derive Os/Arch from the target triple for template rendering
@@ -578,6 +640,16 @@ impl Stage for NfpmStage {
                         validate_format(format).with_context(|| {
                             format!("nfpm config for crate {}", krate.name)
                         })?;
+
+                        // Validate architecture compatibility per format
+                        if let Some(triple) = target.as_deref()
+                            && !is_arch_supported_for_format(triple, format) {
+                                log.warn(&format!(
+                                    "skipping format '{}' for target '{}': architecture not supported",
+                                    format, triple
+                                ));
+                                continue;
+                            }
 
                         // Generate YAML per format so format-specific deps are selected
                         let yaml_content =
@@ -686,7 +758,7 @@ impl Stage for NfpmStage {
 /// Return the file extension for a given nfpm packager format.
 fn format_extension(format: &str) -> &str {
     match format {
-        "deb" | "termux-deb" => ".deb",
+        "deb" | "termux.deb" => ".deb",
         "rpm" => ".rpm",
         "apk" => ".apk",
         "archlinux" => ".pkg.tar.zst",
@@ -764,7 +836,7 @@ mod tests {
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp", None);
         assert!(yaml.contains("version: 2.0.0"));
         assert!(yaml.contains("/etc/myapp/config"));
-        assert!(yaml.contains("/usr/local/bin/myapp"));
+        assert!(yaml.contains("/usr/bin/myapp"));
     }
 
     #[test]
@@ -925,7 +997,9 @@ mod tests {
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("  type: dir"));
-        assert!(!yaml.contains("file_info"));
+        // The binary entry always has file_info with mode 0755, but the
+        // extra "dir" content entry should NOT have file_info
+        assert!(yaml.contains("mode: '0755'"), "binary should have mode 0755");
     }
 
     #[test]
@@ -1379,7 +1453,7 @@ crates:
         assert!(yaml.contains("version: 0.1.0"));
         assert!(yaml.contains("contents:"));
         assert!(yaml.contains("- src: /bin/test"));
-        assert!(yaml.contains("dst: /usr/local/bin/test"));
+        assert!(yaml.contains("dst: /usr/bin/test"));
     }
 
     #[test]
@@ -2243,7 +2317,7 @@ crates:
 
     #[test]
     fn test_format_extension_termux_deb() {
-        assert_eq!(format_extension("termux-deb"), ".deb");
+        assert_eq!(format_extension("termux.deb"), ".deb");
     }
 
     #[test]
@@ -2260,7 +2334,7 @@ crates:
 
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
-            formats: vec!["termux-deb".to_string()],
+            formats: vec!["termux.deb".to_string()],
             ..Default::default()
         };
 
@@ -2290,12 +2364,12 @@ crates:
         assert_eq!(pkgs.len(), 1);
         assert_eq!(
             pkgs[0].metadata.get("format"),
-            Some(&"termux-deb".to_string())
+            Some(&"termux.deb".to_string())
         );
         let path_str = pkgs[0].path.to_string_lossy();
         assert!(
             path_str.ends_with(".deb"),
-            "termux-deb package should have .deb extension, got: {path_str}"
+            "termux.deb package should have .deb extension, got: {path_str}"
         );
     }
 
@@ -2692,11 +2766,11 @@ crates:
     tag_template: "v{{ .Version }}"
     nfpm:
       - package_name: test
-        formats: [deb, termux-deb, ipk, rpm]
+        formats: [deb, termux.deb, ipk, rpm]
 "#;
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
-        assert_eq!(nfpm.formats, vec!["deb", "termux-deb", "ipk", "rpm"]);
+        assert_eq!(nfpm.formats, vec!["deb", "termux.deb", "ipk", "rpm"]);
     }
 
     #[test]

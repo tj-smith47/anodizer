@@ -53,7 +53,7 @@ pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> 
         })?;
 
     // Step 2: Publish update
-    let publish_query = r#"mutation($id: String!, $audience: UpdateAudience!) { publishUpdate(id: $id, notificationAudience: $audience) { id } }"#;
+    let publish_query = r#"mutation($id: String!, $audience: UpdateAudience) { publishUpdate(id: $id, notificationAudience: $audience) { id } }"#;
     let publish_body = json!({
         "query": publish_query,
         "variables": {"id": update_id, "audience": "ALL"}

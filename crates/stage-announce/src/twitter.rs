@@ -11,7 +11,7 @@ pub fn send_twitter(
     access_token_secret: &str,
     message: &str,
 ) -> Result<()> {
-    let url = "https://api.twitter.com/2/tweets";
+    let url = "https://api.x.com/2/tweets";
     let auth_header = build_oauth1_header(
         "POST",
         url,
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn test_oauth1_header_format() {
         let header =
-            build_oauth1_header("POST", "https://api.twitter.com/2/tweets", "ck", "cs", "at", "ats")
+            build_oauth1_header("POST", "https://api.x.com/2/tweets", "ck", "cs", "at", "ats")
                 .unwrap();
         assert!(header.starts_with("OAuth "));
         assert!(header.contains("oauth_consumer_key=\"ck\""));

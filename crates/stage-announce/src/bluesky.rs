@@ -50,15 +50,14 @@ pub fn send_bluesky(
     });
 
     // Add link facet if release_url is found in message
-    if let Some(url) = release_url {
-        if let Some(byte_start) = message.find(url) {
+    if let Some(url) = release_url
+        && let Some(byte_start) = message.find(url) {
             let byte_end = byte_start + url.len();
             record["facets"] = json!([{
                 "index": {"byteStart": byte_start, "byteEnd": byte_end},
                 "features": [{"$type": "app.bsky.richtext.facet#link", "uri": url}]
             }]);
         }
-    }
 
     let create_body = json!({
         "repo": did,

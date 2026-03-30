@@ -19,7 +19,7 @@ use anodize_core::stage::Stage;
 /// Filter values:
 /// - `"none"`          → nothing is signed
 /// - `"all"`           → every artifact kind is signed
-/// - `"source"`        → only `ArtifactKind::Archive` (source archives)
+/// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
 /// - `"binary"`        → only `ArtifactKind::Binary`
 /// - `"package"`       → only `ArtifactKind::LinuxPackage`
@@ -28,20 +28,24 @@ use anodize_core::stage::Stage;
 /// - `"sbom"`          → only `ArtifactKind::Sbom`
 /// - `"snap"`          → only `ArtifactKind::Snap`
 /// - `"macos_package"` → only `ArtifactKind::MacOsPackage`
-/// - `"checksum"` (default) → only `ArtifactKind::Checksum`
-pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> bool {
+/// - `"checksum"`      → only `ArtifactKind::Checksum`
+///
+/// Any other value returns an error.
+pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<bool> {
     match filter {
-        "none" => false,
-        "all" => true,
-        "source" | "archive" => kind == ArtifactKind::Archive,
-        "binary" => kind == ArtifactKind::Binary,
-        "package" => kind == ArtifactKind::LinuxPackage,
-        "installer" => kind == ArtifactKind::Installer,
-        "diskimage" => kind == ArtifactKind::DiskImage,
-        "sbom" => kind == ArtifactKind::Sbom,
-        "snap" => kind == ArtifactKind::Snap,
-        "macos_package" => kind == ArtifactKind::MacOsPackage,
-        _ => kind == ArtifactKind::Checksum,
+        "none" => Ok(false),
+        "all" => Ok(true),
+        "source" => Ok(kind == ArtifactKind::SourceArchive),
+        "archive" => Ok(kind == ArtifactKind::Archive),
+        "binary" => Ok(kind == ArtifactKind::Binary),
+        "package" => Ok(kind == ArtifactKind::LinuxPackage),
+        "installer" => Ok(kind == ArtifactKind::Installer),
+        "diskimage" => Ok(kind == ArtifactKind::DiskImage),
+        "sbom" => Ok(kind == ArtifactKind::Sbom),
+        "snap" => Ok(kind == ArtifactKind::Snap),
+        "macos_package" => Ok(kind == ArtifactKind::MacOsPackage),
+        "checksum" => Ok(kind == ArtifactKind::Checksum),
+        other => anyhow::bail!("invalid sign artifacts filter: {other}"),
     }
 }
 
@@ -211,21 +215,19 @@ fn process_sign_configs(
             std::path::PathBuf,
             String,
             std::collections::HashMap<String, String>,
-        )> = ctx
-            .artifacts
-            .all()
-            .iter()
-            .filter(|a| {
+        )> = {
+            let mut matched = Vec::new();
+            for a in ctx.artifacts.all().iter() {
                 // Apply artifact kind filter.
                 match filter_mode {
                     ArtifactFilter::FromConfig => {
-                        if !should_sign_artifact(a.kind, config_filter) {
-                            return false;
+                        if !should_sign_artifact(a.kind, config_filter)? {
+                            continue;
                         }
                     }
                     ArtifactFilter::BinaryOnly => {
                         if a.kind != ArtifactKind::Binary {
-                            return false;
+                            continue;
                         }
                     }
                 }
@@ -242,12 +244,14 @@ fn process_sign_configs(
                         .get("name")
                         .map(|name| ids.contains(name))
                         .unwrap_or(false);
-                    return matches_id || matches_name;
+                    if !(matches_id || matches_name) {
+                        continue;
+                    }
                 }
-                true
-            })
-            .map(|a| (a.path.clone(), a.crate_name.clone(), a.metadata.clone()))
-            .collect();
+                matched.push((a.path.clone(), a.crate_name.clone(), a.metadata.clone()));
+            }
+            matched
+        };
 
         // Collect new signature artifacts to register after the signing loop.
         let mut new_signature_artifacts: Vec<anodize_core::artifact::Artifact> = Vec::new();
@@ -663,98 +667,99 @@ mod tests {
 
     #[test]
     fn test_filter_artifacts_checksum() {
-        assert!(should_sign_artifact(ArtifactKind::Checksum, "checksum"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "checksum"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "checksum"));
+        assert!(should_sign_artifact(ArtifactKind::Checksum, "checksum").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "checksum").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "checksum").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_all() {
-        assert!(should_sign_artifact(ArtifactKind::Checksum, "all"));
-        assert!(should_sign_artifact(ArtifactKind::Archive, "all"));
-        assert!(should_sign_artifact(ArtifactKind::Binary, "all"));
+        assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_none() {
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "none").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_archive() {
-        assert!(should_sign_artifact(ArtifactKind::Archive, "archive"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "archive"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "archive"));
-        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "archive"));
+        assert!(should_sign_artifact(ArtifactKind::Archive, "archive").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "archive").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "archive").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "archive").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_source() {
-        // "source" is an alias for "archive"
-        assert!(should_sign_artifact(ArtifactKind::Archive, "source"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "source"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "source"));
+        // "source" matches SourceArchive (not Archive)
+        assert!(should_sign_artifact(ArtifactKind::SourceArchive, "source").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "source").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "source").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "source").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_binary() {
-        assert!(should_sign_artifact(ArtifactKind::Binary, "binary"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "binary"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "binary"));
-        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "binary"));
+        assert!(should_sign_artifact(ArtifactKind::Binary, "binary").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "binary").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "binary").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "binary").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_package() {
-        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "package"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "package"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "package"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "package"));
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "package").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_installer() {
-        assert!(should_sign_artifact(ArtifactKind::Installer, "installer"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "installer"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "installer"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "installer"));
-        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "installer"));
+        assert!(should_sign_artifact(ArtifactKind::Installer, "installer").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "installer").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "installer").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "installer").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "installer").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_diskimage() {
-        assert!(should_sign_artifact(ArtifactKind::DiskImage, "diskimage"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "diskimage"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "diskimage"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "diskimage"));
-        assert!(!should_sign_artifact(ArtifactKind::Installer, "diskimage"));
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "diskimage").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "diskimage").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "diskimage").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "diskimage").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "diskimage").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_sbom() {
-        assert!(should_sign_artifact(ArtifactKind::Sbom, "sbom"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "sbom"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "sbom"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "sbom"));
-        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "sbom"));
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "sbom").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "sbom").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "sbom").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "sbom").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "sbom").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_snap() {
-        assert!(should_sign_artifact(ArtifactKind::Snap, "snap"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "snap"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "snap"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "snap"));
-        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "snap"));
+        assert!(should_sign_artifact(ArtifactKind::Snap, "snap").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "snap").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "snap").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "snap").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "snap").unwrap());
     }
 
     #[test]
     fn test_filter_artifacts_macos_package() {
-        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "macos_package"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "macos_package"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "macos_package"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "macos_package"));
-        assert!(!should_sign_artifact(ArtifactKind::Installer, "macos_package"));
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "macos_package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "macos_package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "macos_package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "macos_package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "macos_package").unwrap());
     }
 
     #[test]
@@ -837,69 +842,62 @@ mod tests {
     #[test]
     fn test_artifacts_filter_selects_correct_kinds() {
         // "all" matches everything
-        assert!(should_sign_artifact(ArtifactKind::Archive, "all"));
-        assert!(should_sign_artifact(ArtifactKind::Binary, "all"));
-        assert!(should_sign_artifact(ArtifactKind::Checksum, "all"));
-        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all"));
-        assert!(should_sign_artifact(ArtifactKind::Installer, "all"));
-        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all"));
-        assert!(should_sign_artifact(ArtifactKind::Sbom, "all"));
-        assert!(should_sign_artifact(ArtifactKind::Snap, "all"));
-        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all"));
+        assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
 
         // "none" matches nothing
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::Installer, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::Sbom, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::Snap, "none"));
-        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Sbom, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Snap, "none").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "none").unwrap());
 
         // "archive" only matches Archive
-        assert!(should_sign_artifact(ArtifactKind::Archive, "archive"));
-        assert!(!should_sign_artifact(ArtifactKind::Binary, "archive"));
-        assert!(!should_sign_artifact(ArtifactKind::Checksum, "archive"));
+        assert!(should_sign_artifact(ArtifactKind::Archive, "archive").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "archive").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "archive").unwrap());
 
         // "binary" only matches Binary
-        assert!(should_sign_artifact(ArtifactKind::Binary, "binary"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "binary"));
+        assert!(should_sign_artifact(ArtifactKind::Binary, "binary").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "binary").unwrap());
 
         // "package" only matches LinuxPackage
-        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "package"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "package"));
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "package").unwrap());
 
         // "installer" only matches Installer
-        assert!(should_sign_artifact(ArtifactKind::Installer, "installer"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "installer"));
+        assert!(should_sign_artifact(ArtifactKind::Installer, "installer").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "installer").unwrap());
 
         // "diskimage" only matches DiskImage
-        assert!(should_sign_artifact(ArtifactKind::DiskImage, "diskimage"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "diskimage"));
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "diskimage").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "diskimage").unwrap());
 
         // "sbom" only matches Sbom
-        assert!(should_sign_artifact(ArtifactKind::Sbom, "sbom"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "sbom"));
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "sbom").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "sbom").unwrap());
 
         // "snap" only matches Snap
-        assert!(should_sign_artifact(ArtifactKind::Snap, "snap"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "snap"));
+        assert!(should_sign_artifact(ArtifactKind::Snap, "snap").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "snap").unwrap());
 
         // "macos_package" only matches MacOsPackage
-        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "macos_package"));
-        assert!(!should_sign_artifact(ArtifactKind::Archive, "macos_package"));
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "macos_package").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "macos_package").unwrap());
 
-        // Unknown filter defaults to checksum
-        assert!(should_sign_artifact(
-            ArtifactKind::Checksum,
-            "unknown-value"
-        ));
-        assert!(!should_sign_artifact(
-            ArtifactKind::Archive,
-            "unknown-value"
-        ));
+        // Unknown filter returns an error
+        assert!(should_sign_artifact(ArtifactKind::Checksum, "unknown-value").is_err());
     }
 
     #[test]
@@ -975,7 +973,7 @@ mod tests {
         // 2. If ids is set, artifact metadata "id" or "name" must match
         let ids = &sign_cfg.ids;
         let should_sign = |a: &Artifact| -> bool {
-            if !should_sign_artifact(a.kind, filter) {
+            if !should_sign_artifact(a.kind, filter).unwrap() {
                 return false;
             }
             if let Some(id_list) = ids {

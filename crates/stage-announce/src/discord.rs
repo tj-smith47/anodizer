@@ -15,7 +15,7 @@ pub struct DiscordOptions<'a> {
 }
 
 /// GoReleaser default blue colour.
-const DEFAULT_COLOR: u32 = 3_553_599;
+const DEFAULT_COLOR: u32 = 3_888_754;
 
 // ---------------------------------------------------------------------------
 // Payload builder
@@ -30,10 +30,13 @@ pub(crate) fn discord_payload(message: &str, opts: &DiscordOptions<'_>) -> Strin
     });
 
     if let Some(author) = opts.author {
-        embed["author"] = json!({ "name": author });
-    }
-    if let Some(icon) = opts.icon_url {
-        embed["footer"] = json!({ "icon_url": icon });
+        let mut author_obj = json!({ "name": author });
+        if let Some(icon) = opts.icon_url {
+            author_obj["icon_url"] = json!(icon);
+        }
+        embed["author"] = author_obj;
+    } else if let Some(icon) = opts.icon_url {
+        embed["author"] = json!({ "icon_url": icon });
     }
 
     json!({ "embeds": [embed] }).to_string()
@@ -98,6 +101,20 @@ mod tests {
         let payload = discord_payload("released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let embed = &json["embeds"][0];
-        assert_eq!(embed["footer"]["icon_url"], "https://example.com/icon.png");
+        assert_eq!(embed["author"]["icon_url"], "https://example.com/icon.png");
+    }
+
+    #[test]
+    fn test_discord_payload_with_author_and_icon_url() {
+        let opts = DiscordOptions {
+            author: Some("release-bot"),
+            color: None,
+            icon_url: Some("https://example.com/icon.png"),
+        };
+        let payload = discord_payload("released!", &opts);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let embed = &json["embeds"][0];
+        assert_eq!(embed["author"]["name"], "release-bot");
+        assert_eq!(embed["author"]["icon_url"], "https://example.com/icon.png");
     }
 }

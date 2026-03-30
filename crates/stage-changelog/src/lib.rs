@@ -83,27 +83,25 @@ pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
 
 /// Filter out commits whose `raw_message` matches any of the exclude regex
 /// patterns. Returns a new `Vec` of commits that did NOT match any pattern.
+///
+/// Returns an error if any regex pattern fails to compile.
 pub(crate) fn apply_filters(
     commits: &[CommitInfo],
     exclude: &[String],
-    log: &anodize_core::log::StageLogger,
-) -> Vec<CommitInfo> {
-    let patterns: Vec<Regex> = exclude
-        .iter()
-        .filter_map(|p| match Regex::new(p) {
-            Ok(re) => Some(re),
-            Err(e) => {
-                log.warn(&format!("invalid exclude regex {:?}: {}", p, e));
-                None
-            }
-        })
-        .collect();
+    _log: &anodize_core::log::StageLogger,
+) -> Result<Vec<CommitInfo>> {
+    let mut patterns: Vec<Regex> = Vec::with_capacity(exclude.len());
+    for p in exclude {
+        let re = Regex::new(p)
+            .map_err(|e| anyhow::anyhow!("invalid exclude regex {:?}: {}", p, e))?;
+        patterns.push(re);
+    }
 
-    commits
+    Ok(commits
         .iter()
         .filter(|c| !patterns.iter().any(|re| re.is_match(&c.raw_message)))
         .cloned()
-        .collect()
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -112,45 +110,48 @@ pub(crate) fn apply_filters(
 
 /// Keep only commits whose `raw_message` matches at least one of the include
 /// regex patterns. If `include` is empty, all commits are kept (no-op).
+///
+/// Returns an error if any regex pattern fails to compile.
 pub(crate) fn apply_include_filters(
     commits: &[CommitInfo],
     include: &[String],
-    log: &anodize_core::log::StageLogger,
-) -> Vec<CommitInfo> {
+    _log: &anodize_core::log::StageLogger,
+) -> Result<Vec<CommitInfo>> {
     if include.is_empty() {
-        return commits.to_vec();
+        return Ok(commits.to_vec());
     }
-    let patterns: Vec<Regex> = include
-        .iter()
-        .filter_map(|p| match Regex::new(p) {
-            Ok(re) => Some(re),
-            Err(e) => {
-                log.warn(&format!("invalid include regex {:?}: {}", p, e));
-                None
-            }
-        })
-        .collect();
+    let mut patterns: Vec<Regex> = Vec::with_capacity(include.len());
+    for p in include {
+        let re = Regex::new(p)
+            .map_err(|e| anyhow::anyhow!("invalid include regex {:?}: {}", p, e))?;
+        patterns.push(re);
+    }
 
-    commits
+    Ok(commits
         .iter()
         .filter(|c| patterns.iter().any(|re| re.is_match(&c.raw_message)))
         .cloned()
-        .collect()
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
 // sort_commits
 // ---------------------------------------------------------------------------
 
-/// Sort commits in-place by description. `order` must be `"asc"` or `"desc"`.
-/// An empty string or `"none"` preserves the original git log order (no sorting).
-pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) {
+/// Sort commits in-place by `raw_message` (the full commit subject line),
+/// matching GoReleaser's behavior. `order` must be `"asc"`, `"desc"`, or
+/// empty (preserves original git log order).
+///
+/// Returns an error if `order` is a non-empty, unrecognized value.
+pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) -> Result<()> {
     match order {
-        "asc" => commits.sort_by(|a, b| a.description.cmp(&b.description)),
-        "desc" => commits.sort_by(|a, b| b.description.cmp(&a.description)),
-        // Empty or "none" — preserve original git log order
-        _ => {}
+        "asc" => commits.sort_by(|a, b| a.raw_message.cmp(&b.raw_message)),
+        "desc" => commits.sort_by(|a, b| b.raw_message.cmp(&a.raw_message)),
+        // Empty — preserve original git log order
+        "" => {}
+        other => anyhow::bail!("invalid changelog sort direction: {:?} (expected \"asc\", \"desc\", or empty)", other),
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -165,24 +166,25 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) {
 /// When a group has nested `groups`, the commits that matched the parent group
 /// are further partitioned into subgroups using the same algorithm recursively.
 /// Recursion depth is capped at 6 (matching Markdown's `######` max heading level).
+///
+/// Returns an error if any group regex pattern fails to compile.
 pub(crate) fn group_commits(
     commits: &[CommitInfo],
     groups: &[ChangelogGroup],
-    log: &anodize_core::log::StageLogger,
-) -> Vec<GroupedCommits> {
-    group_commits_inner(commits, groups, log, 1)
+    _log: &anodize_core::log::StageLogger,
+) -> Result<Vec<GroupedCommits>> {
+    group_commits_inner(commits, groups, 1)
 }
 
 fn group_commits_inner(
     commits: &[CommitInfo],
     groups: &[ChangelogGroup],
-    log: &anodize_core::log::StageLogger,
     depth: usize,
-) -> Vec<GroupedCommits> {
+) -> Result<Vec<GroupedCommits>> {
     // Cap recursion at 6 to match Markdown's maximum heading level.
     if depth > 6 {
         // At max depth, return all commits as a single flat group.
-        return if commits.is_empty() {
+        return Ok(if commits.is_empty() {
             Vec::new()
         } else {
             vec![GroupedCommits {
@@ -190,29 +192,29 @@ fn group_commits_inner(
                 commits: commits.to_vec(),
                 subgroups: Vec::new(),
             }]
-        };
+        });
     }
     // Sort groups by their `order` field (None sorts last).
     let mut sorted_groups: Vec<&ChangelogGroup> = groups.iter().collect();
     sorted_groups.sort_by_key(|g| g.order.unwrap_or(i32::MAX));
 
-    // Compile regexes once.
-    let compiled: Vec<(Option<Regex>, &ChangelogGroup)> = sorted_groups
-        .iter()
-        .map(|g| {
-            let re = g.regexp.as_deref().and_then(|p| match Regex::new(p) {
-                Ok(re) => Some(re),
-                Err(e) => {
-                    log.warn(&format!(
+    // Compile regexes once. Invalid patterns are hard errors.
+    let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> = Vec::with_capacity(sorted_groups.len());
+    for g in &sorted_groups {
+        let re = match g.regexp.as_deref() {
+            Some(p) => {
+                let re = Regex::new(p).map_err(|e| {
+                    anyhow::anyhow!(
                         "invalid group regex {:?} for group {:?}: {}",
                         p, g.title, e
-                    ));
-                    None
-                }
-            });
-            (re, *g)
-        })
-        .collect();
+                    )
+                })?;
+                Some(re)
+            }
+            None => None,
+        };
+        compiled.push((re, *g));
+    }
 
     let mut buckets: Vec<Vec<CommitInfo>> = vec![Vec::new(); compiled.len()];
     let mut others: Vec<CommitInfo> = Vec::new();
@@ -229,33 +231,32 @@ fn group_commits_inner(
         others.push(commit.clone());
     }
 
-    let mut result: Vec<GroupedCommits> = compiled
-        .iter()
-        .zip(buckets)
-        .filter(|((_, group), bucket)| !bucket.is_empty() || group.groups.as_ref().is_some_and(|g| !g.is_empty()))
-        .map(|((_, group), bucket)| {
-            // Recursively process nested subgroups if present.
-            let subgroups = match &group.groups {
-                Some(sub) if !sub.is_empty() => group_commits_inner(&bucket, sub, log, depth + 1),
-                _ => Vec::new(),
-            };
-            // When there are subgroups, the parent's "commits" are only those
-            // that did NOT match any subgroup (the subgroup "Others" bucket
-            // is handled inside the recursive call).
-            let own_commits = if subgroups.is_empty() {
-                bucket
-            } else {
-                // All commits are distributed into subgroups already;
-                // the parent shows no direct commits.
-                Vec::new()
-            };
-            GroupedCommits {
-                title: group.title.clone(),
-                commits: own_commits,
-                subgroups,
-            }
-        })
-        .collect();
+    let mut result: Vec<GroupedCommits> = Vec::new();
+    for ((_, group), bucket) in compiled.iter().zip(buckets) {
+        if bucket.is_empty() && group.groups.as_ref().is_none_or(|g| g.is_empty()) {
+            continue;
+        }
+        // Recursively process nested subgroups if present.
+        let subgroups = match &group.groups {
+            Some(sub) if !sub.is_empty() => group_commits_inner(&bucket, sub, depth + 1)?,
+            _ => Vec::new(),
+        };
+        // When there are subgroups, the parent's "commits" are only those
+        // that did NOT match any subgroup (the subgroup "Others" bucket
+        // is handled inside the recursive call).
+        let own_commits = if subgroups.is_empty() {
+            bucket
+        } else {
+            // All commits are distributed into subgroups already;
+            // the parent shows no direct commits.
+            Vec::new()
+        };
+        result.push(GroupedCommits {
+            title: group.title.clone(),
+            commits: own_commits,
+            subgroups,
+        });
+    }
 
     if !others.is_empty() {
         result.push(GroupedCommits {
@@ -265,7 +266,7 @@ fn group_commits_inner(
         });
     }
 
-    result
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -275,11 +276,12 @@ fn group_commits_inner(
 /// Render grouped commits as a Markdown string. Each group becomes a `## Title`
 /// section, and each commit is a bullet formatted according to `format_template`.
 ///
-/// `abbrev` controls the hash abbreviation length (default 7). Values <= 0 omit
-/// the hash entirely.
+/// `abbrev` controls the hash abbreviation length (default 7). A value of `0`
+/// means "use the full SHA" (no truncation). Negative values (like GoReleaser's
+/// `-1`) omit the hash entirely.
 ///
 /// If `format_template` is `None`, the default format `{{ ShortSHA }} {{ Message }}`
-/// is used (matching GoReleaser defaults). When `abbrev <= 0`, the default format
+/// is used (matching GoReleaser defaults). When `abbrev < 0`, the default format
 /// becomes `{{ Message }}` (no hash prefix). Available template variables:
 /// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`, `Login`, `Logins`.
 pub(crate) fn render_changelog(
@@ -288,7 +290,7 @@ pub(crate) fn render_changelog(
     format_template: Option<&str>,
     logins: &str,
 ) -> String {
-    let default_format = if abbrev <= 0 {
+    let default_format = if abbrev < 0 {
         "{{ Message }}"
     } else {
         "{{ ShortSHA }} {{ Message }}"
@@ -341,8 +343,12 @@ fn render_groups(
 /// - `Login` — per-commit GitHub username (populated only with `github` backend)
 /// - `Logins` — comma-separated list of all GitHub usernames in the release
 fn render_commit_line(out: &mut String, commit: &CommitInfo, abbrev: i32, tmpl: &str, logins: &str) {
-    let short_sha = if abbrev <= 0 {
+    let short_sha = if abbrev < 0 {
+        // Negative abbrev (e.g. GoReleaser's -1) means omit hash entirely.
         String::new()
+    } else if abbrev == 0 {
+        // abbrev 0 means full SHA (no truncation).
+        commit.full_hash.clone()
     } else {
         let a = abbrev as usize;
         if commit.hash.len() > a {
@@ -361,7 +367,7 @@ fn render_commit_line(out: &mut String, commit: &CommitInfo, abbrev: i32, tmpl: 
     vars.set("Login", &commit.login);
     let rendered = template::render(tmpl, &vars)
         .unwrap_or_else(|_| {
-            if abbrev <= 0 {
+            if abbrev < 0 {
                 commit.description.clone()
             } else {
                 format!("{} {}", short_sha, commit.description)
@@ -459,6 +465,15 @@ impl Stage for ChangelogStage {
             return Ok(());
         }
 
+        // Validate the use source — only "git", "github", and "github-native"
+        // (already handled above) are supported.
+        if use_source != "git" && use_source != "github" {
+            anyhow::bail!(
+                "changelog: unsupported use source {:?} (expected \"git\", \"github\", or \"github-native\")",
+                use_source
+            );
+        }
+
         let cfg = changelog_cfg.as_ref();
         let sort_order = cfg
             .and_then(|c| c.sort.clone())
@@ -517,13 +532,17 @@ impl Stage for ChangelogStage {
                 (fetch_git_commits(&prev_tag, path_filter, &crate_name, &log), String::new())
             };
 
-            // Apply exclude filters, then include filters.
-            let after_exclude = apply_filters(&all_commit_infos, &exclude_filters, &log);
-            let filtered = apply_include_filters(&after_exclude, &include_filters, &log);
+            // GoReleaser treats include and exclude as mutually exclusive:
+            // if include patterns are configured, exclude is completely ignored.
+            let filtered = if !include_filters.is_empty() {
+                apply_include_filters(&all_commit_infos, &include_filters, &log)?
+            } else {
+                apply_filters(&all_commit_infos, &exclude_filters, &log)?
+            };
 
             // Sort commits.
             let mut sorted = filtered;
-            sort_commits(&mut sorted, &sort_order);
+            sort_commits(&mut sorted, &sort_order)?;
 
             // Group commits.
             let grouped = if groups.is_empty() {
@@ -538,7 +557,7 @@ impl Stage for ChangelogStage {
                     }]
                 }
             } else {
-                group_commits(&sorted, &groups, &log)
+                group_commits(&sorted, &groups, &log)?
             };
 
             // Render the markdown for this crate.
@@ -821,7 +840,7 @@ mod tests {
                 groups: None,
             },
         ];
-        let result = group_commits(&commits, &groups, &test_logger());
+        let result = group_commits(&commits, &groups, &test_logger()).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "Features");
         assert_eq!(result[0].commits.len(), 2);
@@ -837,7 +856,7 @@ mod tests {
             ci("ci: fix pipeline", "ci", "fix pipeline", "c"),
         ];
         let filters = vec!["^docs:".to_string(), "^ci:".to_string()];
-        let filtered = apply_filters(&commits, &filters, &test_logger());
+        let filtered = apply_filters(&commits, &filters, &test_logger()).unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].kind, "feat");
     }
@@ -867,15 +886,15 @@ mod tests {
     #[test]
     fn test_sort_asc() {
         let mut commits = vec![ci("b", "feat", "b", "2"), ci("a", "feat", "a", "1")];
-        sort_commits(&mut commits, "asc");
-        assert_eq!(commits[0].description, "a");
+        sort_commits(&mut commits, "asc").unwrap();
+        assert_eq!(commits[0].raw_message, "a");
     }
 
     #[test]
     fn test_sort_desc() {
         let mut commits = vec![ci("a", "feat", "a", "1"), ci("b", "feat", "b", "2")];
-        sort_commits(&mut commits, "desc");
-        assert_eq!(commits[0].description, "b");
+        sort_commits(&mut commits, "desc").unwrap();
+        assert_eq!(commits[0].raw_message, "b");
     }
 
     #[test]
@@ -890,7 +909,7 @@ mod tests {
             order: Some(0),
             groups: None,
         }];
-        let result = group_commits(&commits, &groups, &test_logger());
+        let result = group_commits(&commits, &groups, &test_logger()).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].title, "Features");
         assert_eq!(result[1].title, "Others");
@@ -915,7 +934,7 @@ mod tests {
                 groups: None,
             },
         ];
-        let result = group_commits(&commits, &groups, &test_logger());
+        let result = group_commits(&commits, &groups, &test_logger()).unwrap();
         // "Bug Fixes" has no commits, should be omitted
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].title, "Features");
@@ -949,7 +968,7 @@ mod tests {
     #[test]
     fn test_apply_filters_empty_exclude() {
         let commits = vec![ci("feat: something", "feat", "something", "a")];
-        let filtered = apply_filters(&commits, &[], &test_logger());
+        let filtered = apply_filters(&commits, &[], &test_logger()).unwrap();
         assert_eq!(filtered.len(), 1);
     }
 
@@ -1056,7 +1075,7 @@ mod tests {
             ci("chore: bump deps", "chore", "bump deps", "d"),
         ];
         let include = vec!["^feat".to_string(), "^fix".to_string()];
-        let result = apply_include_filters(&commits, &include, &test_logger());
+        let result = apply_include_filters(&commits, &include, &test_logger()).unwrap();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].kind, "feat");
         assert_eq!(result[1].kind, "fix");
@@ -1069,7 +1088,7 @@ mod tests {
             ci("chore: bump deps", "chore", "bump deps", "b"),
         ];
         let include = vec!["^feat".to_string()];
-        let result = apply_include_filters(&commits, &include, &test_logger());
+        let result = apply_include_filters(&commits, &include, &test_logger()).unwrap();
         assert!(result.is_empty());
     }
 
@@ -1079,17 +1098,17 @@ mod tests {
             ci("feat: something", "feat", "something", "a"),
             ci("fix: something else", "fix", "something else", "b"),
         ];
-        let result = apply_include_filters(&commits, &[], &test_logger());
+        let result = apply_include_filters(&commits, &[], &test_logger()).unwrap();
         assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn test_apply_include_filters_invalid_regex_skipped() {
+    fn test_apply_include_filters_invalid_regex_is_error() {
         let commits = vec![ci("feat: good", "feat", "good", "a")];
-        // Invalid regex is skipped; valid one still works.
+        // Invalid regex should be a hard error.
         let include = vec!["[invalid".to_string(), "^feat".to_string()];
         let result = apply_include_filters(&commits, &include, &test_logger());
-        assert_eq!(result.len(), 1);
+        assert!(result.is_err(), "invalid include regex should return an error");
     }
 
     // -----------------------------------------------------------------------
@@ -1235,8 +1254,9 @@ abbrev: 10
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_include_and_exclude_together() {
-        // Exclude runs first, then include further restricts.
+    fn test_include_and_exclude_are_mutually_exclusive() {
+        // GoReleaser treats include and exclude as mutually exclusive:
+        // if include is configured, exclude is completely ignored.
         let commits = vec![
             ci("feat: good feature", "feat", "good feature", "a"),
             ci(
@@ -1249,19 +1269,20 @@ abbrev: 10
             ci("docs: update readme", "docs", "update readme", "d"),
         ];
 
-        // Exclude WIP commits
-        let after_exclude = apply_filters(&commits, &["wip".to_string()], &test_logger());
-        assert_eq!(after_exclude.len(), 3); // feat, fix, docs
-
-        // Then include only feat and fix
-        let after_include = apply_include_filters(
-            &after_exclude,
+        // When include is set, only include patterns matter (exclude ignored)
+        let included = apply_include_filters(
+            &commits,
             &["^feat".to_string(), "^fix".to_string()],
             &test_logger(),
-        );
-        assert_eq!(after_include.len(), 2);
-        assert_eq!(after_include[0].description, "good feature");
-        assert_eq!(after_include[1].description, "important fix");
+        ).unwrap();
+        assert_eq!(included.len(), 3); // both feat commits + fix
+        assert_eq!(included[0].description, "good feature");
+        assert_eq!(included[1].description, "work in progress");
+        assert_eq!(included[2].description, "important fix");
+
+        // When include is empty, exclude patterns apply
+        let excluded = apply_filters(&commits, &["wip".to_string()], &test_logger()).unwrap();
+        assert_eq!(excluded.len(), 3); // feat, fix, docs (WIP excluded)
     }
 
     // -----------------------------------------------------------------------
@@ -1337,7 +1358,7 @@ abbrev: 10
 
         // Apply exclude filters (filter out docs and ci)
         let exclude = vec!["^docs:".to_string(), "^ci:".to_string()];
-        let filtered = apply_filters(&all_commits, &exclude, &test_logger());
+        let filtered = apply_filters(&all_commits, &exclude, &test_logger()).unwrap();
         assert_eq!(filtered.len(), 6, "docs and ci commits should be excluded");
         assert!(
             !filtered.iter().any(|c| c.kind == "docs"),
@@ -1350,7 +1371,7 @@ abbrev: 10
 
         // Sort ascending
         let mut sorted = filtered;
-        sort_commits(&mut sorted, "asc");
+        sort_commits(&mut sorted, "asc").unwrap();
 
         // Group into sections
         let groups = vec![
@@ -1367,7 +1388,7 @@ abbrev: 10
                 groups: None,
             },
         ];
-        let grouped = group_commits(&sorted, &groups, &test_logger());
+        let grouped = group_commits(&sorted, &groups, &test_logger()).unwrap();
 
         // Verify grouping
         assert!(
@@ -1474,12 +1495,12 @@ abbrev: 10
             &commits,
             &["^feat".to_string(), "^fix".to_string()],
             &test_logger(),
-        );
+        ).unwrap();
         assert_eq!(included.len(), 3);
 
         // Sort the filtered list, then group
         let mut sorted = included;
-        sort_commits(&mut sorted, "asc");
+        sort_commits(&mut sorted, "asc").unwrap();
         let groups = vec![
             ChangelogGroup {
                 title: "Features".into(),
@@ -1494,7 +1515,7 @@ abbrev: 10
                 groups: None,
             },
         ];
-        let grouped = group_commits(&sorted, &groups, &test_logger());
+        let grouped = group_commits(&sorted, &groups, &test_logger()).unwrap();
 
         let md = render_changelog(&grouped, 7, None, "");
 
@@ -1563,7 +1584,7 @@ abbrev: 10
             &commits,
             &["^ci:".to_string(), "^docs:".to_string()],
             &test_logger(),
-        );
+        ).unwrap();
         assert!(filtered.is_empty());
 
         let grouped = group_commits(
@@ -1575,7 +1596,7 @@ abbrev: 10
                 groups: None,
             }],
             &test_logger(),
-        );
+        ).unwrap();
         assert!(grouped.is_empty());
 
         let md = render_changelog(&grouped, 7, None, "");
@@ -1804,7 +1825,7 @@ abbrev: 10
             &commits,
             &["^feat".to_string(), "^fix".to_string()],
             &test_logger(),
-        );
+        ).unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|c| c.kind == "feat" || c.kind == "fix"));
         // Excluded types should not be present
@@ -1838,23 +1859,20 @@ abbrev: 10
     }
 
     #[test]
-    fn test_abbrev_zero_omits_hash() {
+    fn test_abbrev_zero_shows_full_sha() {
+        let mut commit = ci("feat: test", "feat", "test", "abcdef");
+        commit.full_hash = "abcdef1234567890abcdef1234567890abcdef12".to_string();
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
-            commits: vec![ci("feat: test", "feat", "test", "abcdef")],
+            commits: vec![commit],
             subgroups: Vec::new(),
         }];
 
-        // abbrev = 0 should omit the hash (same behavior as -1)
+        // abbrev = 0 should show the full SHA (no truncation)
         let md = render_changelog(&grouped, 0, None, "");
         assert!(
-            md.contains("- test"),
-            "abbrev=0 should omit hash, got: {}",
-            md
-        );
-        assert!(
-            !md.contains("abcdef"),
-            "abbrev=0 should not contain any hash, got: {}",
+            md.contains("abcdef1234567890abcdef1234567890abcdef12 test"),
+            "abbrev=0 should show full SHA, got: {}",
             md
         );
     }
@@ -1891,10 +1909,10 @@ abbrev: 10
         let commits = vec![ci("ci: pipeline fix", "ci", "pipeline fix", "a")];
 
         // Include filter that matches nothing
-        let result = apply_include_filters(&commits, &["^feat".to_string()], &test_logger());
+        let result = apply_include_filters(&commits, &["^feat".to_string()], &test_logger()).unwrap();
         assert!(result.is_empty());
 
-        let grouped = group_commits(&result, &[], &test_logger());
+        let grouped = group_commits(&result, &[], &test_logger()).unwrap();
         let md = render_changelog(&grouped, 7, None, "");
         assert!(
             md.is_empty(),
@@ -1976,35 +1994,24 @@ abbrev: 10
     // ---- Error path tests (Task 4D) ----
 
     #[test]
-    fn test_invalid_exclude_regex_warns_but_does_not_crash() {
+    fn test_invalid_exclude_regex_returns_error() {
         let commits = vec![ci("feat: new feature", "feat", "new feature", "abc")];
         // Invalid regex: unclosed group
         let filters = vec!["^feat(".to_string()];
-        // apply_filters logs a warning but does not panic or error
         let result = apply_filters(&commits, &filters, &test_logger());
-        // The invalid regex is skipped, so the commit passes through
-        assert_eq!(
-            result.len(),
-            1,
-            "invalid regex should be skipped, commits pass through"
-        );
+        assert!(result.is_err(), "invalid exclude regex should return an error");
     }
 
     #[test]
-    fn test_invalid_include_regex_warns_but_does_not_crash() {
+    fn test_invalid_include_regex_returns_error() {
         let commits = vec![ci("fix: a bug", "fix", "a bug", "def")];
         let filters = vec!["[invalid".to_string()];
         let result = apply_include_filters(&commits, &filters, &test_logger());
-        // Invalid regex is skipped, no valid patterns remain, so nothing matches
-        assert_eq!(
-            result.len(),
-            0,
-            "invalid include regex means no commits match"
-        );
+        assert!(result.is_err(), "invalid include regex should return an error");
     }
 
     #[test]
-    fn test_invalid_group_regex_warns_and_commits_go_to_others() {
+    fn test_invalid_group_regex_returns_error() {
         let commits = vec![ci("feat: new thing", "feat", "new thing", "abc")];
         let groups = vec![ChangelogGroup {
             title: "Features".into(),
@@ -2013,9 +2020,7 @@ abbrev: 10
             groups: None,
         }];
         let result = group_commits(&commits, &groups, &test_logger());
-        // The invalid regex group compiles to None, so commit goes to "Others"
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].title, "Others");
+        assert!(result.is_err(), "invalid group regex should return an error");
     }
 
     #[test]
@@ -2032,15 +2037,17 @@ abbrev: 10
     }
 
     #[test]
-    fn test_sort_commits_unknown_order_preserves_git_order() {
+    fn test_sort_commits_unknown_order_returns_error() {
         let mut commits = vec![
             ci("b: second", "other", "second", "1"),
             ci("a: first", "other", "first", "2"),
         ];
-        sort_commits(&mut commits, "invalid_order");
-        // Unknown order preserves original order (no sorting)
-        assert_eq!(commits[0].description, "second");
-        assert_eq!(commits[1].description, "first");
+        let result = sort_commits(&mut commits, "invalid_order");
+        assert!(result.is_err(), "invalid sort direction should return an error");
+        assert!(
+            result.unwrap_err().to_string().contains("invalid changelog sort direction"),
+            "error message should mention the invalid direction"
+        );
     }
 
     #[test]
@@ -2335,25 +2342,22 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
             ci("a", "feat", "a", "1"),
             ci("b", "feat", "b", "2"),
         ];
-        sort_commits(&mut commits, "");
+        sort_commits(&mut commits, "").unwrap();
         // Original order should be preserved (c, a, b)
-        assert_eq!(commits[0].description, "c");
-        assert_eq!(commits[1].description, "a");
-        assert_eq!(commits[2].description, "b");
+        assert_eq!(commits[0].raw_message, "c");
+        assert_eq!(commits[1].raw_message, "a");
+        assert_eq!(commits[2].raw_message, "b");
     }
 
     #[test]
-    fn test_sort_none_preserves_order() {
+    fn test_sort_none_is_invalid() {
         let mut commits = vec![
             ci("c", "feat", "c", "3"),
             ci("a", "feat", "a", "1"),
             ci("b", "feat", "b", "2"),
         ];
-        sort_commits(&mut commits, "none");
-        // Original order should be preserved (c, a, b)
-        assert_eq!(commits[0].description, "c");
-        assert_eq!(commits[1].description, "a");
-        assert_eq!(commits[2].description, "b");
+        let result = sort_commits(&mut commits, "none");
+        assert!(result.is_err(), "\"none\" is not a valid sort direction");
     }
 
     #[test]
@@ -2363,10 +2367,10 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
             ci("a", "feat", "a", "1"),
             ci("b", "feat", "b", "2"),
         ];
-        sort_commits(&mut commits, "asc");
-        assert_eq!(commits[0].description, "a");
-        assert_eq!(commits[1].description, "b");
-        assert_eq!(commits[2].description, "c");
+        sort_commits(&mut commits, "asc").unwrap();
+        assert_eq!(commits[0].raw_message, "a");
+        assert_eq!(commits[1].raw_message, "b");
+        assert_eq!(commits[2].raw_message, "c");
     }
 
     #[test]
@@ -2376,10 +2380,10 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
             ci("a", "feat", "a", "1"),
             ci("b", "feat", "b", "2"),
         ];
-        sort_commits(&mut commits, "desc");
-        assert_eq!(commits[0].description, "c");
-        assert_eq!(commits[1].description, "b");
-        assert_eq!(commits[2].description, "a");
+        sort_commits(&mut commits, "desc").unwrap();
+        assert_eq!(commits[0].raw_message, "c");
+        assert_eq!(commits[1].raw_message, "b");
+        assert_eq!(commits[2].raw_message, "a");
     }
 
     // ---------------------------------------------------------------------------
@@ -2615,7 +2619,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
                 groups: None,
             },
         ];
-        let result = group_commits(&commits, &groups, &test_logger());
+        let result = group_commits(&commits, &groups, &test_logger()).unwrap();
 
         assert_eq!(result.len(), 2, "should have Features and Bug Fixes");
         assert_eq!(result[0].title, "Features");
@@ -2697,16 +2701,18 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     }
 
     #[test]
-    fn test_abbrev_zero_custom_format_omits_short_sha() {
+    fn test_abbrev_zero_custom_format_shows_full_sha() {
+        let mut commit = ci("feat: test", "feat", "test", "abc1234567890");
+        commit.full_hash = "abc1234567890def1234567890abc1234567890de".to_string();
         let grouped = vec![GroupedCommits::new(
             "Changes",
-            vec![ci("feat: test", "feat", "test", "abc1234567890")],
+            vec![commit],
         )];
-        // Custom format referencing ShortSHA should get an empty string when abbrev=0
+        // Custom format referencing ShortSHA should get the full SHA when abbrev=0
         let md = render_changelog(&grouped, 0, Some("{{ ShortSHA }}|{{ Message }}"), "");
         assert!(
-            md.contains("- |test"),
-            "ShortSHA should be empty with abbrev=0, got: {md}"
+            md.contains("- abc1234567890def1234567890abc1234567890de|test"),
+            "ShortSHA should be full SHA with abbrev=0, got: {md}"
         );
     }
 }

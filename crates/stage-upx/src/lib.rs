@@ -132,7 +132,7 @@ impl Stage for UpxStage {
 
                 if ctx.is_dry_run() {
                     log.status(&format!(
-                        "(dry-run) [{}] would run: {} {} {}",
+                        "(dry-run) [{}] would run: {} --quiet {} {}",
                         id_label,
                         binary,
                         upx_cfg.args.join(" "),
@@ -147,13 +147,41 @@ impl Stage for UpxStage {
                 ));
 
                 let output = Command::new(binary)
+                    .arg("--quiet")
                     .args(&upx_cfg.args)
                     .arg(artifact_path)
                     .output()
                     .with_context(|| {
                         format!("upx: failed to spawn '{}' for {}", binary, artifact_str)
                     })?;
-                log.check_output(output, binary)?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let combined = format!("{}{}", stdout, stderr);
+
+                    // Known UPX exceptions that should be warnings, not errors.
+                    // This matches GoReleaser's behavior for mixed-architecture
+                    // builds where some binaries can't be compressed.
+                    const KNOWN_EXCEPTIONS: &[&str] = &[
+                        "CantPackException",
+                        "AlreadyPackedException",
+                        "NotCompressibleException",
+                        "UnknownExecutableFormatException",
+                    ];
+
+                    if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
+                        log.warn(&format!(
+                            "[{}] skipping {} (target: {}): {}",
+                            id_label,
+                            artifact_str,
+                            target_label,
+                            combined.trim(),
+                        ));
+                    } else {
+                        log.check_output(output, binary)?;
+                    }
+                }
             }
         }
 

@@ -302,10 +302,11 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         linux_artifacts
             .iter()
             .filter_map(|a| {
-                let pkgbuild_arch = if a.arch == "arm64" {
-                    "aarch64".to_string()
-                } else {
-                    "x86_64".to_string()
+                let pkgbuild_arch = match a.arch.as_str() {
+                    "arm64" | "aarch64" => "aarch64".to_string(),
+                    "386" | "i686" | "i386" | "x86" => "i686".to_string(),
+                    "armv7" | "arm" | "armhf" | "armv6" => "armv7h".to_string(),
+                    _ => "x86_64".to_string(),
                 };
                 if seen_arches.insert(pkgbuild_arch.clone()) {
                     let download_url = if let Some(tmpl) = url_template {

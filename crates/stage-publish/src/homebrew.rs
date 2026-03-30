@@ -534,11 +534,19 @@ pub fn generate_formula_with_opts(
     test: &str,
     opts: &FormulaOptions<'_>,
 ) -> String {
-    // Ruby class name: capitalise first letter, replace hyphens.
+    // Ruby class name: GoReleaser-compatible conversion.
+    //
+    // Rules (from GoReleaser's formulaNameFor):
+    // - `+` is replaced with `x`
+    // - `@` is replaced with `AT`
+    // - Split on `-`, `_`, and `.` (all are word separators)
+    // - Each segment is Title-cased and joined
     let class_name: String = {
-        let chars = name.replace('-', "_");
-        chars
-            .split('_')
+        let s = name.replace('+', "x");
+        // Replace `@` with `AT` — this keeps `@` as a standalone word or prefix.
+        let s = s.replace('@', "AT");
+        // Split on `-`, `_`, and `.` as word boundaries.
+        s.split(['-', '_', '.'])
             .map(|seg| {
                 let mut c = seg.chars();
                 match c.next() {
@@ -843,7 +851,6 @@ pub(crate) fn render_commit_msg(
 /// Render a `url_template` string using Tera with `name`, `version`, `os`,
 /// and `arch` variables.  Falls back to the raw template string on render
 /// failure.
-
 pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
@@ -1531,6 +1538,57 @@ mod tests {
             "system \"#{bin}/my-cool-tool\"",
         );
         assert!(formula.contains("class MyCoolTool < Formula"));
+    }
+
+    #[test]
+    fn test_formula_class_name_at_sign() {
+        let formula = generate_formula(
+            "node@20",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"node\"",
+            "system \"#{bin}/node\"",
+        );
+        assert!(
+            formula.contains("class NodeAT20 < Formula"),
+            "@ should become AT in class name"
+        );
+    }
+
+    #[test]
+    fn test_formula_class_name_plus_sign() {
+        let formula = generate_formula(
+            "c++check",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"cppcheck\"",
+            "system \"#{bin}/cppcheck\"",
+        );
+        assert!(
+            formula.contains("class Cxxcheck < Formula"),
+            "+ should become x in class name"
+        );
+    }
+
+    #[test]
+    fn test_formula_class_name_dot_separator() {
+        let formula = generate_formula(
+            "my.tool.app",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"my.tool.app\"",
+            "system \"#{bin}/my.tool.app\"",
+        );
+        assert!(
+            formula.contains("class MyToolApp < Formula"),
+            ". should act as word separator"
+        );
     }
 
     // -----------------------------------------------------------------------
