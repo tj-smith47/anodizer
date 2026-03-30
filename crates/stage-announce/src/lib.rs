@@ -10,6 +10,7 @@ pub mod email;
 mod http;
 pub mod linkedin;
 pub mod mastodon;
+pub mod opencollective;
 pub mod mattermost;
 pub mod reddit;
 pub mod slack;
@@ -429,6 +430,43 @@ impl Stage for AnnounceStage {
         }
 
         // ----------------------------------------------------------------
+        // OpenCollective
+        // ----------------------------------------------------------------
+        if let Some(cfg) = &announce.opencollective
+            && cfg.enabled.unwrap_or(false)
+        {
+            let slug = require_rendered(ctx, cfg.slug.as_deref(), "opencollective", "slug")?;
+            if slug.is_empty() {
+                let log = ctx.logger("announce");
+                log.status("opencollective: slug is empty — skipping");
+            } else {
+                let title = ctx.render_template(
+                    cfg.title_template
+                        .as_deref()
+                        .unwrap_or(opencollective::DEFAULT_TITLE_TEMPLATE),
+                )?;
+                let html = ctx.render_template(
+                    cfg.message_template
+                        .as_deref()
+                        .unwrap_or(opencollective::DEFAULT_MESSAGE_TEMPLATE),
+                )?;
+                let token = std::env::var("OPENCOLLECTIVE_TOKEN").map_err(|_| {
+                    anyhow::anyhow!(
+                        "announce.opencollective: OPENCOLLECTIVE_TOKEN env var is required"
+                    )
+                })?;
+                if token.is_empty() {
+                    anyhow::bail!(
+                        "announce.opencollective: OPENCOLLECTIVE_TOKEN env var must not be empty"
+                    );
+                }
+                dispatch(ctx, "opencollective", &title, || {
+                    opencollective::send_opencollective(&token, &slug, &title, &html)
+                })?;
+            }
+        }
+
+        // ----------------------------------------------------------------
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
@@ -509,9 +547,9 @@ mod tests {
     use super::*;
     use anodize_core::config::{
         AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, EmailAnnounce, LinkedInAnnounce,
-        MastodonAnnounce, MattermostAnnounce, RedditAnnounce, SlackAnnounce, SlackBlock,
-        SlackTextObject, StringOrBool, TeamsAnnounce, TelegramAnnounce, TwitterAnnounce,
-        WebhookConfig,
+        MastodonAnnounce, MattermostAnnounce, OpenCollectiveAnnounce, RedditAnnounce,
+        SlackAnnounce, SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce,
+        TelegramAnnounce, TwitterAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
     use serial_test::serial;
@@ -1712,5 +1750,137 @@ blocks:
             "expected 'must not be empty' error, got: {err}"
         );
         unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
+    }
+
+    // ----------------------------------------------------------------
+    // OpenCollective tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_skips_disabled_opencollective() {
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(false),
+                slug: Some("my-project".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[serial]
+    #[test]
+    fn test_dry_run_opencollective() {
+        unsafe { std::env::set_var("OPENCOLLECTIVE_TOKEN", "test_token") };
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(true),
+                slug: Some("my-project".to_string()),
+                title_template: Some("{{ .Tag }}".to_string()),
+                message_template: Some(
+                    "{{ .ProjectName }} {{ .Tag }} is out!".to_string(),
+                ),
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
+    }
+
+    #[test]
+    fn test_opencollective_missing_slug_errors() {
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(true),
+                slug: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing slug"),
+            "expected 'missing slug' error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_opencollective_empty_slug_skips() {
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(true),
+                slug: Some("".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        // Empty slug should cause a silent skip, not an error
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[serial]
+    #[test]
+    fn test_opencollective_missing_env_var_errors() {
+        unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(true),
+                slug: Some("my-project".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("OPENCOLLECTIVE_TOKEN"),
+            "expected OPENCOLLECTIVE_TOKEN error, got: {err}"
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn test_opencollective_empty_env_var_errors() {
+        unsafe { std::env::set_var("OPENCOLLECTIVE_TOKEN", "") };
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(true),
+                slug: Some("my-project".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "expected 'must not be empty' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
     }
 }

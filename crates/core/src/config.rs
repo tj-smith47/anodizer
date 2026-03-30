@@ -2311,6 +2311,7 @@ pub struct AnnounceConfig {
     pub mastodon: Option<MastodonAnnounce>,
     pub bluesky: Option<BlueskyAnnounce>,
     pub linkedin: Option<LinkedInAnnounce>,
+    pub opencollective: Option<OpenCollectiveAnnounce>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2326,6 +2327,16 @@ pub struct BlueskyAnnounce {
 #[serde(default)]
 pub struct LinkedInAnnounce {
     pub enabled: Option<bool>,
+    pub message_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct OpenCollectiveAnnounce {
+    pub enabled: Option<bool>,
+    /// Collective slug (e.g. "my-project")
+    pub slug: Option<String>,
+    pub title_template: Option<String>,
     pub message_template: Option<String>,
 }
 
