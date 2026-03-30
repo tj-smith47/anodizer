@@ -5,6 +5,7 @@ use std::process::Command;
 
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message, SmtpTransport, Transport};
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,7 @@ pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> 
         .context("failed to build email message")?;
 
     let creds = Credentials::new(smtp.username.to_string(), smtp.password.to_string());
-    let port = if smtp.port == 0 { 587 } else { smtp.port };
+    let port = smtp.port;
 
     let mut transport = SmtpTransport::starttls_relay(smtp.host)
         .context(format!(
@@ -62,7 +63,6 @@ pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> 
         .credentials(creds);
 
     if smtp.insecure_skip_verify {
-        use lettre::transport::smtp::client::{Tls, TlsParameters};
         let tls = TlsParameters::builder(smtp.host.to_string())
             .dangerous_accept_invalid_certs(true)
             .build()
@@ -143,7 +143,7 @@ pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
     } else {
         anyhow::bail!(
             "announce.email: neither `sendmail` nor `msmtp` found on PATH. \
-             Install one to enable email announcements."
+             Configure SMTP (host/port) or install sendmail/msmtp."
         );
     };
 
@@ -249,15 +249,16 @@ mod tests {
 
     #[test]
     fn test_smtp_params_default_port() {
+        // Port default (587) is resolved at the call site in lib.rs;
+        // SmtpParams always carries a real port number.
         let params = SmtpParams {
             host: "smtp.example.com",
-            port: 0,
+            port: 587,
             username: "user",
             password: "pass",
             insecure_skip_verify: false,
         };
-        let effective_port = if params.port == 0 { 587 } else { params.port };
-        assert_eq!(effective_port, 587);
+        assert_eq!(params.port, 587);
     }
 
     #[test]
@@ -269,7 +270,6 @@ mod tests {
             password: "pass",
             insecure_skip_verify: false,
         };
-        let effective_port = if params.port == 0 { 587 } else { params.port };
-        assert_eq!(effective_port, 465);
+        assert_eq!(params.port, 465);
     }
 }

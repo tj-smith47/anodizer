@@ -317,7 +317,7 @@ impl Stage for AnnounceStage {
                         "announce.email: SMTP_PASSWORD env var is required for SMTP transport"
                     )
                 })?;
-                let port = cfg.port.unwrap_or(0);
+                let port = cfg.port.unwrap_or(587);
                 let insecure = cfg.insecure_skip_verify.unwrap_or(false);
 
                 let smtp_params = email::SmtpParams {
