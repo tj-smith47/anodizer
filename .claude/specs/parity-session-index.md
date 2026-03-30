@@ -46,50 +46,50 @@ Sources: `goreleaser-parity-matrix.md` (Tasks 10-18), `fresh-parity-gap-analysis
 GoReleaser source: `internal/pipe/brew/`, `internal/pipe/scoop/`, `internal/pipe/chocolatey/`, `internal/pipe/winget/`, `internal/pipe/aur/`, `internal/pipe/krew/`, `internal/pipe/nix/`
 
 **Homebrew** (from parity-matrix s9, fresh-gap B25)
-- [ ] commit_author.signing
-- [ ] repository.branch, token, pull_request, git (SSH)
-- [ ] ids filter
-- [ ] url_template, url_headers
-- [ ] download_strategy, custom_require
-- [ ] custom_block, extra_install, post_install
-- [ ] plist, service
-- [ ] Homebrew Casks (entire feature)
-- [ ] alternative_names, app, repository.token_type, PR draft/body/base
+- [x] commit_author.signing
+- [x] repository.branch, token, pull_request, git (SSH)
+- [x] ids filter
+- [x] url_template, url_headers
+- [x] download_strategy, custom_require
+- [x] custom_block, extra_install, post_install
+- [x] plist, service
+- [x] Homebrew Casks (entire feature)
+- [x] alternative_names, app, repository.token_type, PR draft/body/base
 
 **Scoop** (from parity-matrix s10, fresh-gap B26)
-- [ ] commit_author.signing
-- [ ] repository.branch, token, pull_request, git (SSH)
-- [ ] 32-bit architecture block
-- [ ] url_template, use (archive/msi/nsis), repository.token_type
+- [x] commit_author.signing
+- [x] repository.branch, token, pull_request, git (SSH)
+- [x] 32-bit architecture block
+- [x] url_template, use (archive/msi/nsis), repository.token_type
 
 **Chocolatey** (from fresh-gap B27)
-- [ ] ids, owners, title, copyright, require_license_acceptance
-- [ ] project_source_url, docs_url, bug_tracker_url
-- [ ] summary, release_notes, dependencies, source_repo
-- [ ] use (archive/msi/nsis), url_template, package_source_url
+- [x] ids, owners, title, copyright, require_license_acceptance
+- [x] project_source_url, docs_url, bug_tracker_url
+- [x] summary, release_notes, dependencies, source_repo
+- [x] use (archive/msi/nsis), url_template, package_source_url
 
 **Winget** (from fresh-gap B28)
-- [ ] ids, use, product_code, url_template
-- [ ] commit_msg_template, path, homepage, license_url
-- [ ] copyright, copyright_url, skip_upload
-- [ ] release_notes, release_notes_url, installation_notes
-- [ ] tags, dependencies, publisher_support_url, privacy_url
-- [ ] repository.*, commit_author.*
+- [x] ids, use, product_code, url_template
+- [x] commit_msg_template, path, homepage, license_url
+- [x] copyright, copyright_url, skip_upload
+- [x] release_notes, release_notes_url, installation_notes
+- [x] tags, dependencies, publisher_support_url, privacy_url
+- [x] repository.*, commit_author.*
 
 **AUR** (from fresh-gap B29)
-- [ ] ids, private_key, skip_upload, commit_msg_template, git_ssh_command
+- [x] ids, private_key, skip_upload, commit_msg_template, git_ssh_command
 
 **Krew** (from fresh-gap B30)
-- [ ] ids, url_template, commit_msg_template, skip_upload
-- [ ] repository.*, commit_author.*
+- [x] ids, url_template, commit_msg_template, skip_upload
+- [x] repository.*, commit_author.*
 
 **Nix** (from parity-matrix s11, fresh-gap B16)
-- [ ] Full publisher: name, path, install, extra_install, post_install
-- [ ] dependencies, formatter, repository.*, commit_author.*
+- [x] Full publisher: name, path, install, extra_install, post_install
+- [x] dependencies, formatter, repository.*, commit_author.*
 
 **Shared repository config** (from fresh-gap B39)
-- [ ] Unified repository struct across all 7 publishers: branch, token, token_type, pull_request.*, git.*
-- [ ] Unified commit_author struct: name, email, signing.*
+- [x] Unified repository struct across all 7 publishers: branch, token, token_type, pull_request.*, git.*
+- [x] Unified commit_author struct: name, email, signing.*
 
 ### Session B: Announce Providers
 GoReleaser source: `internal/pipe/announce/`, `internal/pipe/discord/`, `internal/pipe/slack/`, `internal/pipe/telegram/`, `internal/pipe/teams/`, `internal/pipe/mattermost/`, `internal/pipe/webhook/`, `internal/pipe/smtp/`, `internal/pipe/reddit/`, `internal/pipe/twitter/`, `internal/pipe/mastodon/`, `internal/pipe/bluesky/`, `internal/pipe/linkedin/`, `internal/pipe/opencollective/`, `internal/pipe/discourse/`
