@@ -94,19 +94,19 @@ GoReleaser source: `internal/pipe/brew/`, `internal/pipe/scoop/`, `internal/pipe
 ### Session B: Announce Providers
 GoReleaser source: `internal/pipe/announce/`, `internal/pipe/discord/`, `internal/pipe/slack/`, `internal/pipe/telegram/`, `internal/pipe/teams/`, `internal/pipe/mattermost/`, `internal/pipe/webhook/`, `internal/pipe/smtp/`, `internal/pipe/reddit/`, `internal/pipe/twitter/`, `internal/pipe/mastodon/`, `internal/pipe/bluesky/`, `internal/pipe/linkedin/`, `internal/pipe/opencollective/`, `internal/pipe/discourse/`
 
-- [ ] announce.skip (template-conditional)
-- [ ] Teams icon_url
-- [ ] Mattermost title_template
-- [ ] Webhook expected_status_codes
-- [ ] Slack blocks/attachments — verify wiring (config fields exist, behavior unverified)
-- [ ] SMTP email transport (replace sendmail)
-- [ ] Reddit provider
-- [ ] Twitter/X provider
-- [ ] Mastodon provider
-- [ ] Bluesky provider
-- [ ] LinkedIn provider
-- [ ] OpenCollective provider
-- [ ] Discourse provider
+- [x] announce.skip (template-conditional)
+- [x] Teams icon_url
+- [x] Mattermost title_template
+- [x] Webhook expected_status_codes
+- [x] Slack blocks/attachments — verify wiring (config fields exist, behavior unverified)
+- [x] SMTP email transport (replace sendmail)
+- [x] Reddit provider
+- [x] Twitter/X provider
+- [x] Mastodon provider
+- [x] Bluesky provider
+- [x] LinkedIn provider
+- [x] OpenCollective provider
+- [x] Discourse provider
 
 ### Session C: Custom Publishers + CLI + Hooks
 GoReleaser source: `internal/pipe/custompublishers/`, `cmd/`

@@ -2299,34 +2299,51 @@ pub struct AnnounceConfig {
     /// Template-conditional skip: if rendered to "true", skip the entire announce stage.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Discord announcement configuration.
     pub discord: Option<DiscordAnnounce>,
+    /// Discourse announcement configuration.
     pub discourse: Option<DiscourseAnnounce>,
+    /// Slack announcement configuration.
     pub slack: Option<SlackAnnounce>,
+    /// Generic webhook announcement configuration.
     pub webhook: Option<WebhookConfig>,
+    /// Telegram announcement configuration.
     pub telegram: Option<TelegramAnnounce>,
+    /// Microsoft Teams announcement configuration.
     pub teams: Option<TeamsAnnounce>,
+    /// Mattermost announcement configuration.
     pub mattermost: Option<MattermostAnnounce>,
+    /// Email announcement configuration.
     pub email: Option<EmailAnnounce>,
+    /// Reddit announcement configuration.
     pub reddit: Option<RedditAnnounce>,
+    /// Twitter/X announcement configuration.
     pub twitter: Option<TwitterAnnounce>,
+    /// Mastodon announcement configuration.
     pub mastodon: Option<MastodonAnnounce>,
+    /// Bluesky announcement configuration.
     pub bluesky: Option<BlueskyAnnounce>,
+    /// LinkedIn announcement configuration.
     pub linkedin: Option<LinkedInAnnounce>,
+    /// OpenCollective announcement configuration.
     pub opencollective: Option<OpenCollectiveAnnounce>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BlueskyAnnounce {
+    /// Enable Bluesky announcements.
     pub enabled: Option<bool>,
     /// Bluesky handle/username (e.g. "user.bsky.social")
     pub username: Option<String>,
+    /// Message template for the post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DiscourseAnnounce {
+    /// Enable Discourse announcements.
     pub enabled: Option<bool>,
     /// Discourse forum URL (e.g. "https://forum.example.com")
     pub server: Option<String>,
@@ -2334,48 +2351,62 @@ pub struct DiscourseAnnounce {
     pub category_id: Option<u64>,
     /// Username for the API request (default: "system")
     pub username: Option<String>,
+    /// Title template for the forum topic. Default: "{{ .ProjectName }} {{ .Tag }} is out!"
     pub title_template: Option<String>,
+    /// Message body template for the forum topic. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct LinkedInAnnounce {
+    /// Enable LinkedIn announcements. Requires LINKEDIN_ACCESS_TOKEN env var.
     pub enabled: Option<bool>,
+    /// Message template for the LinkedIn share post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct OpenCollectiveAnnounce {
+    /// Enable OpenCollective announcements. Requires OPENCOLLECTIVE_TOKEN env var.
     pub enabled: Option<bool>,
     /// Collective slug (e.g. "my-project")
     pub slug: Option<String>,
+    /// Title template for the update. Default: "{{ .Tag }}"
     pub title_template: Option<String>,
+    /// HTML message template for the update. Default includes <br/> and <a> tags with ReleaseURL.
     pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TwitterAnnounce {
+    /// Enable Twitter/X announcements. Requires TWITTER_CONSUMER_KEY, TWITTER_CONSUMER_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET env vars.
     pub enabled: Option<bool>,
+    /// Tweet message template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MastodonAnnounce {
+    /// Enable Mastodon announcements. Requires MASTODON_CLIENT_ID, MASTODON_CLIENT_SECRET, MASTODON_ACCESS_TOKEN env vars.
     pub enabled: Option<bool>,
     /// Mastodon instance URL (e.g. "https://mastodon.social")
     pub server: Option<String>,
+    /// Toot message template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DiscordAnnounce {
+    /// Enable Discord announcements.
     pub enabled: Option<bool>,
+    /// Discord webhook URL. Can use DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN env vars instead.
     pub webhook_url: Option<String>,
+    /// Message template for the Discord embed. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
     /// Author name displayed in the embed (optional)
     pub author: Option<String>,
@@ -2388,10 +2419,15 @@ pub struct DiscordAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct WebhookConfig {
+    /// Enable generic webhook announcements.
     pub enabled: Option<bool>,
+    /// Webhook endpoint URL (supports template variables).
     pub endpoint_url: Option<String>,
+    /// Custom HTTP headers to include in the request.
     pub headers: Option<HashMap<String, String>>,
+    /// Content-Type header value. Default: "application/json".
     pub content_type: Option<String>,
+    /// Message body template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
     /// When true, skip TLS certificate verification for the webhook endpoint
     pub skip_tls_verify: Option<bool>,
@@ -2403,9 +2439,13 @@ pub struct WebhookConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TelegramAnnounce {
+    /// Enable Telegram announcements. Requires bot_token and chat_id.
     pub enabled: Option<bool>,
+    /// Telegram Bot API token. Get one from @BotFather.
     pub bot_token: Option<String>,
+    /// Telegram chat ID to send the message to (supports template variables).
     pub chat_id: Option<String>,
+    /// Message template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
     /// Optional parse mode: "MarkdownV2" or "HTML" (defaults to "MarkdownV2")
     pub parse_mode: Option<String>,
@@ -2416,8 +2456,11 @@ pub struct TelegramAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TeamsAnnounce {
+    /// Enable Microsoft Teams announcements.
     pub enabled: Option<bool>,
+    /// Teams incoming webhook URL.
     pub webhook_url: Option<String>,
+    /// Message template for the Adaptive Card body. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
     /// Optional title template for the Adaptive Card header
     pub title_template: Option<String>,
@@ -2430,7 +2473,9 @@ pub struct TeamsAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MattermostAnnounce {
+    /// Enable Mattermost announcements.
     pub enabled: Option<bool>,
+    /// Mattermost incoming webhook URL.
     pub webhook_url: Option<String>,
     /// Optional channel override (e.g. "town-square")
     pub channel: Option<String>,
@@ -2442,6 +2487,7 @@ pub struct MattermostAnnounce {
     pub icon_emoji: Option<String>,
     /// Optional attachment color (hex string, e.g. "#36a64f")
     pub color: Option<String>,
+    /// Message template for the Mattermost post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
     /// Optional title template for the Mattermost attachment
     pub title_template: Option<String>,
@@ -2450,6 +2496,7 @@ pub struct MattermostAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct EmailAnnounce {
+    /// Enable email announcements.
     pub enabled: Option<bool>,
     /// SMTP server hostname. When set, uses SMTP transport.
     /// When absent, falls back to sendmail/msmtp.
@@ -2463,6 +2510,7 @@ pub struct EmailAnnounce {
     /// Recipient email addresses
     #[serde(default)]
     pub to: Vec<String>,
+    /// Email subject template. Default: "{{ .ProjectName }} {{ .Tag }} released"
     pub subject_template: Option<String>,
     /// Body template (called body_template in GoReleaser, message_template here for consistency)
     pub message_template: Option<String>,
@@ -2473,6 +2521,7 @@ pub struct EmailAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct RedditAnnounce {
+    /// Enable Reddit announcements. Requires REDDIT_SECRET and REDDIT_PASSWORD env vars.
     pub enabled: Option<bool>,
     /// Reddit application (OAuth client) ID
     pub application_id: Option<String>,
@@ -2480,19 +2529,28 @@ pub struct RedditAnnounce {
     pub username: Option<String>,
     /// Subreddit to post to (without /r/ prefix)
     pub sub: Option<String>,
+    /// Title template for the Reddit link post. Default: "{{ .ProjectName }} {{ .Tag }} is out!"
     pub title_template: Option<String>,
+    /// URL template for the Reddit link post. Default: "{{ .ReleaseURL }}"
     pub url_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SlackAnnounce {
+    /// Enable Slack announcements.
     pub enabled: Option<bool>,
+    /// Slack incoming webhook URL. Can also use SLACK_WEBHOOK env var.
     pub webhook_url: Option<String>,
+    /// Message template for the Slack post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
+    /// Override the webhook's default channel (e.g. "#releases").
     pub channel: Option<String>,
+    /// Override the webhook's default username (e.g. "release-bot").
     pub username: Option<String>,
+    /// Override the webhook's default icon with an emoji (e.g. ":rocket:").
     pub icon_emoji: Option<String>,
+    /// Override the webhook's default icon with an image URL.
     pub icon_url: Option<String>,
     /// Slack Block Kit blocks (typed for schema validation).
     pub blocks: Option<Vec<SlackBlock>>,
