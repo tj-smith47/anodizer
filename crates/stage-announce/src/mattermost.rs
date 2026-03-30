@@ -103,7 +103,7 @@ mod tests {
             icon_url: Some("https://example.com/icon.png"),
             icon_emoji: Some(":rocket:"),
             color: Some("#36a64f"),
-            title: None,
+            title: Some("Release v1.0"),
         };
         let payload = mattermost_payload("myapp v1.0.0 released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -114,6 +114,7 @@ mod tests {
         assert_eq!(json["icon_emoji"], ":rocket:");
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments[0]["color"], "#36a64f");
+        assert_eq!(attachments[0]["title"], "Release v1.0");
     }
 
     #[test]
