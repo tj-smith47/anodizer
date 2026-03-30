@@ -46,6 +46,7 @@ fn build_oauth1_header(
     token: &str,
     token_secret: &str,
 ) -> Result<String> {
+    let method = method.to_uppercase();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_secs()
@@ -68,7 +69,7 @@ fn build_oauth1_header(
 
     let base_string = format!(
         "{}&{}&{}",
-        method,
+        &method,
         percent_encode(url),
         percent_encode(&param_string)
     );
@@ -114,11 +115,16 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn generate_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::hash::{Hash, Hasher};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     SystemTime::now().hash(&mut hasher);
     std::thread::current().id().hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    count.hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    format!("{:016x}{:016x}", hasher.finish(), count)
 }
 
 #[cfg(test)]
@@ -167,9 +173,24 @@ mod tests {
     }
 
     #[test]
+    fn test_percent_encode_utf8() {
+        // Multi-byte UTF-8 characters should be encoded byte-by-byte
+        let encoded = percent_encode("caf\u{00e9}");
+        assert_eq!(encoded, "caf%C3%A9");
+    }
+
+    #[test]
+    fn test_generate_nonce_uniqueness() {
+        let n1 = generate_nonce();
+        let n2 = generate_nonce();
+        assert_ne!(n1, n2);
+        assert_eq!(n1.len(), 32); // 32 hex characters
+    }
+
+    #[test]
     fn test_generate_nonce_is_hex() {
         let nonce = generate_nonce();
-        assert_eq!(nonce.len(), 16);
+        assert_eq!(nonce.len(), 32);
         assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

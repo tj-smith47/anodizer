@@ -20,7 +20,7 @@ pub mod webhook;
 // Shared helpers to reduce boilerplate across providers
 // ---------------------------------------------------------------------------
 
-const DEFAULT_MESSAGE_TEMPLATE: &str = "{{ .ProjectName }} {{ .Tag }} released!";
+const DEFAULT_MESSAGE_TEMPLATE: &str = "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}";
 
 /// Render a required config field through the template engine, bailing with
 /// `provider: missing <field>` when the value is `None`.
@@ -298,9 +298,15 @@ impl Stage for AnnounceStage {
             let secret = std::env::var("REDDIT_SECRET").map_err(|_| {
                 anyhow::anyhow!("announce.reddit: REDDIT_SECRET env var is required")
             })?;
+            if secret.is_empty() {
+                anyhow::bail!("announce.reddit: REDDIT_SECRET env var must not be empty");
+            }
             let password = std::env::var("REDDIT_PASSWORD").map_err(|_| {
                 anyhow::anyhow!("announce.reddit: REDDIT_PASSWORD env var is required")
             })?;
+            if password.is_empty() {
+                anyhow::bail!("announce.reddit: REDDIT_PASSWORD env var must not be empty");
+            }
 
             dispatch(ctx, "reddit", &format!("r/{sub}: {title}"), || {
                 reddit::send_reddit(&app_id, &secret, &username, &password, &sub, &title, &url)
@@ -348,13 +354,30 @@ impl Stage for AnnounceStage {
             && cfg.enabled.unwrap_or(false)
         {
             let server = require_rendered(ctx, cfg.server.as_deref(), "mastodon", "server")?;
-            let message = render_message(ctx, cfg.message_template.as_deref())?;
-            let access_token = std::env::var("MASTODON_ACCESS_TOKEN").map_err(|_| {
-                anyhow::anyhow!("announce.mastodon: MASTODON_ACCESS_TOKEN env var is required")
-            })?;
-            dispatch(ctx, "mastodon", &message, || {
-                mastodon::send_mastodon(&server, &access_token, &message)
-            })?;
+            if server.is_empty() {
+                // GoReleaser skips silently when server is empty
+                let log = ctx.logger("announce");
+                log.status("mastodon: server is empty — skipping");
+            } else {
+                let message = render_message(ctx, cfg.message_template.as_deref())?;
+                // GoReleaser requires all three env vars even though only access_token is used
+                let _client_id = std::env::var("MASTODON_CLIENT_ID").map_err(|_| {
+                    anyhow::anyhow!("announce.mastodon: MASTODON_CLIENT_ID env var is required")
+                })?;
+                let _client_secret = std::env::var("MASTODON_CLIENT_SECRET").map_err(|_| {
+                    anyhow::anyhow!(
+                        "announce.mastodon: MASTODON_CLIENT_SECRET env var is required"
+                    )
+                })?;
+                let access_token = std::env::var("MASTODON_ACCESS_TOKEN").map_err(|_| {
+                    anyhow::anyhow!(
+                        "announce.mastodon: MASTODON_ACCESS_TOKEN env var is required"
+                    )
+                })?;
+                dispatch(ctx, "mastodon", &message, || {
+                    mastodon::send_mastodon(&server, &access_token, &message)
+                })?;
+            }
         }
 
         // ----------------------------------------------------------------
@@ -600,6 +623,10 @@ mod tests {
         };
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v2.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v2.0.0",
+        );
         assert!(AnnounceStage.run(&mut ctx).is_ok());
     }
 
@@ -1297,6 +1324,10 @@ blocks:
         config.announce = Some(announce);
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
         assert!(
             err.to_string().contains("TWITTER_CONSUMER_KEY"),
@@ -1325,6 +1356,8 @@ blocks:
     #[test]
     #[serial]
     fn test_dry_run_mastodon() {
+        unsafe { std::env::set_var("MASTODON_CLIENT_ID", "test_id") };
+        unsafe { std::env::set_var("MASTODON_CLIENT_SECRET", "test_secret") };
         unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
@@ -1351,6 +1384,8 @@ blocks:
             "https://github.com/org/myapp/releases/tag/v1.0.0",
         );
         assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("MASTODON_CLIENT_ID") };
+        unsafe { std::env::remove_var("MASTODON_CLIENT_SECRET") };
         unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
     }
 
@@ -1382,6 +1417,8 @@ blocks:
     #[test]
     #[serial]
     fn test_mastodon_missing_env_var_returns_error() {
+        unsafe { std::env::remove_var("MASTODON_CLIENT_ID") };
+        unsafe { std::env::remove_var("MASTODON_CLIENT_SECRET") };
         unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
@@ -1396,10 +1433,31 @@ blocks:
         config.announce = Some(announce);
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v1.0.0");
-        let err = AnnounceStage.run(&mut ctx).unwrap_err();
-        assert!(
-            err.to_string().contains("MASTODON_ACCESS_TOKEN"),
-            "expected MASTODON_ACCESS_TOKEN error, got: {err}"
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
         );
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        // First missing env var is now MASTODON_CLIENT_ID
+        assert!(
+            err.to_string().contains("MASTODON_CLIENT_ID"),
+            "expected MASTODON_CLIENT_ID error, got: {err}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_mastodon_empty_server_skips() {
+        let announce = AnnounceConfig {
+            mastodon: Some(MastodonAnnounce {
+                enabled: Some(true),
+                server: Some("".to_string()),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        // Empty server should cause a silent skip, not an error
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
     }
 }

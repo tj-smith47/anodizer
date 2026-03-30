@@ -46,6 +46,7 @@ pub fn send_reddit(
 
     // Step 2: Submit link
     let mut form = HashMap::new();
+    form.insert("api_type", "json");
     form.insert("kind", "link");
     form.insert("sr", subreddit);
     form.insert("title", title);
@@ -61,6 +62,18 @@ pub fn send_reddit(
         let status = submit_resp.status();
         let body = submit_resp.text().unwrap_or_default();
         anyhow::bail!("reddit: submit failed ({status}): {body}");
+    }
+
+    // Reddit returns 200 even on failure — check json.errors
+    let submit_body: serde_json::Value = serde_json::from_str(&submit_resp.text()?)?;
+    if let Some(errors) = submit_body
+        .get("json")
+        .and_then(|j| j.get("errors"))
+        .and_then(|e| e.as_array())
+    {
+        if !errors.is_empty() {
+            anyhow::bail!("reddit: submit returned errors: {errors:?}");
+        }
     }
 
     Ok(())
