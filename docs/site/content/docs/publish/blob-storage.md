@@ -75,9 +75,9 @@ IAM instance profiles and ECS task roles are also supported automatically.
 
 | Variable | Description |
 |----------|-------------|
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to a service account JSON key file. |
-| `GOOGLE_SERVICE_ACCOUNT` | Service account email (with Workload Identity). |
-| `GOOGLE_SERVICE_ACCOUNT_TOKEN` | Bearer token. |
+| `GOOGLE_SERVICE_ACCOUNT` | Path to service account JSON key file. |
+| `GOOGLE_SERVICE_ACCOUNT_PATH` | Alias for `GOOGLE_SERVICE_ACCOUNT`. |
+| `GOOGLE_SERVICE_ACCOUNT_KEY` | JSON-serialized service account key (inline, not a file path). |
 
 Application Default Credentials (ADC) via `gcloud auth application-default login` are also supported.
 
@@ -87,9 +87,11 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 |----------|-------------|
 | `AZURE_STORAGE_ACCOUNT_NAME` | Storage account name. |
 | `AZURE_STORAGE_ACCOUNT_KEY` | Storage account key. |
-| `AZURE_STORAGE_SAS_KEY` | Shared Access Signature token. |
+| `AZURE_STORAGE_SAS_KEY` | Shared Access Signature token (alias: `AZURE_STORAGE_SAS_TOKEN`). |
 | `AZURE_STORAGE_CONNECTION_STRING` | Full connection string. |
-| `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET` / `AZURE_TENANT_ID` | Service principal credentials. |
+| `AZURE_CLIENT_ID` | Service principal client ID (with `AZURE_CLIENT_SECRET` and `AZURE_TENANT_ID`). |
+| `AZURE_CLIENT_SECRET` | Service principal client secret. |
+| `AZURE_TENANT_ID` | Azure AD tenant ID. |
 
 ## S3-compatible backends
 

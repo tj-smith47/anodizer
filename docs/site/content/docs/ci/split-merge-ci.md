@@ -32,7 +32,8 @@ Use this command when:
 | `--dry-run` | Run all stages without side effects |
 | `--token` | GitHub token (overrides `GITHUB_TOKEN`) |
 | `--dist` | Custom dist directory (overrides config) |
-| `--config` | Path to `anodize.yaml` (overrides auto-detection) |
+
+Global flags like `--config` / `-f` and `--verbose` also apply.
 
 ### `anodize announce`
 
