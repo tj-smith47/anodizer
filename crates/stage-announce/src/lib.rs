@@ -160,8 +160,13 @@ impl Stage for AnnounceStage {
                 .unwrap_or_else(|| "application/json".to_string());
 
             let skip_tls = cfg.skip_tls_verify.unwrap_or(false);
+            let expected_codes = if cfg.expected_status_codes.is_empty() {
+                webhook::default_expected_status_codes()
+            } else {
+                cfg.expected_status_codes.clone()
+            };
             dispatch(ctx, "webhook", &message, || {
-                webhook::send_webhook(&url, &message, &headers, &content_type, skip_tls)
+                webhook::send_webhook(&url, &message, &headers, &content_type, skip_tls, &expected_codes)
             })?;
         }
 
@@ -365,6 +370,7 @@ mod tests {
                 content_type: None,
                 message_template: None,
                 skip_tls_verify: None,
+                expected_status_codes: vec![],
             }),
             ..Default::default()
         };
@@ -435,6 +441,7 @@ mod tests {
                 content_type: Some("application/json".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
                 skip_tls_verify: None,
+                expected_status_codes: vec![],
             }),
             ..Default::default()
         };

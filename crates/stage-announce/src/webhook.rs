@@ -24,6 +24,22 @@ pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Status code helpers
+// ---------------------------------------------------------------------------
+
+/// Default HTTP status codes accepted as a successful webhook response.
+///
+/// Matches GoReleaser's `ExpectedStatusCodes` default: `[200, 201, 202, 204]`.
+pub(crate) fn default_expected_status_codes() -> Vec<u16> {
+    vec![200, 201, 202, 204]
+}
+
+/// Returns `true` when `status` is in the `expected` set.
+pub(crate) fn is_expected_status(status: u16, expected: &[u16]) -> bool {
+    expected.contains(&status)
+}
+
+// ---------------------------------------------------------------------------
 // Send
 // ---------------------------------------------------------------------------
 
@@ -31,12 +47,15 @@ pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
 ///
 /// When `skip_tls_verify` is true the client will accept invalid / self-signed
 /// TLS certificates (mirrors GoReleaser's `skip_tls_verify` webhook option).
+///
+/// The response status is validated against `expected_status_codes`.
 pub fn send_webhook(
     endpoint_url: &str,
     message: &str,
     headers: &HashMap<String, String>,
     content_type: &str,
     skip_tls_verify: bool,
+    expected_status_codes: &[u16],
 ) -> Result<()> {
     let body = webhook_body(message, content_type);
     let effective_ct = if content_type.is_empty() {
@@ -59,8 +78,12 @@ pub fn send_webhook(
     }
 
     let resp = builder.send()?;
-    if !resp.status().is_success() {
-        anyhow::bail!("webhook returned non-success status: {}", resp.status());
+    let status = resp.status().as_u16();
+    if !is_expected_status(status, expected_status_codes) {
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!(
+            "webhook returned unexpected status {status} (expected one of {expected_status_codes:?}): {body}"
+        );
     }
     Ok(())
 }
@@ -72,6 +95,22 @@ pub fn send_webhook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_expected_status() {
+        let expected = vec![200, 201, 204];
+        assert!(is_expected_status(200, &expected));
+        assert!(is_expected_status(201, &expected));
+        assert!(is_expected_status(204, &expected));
+        assert!(!is_expected_status(500, &expected));
+        assert!(!is_expected_status(403, &expected));
+    }
+
+    #[test]
+    fn test_default_expected_status_codes() {
+        let defaults = default_expected_status_codes();
+        assert_eq!(defaults, vec![200, 201, 202, 204]);
+    }
 
     #[test]
     fn test_webhook_body_json_passthrough() {

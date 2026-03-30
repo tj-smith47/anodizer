@@ -2332,6 +2332,9 @@ pub struct WebhookConfig {
     pub message_template: Option<String>,
     /// When true, skip TLS certificate verification for the webhook endpoint
     pub skip_tls_verify: Option<bool>,
+    /// HTTP status codes to accept as success (default: [200, 201, 202, 204])
+    #[serde(default)]
+    pub expected_status_codes: Vec<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
