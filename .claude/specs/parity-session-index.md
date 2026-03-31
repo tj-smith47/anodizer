@@ -20,9 +20,13 @@ Every Missing and Partial item must be addressed. There is no "high priority" vs
 ## Rules For Every Session
 
 1. **Read GoReleaser source first.** Before implementing ANY feature, read the Go source at `/opt/repos/goreleaser/internal/pipe/{area}/` and its tests. List every config field, default, and behavior.
-2. **Spec + code quality review loop.** After implementing, run spec review then code quality review. Fix ALL findings of ANY severity. Re-review. Repeat until ZERO issues/suggestions remain. That's when the task is done.
-3. **Mark items done here.** Check the box in this file when an item is implemented to equal or better quality than GoReleaser.
-4. **Work on master directly.** No worktrees or branches for sequential work.
+2. **Config + wiring are ONE task, not two.** Adding a config struct/field without wiring it to behavioral code is NOT done. Every checklist item means: config parsing + behavioral wiring + tests proving the behavior works. A parsed-but-ignored field is Missing by definition. When reviewing, the spec reviewer MUST verify fields are wired by tracing from config through to the code that reads them.
+3. **Spec review = GoReleaser source comparison.** The spec reviewer must read the GoReleaser pipe source and compare behavior line-by-line. Checking that "the struct has the right fields" is not a spec review. The review must verify: Does anodize produce the same output as GoReleaser given the same input? Are defaults the same? Are error cases the same?
+4. **Spec + code quality review loop.** After implementing, run spec review then code quality review. Fix ALL findings of ANY severity. Re-review. Repeat until ZERO issues/suggestions remain. That's when the task is done.
+5. **Mark items done here.** Check the box in this file when an item is implemented to equal or better quality than GoReleaser.
+6. **Work on master directly.** No worktrees or branches for sequential work.
+7. **Scope honestly.** Do fewer tasks to full parity rather than many tasks to config-only depth. Incomplete work creates more cleanup work than it saves.
+8. **Pro features: research community implementations.** For GoReleaser Pro features that have no OSS source code, search for similar implementations of each component in community tools (e.g., other release tools, CI systems, package managers). Learn from their edge case handling, error behavior, and design choices. Document what was found and incorporate lessons learned. This fills the gap left by not having Pro pipe source to read.
 
 ## Phase 1: Completed (This Session)
 
@@ -143,30 +147,30 @@ GoReleaser source: `internal/pipe/nsis/`, `internal/pipe/appbundle/`, `internal/
 ### Session D2: Remaining New Stages
 GoReleaser source: `internal/pipe/flatpak/`, `internal/pipe/notary/`, `internal/pipe/dmg/`, `internal/pipe/msi/`, `internal/pipe/pkg/`
 
-- [ ] Flatpak stage (new crate): app_id, runtime, runtime_version, sdk, command, finish_args, name_template, disable
-- [ ] macOS Notarization (new crate): sign.certificate/password/entitlements, notarize.issuer_id/key_id/key/wait/timeout; native variant: sign.keychain/identity/options, notarize.profile_name
-- [ ] DMG stage improvements (Pro features: use appbundle, signing integration)
-- [ ] MSI stage improvements (Pro features beyond current Wix support)
-- [ ] PKG stage improvements (Pro features, v2.14+)
+- [x] Flatpak stage (new crate): app_id, runtime, runtime_version, sdk, command, finish_args, name_template, disable, extra_files, replace, mod_timestamp; manifest JSON generation; flatpak-builder + flatpak build-bundle subprocess; Linux-only amd64/arm64
+- [x] macOS Notarization (new crate): cross-platform mode (rcodesign sign/notary-submit with P12 + API key), native mode (codesign + xcrun notarytool with keychain); sign.certificate/password/entitlements, notarize.issuer_id/key_id/key/wait/timeout; native: sign.keychain/identity/options/entitlements, notarize.profile_name/wait/timeout, use dmg/pkg; pipeline ordering fix (AppBundle before DMG)
+- [x] DMG stage improvements: `use` field (binary/appbundle artifact selection), `disable` upgraded to StringOrBool
+- [x] MSI stage improvements: `extra_files` (simple filenames copied to WiX build context), `extensions` (WiX extensions with template support for v3+v4), `disable` upgraded to StringOrBool
+- [x] PKG stage improvements: `use` field (binary/appbundle artifact selection), `disable` upgraded to StringOrBool
 
-### Session E: Cross-Cutting Concerns
-<!-- NOTE: This session is too large for a single conversation. Split into E1 (Config infrastructure + Pervasive patterns) and E2 (Template additions + Stage-specific extras) before starting. Update this plan to reflect the split. -->
+### Session E1: Config Infrastructure + Pervasive Patterns
 GoReleaser source: `internal/pipe/git/`, `internal/pipe/metadata/`, `internal/pipe/env/`, `internal/pipe/defaults/`
 
 **Config infrastructure** (from fresh-gap B1-B6)
-- [ ] git.tag_sort, git.ignore_tags, git.ignore_tag_prefixes, git.prerelease_suffix
-- [ ] Global metadata block (mod_timestamp, maintainers, license, homepage, description, full_description, commit_author)
-- [ ] Config includes from URL (with headers); verify from_file.path behavior (config exists, wiring unverified)
-- [ ] Custom template variables (.Var.*)
-- [ ] Template files config section (id, src, dst, mode)
-- [ ] Monorepo improvements (tag_prefix, dir)
-- [ ] version schema field, report_sizes
-- [ ] release.tag (Pro, template override)
+- [x] git.tag_sort, git.ignore_tags, git.ignore_tag_prefixes, git.prerelease_suffix (config + full behavioral wiring to find_latest_tag_matching + find_previous_tag, glob matching, template rendering, tag_sort validation)
+- [x] Global metadata block (mod_timestamp) — config + wire mtime to metadata.json and artifacts.json; fixed metadata.json content format to match GoReleaser (project metadata, not artifact list); added artifacts.json output; registered metadata.json as artifact
+- [x] Custom template variables (.Var.*) — config + wire into template engine as nested Var map; Go-style and Tera-style access; variable values template-rendered at injection
+- [x] report_sizes: fixed to match GoReleaser (filter by size_reportable_kinds including Library/Wasm, store size in artifact.size field, table output)
+- [x] StringOrBool/template `disable` + `skip_upload` on ALL config sections — upgraded SnapcraftConfig, AurConfig, PublisherConfig, ChocolateyConfig (disable + skip_publish), HomebrewConfig, ScoopConfig, WingetConfig, KrewConfig, NixConfig; wired is_disabled()/should_skip_upload() with template rendering in all stages
 
-**Pervasive patterns** (from fresh-gap B36-B37)
-- [ ] `if` conditional across all config sections (signs, nfpms, blobs, publishers, docker, snapcrafts, sboms)
-- [ ] `templated_extra_files` across all sections (archives, release, checksums, docker, blob, source, snapcraft, publishers)
-- [ ] StringOrBool/template `disable` on all configs that still use bool-only (snapcrafts, sboms, etc.)
+**Deferred to E1-continued** (need full GoReleaser source comparison + behavioral wiring)
+- [ ] Config includes from URL (with headers) + from_file structured form — needs HTTP client, custom deserializer, GoReleaser Pro behavior match
+- [ ] Template files config section (id, src, dst, mode) — GoReleaser Pro feature, new processing stage
+- [ ] `templated_extra_files` across sections (render file CONTENTS as templates, distinct from extra_files) — GoReleaser Pro, needs per-stage wiring: checksums, release, docker, blob, publishers, snapcraft, dmg, nsis, app_bundles
+- [ ] Monorepo improvements (tag_prefix, dir) — GoReleaser Pro, needs PrefixedTag/PrefixedPreviousTag template var wiring
+- [ ] release.tag (Pro, template override) — needs wiring to release stage tag selection
+
+### Session E2: Template Additions + Stage-Specific Extras
 
 **Template additions** (from fresh-gap B31-B32)
 - [ ] OSS template functions: incpatch, incminor, incmajor (version increment)
