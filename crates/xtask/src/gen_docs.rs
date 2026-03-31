@@ -466,11 +466,13 @@ mod tests {
             "env",
             "publishers",
             "tag",
+            "git",
             "partial",
             "workspaces",
             "source",
             "sboms",
             "release",
+            "notarize",
         ] {
             assert!(
                 field_names.contains(&&expected.to_string()),

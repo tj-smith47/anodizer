@@ -62,6 +62,8 @@ pub struct Config {
     pub publishers: Option<Vec<PublisherConfig>>,
     /// Automatic semantic version tagging configuration.
     pub tag: Option<TagConfig>,
+    /// Git-level tag discovery and sorting settings.
+    pub git: Option<GitConfig>,
     /// Partial/split build configuration for fan-out CI pipelines.
     pub partial: Option<PartialConfig>,
     /// Independent workspace roots in a monorepo.
@@ -74,6 +76,8 @@ pub struct Config {
     pub sboms: Vec<SbomConfig>,
     /// GitHub release configuration shared by all crates.
     pub release: Option<ReleaseConfig>,
+    /// macOS code signing and notarization configuration.
+    pub notarize: Option<NotarizeConfig>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -135,11 +139,13 @@ impl Default for Config {
             env: None,
             publishers: None,
             tag: None,
+            git: None,
             partial: None,
             workspaces: None,
             source: None,
             sboms: Vec::new(),
             release: None,
+            notarize: None,
         }
     }
 }
@@ -330,6 +336,8 @@ pub struct CrateConfig {
     pub nsis: Option<Vec<NsisConfig>>,
     /// macOS app bundle configurations for this crate.
     pub app_bundles: Option<Vec<AppBundleConfig>>,
+    /// Linux Flatpak bundle configurations for this crate.
+    pub flatpaks: Option<Vec<FlatpakConfig>>,
     /// Cloud storage (S3/GCS/Azure) upload configurations for this crate.
     pub blobs: Option<Vec<BlobConfig>>,
     /// cargo-binstall metadata configuration for this crate.
@@ -374,6 +382,7 @@ impl Default for CrateConfig {
             pkgs: None,
             nsis: None,
             app_bundles: None,
+            flatpaks: None,
             blobs: None,
             binstall: None,
             version_sync: None,
@@ -2280,8 +2289,12 @@ pub struct DmgConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Disable this DMG config.
-    pub disable: Option<bool>,
+    /// Disable this DMG config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Which artifact type to package: "binary" (default) or "appbundle".
+    #[serde(rename = "use")]
+    pub use_: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2305,8 +2318,13 @@ pub struct MsiConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Disable this MSI config.
-    pub disable: Option<bool>,
+    /// Disable this MSI config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Additional files available in the WiX build context (simple filenames).
+    pub extra_files: Option<Vec<String>>,
+    /// WiX extensions to enable (e.g., "WixUIExtension"). Templates allowed.
+    pub extensions: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2334,8 +2352,12 @@ pub struct PkgConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Disable this PKG config.
-    pub disable: Option<bool>,
+    /// Which artifact type to package: "binary" (default) or "appbundle".
+    #[serde(rename = "use")]
+    pub use_: Option<String>,
+    /// Disable this PKG config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2388,6 +2410,42 @@ pub struct AppBundleConfig {
     /// Remove source archives from artifacts, keeping only the app bundle.
     pub replace: Option<bool>,
     /// Disable this app bundle config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+}
+
+// ---------------------------------------------------------------------------
+// FlatpakConfig (Linux Flatpak bundle)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct FlatpakConfig {
+    /// Unique identifier for this Flatpak config.
+    pub id: Option<String>,
+    /// Build IDs to include. Empty means all builds.
+    pub ids: Option<Vec<String>>,
+    /// Output .flatpak filename (supports templates).
+    pub name_template: Option<String>,
+    /// Flatpak application ID in reverse-DNS notation (e.g. org.example.MyApp). Required.
+    pub app_id: Option<String>,
+    /// Flatpak runtime (e.g. org.freedesktop.Platform). Required.
+    pub runtime: Option<String>,
+    /// Flatpak runtime version (e.g. "24.08"). Required.
+    pub runtime_version: Option<String>,
+    /// Flatpak SDK (e.g. org.freedesktop.Sdk). Required.
+    pub sdk: Option<String>,
+    /// Command to run inside the Flatpak sandbox. Defaults to first binary name.
+    pub command: Option<String>,
+    /// Sandbox permissions (e.g. --share=network, --socket=x11).
+    pub finish_args: Option<Vec<String>>,
+    /// Additional files to include alongside the binary (glob or {glob, name_template}).
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Remove source archives from artifacts, keeping only the Flatpak bundle.
+    pub replace: Option<bool>,
+    /// Output timestamp for reproducible builds.
+    pub mod_timestamp: Option<String>,
+    /// Disable this Flatpak config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
 }
@@ -2485,6 +2543,108 @@ pub struct BinstallConfig {
     pub bin_dir: Option<String>,
     /// Package format hint for cargo-binstall: tgz, tar.gz, tar.xz, zip, bin, etc.
     pub pkg_fmt: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// NotarizeConfig (macOS code signing and notarization)
+// ---------------------------------------------------------------------------
+
+/// Top-level notarization configuration supporting both cross-platform
+/// (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NotarizeConfig {
+    /// Cross-platform signing/notarization (rcodesign-based, works on any OS).
+    pub macos: Option<Vec<MacOSSignNotarizeConfig>>,
+    /// Native signing/notarization (codesign + xcrun, macOS only).
+    pub macos_native: Option<Vec<MacOSNativeSignNotarizeConfig>>,
+}
+
+/// Cross-platform macOS signing and notarization via `rcodesign`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MacOSSignNotarizeConfig {
+    /// Build IDs to filter. Default: project name.
+    pub ids: Option<Vec<String>>,
+    /// Enable this configuration. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
+    /// Signing configuration (P12 certificate).
+    pub sign: Option<MacOSSignConfig>,
+    /// Notarization configuration (App Store Connect API key). Omit for sign-only.
+    pub notarize: Option<MacOSNotarizeApiConfig>,
+}
+
+/// P12-certificate signing configuration for `rcodesign sign`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MacOSSignConfig {
+    /// Path to .p12 certificate file or base64-encoded contents. Templates allowed.
+    pub certificate: Option<String>,
+    /// Password for the .p12 certificate. Templates allowed.
+    pub password: Option<String>,
+    /// Path to entitlements XML file. Templates allowed.
+    pub entitlements: Option<String>,
+}
+
+/// App Store Connect API key configuration for `rcodesign notary-submit`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MacOSNotarizeApiConfig {
+    /// App Store Connect API key issuer UUID. Templates allowed.
+    pub issuer_id: Option<String>,
+    /// Path to .p8 key file or base64-encoded contents. Templates allowed.
+    pub key: Option<String>,
+    /// API key ID. Templates allowed.
+    pub key_id: Option<String>,
+    /// Timeout for notarization status polling. Default: "10m".
+    pub timeout: Option<String>,
+    /// Whether to wait for notarization to complete.
+    pub wait: Option<bool>,
+}
+
+/// Native macOS signing and notarization via `codesign` + `xcrun notarytool`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MacOSNativeSignNotarizeConfig {
+    /// Build IDs to filter. Default: project name.
+    pub ids: Option<Vec<String>>,
+    /// Enable this configuration. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
+    /// Which artifact type to sign/notarize: "dmg" (default) or "pkg".
+    #[serde(rename = "use")]
+    pub use_: Option<String>,
+    /// Native signing configuration (Keychain).
+    pub sign: Option<MacOSNativeSignConfig>,
+    /// Native notarization configuration (xcrun notarytool).
+    pub notarize: Option<MacOSNativeNotarizeConfig>,
+}
+
+/// Keychain-based signing configuration for native `codesign`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MacOSNativeSignConfig {
+    /// Keychain identity (e.g., "Developer ID Application: Name"). Templates allowed.
+    pub identity: Option<String>,
+    /// Path to Keychain file. Templates allowed.
+    pub keychain: Option<String>,
+    /// Options to pass to codesign (e.g., ["runtime"]). Only used for DMGs.
+    pub options: Option<Vec<String>>,
+    /// Path to entitlements XML file. Only used for DMGs. Templates allowed.
+    pub entitlements: Option<String>,
+}
+
+/// Native notarization configuration for `xcrun notarytool`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MacOSNativeNotarizeConfig {
+    /// Notarytool stored credentials profile name. Templates allowed.
+    pub profile_name: Option<String>,
+    /// Whether to wait for notarization to complete.
+    pub wait: Option<bool>,
+    /// Timeout in seconds for `xcrun notarytool submit --timeout`. Templates allowed.
+    pub timeout: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3384,6 +3544,38 @@ impl<'de> Deserialize<'de> for HookEntry {
             )),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// GitConfig
+// ---------------------------------------------------------------------------
+
+/// Git-level tag discovery and sorting settings.
+///
+/// Controls how anodize discovers and orders tags when determining the current
+/// and previous versions. This is separate from `TagConfig`, which controls
+/// version *bumping* logic.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct GitConfig {
+    /// How to sort git tags when determining the latest version.
+    ///
+    /// Accepted values:
+    /// - `"-version:refname"` (default) — lexicographic version sort on the tag name.
+    /// - `"-version:creatordate"` — sort by the tag's creation date (newest first).
+    pub tag_sort: Option<String>,
+    /// Tag patterns to ignore during version detection (supports templates).
+    /// Tags matching any pattern in this list are excluded from version
+    /// detection entirely.
+    pub ignore_tags: Option<Vec<String>>,
+    /// Tag prefixes to ignore during version detection.
+    /// Tags starting with any prefix in this list are excluded.
+    /// This is an anodize enhancement not present in GoReleaser.
+    pub ignore_tag_prefixes: Option<Vec<String>>,
+    /// Suffix that identifies pre-release tags for sorting purposes.
+    /// When set, tags ending with this suffix are treated as pre-releases
+    /// and sorted accordingly during tag discovery.
+    pub prerelease_suffix: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -6309,5 +6501,115 @@ crates:
         assert!(sc.post_install.is_none());
         assert!(sc.shortcuts.is_none());
         assert!(sc.skip_upload.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // GitConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_git_config_all_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+git:
+  tag_sort: "-version:creatordate"
+  ignore_tags:
+    - "nightly*"
+    - "legacy-*"
+  ignore_tag_prefixes:
+    - "internal/"
+    - "test-"
+  prerelease_suffix: "-rc"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let git = config.git.expect("git section should be present");
+        assert_eq!(git.tag_sort.as_deref(), Some("-version:creatordate"));
+        assert_eq!(
+            git.ignore_tags.as_deref(),
+            Some(&["nightly*".to_string(), "legacy-*".to_string()][..])
+        );
+        assert_eq!(
+            git.ignore_tag_prefixes.as_deref(),
+            Some(&["internal/".to_string(), "test-".to_string()][..])
+        );
+        assert_eq!(git.prerelease_suffix.as_deref(), Some("-rc"));
+    }
+
+    #[test]
+    fn test_git_config_omitted_is_none() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.git.is_none());
+    }
+
+    #[test]
+    fn test_git_config_partial_only_tag_sort() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+git:
+  tag_sort: "-version:refname"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let git = config.git.expect("git section should be present");
+        assert_eq!(git.tag_sort.as_deref(), Some("-version:refname"));
+        assert!(git.ignore_tags.is_none());
+        assert!(git.ignore_tag_prefixes.is_none());
+        assert!(git.prerelease_suffix.is_none());
+    }
+
+    #[test]
+    fn test_git_config_ignore_tags_accepts_array() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+git:
+  ignore_tags:
+    - "alpha*"
+    - "beta*"
+    - "rc-*"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let tags = config.git.unwrap().ignore_tags.unwrap();
+        assert_eq!(tags.len(), 3);
+        assert_eq!(tags[0], "alpha*");
+        assert_eq!(tags[1], "beta*");
+        assert_eq!(tags[2], "rc-*");
+    }
+
+    #[test]
+    fn test_git_config_ignore_tag_prefixes_accepts_array() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+git:
+  ignore_tag_prefixes:
+    - "wip/"
+    - "experiment/"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let prefixes = config.git.unwrap().ignore_tag_prefixes.unwrap();
+        assert_eq!(prefixes.len(), 2);
+        assert_eq!(prefixes[0], "wip/");
+        assert_eq!(prefixes[1], "experiment/");
     }
 }
