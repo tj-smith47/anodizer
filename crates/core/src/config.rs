@@ -58,6 +58,9 @@ pub struct Config {
     pub report_sizes: Option<bool>,
     /// Environment variables available to all template expressions.
     pub env: Option<HashMap<String, String>>,
+    /// Custom template variables accessible as {{ .Var.key }} in templates.
+    /// Provides a way to define reusable values, especially useful with config includes.
+    pub variables: Option<HashMap<String, String>>,
     /// Generic artifact publisher configurations.
     pub publishers: Option<Vec<PublisherConfig>>,
     /// Automatic semantic version tagging configuration.
@@ -78,6 +81,8 @@ pub struct Config {
     pub release: Option<ReleaseConfig>,
     /// macOS code signing and notarization configuration.
     pub notarize: Option<NotarizeConfig>,
+    /// Project metadata configuration (applied to metadata.json output files).
+    pub metadata: Option<MetadataConfig>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -137,6 +142,7 @@ impl Default for Config {
             announce: None,
             report_sizes: None,
             env: None,
+            variables: None,
             publishers: None,
             tag: None,
             git: None,
@@ -146,6 +152,7 @@ impl Default for Config {
             sboms: Vec::new(),
             release: None,
             notarize: None,
+            metadata: None,
         }
     }
 }
@@ -3136,6 +3143,19 @@ pub struct NightlyConfig {
     pub name_template: Option<String>,
     /// Tag name used for the nightly release. Default: "nightly".
     pub tag_name: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// MetadataConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MetadataConfig {
+    /// Global modification timestamp for metadata output files (metadata.json).
+    /// Template string (e.g. "{{ .CommitTimestamp }}") or unix timestamp.
+    /// When set, rendered late in the pipeline and applied as file mtime.
+    pub mod_timestamp: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -6689,5 +6709,86 @@ git:
         assert_eq!(prefixes.len(), 2);
         assert_eq!(prefixes[0], "wip/");
         assert_eq!(prefixes[1], "experiment/");
+    }
+
+    #[test]
+    fn test_metadata_config_with_mod_timestamp() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+metadata:
+  mod_timestamp: "{{ .CommitTimestamp }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let meta = config.metadata.unwrap();
+        assert_eq!(
+            meta.mod_timestamp.unwrap(),
+            "{{ .CommitTimestamp }}"
+        );
+    }
+
+    #[test]
+    fn test_metadata_config_omitted_is_none() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.metadata.is_none());
+    }
+
+    #[test]
+    fn test_metadata_config_empty_section() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+metadata: {}
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let meta = config.metadata.unwrap();
+        assert!(meta.mod_timestamp.is_none());
+    }
+
+    #[test]
+    fn test_variables_config_parsed() {
+        let yaml = r#"
+project_name: test
+variables:
+  description: "my project description"
+  somethingElse: "yada yada yada"
+  empty: ""
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let vars = config.variables.as_ref().unwrap();
+        assert_eq!(vars.get("description").unwrap(), "my project description");
+        assert_eq!(vars.get("somethingElse").unwrap(), "yada yada yada");
+        assert_eq!(vars.get("empty").unwrap(), "");
+        assert_eq!(vars.len(), 3);
+    }
+
+    #[test]
+    fn test_variables_config_omitted_is_none() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.variables.is_none());
     }
 }

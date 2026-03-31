@@ -831,6 +831,8 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 pub struct TemplateVars {
     vars: HashMap<String, String>,
     env: HashMap<String, String>,
+    /// Custom user-defined variables accessible as {{ .Var.key }}.
+    custom_vars: HashMap<String, String>,
 }
 
 impl TemplateVars {
@@ -838,6 +840,7 @@ impl TemplateVars {
         Self {
             vars: HashMap::new(),
             env: HashMap::new(),
+            custom_vars: HashMap::new(),
         }
     }
 
@@ -853,7 +856,11 @@ impl TemplateVars {
         self.env.insert(key.to_string(), value.to_string());
     }
 
-    /// Return all template variables (excluding env).
+    pub fn set_custom_var(&mut self, key: &str, value: &str) {
+        self.custom_vars.insert(key.to_string(), value.to_string());
+    }
+
+    /// Return all template variables (excluding env and custom vars).
     pub fn all(&self) -> &HashMap<String, String> {
         &self.vars
     }
@@ -967,6 +974,10 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
         }
     }
     ctx.insert("Env", &vars.env);
+
+    if !vars.custom_vars.is_empty() {
+        ctx.insert("Var", &vars.custom_vars);
+    }
 
     // Build a nested `Runtime` map for GoReleaser `Runtime.Goos` / `Runtime.Goarch` compat.
     let mut runtime = HashMap::new();
@@ -1997,5 +2008,54 @@ mod tests {
             !result.is_empty(),
             "Runtime.Goos should render to a non-empty string"
         );
+    }
+
+    // ---- Custom variables (.Var.*) tests ----
+
+    #[test]
+    fn test_custom_var_tera_style() {
+        let mut vars = test_vars();
+        vars.set_custom_var("description", "my project description");
+        let result = render("{{ Var.description }}", &vars).unwrap();
+        assert_eq!(result, "my project description");
+    }
+
+    #[test]
+    fn test_custom_var_go_style() {
+        let mut vars = test_vars();
+        vars.set_custom_var("mykey", "myvalue");
+        let result = render("{{ .Var.mykey }}", &vars).unwrap();
+        assert_eq!(result, "myvalue");
+    }
+
+    #[test]
+    fn test_custom_var_multiple() {
+        let mut vars = test_vars();
+        vars.set_custom_var("name", "anodize");
+        vars.set_custom_var("desc", "release tool");
+        let result = render("{{ .Var.name }} - {{ .Var.desc }}", &vars).unwrap();
+        assert_eq!(result, "anodize - release tool");
+    }
+
+    #[test]
+    fn test_custom_var_empty_map_no_error() {
+        // When no custom vars are set, Var is not inserted into context.
+        // Referencing Var.something should error (undefined), but having
+        // no custom vars should not cause a panic or crash.
+        let vars = test_vars();
+        // Rendering a template that does NOT reference Var should succeed.
+        let result = render("{{ ProjectName }}", &vars).unwrap();
+        assert_eq!(result, "cfgd");
+    }
+
+    #[test]
+    fn test_custom_var_with_template_in_value() {
+        // Verify that custom var values can themselves be template-rendered
+        // (this is done in the CLI wiring, but we can test the end result here)
+        let mut vars = test_vars();
+        // Simulate a pre-rendered value (as the CLI would do)
+        vars.set_custom_var("version_string", "cfgd v1.2.3");
+        let result = render("{{ .Var.version_string }}", &vars).unwrap();
+        assert_eq!(result, "cfgd v1.2.3");
     }
 }

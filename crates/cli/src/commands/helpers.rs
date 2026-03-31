@@ -254,6 +254,15 @@ pub fn setup_env(
         }
     }
 
+    // Populate user-defined custom variables into template context.
+    if let Some(ref vars_map) = config.variables {
+        for (key, value) in vars_map {
+            // Render variable values through templates (they may reference env vars or other template vars)
+            let rendered = ctx.render_template(value).unwrap_or_else(|_| value.clone());
+            ctx.template_vars_mut().set_custom_var(key, &rendered);
+        }
+    }
+
     // Early token presence check (like GoReleaser's ErrMissingToken in env.go).
     // Warn if no GitHub token is available and the pipeline will need one.
     // Don't hard-error — snapshot mode and dry-run can proceed without a token.

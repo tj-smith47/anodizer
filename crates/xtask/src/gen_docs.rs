@@ -464,6 +464,7 @@ mod tests {
             "announce",
             "report_sizes",
             "env",
+            "variables",
             "publishers",
             "tag",
             "git",
@@ -473,6 +474,7 @@ mod tests {
             "sboms",
             "release",
             "notarize",
+            "metadata",
         ] {
             assert!(
                 field_names.contains(&&expected.to_string()),
