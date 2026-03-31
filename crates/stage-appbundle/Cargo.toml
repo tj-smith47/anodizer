@@ -1,0 +1,17 @@
+[package]
+name = "anodize-stage-appbundle"
+description = "macOS app bundle stage for anodize release automation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+anodize-core.workspace = true
+anyhow.workspace = true
+glob.workspace = true
+
+[dev-dependencies]
+serde_yaml_ng.workspace = true
+tempfile.workspace = true
