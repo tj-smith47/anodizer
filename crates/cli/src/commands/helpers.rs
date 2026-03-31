@@ -294,19 +294,19 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
     }
 }
 
-/// Load artifacts from dist/metadata.json into the context's artifact registry.
+/// Load artifacts from dist/artifacts.json into the context's artifact registry.
 /// Used by `publish` and `announce` commands that run from a completed dist/.
 pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
-    let metadata_path = dist.join("metadata.json");
-    if !metadata_path.exists() {
+    let artifacts_path = dist.join("artifacts.json");
+    if !artifacts_path.exists() {
         anyhow::bail!(
-            "no metadata.json found in {}. Run a full release or merge first.",
+            "no artifacts.json found in {}. Run a full release or merge first.",
             dist.display()
         );
     }
 
-    let content = std::fs::read_to_string(&metadata_path)
-        .with_context(|| format!("read {}", metadata_path.display()))?;
+    let content = std::fs::read_to_string(&artifacts_path)
+        .with_context(|| format!("read {}", artifacts_path.display()))?;
 
     #[derive(serde::Deserialize)]
     struct MetadataArtifact {
@@ -319,7 +319,7 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
     }
 
     let artifacts: Vec<MetadataArtifact> = serde_json::from_str(&content)
-        .with_context(|| format!("parse {}", metadata_path.display()))?;
+        .with_context(|| format!("parse {}", artifacts_path.display()))?;
 
     for a in artifacts {
         let kind = ArtifactKind::parse(&a.kind)

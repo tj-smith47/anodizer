@@ -24,6 +24,7 @@ pub enum ArtifactKind {
     DiskImage,
     Installer,
     MacOsPackage,
+    Flatpak,
 }
 
 impl std::fmt::Display for ArtifactKind {
@@ -53,6 +54,7 @@ impl ArtifactKind {
             ArtifactKind::DiskImage => "disk_image",
             ArtifactKind::Installer => "installer",
             ArtifactKind::MacOsPackage => "macos_package",
+            ArtifactKind::Flatpak => "flatpak",
         }
     }
 
@@ -76,6 +78,7 @@ impl ArtifactKind {
             "disk_image" => Some(ArtifactKind::DiskImage),
             "installer" => Some(ArtifactKind::Installer),
             "macos_package" => Some(ArtifactKind::MacOsPackage),
+            "flatpak" => Some(ArtifactKind::Flatpak),
             _ => None,
         }
     }
@@ -178,8 +181,8 @@ impl ArtifactRegistry {
         self.artifacts.retain(|a| !paths.contains(&a.path));
     }
 
-    /// Serialize all artifacts to a JSON value suitable for writing to metadata.json.
-    pub fn to_metadata_json(&self) -> anyhow::Result<serde_json::Value> {
+    /// Serialize all artifacts to a JSON value suitable for writing to artifacts.json.
+    pub fn to_artifacts_json(&self) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::to_value(&self.artifacts)?)
     }
 }
@@ -199,6 +202,7 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::Sbom,
         ArtifactKind::Signature,
         ArtifactKind::Certificate,
+        ArtifactKind::Flatpak,
     ]
 }
 
@@ -307,15 +311,15 @@ mod tests {
     }
 
     #[test]
-    fn test_to_metadata_json_empty() {
+    fn test_to_artifacts_json_empty() {
         let registry = ArtifactRegistry::new();
-        let json = registry.to_metadata_json().unwrap();
+        let json = registry.to_artifacts_json().unwrap();
         assert!(json.is_array());
         assert_eq!(json.as_array().unwrap().len(), 0);
     }
 
     #[test]
-    fn test_to_metadata_json_with_artifacts() {
+    fn test_to_artifacts_json_with_artifacts() {
         let mut registry = ArtifactRegistry::new();
         let mut meta = HashMap::new();
         meta.insert("format".to_string(), "tar.gz".to_string());
@@ -336,7 +340,7 @@ mod tests {
             metadata: Default::default(),
         });
 
-        let json = registry.to_metadata_json().unwrap();
+        let json = registry.to_artifacts_json().unwrap();
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
 
@@ -366,7 +370,7 @@ mod tests {
             metadata: Default::default(),
         });
 
-        let json = registry.to_metadata_json().unwrap();
+        let json = registry.to_artifacts_json().unwrap();
         let serialized = serde_json::to_string_pretty(&json).unwrap();
         // Should be parseable back
         let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();

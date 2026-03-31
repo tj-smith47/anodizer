@@ -356,20 +356,101 @@ fn run_post_pipeline(
             artifact::print_size_report(&ctx.artifacts, log);
         }
 
-        // Write metadata.json to dist/
-        let metadata = ctx
-            .artifacts
-            .to_metadata_json()
-            .context("failed to serialize artifact metadata")?;
         let dist = &config.dist;
         std::fs::create_dir_all(dist)
             .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
+
+        // Write metadata.json with project metadata (GoReleaser parity).
         let metadata_path = dist.join("metadata.json");
-        let json_str =
-            serde_json::to_string_pretty(&metadata).context("failed to serialize metadata JSON")?;
-        std::fs::write(&metadata_path, &json_str)
-            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
-        log.status(&format!("wrote {}", metadata_path.display()));
+        {
+            let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
+            let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
+
+            let tag = ctx
+                .template_vars()
+                .get("Tag")
+                .cloned()
+                .unwrap_or_default();
+            let previous_tag = ctx
+                .template_vars()
+                .get("PreviousTag")
+                .cloned()
+                .unwrap_or_default();
+            let version = ctx.version();
+            let commit = ctx
+                .template_vars()
+                .get("FullCommit")
+                .cloned()
+                .unwrap_or_default();
+            let date = Utc::now().to_rfc3339();
+
+            let project_metadata = serde_json::json!({
+                "project_name": config.project_name,
+                "tag": tag,
+                "previous_tag": previous_tag,
+                "version": version,
+                "commit": commit,
+                "date": date,
+                "runtime": {
+                    "goos": goos,
+                    "goarch": goarch,
+                }
+            });
+
+            let json_str = serde_json::to_string_pretty(&project_metadata)
+                .context("failed to serialize project metadata JSON")?;
+            std::fs::write(&metadata_path, &json_str)
+                .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+            log.status(&format!("wrote {}", metadata_path.display()));
+        }
+
+        // Register metadata.json as an artifact.
+        ctx.artifacts.add(anodize_core::artifact::Artifact {
+            kind: anodize_core::artifact::ArtifactKind::Metadata,
+            name: "metadata.json".to_string(),
+            path: metadata_path.clone(),
+            target: None,
+            crate_name: config.project_name.clone(),
+            metadata: Default::default(),
+        });
+
+        // Write artifacts.json with the artifact list.
+        let artifacts_path = dist.join("artifacts.json");
+        {
+            let artifacts_json = ctx
+                .artifacts
+                .to_artifacts_json()
+                .context("failed to serialize artifact list")?;
+            let json_str = serde_json::to_string_pretty(&artifacts_json)
+                .context("failed to serialize artifacts JSON")?;
+            std::fs::write(&artifacts_path, &json_str)
+                .with_context(|| format!("failed to write {}", artifacts_path.display()))?;
+            log.status(&format!("wrote {}", artifacts_path.display()));
+        }
+
+        // Apply mod_timestamp to both metadata.json and artifacts.json if configured.
+        if let Some(ref meta) = config.metadata
+            && let Some(ref ts_tmpl) = meta.mod_timestamp
+        {
+            let rendered = ctx
+                .render_template(ts_tmpl)
+                .context("failed to render metadata.mod_timestamp template")?;
+            if !rendered.is_empty() {
+                let mtime = anodize_core::util::parse_mod_timestamp(&rendered)
+                    .with_context(|| {
+                        format!(
+                            "invalid metadata.mod_timestamp value: {:?}",
+                            rendered
+                        )
+                    })?;
+                anodize_core::util::set_file_mtime(&metadata_path, mtime)?;
+                anodize_core::util::set_file_mtime(&artifacts_path, mtime)?;
+                log.status(&format!(
+                    "set mtime on metadata.json and artifacts.json to {}",
+                    rendered
+                ));
+            }
+        }
     }
 
     // Run custom publishers

@@ -174,8 +174,12 @@ pub fn set_file_mtime(path: &Path, mtime: SystemTime) -> Result<()> {
         .write(true)
         .open(path)
         .with_context(|| format!("open {} for mtime update", path.display()))?;
-    file.set_times(std::fs::FileTimes::new().set_modified(mtime))
-        .with_context(|| format!("set mtime on {}", path.display()))?;
+    file.set_times(
+        std::fs::FileTimes::new()
+            .set_accessed(mtime)
+            .set_modified(mtime),
+    )
+    .with_context(|| format!("set mtime on {}", path.display()))?;
     Ok(())
 }
 
