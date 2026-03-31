@@ -89,6 +89,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
     // Validate config schema version
     anodize_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Validate git.tag_sort if present
+    anodize_core::config::validate_tag_sort(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     Ok(config)
 }
@@ -266,6 +268,8 @@ impl Pipeline {
             "pkg",
             "nsis",
             "appbundle",
+            "flatpak",
+            "notarize",
             "source",
             "changelog",
             "checksum",
@@ -338,6 +342,8 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_source::SourceStage;
     use anodize_stage_upx::UpxStage;
     use anodize_stage_appbundle::AppBundleStage;
+    use anodize_stage_flatpak::FlatpakStage;
+    use anodize_stage_notarize::NotarizeStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));
@@ -347,11 +353,15 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(ArchiveStage));
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SnapcraftStage));
+    // AppBundle must run before DMG so signed bundles can be packaged into disk images.
+    p.add(Box::new(AppBundleStage));
     p.add(Box::new(DmgStage));
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
     p.add(Box::new(NsisStage));
-    p.add(Box::new(AppBundleStage));
+    p.add(Box::new(FlatpakStage));
+    // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
+    p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
@@ -418,6 +428,8 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
     use anodize_stage_appbundle::AppBundleStage;
+    use anodize_stage_flatpak::FlatpakStage;
+    use anodize_stage_notarize::NotarizeStage;
 
     let mut p = Pipeline::new();
     // Changelog runs before archive so release notes are available for archive naming.
@@ -425,11 +437,15 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(ArchiveStage));
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SnapcraftStage));
+    // AppBundle must run before DMG so signed bundles can be packaged into disk images.
+    p.add(Box::new(AppBundleStage));
     p.add(Box::new(DmgStage));
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
     p.add(Box::new(NsisStage));
-    p.add(Box::new(AppBundleStage));
+    p.add(Box::new(FlatpakStage));
+    // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
+    p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));

@@ -162,6 +162,29 @@ pub fn validate_version(config: &Config) -> Result<(), String> {
     }
 }
 
+/// Validate `git.tag_sort` if present. Accepted values:
+/// - `"-version:refname"` (default, lexicographic version sort)
+/// - `"-version:creatordate"` (sort by tag creation date, newest first)
+///
+/// Returns an error for unrecognized values.
+pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
+    if let Some(ref git) = config.git {
+        if let Some(ref sort) = git.tag_sort {
+            match sort.as_str() {
+                "-version:refname" | "-version:creatordate" => {}
+                other => {
+                    return Err(format!(
+                        "unsupported git.tag_sort value: \"{}\". \
+                         Accepted values: \"-version:refname\", \"-version:creatordate\".",
+                        other
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Load environment variables from .env-style files.
 /// Each file is read as KEY=VALUE lines. Lines starting with # and empty lines are skipped.
 /// Returns a HashMap of parsed key-value pairs. Does NOT mutate the process
@@ -3568,9 +3591,9 @@ pub struct GitConfig {
     /// Tags matching any pattern in this list are excluded from version
     /// detection entirely.
     pub ignore_tags: Option<Vec<String>>,
-    /// Tag prefixes to ignore during version detection.
+    /// Tag prefixes to ignore during version detection (supports templates).
     /// Tags starting with any prefix in this list are excluded.
-    /// This is an anodize enhancement not present in GoReleaser.
+    /// Mirrors GoReleaser Pro's ignore_tag_prefixes feature.
     pub ignore_tag_prefixes: Option<Vec<String>>,
     /// Suffix that identifies pre-release tags for sorting purposes.
     /// When set, tags ending with this suffix are treated as pre-releases
@@ -6591,6 +6614,61 @@ git:
         assert_eq!(tags[0], "alpha*");
         assert_eq!(tags[1], "beta*");
         assert_eq!(tags[2], "rc-*");
+    }
+
+    #[test]
+    fn test_validate_tag_sort_valid_refname() {
+        let config = Config {
+            git: Some(GitConfig {
+                tag_sort: Some("-version:refname".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_tag_sort(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tag_sort_valid_creatordate() {
+        let config = Config {
+            git: Some(GitConfig {
+                tag_sort: Some("-version:creatordate".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(validate_tag_sort(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tag_sort_none_is_valid() {
+        let config = Config {
+            git: Some(GitConfig::default()),
+            ..Default::default()
+        };
+        assert!(validate_tag_sort(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tag_sort_no_git_config_is_valid() {
+        let config = Config::default();
+        assert!(validate_tag_sort(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tag_sort_invalid_rejected() {
+        let config = Config {
+            git: Some(GitConfig {
+                tag_sort: Some("alphabetical".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let result = validate_tag_sort(&config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("alphabetical"), "error should contain the bad value: {}", err);
+        assert!(err.contains("-version:refname"), "error should list accepted values: {}", err);
     }
 
     #[test]

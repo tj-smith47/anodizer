@@ -3,7 +3,48 @@ use regex::Regex;
 use std::process::Command;
 use std::sync::LazyLock;
 
+use crate::config::GitConfig;
 use crate::template::TemplateVars;
+
+/// Render ignore patterns (both `ignore_tags` and `ignore_tag_prefixes`) through
+/// the template engine when `template_vars` is provided.
+///
+/// Returns two vecs: `(rendered_ignore_tags, rendered_ignore_tag_prefixes)`.
+/// When `vars` is `None`, patterns are returned as-is (unrendered).
+pub fn render_ignore_patterns(
+    git_config: Option<&GitConfig>,
+    vars: Option<&TemplateVars>,
+) -> (Vec<String>, Vec<String>) {
+    let rendered_tags: Vec<String> = git_config
+        .and_then(|gc| gc.ignore_tags.as_ref())
+        .map(|v| {
+            v.iter()
+                .map(|s| {
+                    if let Some(tv) = vars {
+                        crate::template::render(s, tv).unwrap_or_else(|_| s.clone())
+                    } else {
+                        s.clone()
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let rendered_prefixes: Vec<String> = git_config
+        .and_then(|gc| gc.ignore_tag_prefixes.as_ref())
+        .map(|v| {
+            v.iter()
+                .map(|s| {
+                    if let Some(tv) = vars {
+                        crate::template::render(s, tv).unwrap_or_else(|_| s.clone())
+                    } else {
+                        s.clone()
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (rendered_tags, rendered_prefixes)
+}
 
 #[derive(Debug, Clone)]
 pub struct SemVer {
@@ -291,10 +332,11 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
 /// E.g., tag_template "cfgd-core-v{{ .Version }}" → matches tags like "cfgd-core-v1.2.3"
 ///
 /// When `git_config` is provided:
-/// - `ignore_tags`: tags whose name exactly matches any entry are excluded.
+/// - `ignore_tags`: tags matching any entry (glob patterns) are excluded.
 ///   When `template_vars` is also provided, each entry is rendered through the
 ///   template engine first (matching GoReleaser's behavior).
 /// - `ignore_tag_prefixes`: tags starting with any prefix are excluded.
+///   Also template-rendered when `template_vars` is provided.
 /// - `tag_sort` set to `"-version:creatordate"`: delegates ordering to git
 ///   instead of Rust-side SemVer sort (the default `"-version:refname"` is
 ///   equivalent to SemVer sort, so Rust-side sort is kept).
@@ -304,7 +346,7 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
 ///   `--sort=-version:refname` is used so the suffix takes effect.
 pub fn find_latest_tag_matching(
     tag_template: &str,
-    git_config: Option<&crate::config::GitConfig>,
+    git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
 ) -> Result<Option<String>> {
     // Replace version placeholders with a sentinel, regex-escape everything
@@ -320,27 +362,19 @@ pub fn find_latest_tag_matching(
     let pattern = escaped.replace(SENTINEL, r"\d+\.\d+\.\d+(?:-.+)?");
     let re = Regex::new(&format!("^{}$", pattern))?;
 
-    // Extract ignore_tags (template-rendered when vars available),
-    // ignore_tag_prefixes, tag_sort, and prerelease_suffix from the config,
-    // falling back to empty/default when absent.
-    let rendered_ignore_tags: Vec<String> = git_config
-        .and_then(|gc| gc.ignore_tags.as_ref())
-        .map(|v| {
-            v.iter()
-                .map(|s| {
-                    if let Some(vars) = template_vars {
-                        crate::template::render(s, vars).unwrap_or_else(|_| s.clone())
-                    } else {
-                        s.clone()
-                    }
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let ignore_prefixes: Vec<&str> = git_config
-        .and_then(|gc| gc.ignore_tag_prefixes.as_ref())
-        .map(|v| v.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_default();
+    // Use the shared helper to render ignore_tags and ignore_tag_prefixes
+    // through the template engine when vars are available.
+    let (rendered_ignore_tags, rendered_ignore_prefixes) =
+        render_ignore_patterns(git_config, template_vars);
+
+    // Compile ignore_tags entries as glob patterns for consistent behavior
+    // with `find_previous_tag` (which passes them to `git describe --exclude`
+    // which interprets globs). This matches GoReleaser's behavior.
+    let ignore_tag_globs: Vec<glob::Pattern> = rendered_ignore_tags
+        .iter()
+        .filter_map(|pat| glob::Pattern::new(pat).ok())
+        .collect();
+
     let tag_sort = git_config
         .and_then(|gc| gc.tag_sort.as_deref())
         .unwrap_or("-version:refname");
@@ -372,10 +406,11 @@ pub fn find_latest_tag_matching(
     let mut matching: Vec<(SemVer, String)> = tags_output
         .lines()
         .filter(|t| re.is_match(t))
-        // Apply ignore_tags: exclude exact matches (template-rendered).
-        .filter(|t| !rendered_ignore_tags.iter().any(|ig| ig == t))
-        // Apply ignore_tag_prefixes: exclude tags starting with any prefix.
-        .filter(|t| !ignore_prefixes.iter().any(|pfx| t.starts_with(pfx)))
+        // Apply ignore_tags: exclude via glob matching (template-rendered).
+        .filter(|t| !ignore_tag_globs.iter().any(|pat| pat.matches(t)))
+        // Apply ignore_tag_prefixes: exclude tags starting with any prefix
+        // (template-rendered).
+        .filter(|t| !rendered_ignore_prefixes.iter().any(|pfx| t.starts_with(pfx.as_str())))
         .filter_map(|t| parse_semver_tag(t).ok().map(|v| (v, t.to_string())))
         .collect();
 
@@ -779,48 +814,45 @@ pub fn detect_github_repo() -> Result<(String, String)> {
 /// Find the tag immediately before `current_tag` in commit history.
 ///
 /// Uses `git describe --tags --abbrev=0 {current_tag}^` to locate the previous
-/// tag. When `git_config` is provided, applies `--exclude` flags for
-/// `ignore_tags` and rejects results that match `ignore_tag_prefixes`.
+/// tag. When `git_config` is provided, applies `--exclude` flags for both
+/// `ignore_tags` patterns and `ignore_tag_prefixes` (converted to `<prefix>*`
+/// globs), so git handles all filtering natively in a single call.
 ///
-/// `rendered_ignore_tags` should be pre-rendered through the template engine
-/// by the caller (matching GoReleaser's behavior where ignore_tags are
-/// template-rendered).
+/// Both `ignore_tags` and `ignore_tag_prefixes` are rendered through the
+/// template engine when `template_vars` is provided.
 ///
 /// If that fails (e.g. `current_tag` is the very first tag), falls back to
 /// returning `None`.
 pub fn find_previous_tag(
     current_tag: &str,
-    git_config: Option<&crate::config::GitConfig>,
-    rendered_ignore_tags: &[String],
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
 ) -> Result<Option<String>> {
     let parent_ref = format!("{}^", current_tag);
 
-    // Build args: `git describe --tags --abbrev=0 --exclude=<tag> ... <parent_ref>`
-    let exclude_args: Vec<String> = rendered_ignore_tags
+    // Use the shared helper to render both ignore_tags and ignore_tag_prefixes.
+    let (rendered_ignore_tags, rendered_ignore_prefixes) =
+        render_ignore_patterns(git_config, template_vars);
+
+    // Build args: `git describe --tags --abbrev=0 --exclude=<pattern> ... <parent_ref>`
+    // Include both ignore_tags (as-is, they're glob patterns) and
+    // ignore_tag_prefixes (converted to `<prefix>*` globs).
+    let mut exclude_args: Vec<String> = rendered_ignore_tags
         .iter()
         .map(|t| format!("--exclude={}", t))
         .collect();
+    for pfx in &rendered_ignore_prefixes {
+        exclude_args.push(format!("--exclude={}*", pfx));
+    }
+
     let mut args: Vec<&str> = vec!["describe", "--tags", "--abbrev=0"];
     for ea in &exclude_args {
         args.push(ea.as_str());
     }
     args.push(&parent_ref);
 
-    let ignore_prefixes: Vec<&str> = git_config
-        .and_then(|gc| gc.ignore_tag_prefixes.as_ref())
-        .map(|v| v.iter().map(|s| s.as_str()).collect())
-        .unwrap_or_default();
-
     match git_output(&args) {
-        Ok(tag) if !tag.is_empty() => {
-            // Check against ignore_tag_prefixes: reject if the found tag
-            // starts with any configured prefix.
-            if ignore_prefixes.iter().any(|pfx| tag.starts_with(pfx)) {
-                Ok(None)
-            } else {
-                Ok(Some(tag))
-            }
-        }
+        Ok(tag) if !tag.is_empty() => Ok(Some(tag)),
         _ => Ok(None),
     }
 }
@@ -1326,28 +1358,71 @@ mod tests {
     fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        // Create tags: a release and a prerelease with -rc suffix
+        // Create tags: two releases and a prerelease with -rc suffix.
+        // v1.1.1-rc.1 is semantically version 1.1.1 with a prerelease,
+        // which is > 1.1.0 in both SemVer and git version sort.
+        // versionsort.suffix only affects ordering relative to the same
+        // base version (e.g. v1.1.1-rc.1 vs v1.1.1), not across different
+        // patch levels.
         init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v1.1.1-rc.1"]);
 
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
 
-        // Without prerelease_suffix, v1.1.1-rc.1 would sort highest by
-        // SemVer (1.1.1-rc.1 is a prerelease for 1.1.1, which is > 1.1.0).
-        // But with prerelease_suffix="-rc", git's versionsort.suffix
-        // should be activated even under the default tag_sort.
+        // Without prerelease_suffix, using Rust-side SemVer sort:
+        // v1.1.1-rc.1 is a prerelease of v1.1.1, which is > v1.1.0 but
+        // SemVer says prereleases are < the release, so 1.1.1-rc.1 < 1.1.1.
+        // But 1.1.1-rc.1 > 1.1.0 (different patch version), so it wins.
+        let result_no_suffix = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
+        assert_eq!(
+            result_no_suffix,
+            Some("v1.1.1-rc.1".to_string()),
+            "without prerelease_suffix, SemVer sort puts v1.1.1-rc.1 highest"
+        );
+
+        // With prerelease_suffix="-rc", git-delegated sort is activated
+        // (use_git_sort=true). versionsort.suffix=-rc makes -rc tags sort
+        // after their base version (so v1.1.1-rc.1 comes after v1.1.1),
+        // but v1.1.1-rc.1 is still version 1.1.1 which is > 1.1.0.
+        // Since we take the first (highest) from git's descending sort,
+        // v1.1.1-rc.1 remains the latest.
         let gc = crate::config::GitConfig {
             prerelease_suffix: Some("-rc".to_string()),
             ..Default::default()
         };
-        // With prerelease_suffix set, find_latest_tag_matching should use
-        // git-delegated sort (use_git_sort=true), passing -c versionsort.suffix=-rc.
         let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
-        // The result should be a valid tag (the function should not error).
-        // The exact ordering depends on git's version sort with the suffix,
-        // but the key behavior is that prerelease_suffix IS passed to git
-        // even under the default tag_sort.
-        assert!(result.is_some(), "should find a matching tag");
+        assert_eq!(
+            result,
+            Some("v1.1.1-rc.1".to_string()),
+            "prerelease_suffix activates git-delegated sort; v1.1.1-rc.1 still highest"
+        );
+
+        // Now test the scenario where versionsort.suffix actually matters:
+        // when the release version exists alongside the prerelease.
+        // Add v1.1.1 — without suffix, git sorts rc before release (v1.1.1-rc.1 < v1.1.1);
+        // with suffix, rc sorts *after* release but --sort=-version:refname
+        // means descending, so release comes first.
+        let run = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        };
+        run(&["tag", "v1.1.1"]);
+
+        // With versionsort.suffix=-rc and both v1.1.1 and v1.1.1-rc.1 present,
+        // the suffix causes -rc.1 to sort after v1.1.1 in ascending order,
+        // meaning v1.1.1-rc.1 comes last. In descending sort (-version:refname),
+        // v1.1.1-rc.1 would be first. But the key point is that git-delegated
+        // sort IS being used (prerelease_suffix triggers it).
+        let result_both = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
+        assert!(result_both.is_some(), "should find a tag with both release and rc present");
 
         std::env::set_current_dir(orig).unwrap();
     }
@@ -1435,13 +1510,16 @@ mod tests {
         std::env::set_current_dir(dir).unwrap();
 
         // Without ignore_tags, previous tag of v3.0.0 should be v2.0.0
-        let result = find_previous_tag("v3.0.0", None, &[]).unwrap();
+        let result = find_previous_tag("v3.0.0", None, None).unwrap();
         assert_eq!(result, Some("v2.0.0".to_string()));
 
         // With v2.0.0 in ignore_tags, it should be excluded via --exclude
         // and the previous tag should be v1.0.0
-        let ignore = vec!["v2.0.0".to_string()];
-        let result_filtered = find_previous_tag("v3.0.0", None, &ignore).unwrap();
+        let gc = crate::config::GitConfig {
+            ignore_tags: Some(vec!["v2.0.0".to_string()]),
+            ..Default::default()
+        };
+        let result_filtered = find_previous_tag("v3.0.0", Some(&gc), None).unwrap();
         assert_eq!(result_filtered, Some("v1.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
@@ -1459,16 +1537,17 @@ mod tests {
         std::env::set_current_dir(dir).unwrap();
 
         // Without filtering, previous tag of v3.0.0 is nightly-v2.0.0
-        let result = find_previous_tag("v3.0.0", None, &[]).unwrap();
+        let result = find_previous_tag("v3.0.0", None, None).unwrap();
         assert_eq!(result, Some("nightly-v2.0.0".to_string()));
 
-        // With ignore_tag_prefixes=["nightly-"], nightly-v2.0.0 is rejected
+        // With ignore_tag_prefixes=["nightly-"], nightly-v2.0.0 is excluded
+        // via --exclude=nightly-* and git describe skips it, returning v1.0.0
         let gc = crate::config::GitConfig {
             ignore_tag_prefixes: Some(vec!["nightly-".to_string()]),
             ..Default::default()
         };
-        let result_filtered = find_previous_tag("v3.0.0", Some(&gc), &[]).unwrap();
-        assert_eq!(result_filtered, None);
+        let result_filtered = find_previous_tag("v3.0.0", Some(&gc), None).unwrap();
+        assert_eq!(result_filtered, Some("v1.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
     }
@@ -1483,7 +1562,7 @@ mod tests {
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
 
-        let result = find_previous_tag("v2.0.0", None, &[]).unwrap();
+        let result = find_previous_tag("v2.0.0", None, None).unwrap();
         assert_eq!(result, Some("v1.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();

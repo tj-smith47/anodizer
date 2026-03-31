@@ -121,7 +121,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             // --all --force: include every crate
             config.crates.iter().map(|c| c.name.clone()).collect()
         } else {
-            detect_changed_crates(&config.crates, config.git.as_ref())?
+            detect_changed_crates(&config.crates, config.git.as_ref(), &log)?
         }
     } else {
         opts.crate_names.clone()
@@ -401,7 +401,27 @@ fn run_post_pipeline(
 fn detect_changed_crates(
     crates: &[CrateConfig],
     git_config: Option<&anodize_core::config::GitConfig>,
+    log: &StageLogger,
 ) -> Result<Vec<String>> {
+    // Log when ignore_tags/ignore_tag_prefixes contain template expressions
+    // but template_vars are not yet available (we pass None below).
+    if let Some(gc) = git_config {
+        let has_templates = gc
+            .ignore_tags
+            .as_ref()
+            .is_some_and(|tags| tags.iter().any(|t| t.contains("{{")))
+            || gc
+                .ignore_tag_prefixes
+                .as_ref()
+                .is_some_and(|pfx| pfx.iter().any(|p| p.contains("{{")));
+        if has_templates {
+            log.debug(
+                "note: ignore_tags/ignore_tag_prefixes templates not rendered during \
+                 change detection (template vars not yet available)",
+            );
+        }
+    }
+
     let mut changed = vec![];
     let mut oldest_tag: Option<String> = None;
 

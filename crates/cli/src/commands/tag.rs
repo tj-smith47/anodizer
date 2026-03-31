@@ -286,6 +286,7 @@ fn load_crate_tag_prefix(opts: &TagOpts, crate_name: &str) -> Option<String> {
     git::extract_tag_prefix(&crate_cfg.tag_template)
 }
 
+// TODO: Wire GitConfig (ignore_tags, ignore_tag_prefixes) into tag discovery
 fn find_previous_tag(cfg: &ResolvedConfig) -> Result<Option<String>> {
     let tags = match cfg.tag_context.as_str() {
         "branch" => git::get_branch_semver_tags(&cfg.tag_prefix)?,
