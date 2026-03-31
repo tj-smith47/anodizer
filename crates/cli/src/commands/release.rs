@@ -121,7 +121,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             // --all --force: include every crate
             config.crates.iter().map(|c| c.name.clone()).collect()
         } else {
-            detect_changed_crates(&config.crates)?
+            detect_changed_crates(&config.crates, config.git.as_ref())?
         }
     } else {
         opts.crate_names.clone()
@@ -398,12 +398,15 @@ fn run_post_pipeline(
 }
 
 /// Detect which crates have changes since their last tag.
-fn detect_changed_crates(crates: &[CrateConfig]) -> Result<Vec<String>> {
+fn detect_changed_crates(
+    crates: &[CrateConfig],
+    git_config: Option<&anodize_core::config::GitConfig>,
+) -> Result<Vec<String>> {
     let mut changed = vec![];
     let mut oldest_tag: Option<String> = None;
 
     for c in crates {
-        let latest_tag = git::find_latest_tag_matching(&c.tag_template)?;
+        let latest_tag = git::find_latest_tag_matching(&c.tag_template, git_config)?;
         match &latest_tag {
             None => {
                 // No tag at all → always include

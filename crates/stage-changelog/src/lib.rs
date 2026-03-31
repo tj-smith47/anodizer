@@ -547,7 +547,9 @@ impl Stage for ChangelogStage {
             let crate_name = crate_cfg.name.clone();
 
             // Find the previous tag for this crate.
-            let prev_tag = find_latest_tag_matching(&crate_cfg.tag_template).unwrap_or(None);
+            let prev_tag =
+                find_latest_tag_matching(&crate_cfg.tag_template, ctx.config.git.as_ref())
+                    .unwrap_or(None);
 
             let path_filter = if crate_cfg.path.is_empty() || crate_cfg.path == "." {
                 None

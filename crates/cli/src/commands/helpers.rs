@@ -87,7 +87,10 @@ pub fn resolve_git_context(
             ));
             override_tag.clone()
         } else {
-            let latest_tag = match git::find_latest_tag_matching(&crate_cfg.tag_template) {
+            let latest_tag = match git::find_latest_tag_matching(
+                &crate_cfg.tag_template,
+                config.git.as_ref(),
+            ) {
                 Ok(found) => found,
                 Err(e) => {
                     log.warn(&format!("error finding tags matching template: {e}"));
