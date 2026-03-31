@@ -19,6 +19,7 @@ members = [
     "crates/stage-msi",
     "crates/stage-pkg",
     "crates/stage-blob",
+    "crates/stage-nsis",
     "crates/stage-appbundle",
     "crates/cli",
     "crates/xtask",

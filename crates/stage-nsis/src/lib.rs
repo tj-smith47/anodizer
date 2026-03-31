@@ -13,26 +13,30 @@ use anodize_core::stage::Stage;
 // Default NSIS script
 // ---------------------------------------------------------------------------
 
-/// Generate a default `.nsi` script that installs the binary and creates an
-/// uninstaller. The caller passes concrete values via `-D` defines to
-/// `makensis`, so the script uses `${PRODUCT_NAME}`, `${OUTPUT_FILE}`,
-/// `${BINARY_PATH}`, and `${BINARY_NAME}` placeholders.
+/// Generate a default `.nsi` script template using Tera syntax.
+///
+/// The template uses `{{ ProjectName }}`, `{{ NsisOutputFile }}`,
+/// `{{ NsisBinaryPath }}`, and `{{ NsisBinaryName }}` variables that are
+/// rendered through the template engine before being passed to makensis.
 pub fn default_nsi_script() -> &'static str {
     r#"!include "MUI2.nsh"
-Name "${PRODUCT_NAME}"
-OutFile "${OUTPUT_FILE}"
-InstallDir "$PROGRAMFILES\${PRODUCT_NAME}"
+Name "{{ ProjectName }}"
+OutFile "{{ NsisOutputFile }}"
+InstallDir "$PROGRAMFILES\{{ ProjectName }}"
+RequestExecutionLevel admin
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 Section "Install"
     SetOutPath "$INSTDIR"
-    File "${BINARY_PATH}"
-    CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\${BINARY_NAME}"
+    File "{{ NsisBinaryPath }}"
+    CreateShortCut "$DESKTOP\{{ ProjectName }}.lnk" "$INSTDIR\{{ NsisBinaryName }}"
+    WriteUninstaller "$INSTDIR\uninstall.exe"
 SectionEnd
 Section "Uninstall"
-    Delete "$INSTDIR\${BINARY_NAME}"
-    Delete "$DESKTOP\${PRODUCT_NAME}.lnk"
+    Delete "$INSTDIR\{{ NsisBinaryName }}"
+    Delete "$DESKTOP\{{ ProjectName }}.lnk"
+    Delete "$INSTDIR\uninstall.exe"
     RMDir "$INSTDIR"
 SectionEnd
 "#
@@ -45,14 +49,8 @@ SectionEnd
 /// Build the `makensis` CLI arguments.
 ///
 /// - `script_path`: path to the `.nsi` script file
-/// - `defines`: key-value pairs passed as `-DKEY=VALUE` flags
-pub fn nsis_command(script_path: &str, defines: &[(&str, &str)]) -> Vec<String> {
-    let mut args = vec!["makensis".to_string()];
-    for (key, value) in defines {
-        args.push(format!("-D{key}={value}"));
-    }
-    args.push(script_path.to_string());
-    args
+pub fn nsis_command(script_path: &str) -> Vec<String> {
+    vec!["makensis".to_string(), script_path.to_string()]
 }
 
 // ---------------------------------------------------------------------------
@@ -96,8 +94,6 @@ impl Stage for NsisStage {
             return Ok(());
         }
 
-        let project_name = ctx.config.project_name.clone();
-
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
@@ -119,18 +115,15 @@ impl Stage for NsisStage {
                 .collect();
 
             for nsis_cfg in nsis_configs {
-                // Skip disabled configs (template-based: evaluate and check for "true")
-                if let Some(disable_str) = &nsis_cfg.disable {
-                    let rendered = ctx
-                        .render_template(disable_str)
-                        .unwrap_or_else(|_| disable_str.clone());
-                    if rendered.trim() == "true" {
-                        log.status(&format!(
-                            "skipping disabled NSIS config for crate {}",
-                            krate.name
-                        ));
-                        continue;
-                    }
+                // Skip disabled configs (supports bool or template string)
+                if let Some(ref d) = nsis_cfg.disable
+                    && d.is_disabled(|s| ctx.render_template(s))
+                {
+                    log.status(&format!(
+                        "skipping disabled NSIS config for crate {}",
+                        krate.name
+                    ));
+                    continue;
                 }
 
                 // Filter by build IDs if specified
@@ -171,6 +164,13 @@ impl Stage for NsisStage {
                     .iter()
                     .map(|b| (b.target.clone(), b.path.clone()))
                     .collect();
+
+                // Check that makensis is available once per config (not per binary)
+                if !dry_run && !anodize_core::util::find_binary("makensis") {
+                    anyhow::bail!(
+                        "makensis not found on PATH; install NSIS to create Windows installers"
+                    );
+                }
 
                 for (target, binary_path) in &effective_binaries {
                     // Derive Os/Arch from the target triple for template rendering
@@ -247,13 +247,6 @@ impl Stage for NsisStage {
                         continue;
                     }
 
-                    // Live mode — check that makensis is available
-                    if !anodize_core::util::find_binary("makensis") {
-                        anyhow::bail!(
-                            "makensis not found on PATH; install NSIS to create Windows installers"
-                        );
-                    }
-
                     // Create output directory
                     fs::create_dir_all(&output_dir).with_context(|| {
                         format!("create NSIS output dir: {}", output_dir.display())
@@ -302,49 +295,50 @@ impl Stage for NsisStage {
                         }
                     }
 
-                    // Determine the .nsi script to use
-                    let nsi_script_path = if let Some(script_tmpl) = &nsis_cfg.script {
-                        // User-provided script: read, render through template engine, write
-                        // to staging dir
-                        let script_content = fs::read_to_string(script_tmpl).with_context(|| {
+                    // Set NSIS-specific template vars for script rendering
+                    let exe_path_str = exe_path.to_string_lossy().into_owned();
+                    let staged_binary_str = staged_binary.to_string_lossy().into_owned();
+                    ctx.template_vars_mut()
+                        .set("NsisOutputFile", &exe_path_str);
+                    ctx.template_vars_mut()
+                        .set("NsisBinaryPath", &staged_binary_str);
+                    ctx.template_vars_mut()
+                        .set("NsisBinaryName", binary_name);
+
+                    // Get the script content (user-provided or default), render
+                    // through the template engine, and write to a temp file
+                    let script_content = if let Some(script_tmpl) = &nsis_cfg.script {
+                        fs::read_to_string(script_tmpl).with_context(|| {
                             format!("nsis: read script template: {script_tmpl}")
-                        })?;
-                        let rendered = ctx.render_template(&script_content).with_context(|| {
-                            format!("nsis: render script template: {script_tmpl}")
-                        })?;
-                        let rendered_path = staging_dir.join("installer.nsi");
-                        fs::write(&rendered_path, &rendered).with_context(|| {
-                            format!("nsis: write rendered script to {}", rendered_path.display())
-                        })?;
-                        rendered_path
+                        })?
                     } else {
-                        // Use default script
-                        let default_path = staging_dir.join("installer.nsi");
-                        fs::write(&default_path, default_nsi_script()).with_context(|| {
+                        default_nsi_script().to_string()
+                    };
+
+                    let rendered_script =
+                        ctx.render_template(&script_content).with_context(|| {
                             format!(
-                                "nsis: write default script to {}",
-                                default_path.display()
+                                "nsis: render script for crate {} target {:?}",
+                                krate.name, target
                             )
                         })?;
-                        default_path
-                    };
+
+                    let nsi_script_path = staging_dir.join("installer.nsi");
+                    fs::write(&nsi_script_path, &rendered_script).with_context(|| {
+                        format!(
+                            "nsis: write rendered script to {}",
+                            nsi_script_path.display()
+                        )
+                    })?;
 
                     // Apply mod_timestamp if set (to staging dir contents)
                     if let Some(ts) = &nsis_cfg.mod_timestamp {
                         anodize_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
                     }
 
-                    // Build makensis command with -D defines
-                    let output_file_str = exe_path.to_string_lossy().into_owned();
-                    let binary_path_str = staged_binary.to_string_lossy().into_owned();
+                    // Build makensis command
                     let script_path_str = nsi_script_path.to_string_lossy().into_owned();
-                    let defines = [
-                        ("PRODUCT_NAME", project_name.as_str()),
-                        ("OUTPUT_FILE", output_file_str.as_str()),
-                        ("BINARY_PATH", binary_path_str.as_str()),
-                        ("BINARY_NAME", binary_name),
-                    ];
-                    let cmd_args = nsis_command(&script_path_str, &defines);
+                    let cmd_args = nsis_command(&script_path_str);
 
                     log.status(&format!("running: {}", cmd_args.join(" ")));
 
@@ -431,38 +425,46 @@ mod tests {
     fn test_default_nsi_script_generation() {
         let script = default_nsi_script();
 
-        // Verify the script contains the expected NSIS sections
+        // Verify the script contains the expected NSIS sections with Tera variables
         assert!(
             script.contains("!include \"MUI2.nsh\""),
             "should include MUI2"
         );
         assert!(
-            script.contains("Name \"${PRODUCT_NAME}\""),
-            "should reference PRODUCT_NAME define"
+            script.contains("Name \"{{ ProjectName }}\""),
+            "should reference ProjectName template var"
         );
         assert!(
-            script.contains("OutFile \"${OUTPUT_FILE}\""),
-            "should reference OUTPUT_FILE define"
+            script.contains("OutFile \"{{ NsisOutputFile }}\""),
+            "should reference NsisOutputFile template var"
         );
         assert!(
-            script.contains("InstallDir \"$PROGRAMFILES\\${PRODUCT_NAME}\""),
+            script.contains("InstallDir \"$PROGRAMFILES\\{{ ProjectName }}\""),
             "should set install dir under Program Files"
+        );
+        assert!(
+            script.contains("RequestExecutionLevel admin"),
+            "should request admin execution level"
         );
         assert!(
             script.contains("Section \"Install\""),
             "should have Install section"
         );
         assert!(
-            script.contains("File \"${BINARY_PATH}\""),
-            "should include the binary"
+            script.contains("File \"{{ NsisBinaryPath }}\""),
+            "should include the binary via template var"
         );
         assert!(
             script.contains("Section \"Uninstall\""),
             "should have Uninstall section"
         );
         assert!(
-            script.contains("Delete \"$INSTDIR\\${BINARY_NAME}\""),
+            script.contains("Delete \"$INSTDIR\\{{ NsisBinaryName }}\""),
             "uninstaller should delete the binary"
+        );
+        assert!(
+            script.contains("Delete \"$INSTDIR\\uninstall.exe\""),
+            "uninstaller should delete itself"
         );
         assert!(
             script.contains("RMDir \"$INSTDIR\""),
@@ -471,6 +473,10 @@ mod tests {
         assert!(
             script.contains("CreateShortCut"),
             "should create a desktop shortcut"
+        );
+        assert!(
+            script.contains("WriteUninstaller"),
+            "should write the uninstaller"
         );
     }
 
@@ -501,27 +507,11 @@ mod tests {
 
     #[test]
     fn test_nsis_command_args() {
-        let defines = [
-            ("PRODUCT_NAME", "MyApp"),
-            ("OUTPUT_FILE", "/tmp/out/MyApp_setup.exe"),
-            ("BINARY_PATH", "/tmp/staging/myapp.exe"),
-            ("BINARY_NAME", "myapp.exe"),
-        ];
-        let cmd = nsis_command("/tmp/staging/installer.nsi", &defines);
+        let cmd = nsis_command("/tmp/staging/installer.nsi");
 
         assert_eq!(cmd[0], "makensis");
-        assert_eq!(cmd[1], "-DPRODUCT_NAME=MyApp");
-        assert_eq!(cmd[2], "-DOUTPUT_FILE=/tmp/out/MyApp_setup.exe");
-        assert_eq!(cmd[3], "-DBINARY_PATH=/tmp/staging/myapp.exe");
-        assert_eq!(cmd[4], "-DBINARY_NAME=myapp.exe");
-        assert_eq!(cmd[5], "/tmp/staging/installer.nsi");
-        assert_eq!(cmd.len(), 6);
-    }
-
-    #[test]
-    fn test_nsis_command_no_defines() {
-        let cmd = nsis_command("/tmp/script.nsi", &[]);
-        assert_eq!(cmd, vec!["makensis", "/tmp/script.nsi"]);
+        assert_eq!(cmd[1], "/tmp/staging/installer.nsi");
+        assert_eq!(cmd.len(), 2);
     }
 
     // -----------------------------------------------------------------------
@@ -542,13 +532,13 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_disabled() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
+        use anodize_core::config::{Config, CrateConfig, NsisConfig, StringOrBool};
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
         let nsis_cfg = NsisConfig {
-            disable: Some("true".to_string()),
+            disable: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -594,14 +584,14 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_disabled_via_template() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
+        use anodize_core::config::{Config, CrateConfig, NsisConfig, StringOrBool};
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
         // Template evaluates to "true" when IsSnapshot is set
         let nsis_cfg = NsisConfig {
-            disable: Some("{{ IsSnapshot }}".to_string()),
+            disable: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
             ..Default::default()
         };
 
@@ -975,7 +965,10 @@ crates:
             nsis.mod_timestamp.as_deref(),
             Some("{{ .CommitTimestamp }}")
         );
-        assert_eq!(nsis.disable.as_deref(), Some("false"));
+        assert_eq!(
+            nsis.disable,
+            Some(anodize_core::config::StringOrBool::String("false".to_string()))
+        );
     }
 
     #[test]
