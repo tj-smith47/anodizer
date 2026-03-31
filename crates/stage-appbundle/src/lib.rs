@@ -69,8 +69,11 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
         .unwrap_or_else(|| ("darwin".to_string(), "amd64".to_string()))
 }
 
-/// Default output bundle name template: `{ProjectName}.app`
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}.app";
+/// Default output bundle name template: `{ProjectName}_{Arch}.app`
+///
+/// Includes `Arch` to prevent silent overwrites when multiple architectures
+/// are built (e.g. arm64 + amd64).
+const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}.app";
 
 /// Copy extra files specified by `ArchiveFileSpec` entries into the app bundle.
 ///
@@ -161,6 +164,12 @@ fn copy_extra_files(
 }
 
 /// Recursively apply a mod_timestamp to all files in a directory tree.
+///
+/// This is a local variant of `anodize_core::util::apply_mod_timestamp` because
+/// the core utility only walks one directory level.  App bundles have a nested
+/// `Contents/{MacOS,Resources}/` structure, so we need recursive traversal.
+/// Modifying the core utility to be recursive could affect other stages that
+/// rely on the current single-level behaviour, so we keep this local copy.
 fn apply_mod_timestamp_recursive(
     dir: &Path,
     raw: &str,
@@ -239,6 +248,15 @@ impl Stage for AppBundleStage {
                 .collect();
 
             for bundle_cfg in bundle_configs {
+                // Skip disabled configs
+                if bundle_cfg.disable.unwrap_or(false) {
+                    log.status(&format!(
+                        "skipping disabled appbundle config for crate {}",
+                        krate.name
+                    ));
+                    continue;
+                }
+
                 // Filter by build IDs if specified
                 let mut filtered = darwin_binaries.clone();
                 if let Some(ref filter_ids) = bundle_cfg.ids
@@ -314,12 +332,13 @@ impl Stage for AppBundleStage {
                         .and_then(|n| n.to_str())
                         .unwrap_or(&krate.name);
 
-                    // Determine the bundle identifier
-                    let bundle_id = bundle_cfg
-                        .bundle
-                        .as_deref()
-                        .map(String::from)
-                        .unwrap_or_else(|| format!("com.anodize.{project_name}"));
+                    // Determine the bundle identifier (template-rendered)
+                    let bundle_id = if let Some(ref bundle_tmpl) = bundle_cfg.bundle {
+                        ctx.render_template(bundle_tmpl)
+                            .with_context(|| format!("appbundle: render bundle template for {}", krate.name))?
+                    } else {
+                        format!("com.anodize.{project_name}")
+                    };
 
                     // Render icon path and extract filename (if icon is configured)
                     let rendered_icon_path = if let Some(icon_tmpl) = &bundle_cfg.icon {
@@ -391,6 +410,15 @@ impl Stage for AppBundleStage {
                         )
                     })?;
 
+                    // Ensure the binary is executable inside the .app bundle
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let perms = std::fs::Permissions::from_mode(0o755);
+                        std::fs::set_permissions(&staged_binary, perms)
+                            .with_context(|| format!("appbundle: set executable permission on {}", staged_binary.display()))?;
+                    }
+
                     // Copy icon into Contents/Resources/ if provided
                     if let Some(icon_path_str) = &rendered_icon_path {
                         let icon_src = PathBuf::from(icon_path_str);
@@ -423,9 +451,11 @@ impl Stage for AppBundleStage {
                         copy_extra_files(extra_files, &app_dir, &log)?;
                     }
 
-                    // Apply mod_timestamp if set
-                    if let Some(ts) = &bundle_cfg.mod_timestamp {
-                        apply_mod_timestamp_recursive(&app_dir, ts, &log)?;
+                    // Apply mod_timestamp if set (template-rendered)
+                    if let Some(ref ts_tmpl) = bundle_cfg.mod_timestamp {
+                        let ts = ctx.render_template(ts_tmpl)
+                            .with_context(|| "appbundle: render mod_timestamp template")?;
+                        apply_mod_timestamp_recursive(&app_dir, &ts, &log)?;
                     }
 
                     log.status(&format!(
@@ -988,8 +1018,8 @@ mod tests {
         let stage = AppBundleStage;
         stage.run(&mut ctx).unwrap();
 
-        // Verify .app directory structure
-        let app_dir = tmp.path().join("dist/macos/myapp.app");
+        // Verify .app directory structure (default template includes Arch)
+        let app_dir = tmp.path().join("dist/macos/myapp_arm64.app");
         assert!(app_dir.exists(), "app bundle directory should exist");
         assert!(
             app_dir.join("Contents/MacOS/myapp").exists(),
@@ -1077,7 +1107,7 @@ mod tests {
         let stage = AppBundleStage;
         stage.run(&mut ctx).unwrap();
 
-        let app_dir = tmp.path().join("dist/macos/myapp.app");
+        let app_dir = tmp.path().join("dist/macos/myapp_arm64.app");
 
         // Verify icon was copied
         assert!(
@@ -1311,6 +1341,109 @@ crates:
         assert!(
             ids.contains(&Some(&"pro".to_string())),
             "expected id=pro in metadata"
+        );
+    }
+
+    #[test]
+    fn test_stage_disable_skips_config() {
+        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let enabled_cfg = AppBundleConfig {
+            id: Some("enabled".to_string()),
+            name: Some("{{ ProjectName }}-enabled-{{ Arch }}.app".to_string()),
+            ..Default::default()
+        };
+        let disabled_cfg = AppBundleConfig {
+            id: Some("disabled".to_string()),
+            name: Some("{{ ProjectName }}-disabled-{{ Arch }}.app".to_string()),
+            disable: Some(true),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![enabled_cfg, disabled_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = AppBundleStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Only the enabled config should produce an artifact
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(
+            installers.len(),
+            1,
+            "disabled config should be skipped, only one artifact expected"
+        );
+
+        let name = installers[0]
+            .path
+            .file_name()
+            .unwrap()
+            .to_string_lossy();
+        assert!(
+            name.contains("enabled"),
+            "the produced artifact should be the enabled one, got: {name}"
+        );
+        assert!(
+            !name.contains("disabled"),
+            "disabled config should not produce an artifact"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_disable_field() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    app_bundles:
+      - bundle: "com.example.test"
+        disable: true
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let bundles = config.crates[0].app_bundles.as_ref().unwrap();
+        assert_eq!(bundles.len(), 1);
+        assert_eq!(bundles[0].disable, Some(true));
+    }
+
+    #[test]
+    fn test_default_name_template_includes_arch() {
+        // Verify the constant itself contains Arch to prevent multi-arch overwrites
+        assert!(
+            DEFAULT_NAME_TEMPLATE.contains("Arch"),
+            "default name template should include Arch to prevent overwrites: {DEFAULT_NAME_TEMPLATE}"
         );
     }
 }

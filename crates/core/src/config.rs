@@ -2355,8 +2355,9 @@ pub struct NsisConfig {
     pub script: Option<String>,
     /// Additional files to include alongside the installer (glob or {glob, name_template}).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
-    /// Template string; when it evaluates to "true", skip this config.
-    pub disable: Option<String>,
+    /// Disable this NSIS config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only the installer.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
@@ -2384,6 +2385,8 @@ pub struct AppBundleConfig {
     pub extra_files: Option<Vec<ArchiveFileSpec>>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
+    /// Disable this app bundle config.
+    pub disable: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2646,8 +2649,9 @@ pub struct SbomConfig {
     pub artifacts: Option<String>,
     /// Filter by artifact IDs (ignored if artifacts="source").
     pub ids: Option<Vec<String>>,
-    /// Template string; when it evaluates to "true", skip this config.
-    pub disable: Option<String>,
+    /// Disable this SBOM config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
 }
 
 /// Custom deserializer for the `sboms` / `sbom` field.
