@@ -50,10 +50,7 @@ pub fn send_linkedin(access_token: &str, message: &str) -> Result<()> {
 ///
 /// Tries `/v2/userinfo` first (newer endpoint, `sub` field).  Falls back to
 /// `/v2/me` (legacy, `id` field) only when the newer endpoint returns 403.
-fn get_profile_urn(
-    client: &reqwest::blocking::Client,
-    access_token: &str,
-) -> Result<String> {
+fn get_profile_urn(client: &reqwest::blocking::Client, access_token: &str) -> Result<String> {
     // Try newer /v2/userinfo endpoint first.
     let resp = client
         .get(format!("{API_BASE}/v2/userinfo"))

@@ -70,9 +70,10 @@ pub fn send_reddit(
         .get("json")
         .and_then(|j| j.get("errors"))
         .and_then(|e| e.as_array())
-        && !errors.is_empty() {
-            anyhow::bail!("reddit: submit returned errors: {errors:?}");
-        }
+        && !errors.is_empty()
+    {
+        anyhow::bail!("reddit: submit returned errors: {errors:?}");
+    }
 
     Ok(())
 }

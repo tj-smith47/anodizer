@@ -60,6 +60,25 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     Ok(Duration::from_secs(total_secs))
 }
 
+/// Format a `Duration` into a human-readable string like `1h30m10s`.
+fn format_duration(d: Duration) -> String {
+    let total = d.as_secs();
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    let mut out = String::new();
+    if h > 0 {
+        out.push_str(&format!("{}h", h));
+    }
+    if m > 0 {
+        out.push_str(&format!("{}m", m));
+    }
+    if s > 0 || out.is_empty() {
+        out.push_str(&format!("{}s", s));
+    }
+    out
+}
+
 /// Run a closure with a timeout. If the closure does not complete within the
 /// given duration, the process exits with code 124 (the conventional timeout
 /// exit code, matching GNU `timeout`).
@@ -80,7 +99,10 @@ where
         let remaining = deadline.saturating_duration_since(Instant::now());
         std::thread::sleep(remaining);
         if !completed_clone.load(Ordering::SeqCst) {
-            eprintln!("\nError: pipeline timed out after {:?}", timeout);
+            eprintln!(
+                "\nERROR: pipeline timed out after {}; aborting. Use --timeout to increase the limit.",
+                format_duration(timeout)
+            );
             std::process::exit(124);
         }
     });

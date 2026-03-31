@@ -37,7 +37,7 @@ pub fn run(
     ctx.populate_runtime_vars();
 
     // Resolve git info (shared with release.rs and build.rs)
-    helpers::resolve_git_context(&mut ctx, &config, &log);
+    helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
     // Run the changelog stage
     let stage = anodize_stage_changelog::ChangelogStage;

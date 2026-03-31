@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -97,6 +98,74 @@ fn prepare_stdin_from(
     }
 }
 
+/// Determine the default signing command by checking `git config gpg.program`
+/// first, falling back to "gpg" if unset or unavailable.
+fn default_sign_cmd() -> String {
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["config", "gpg.program"])
+        .output()
+    {
+        let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !cmd.is_empty() {
+            return cmd;
+        }
+    }
+    "gpg".to_string()
+}
+
+/// Expand shell-style variable references (`$var` and `${var}`) in a string.
+///
+/// GoReleaser supports both Go template syntax and shell variable syntax in
+/// signing args, signature paths, and certificate paths.
+///
+/// Uses single-pass replacement to prevent double-substitution: if `$artifact`
+/// expands to a value containing `$signature`, the `$signature` in the expanded
+/// value is NOT re-expanded.
+fn expand_shell_vars(s: &str, vars: &HashMap<&str, &str>) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '$' {
+            // Try `${var}` syntax first.
+            if i + 1 < len && chars[i + 1] == '{'
+                && let Some(close) = chars[i + 2..].iter().position(|&c| c == '}')
+            {
+                let var_name: String = chars[i + 2..i + 2 + close].iter().collect();
+                if let Some(&val) = vars.get(var_name.as_str()) {
+                    result.push_str(val);
+                    i += 2 + close + 1; // skip past '}'
+                    continue;
+                }
+            }
+            // Try `$var` syntax: match the longest variable name at this position.
+            // Sort candidates longest-first to prefer `$artifactName` over `$artifact`.
+            let remaining: String = chars[i + 1..].iter().collect();
+            let mut matched = false;
+            let mut candidates: Vec<&&str> = vars.keys().collect();
+            candidates.sort_by_key(|b| std::cmp::Reverse(b.len()));
+            for key in candidates {
+                if remaining.starts_with(*key) {
+                    result.push_str(vars[key]);
+                    i += 1 + key.len();
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                result.push(chars[i]);
+                i += 1;
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
 /// Replace `{{ .Artifact }}`, `{{ .Signature }}`, and `{{ .Certificate }}`
 /// placeholders in each arg.
 pub(crate) fn resolve_sign_args(
@@ -126,16 +195,121 @@ pub(crate) fn resolve_sign_args(
 /// Artifact filter mode for `process_sign_configs`.
 #[derive(Clone, Copy)]
 enum ArtifactFilter {
-    /// Use the `artifacts` field from each SignConfig (or default to "checksum").
+    /// Use the `artifacts` field from each SignConfig (or default to "none").
     FromConfig,
     /// Always restrict to `ArtifactKind::Binary`, regardless of config.
     BinaryOnly,
+}
+
+/// A fully-prepared sign job ready for parallel execution.
+///
+/// All template rendering and path resolution is done up-front so that the
+/// actual signing command can be spawned without borrowing the `Context`.
+struct SignJob {
+    /// The signing command binary (e.g., "gpg", "cosign").
+    cmd: String,
+    /// Fully-resolved command arguments.
+    args: Vec<String>,
+    /// Optional stdin content to pipe to the signing command.
+    stdin_data: Option<Vec<u8>>,
+    /// Optional environment variables to set on the child process.
+    env: Option<HashMap<String, String>>,
+    /// Human-readable label for log messages (e.g., "sign", "binary-sign").
+    label: String,
+    /// The sign config's `id` field for log messages.
+    id_label: String,
+    /// Display string for the artifact being signed (used in log messages).
+    artifact_display: String,
+    /// Display string for the signature output path (used in log messages).
+    signature_display: String,
+    /// Whether to capture and log the command's stdout/stderr.
+    output_flag: bool,
+    /// Artifact registrations to add after signing (signature + optional certificate).
+    new_artifacts: Vec<anodize_core::artifact::Artifact>,
+}
+
+/// Execute a single prepared sign job, returning `Ok(())` on success.
+fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
+    log.status(&format!(
+        "[{}] {} {} -> {}",
+        job.id_label, job.label, job.artifact_display, job.signature_display
+    ));
+
+    let stdin_cfg = if job.stdin_data.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::inherit()
+    };
+
+    let mut command = Command::new(&job.cmd);
+    command
+        .args(&job.args)
+        .stdin(stdin_cfg)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    if let Some(ref env_vars) = job.env {
+        command.envs(env_vars);
+    }
+
+    let mut child = command.spawn().with_context(|| {
+        format!(
+            "{}: failed to spawn '{}' for {}",
+            job.label, job.cmd, job.artifact_display
+        )
+    })?;
+
+    if let Some(ref data) = job.stdin_data {
+        if let Some(mut child_stdin) = child.stdin.take() {
+            child_stdin.write_all(data).with_context(|| {
+                format!(
+                    "{}: failed to write stdin for {}",
+                    job.label, job.artifact_display
+                )
+            })?;
+            drop(child_stdin); // Explicitly close stdin so child sees EOF
+        } else {
+            log.warn(&format!(
+                "{}: stdin data provided but child process stdin unavailable for {}",
+                job.label, job.artifact_display
+            ));
+        }
+    }
+
+    let output = child.wait_with_output().with_context(|| {
+        format!(
+            "{}: failed to wait for '{}' for {}",
+            job.label, job.cmd, job.artifact_display
+        )
+    })?;
+
+    // Capture output BEFORE the error bail so stdout/stderr from a
+    // failed signing command is still logged when `output: true`.
+    let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if job.output_flag {
+        if !stdout_str.is_empty() {
+            log.status(&format!("[{} stdout] {}", job.label, stdout_str.trim()));
+        }
+        if !stderr_str.is_empty() {
+            log.status(&format!("[{} stderr] {}", job.label, stderr_str.trim()));
+        }
+    }
+
+    // Now check exit status (bails on non-zero).
+    log.check_output(output, &job.cmd)?;
+    Ok(())
 }
 
 /// Process a list of `SignConfig` entries against a set of artifacts, executing
 /// the signing command for each matching artifact.  This is the shared
 /// implementation behind both the `signs` and `binary_signs` top-level config
 /// sections.
+///
+/// Signing commands are executed in parallel using `std::thread::scope` with
+/// chunked parallelism (similar to the build stage), since each signing
+/// invocation is an independent external process.
 fn process_sign_configs(
     sign_configs: &[SignConfig],
     ctx: &mut Context,
@@ -143,6 +317,13 @@ fn process_sign_configs(
     filter_mode: ArtifactFilter,
     label: &str,
 ) -> Result<()> {
+    let parallelism = std::cmp::max(
+        1,
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4),
+    );
+
     for sign_cfg in sign_configs {
         // Evaluate the `if` conditional template — skip when rendered
         // result is "false" or empty/whitespace-only.
@@ -174,24 +355,22 @@ fn process_sign_configs(
             }
         }
 
-        let config_filter = sign_cfg.artifacts.as_deref().unwrap_or("checksum");
+        let config_filter = sign_cfg.artifacts.as_deref().unwrap_or(match filter_mode {
+            ArtifactFilter::FromConfig => "none",
+            ArtifactFilter::BinaryOnly => "binary",
+        });
 
         // For the normal `signs` path, respect the artifacts filter.
         // For `binary_signs`, skip if the config explicitly says "none".
-        match filter_mode {
-            ArtifactFilter::FromConfig => {
-                if config_filter == "none" {
-                    continue;
-                }
-            }
-            ArtifactFilter::BinaryOnly => {
-                if config_filter == "none" {
-                    continue;
-                }
-            }
+        if config_filter == "none" {
+            continue;
         }
 
-        let cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg").to_string();
+        let cmd = sign_cfg
+            .cmd
+            .as_deref()
+            .map(|s| s.to_string())
+            .unwrap_or_else(default_sign_cmd);
 
         if sign_cfg.args.as_ref().is_some_and(|a| a.is_empty()) {
             log.warn(&format!(
@@ -204,7 +383,7 @@ fn process_sign_configs(
             vec![
                 "--output".to_string(),
                 "{{ .Signature }}".to_string(),
-                "--detach-sig".to_string(),
+                "--detach-sign".to_string(),
                 "{{ .Artifact }}".to_string(),
             ]
         });
@@ -253,11 +432,23 @@ fn process_sign_configs(
             matched
         };
 
-        // Collect new signature artifacts to register after the signing loop.
-        let mut new_signature_artifacts: Vec<anodize_core::artifact::Artifact> = Vec::new();
+        // ----------------------------------------------------------------
+        // Phase 1: Prepare all sign jobs (template rendering, path
+        // resolution).  This requires `&ctx` but produces owned data that
+        // can be sent to worker threads.
+        // ----------------------------------------------------------------
+        let mut sign_jobs: Vec<SignJob> = Vec::new();
 
-        for (artifact_path, artifact_crate_name, _metadata) in &artifact_paths {
+        for (artifact_path, artifact_crate_name, artifact_metadata) in &artifact_paths {
             let artifact_str = artifact_path.to_string_lossy();
+            let artifact_name = artifact_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            let artifact_id = artifact_metadata
+                .get("id")
+                .map(|s| s.as_str())
+                .unwrap_or("");
             let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx, log);
 
             // Resolve the certificate path from template if configured.
@@ -274,6 +465,28 @@ fn process_sign_configs(
                 })
             });
 
+            // Build shell variable map for $artifact / ${artifact} expansion.
+            // GoReleaser supports both Go template syntax and shell variable syntax.
+            let certificate_for_vars = certificate_str.clone();
+            let shell_vars: HashMap<&str, &str> = HashMap::from([
+                ("artifact", artifact_str.as_ref()),
+                ("signature", signature_str.as_str()),
+                ("certificate", certificate_for_vars.as_deref().unwrap_or("")),
+                (
+                    "digest",
+                    artifact_metadata
+                        .get("digest")
+                        .map(|s| s.as_str())
+                        .unwrap_or(""),
+                ),
+                ("artifactName", artifact_name),
+                ("artifactID", artifact_id),
+            ]);
+
+            // Apply shell variable expansion to signature and certificate paths.
+            let signature_str = expand_shell_vars(&signature_str, &shell_vars);
+            let certificate_str = certificate_str.map(|c| expand_shell_vars(&c, &shell_vars));
+
             let resolved = resolve_sign_args(
                 &args,
                 artifact_str.as_ref(),
@@ -285,35 +498,67 @@ fn process_sign_configs(
             let fully_resolved: Vec<String> = resolved
                 .iter()
                 .map(|arg| {
-                    ctx.render_template(arg).unwrap_or_else(|e| {
+                    let rendered = ctx.render_template(arg).unwrap_or_else(|e| {
                         log.warn(&format!(
                             "failed to render {} arg '{}': {}, using raw value",
                             label, arg, e
                         ));
                         arg.clone()
-                    })
+                    });
+                    // Apply shell-style variable expansion after template rendering.
+                    expand_shell_vars(&rendered, &shell_vars)
                 })
                 .collect();
 
-            // Register signature (and certificate) artifacts regardless of
-            // dry-run mode so downstream stages (release) can reference them.
-            let sig_path = std::path::PathBuf::from(&signature_str);
+            // Build artifact registrations (signature + optional certificate).
+            // These are registered regardless of dry-run mode so downstream
+            // stages (release) can reference them.
+            //
+            // relativeToDist: if the resolved signature path is not already
+            // inside the dist directory, prepend the dist path so the file
+            // lands alongside other release artifacts.
+            let dist = &ctx.config.dist;
+            let sig_path = {
+                let resolved = std::path::PathBuf::from(&signature_str);
+                if !resolved.starts_with(dist) {
+                    dist.join(&resolved)
+                } else {
+                    resolved
+                }
+            };
             let mut sig_metadata = std::collections::HashMap::new();
             sig_metadata.insert("type".to_string(), "Signature".to_string());
-            new_signature_artifacts.push(anodize_core::artifact::Artifact {
-                kind: ArtifactKind::Metadata,
+            let sig_name = sig_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut job_artifacts = vec![anodize_core::artifact::Artifact {
+                kind: ArtifactKind::Signature,
+                name: sig_name,
                 path: sig_path,
                 target: None,
                 crate_name: artifact_crate_name.clone(),
                 metadata: sig_metadata,
-            });
+            }];
 
             if let Some(ref cert_path_str) = certificate_str {
-                let cert_path = std::path::PathBuf::from(cert_path_str);
+                let cert_resolved = std::path::PathBuf::from(cert_path_str);
+                let cert_path = if !cert_resolved.starts_with(dist) {
+                    dist.join(&cert_resolved)
+                } else {
+                    cert_resolved
+                };
+                let cert_name = cert_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
-                new_signature_artifacts.push(anodize_core::artifact::Artifact {
-                    kind: ArtifactKind::Metadata,
+                job_artifacts.push(anodize_core::artifact::Artifact {
+                    kind: ArtifactKind::Certificate,
+                    name: cert_name,
                     path: cert_path,
                     target: None,
                     crate_name: artifact_crate_name.clone(),
@@ -327,83 +572,99 @@ fn process_sign_configs(
                     cmd,
                     fully_resolved.join(" ")
                 ));
+                // Still register artifacts in dry-run mode for downstream stages.
+                for artifact in job_artifacts {
+                    ctx.artifacts.add(artifact);
+                }
                 continue;
             }
 
-            let id_label = sign_cfg.id.as_deref().unwrap_or("default");
-            log.status(&format!(
-                "[{}] {} {} -> {}",
-                id_label, label, artifact_str, signature_str
-            ));
-
-            let (stdin_cfg, stdin_data) = prepare_stdin_from(
+            // Prepare stdin data up-front so it can be sent to worker threads.
+            let (_, stdin_data) = prepare_stdin_from(
                 sign_cfg.stdin.as_deref(),
                 sign_cfg.stdin_file.as_deref(),
                 label,
             )?;
 
-            let mut command = Command::new(&cmd);
-            command
-                .args(&fully_resolved)
-                .stdin(stdin_cfg)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-
-            // Merge custom env vars if configured.
-            if let Some(ref env_vars) = sign_cfg.env {
-                command.envs(env_vars);
-            }
-
-            let mut child = command.spawn().with_context(|| {
-                format!("{}: failed to spawn '{}' for {}", label, cmd, artifact_str)
-            })?;
-
-            if let Some(data) = stdin_data {
-                if let Some(mut child_stdin) = child.stdin.take() {
-                    child_stdin.write_all(&data).with_context(|| {
-                        format!("{}: failed to write stdin for {}", label, artifact_str)
-                    })?;
-                    drop(child_stdin); // Explicitly close stdin so child sees EOF
-                } else {
-                    log.warn(&format!(
-                        "{}: stdin data provided but child process stdin unavailable for {}",
-                        label, artifact_str
-                    ));
-                }
-            }
-
-            let output = child.wait_with_output().with_context(|| {
-                format!(
-                    "{}: failed to wait for '{}' for {}",
-                    label, cmd, artifact_str
-                )
-            })?;
-
-            // Capture output BEFORE the error bail so stdout/stderr from a
-            // failed signing command is still logged when `output: true`.
-            let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
-
-            if sign_cfg.output.unwrap_or(false) {
-                if !stdout_str.is_empty() {
-                    log.status(&format!("[{} stdout] {}", label, stdout_str.trim()));
-                }
-                if !stderr_str.is_empty() {
-                    log.status(&format!("[{} stderr] {}", label, stderr_str.trim()));
-                }
-            }
-
-            // Now check exit status (bails on non-zero).
-            log.check_output(output, &cmd)?;
+            sign_jobs.push(SignJob {
+                cmd: cmd.clone(),
+                args: fully_resolved,
+                stdin_data,
+                env: sign_cfg.env.clone(),
+                label: label.to_string(),
+                id_label: sign_cfg.id.as_deref().unwrap_or("default").to_string(),
+                artifact_display: artifact_str.to_string(),
+                signature_display: signature_str.clone(),
+                output_flag: sign_cfg.output.unwrap_or(true),
+                new_artifacts: job_artifacts,
+            });
         }
 
-        // Register all signature/certificate artifacts collected during this sign config.
-        for artifact in new_signature_artifacts {
+        // ----------------------------------------------------------------
+        // Phase 2: Execute sign jobs in parallel chunks.
+        // Each chunk runs up to `parallelism` signing commands concurrently
+        // via std::thread::scope, matching the build stage's pattern.
+        // ----------------------------------------------------------------
+        if !sign_jobs.is_empty() {
+            log.status(&format!(
+                "signing {} artifacts with parallelism={}",
+                sign_jobs.len(),
+                parallelism
+            ));
+        }
+
+        // Collect all new artifacts from jobs to register after execution.
+        let mut all_new_artifacts: Vec<anodize_core::artifact::Artifact> = Vec::new();
+
+        for chunk in sign_jobs.chunks(parallelism) {
+            let results: Vec<Result<()>> = std::thread::scope(|s| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|job| {
+                        let thread_log = anodize_core::log::StageLogger::new(
+                            label_to_static(label),
+                            log.verbosity(),
+                        );
+                        s.spawn(move || execute_sign_job(job, &thread_log))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("sign thread panicked"))
+                    .collect()
+            });
+
+            // Check for errors — fail fast on the first error in this chunk.
+            for result in &results {
+                if let Err(e) = result {
+                    // Re-create the error since we can't move out of a reference.
+                    anyhow::bail!("{}", e);
+                }
+            }
+
+            // Register artifacts from successful jobs in this chunk.
+            for job in chunk {
+                all_new_artifacts.extend(job.new_artifacts.iter().cloned());
+            }
+        }
+
+        for artifact in all_new_artifacts {
             ctx.artifacts.add(artifact);
         }
     }
 
     Ok(())
+}
+
+/// Convert a runtime label string to a `&'static str` for `StageLogger::new`.
+///
+/// Only the known label values are used; unknown labels fall back to "sign".
+fn label_to_static(label: &str) -> &'static str {
+    match label {
+        "sign" => "sign",
+        "binary-sign" => "binary-sign",
+        _ => "sign",
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -424,13 +685,7 @@ impl Stage for SignStage {
         // GPG / generic signing via `signs` config (supports multiple)
         // ----------------------------------------------------------------
         let sign_configs = ctx.config.signs.clone();
-        process_sign_configs(
-            &sign_configs,
-            ctx,
-            &log,
-            ArtifactFilter::FromConfig,
-            "sign",
-        )?;
+        process_sign_configs(&sign_configs, ctx, &log, ArtifactFilter::FromConfig, "sign")?;
 
         // ----------------------------------------------------------------
         // Binary-specific signing via `binary_signs` config
@@ -481,23 +736,47 @@ impl Stage for SignStage {
                     .unwrap_or("cosign")
                     .to_string();
 
-                let args = docker_sign_cfg
-                    .args
-                    .clone()
-                    .unwrap_or_else(|| vec!["sign".to_string(), "{{ .Artifact }}".to_string()]);
+                let args = docker_sign_cfg.args.clone().unwrap_or_else(|| {
+                    vec![
+                        "sign".to_string(),
+                        "--key=cosign.key".to_string(),
+                        "{{ .Artifact }}@{{ .Digest }}".to_string(),
+                        "--yes".to_string(),
+                    ]
+                });
 
-                let docker_filter = docker_sign_cfg.artifacts.as_deref().unwrap_or("all");
+                let docker_filter = docker_sign_cfg.artifacts.as_deref().unwrap_or("");
 
                 if docker_filter == "none" {
                     continue;
                 }
 
+                // Collect docker artifacts based on the filter mode:
+                // "images" or "" (default) → DockerImage only
+                // "manifests" → DockerManifest only
+                // "all" → both DockerImage and DockerManifest
+                // anything else → warn and default to DockerImage
+                let docker_artifacts: Vec<_> = match docker_filter {
+                    "images" | "" => ctx.artifacts.by_kind(ArtifactKind::DockerImage),
+                    "manifests" => ctx.artifacts.by_kind(ArtifactKind::DockerManifest),
+                    "all" => {
+                        let mut arts = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+                        arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerManifest));
+                        arts
+                    }
+                    other => {
+                        log.warn(&format!(
+                            "unknown docker_signs artifacts filter '{}', defaulting to images",
+                            other
+                        ));
+                        ctx.artifacts.by_kind(ArtifactKind::DockerImage)
+                    }
+                };
+
                 let image_paths: Vec<(
                     std::path::PathBuf,
                     std::collections::HashMap<String, String>,
-                )> = ctx
-                    .artifacts
-                    .by_kind(ArtifactKind::DockerImage)
+                )> = docker_artifacts
                     .into_iter()
                     .filter(|a| {
                         // Apply ids filter if set on docker sign config.
@@ -527,10 +806,14 @@ impl Stage for SignStage {
                     // `artifactID` — the artifact's id field from metadata
                     // Always set (even to empty) to avoid stale values from a
                     // previous iteration leaking to this image.
-                    ctx.template_vars_mut()
-                        .set("digest", metadata.get("digest").map(|s| s.as_str()).unwrap_or(""));
-                    ctx.template_vars_mut()
-                        .set("artifactID", metadata.get("id").map(|s| s.as_str()).unwrap_or(""));
+                    ctx.template_vars_mut().set(
+                        "digest",
+                        metadata.get("digest").map(|s| s.as_str()).unwrap_or(""),
+                    );
+                    ctx.template_vars_mut().set(
+                        "artifactID",
+                        metadata.get("id").map(|s| s.as_str()).unwrap_or(""),
+                    );
 
                     // For Docker images the "signature" concept is embedded;
                     // use a placeholder `.sig` path to satisfy the template
@@ -619,7 +902,7 @@ impl Stage for SignStage {
                     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
 
-                    if docker_sign_cfg.output.unwrap_or(false) {
+                    if docker_sign_cfg.output.unwrap_or(true) {
                         if !stdout_str.is_empty() {
                             log.status(&format!("[docker-sign stdout] {}", stdout_str.trim()));
                         }
@@ -657,7 +940,7 @@ mod tests {
         let args = vec![
             "--output".to_string(),
             "{{ .Signature }}".to_string(),
-            "--detach-sig".to_string(),
+            "--detach-sign".to_string(),
             "{{ .Artifact }}".to_string(),
         ];
         let resolved = resolve_sign_args(&args, "/tmp/file.tar.gz", "/tmp/file.tar.gz.sig", None);
@@ -821,6 +1104,7 @@ mod tests {
         // Add artifacts of both types
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/app.tar.gz"),
             target: None,
             crate_name: "test".to_string(),
@@ -828,6 +1112,7 @@ mod tests {
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -921,11 +1206,12 @@ mod tests {
             if_condition: None,
         };
 
-        let filter = sign_cfg.artifacts.as_deref().unwrap_or("checksum");
+        let filter = sign_cfg.artifacts.as_deref().unwrap_or("none");
 
         // Build test artifacts
         let matching_artifact = Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/linux.tar.gz"),
             target: None,
             crate_name: "test".to_string(),
@@ -938,6 +1224,7 @@ mod tests {
 
         let non_matching_artifact = Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/darwin.tar.gz"),
             target: None,
             crate_name: "test".to_string(),
@@ -950,6 +1237,7 @@ mod tests {
 
         let no_id_artifact = Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/other.tar.gz"),
             target: None,
             crate_name: "test".to_string(),
@@ -958,6 +1246,7 @@ mod tests {
 
         let wrong_kind_artifact = Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/binary"),
             target: None,
             crate_name: "test".to_string(),
@@ -1036,7 +1325,7 @@ mod tests {
             args: Some(vec![
                 "--output".to_string(),
                 "{{ .Signature }}".to_string(),
-                "--detach-sig".to_string(),
+                "--detach-sign".to_string(),
                 "{{ .Artifact }}".to_string(),
             ]),
             artifacts: Some("checksum".to_string()),
@@ -1057,6 +1346,7 @@ mod tests {
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1082,6 +1372,7 @@ mod tests {
 
         ctx_no_dry.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1100,7 +1391,7 @@ mod tests {
         let args = vec![
             "--output".to_string(),
             "{{ .Signature }}".to_string(),
-            "--detach-sig".to_string(),
+            "--detach-sign".to_string(),
             "{{ .Artifact }}".to_string(),
             "--extra={{ .Artifact }}.meta".to_string(),
         ];
@@ -1108,7 +1399,7 @@ mod tests {
         let resolved = resolve_sign_args(&args, "/tmp/file.tar.gz", "/tmp/file.tar.gz.sig", None);
         assert_eq!(resolved[0], "--output");
         assert_eq!(resolved[1], "/tmp/file.tar.gz.sig");
-        assert_eq!(resolved[2], "--detach-sig");
+        assert_eq!(resolved[2], "--detach-sign");
         assert_eq!(resolved[3], "/tmp/file.tar.gz");
         assert_eq!(resolved[4], "--extra=/tmp/file.tar.gz.meta");
     }
@@ -1136,6 +1427,7 @@ mod tests {
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/file.tar.gz"),
             target: None,
             crate_name: "test".to_string(),
@@ -1159,7 +1451,7 @@ mod tests {
             args: Some(vec![
                 "--output".to_string(),
                 "{{ .Signature }}".to_string(),
-                "--detach-sig".to_string(),
+                "--detach-sign".to_string(),
                 "{{ .Artifact }}".to_string(),
             ]),
             artifacts: Some("checksum".to_string()),
@@ -1180,6 +1472,7 @@ mod tests {
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1222,6 +1515,7 @@ mod tests {
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/test.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1398,6 +1692,7 @@ stdin_file: "/path/to/password"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: artifact_path,
             target: None,
             crate_name: "test".to_string(),
@@ -1438,6 +1733,8 @@ stdin_file: "/path/to/password"
             env: None,
             output: None,
             if_condition: None,
+            signature: None,
+            certificate: None,
         }];
 
         let mut ctx = TestContextBuilder::new().dry_run(true).build();
@@ -1446,6 +1743,7 @@ stdin_file: "/path/to/password"
         // Add docker images: one matching, one not
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
+            name: String::new(),
             path: std::path::PathBuf::from("ghcr.io/myorg/prod:latest"),
             target: None,
             crate_name: "test".to_string(),
@@ -1457,6 +1755,7 @@ stdin_file: "/path/to/password"
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
+            name: String::new(),
             path: std::path::PathBuf::from("ghcr.io/myorg/dev:latest"),
             target: None,
             crate_name: "test".to_string(),
@@ -1533,6 +1832,7 @@ stdin_file: "/path/to/password"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1548,19 +1848,14 @@ stdin_file: "/path/to/password"
 
     #[test]
     fn test_prepare_stdin_from_content() {
-        let (_, data) =
-            prepare_stdin_from(Some("my-password"), None, "docker-sign").unwrap();
+        let (_, data) = prepare_stdin_from(Some("my-password"), None, "docker-sign").unwrap();
         assert!(data.is_some());
         assert_eq!(data.unwrap(), b"my-password");
     }
 
     #[test]
     fn test_prepare_stdin_from_file_missing() {
-        let result = prepare_stdin_from(
-            None,
-            Some("/nonexistent/docker_stdin.txt"),
-            "docker-sign",
-        );
+        let result = prepare_stdin_from(None, Some("/nonexistent/docker_stdin.txt"), "docker-sign");
         assert!(result.is_err());
     }
 
@@ -1580,7 +1875,7 @@ stdin_file: "/path/to/password"
             args: Some(vec![
                 "--output".to_string(),
                 "{{ .Signature }}".to_string(),
-                "--detach-sig".to_string(),
+                "--detach-sign".to_string(),
                 "{{ .Artifact }}".to_string(),
             ]),
             artifacts: Some("checksum".to_string()),
@@ -1598,6 +1893,7 @@ stdin_file: "/path/to/password"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -1608,19 +1904,15 @@ stdin_file: "/path/to/password"
         stage.run(&mut ctx).unwrap();
 
         // The signature artifact should be registered even in dry-run mode.
-        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        let sig_artifacts = ctx.artifacts.by_kind(ArtifactKind::Signature);
         assert_eq!(
-            metadata_artifacts.len(),
+            sig_artifacts.len(),
             1,
             "should register one signature artifact"
         );
-        let sig = &metadata_artifacts[0];
+        let sig = &sig_artifacts[0];
         assert_eq!(sig.metadata.get("type").unwrap(), "Signature");
         assert_eq!(sig.crate_name, "myapp");
-        assert_eq!(
-            sig.path,
-            std::path::PathBuf::from("/tmp/checksums.sha256.sig")
-        );
     }
 
     #[test]
@@ -1630,10 +1922,7 @@ stdin_file: "/path/to/password"
         let signs = vec![SignConfig {
             id: Some("cosign".to_string()),
             cmd: Some("cosign".to_string()),
-            args: Some(vec![
-                "sign-blob".to_string(),
-                "{{ .Artifact }}".to_string(),
-            ]),
+            args: Some(vec!["sign-blob".to_string(), "{{ .Artifact }}".to_string()]),
             artifacts: Some("checksum".to_string()),
             ids: None,
             signature: None,
@@ -1649,6 +1938,7 @@ stdin_file: "/path/to/password"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -1659,21 +1949,17 @@ stdin_file: "/path/to/password"
         stage.run(&mut ctx).unwrap();
 
         // Should register both a signature and a certificate artifact.
-        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        let sig_artifacts = ctx.artifacts.by_kind(ArtifactKind::Signature);
         assert_eq!(
-            metadata_artifacts.len(),
-            2,
-            "should register signature + certificate artifacts"
+            sig_artifacts.len(),
+            1,
+            "should register one Signature artifact"
         );
-
-        let types: Vec<&str> = metadata_artifacts
-            .iter()
-            .map(|a| a.metadata.get("type").unwrap().as_str())
-            .collect();
-        assert!(types.contains(&"Signature"), "should have a Signature artifact");
-        assert!(
-            types.contains(&"Certificate"),
-            "should have a Certificate artifact"
+        let cert_artifacts = ctx.artifacts.by_kind(ArtifactKind::Certificate);
+        assert_eq!(
+            cert_artifacts.len(),
+            1,
+            "should register one Certificate artifact"
         );
     }
 
@@ -1731,6 +2017,8 @@ env:
             env: Some(env_map),
             output: None,
             if_condition: None,
+            signature: None,
+            certificate: None,
         }];
 
         let mut ctx = TestContextBuilder::new().dry_run(false).build();
@@ -1738,6 +2026,7 @@ env:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
+            name: String::new(),
             path: std::path::PathBuf::from("ghcr.io/test/app:latest"),
             target: None,
             crate_name: "test".to_string(),
@@ -1860,10 +2149,14 @@ crates: []
             if_condition: Some("false".to_string()),
         }];
 
-        let mut ctx = TestContextBuilder::new().dry_run(false).signs(signs).build();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(signs)
+            .build();
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1902,6 +2195,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1915,9 +2209,9 @@ crates: []
         );
 
         // Verify the signature artifact was registered (proves the config was not skipped)
-        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        let sig_artifacts = ctx.artifacts.by_kind(ArtifactKind::Signature);
         assert!(
-            !metadata_artifacts.is_empty(),
+            !sig_artifacts.is_empty(),
             "sign config with if='true' should register signature artifacts"
         );
     }
@@ -1945,10 +2239,14 @@ crates: []
             if_condition: Some("".to_string()),
         }];
 
-        let mut ctx = TestContextBuilder::new().dry_run(false).signs(signs).build();
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(signs)
+            .build();
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -1993,6 +2291,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -2015,6 +2314,7 @@ crates: []
 
         ctx_snap.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -2056,6 +2356,7 @@ crates: []
         // Add a binary and an archive artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp"),
             target: None,
             crate_name: "test".to_string(),
@@ -2063,6 +2364,7 @@ crates: []
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp.tar.gz"),
             target: None,
             crate_name: "test".to_string(),
@@ -2070,6 +2372,7 @@ crates: []
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),
@@ -2080,15 +2383,11 @@ crates: []
         stage.run(&mut ctx).unwrap();
 
         // Only the binary should have generated a signature artifact
-        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        let sig_artifacts = ctx.artifacts.by_kind(ArtifactKind::Signature);
         assert_eq!(
-            metadata_artifacts.len(),
+            sig_artifacts.len(),
             1,
             "binary_signs should only sign Binary artifacts, not Archive or Checksum"
-        );
-        assert_eq!(
-            metadata_artifacts[0].path,
-            std::path::PathBuf::from("/tmp/myapp.sig")
         );
     }
 
@@ -2119,6 +2418,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp"),
             target: None,
             crate_name: "test".to_string(),
@@ -2159,6 +2459,8 @@ crates: []
             env: None,
             output: None,
             if_condition: None,
+            signature: None,
+            certificate: None,
         }];
 
         let mut ctx = TestContextBuilder::new().dry_run(false).build();
@@ -2166,14 +2468,12 @@ crates: []
 
         // Add a docker image with digest and id metadata
         let mut metadata = std::collections::HashMap::new();
-        metadata.insert(
-            "digest".to_string(),
-            "sha256:abc123def456".to_string(),
-        );
+        metadata.insert("digest".to_string(), "sha256:abc123def456".to_string());
         metadata.insert("id".to_string(), "my-docker-image".to_string());
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
+            name: String::new(),
             path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
             target: None,
             crate_name: "test".to_string(),
@@ -2213,6 +2513,8 @@ crates: []
             env: None,
             output: None,
             if_condition: None,
+            signature: None,
+            certificate: None,
         }];
 
         let mut ctx = TestContextBuilder::new().dry_run(true).build();
@@ -2220,6 +2522,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
+            name: String::new(),
             path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
             target: None,
             crate_name: "test".to_string(),
@@ -2260,6 +2563,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/checksums.sha256"),
             target: None,
             crate_name: "test".to_string(),

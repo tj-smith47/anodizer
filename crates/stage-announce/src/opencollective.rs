@@ -3,9 +3,8 @@ use serde_json::json;
 
 const GRAPHQL_URL: &str = "https://api.opencollective.com/graphql/v2";
 
-pub const DEFAULT_TITLE_TEMPLATE: &str = "{{ .Tag }}";
-pub const DEFAULT_MESSAGE_TEMPLATE: &str =
-    r#"{{ .ProjectName }} {{ .Tag }} is out!<br/>Check it out at <a href="{{ .ReleaseURL }}">{{ .ReleaseURL }}</a>"#;
+pub const DEFAULT_TITLE_TEMPLATE: &str = "{{ Tag }}";
+pub const DEFAULT_MESSAGE_TEMPLATE: &str = r#"{{ ProjectName }} {{ Tag }} is out!<br/>Check it out at <a href="{{ ReleaseURL }}">{{ ReleaseURL }}</a>"#;
 
 /// Create and publish an update on OpenCollective.
 ///
@@ -16,7 +15,8 @@ pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> 
     let client = reqwest::blocking::Client::new();
 
     // Step 1: Create update
-    let create_query = r#"mutation($update: UpdateCreateInput!) { createUpdate(update: $update) { id } }"#;
+    let create_query =
+        r#"mutation($update: UpdateCreateInput!) { createUpdate(update: $update) { id } }"#;
     let create_body = json!({
         "query": create_query,
         "variables": {

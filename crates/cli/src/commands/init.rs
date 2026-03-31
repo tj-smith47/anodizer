@@ -46,8 +46,33 @@ struct CrateInfo {
 // ---------------------------------------------------------------------------
 
 pub fn run() -> Result<()> {
+    let config_path = ".anodize.yaml";
+    if std::path::Path::new(config_path).exists() {
+        anyhow::bail!("config file '{}' already exists", config_path);
+    }
+
     let yaml = generate_config(".")?;
-    print!("{}", yaml);
+    std::fs::write(config_path, &yaml)
+        .with_context(|| format!("failed to write {}", config_path))?;
+    println!("Created {}", config_path);
+
+    // Update .gitignore to include dist/
+    let gitignore_path = ".gitignore";
+    let gitignore = std::fs::read_to_string(gitignore_path).unwrap_or_default();
+    if !gitignore.contains("dist/") {
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(gitignore_path)
+            .with_context(|| format!("failed to open {}", gitignore_path))?;
+        use std::io::Write;
+        if !gitignore.is_empty() && !gitignore.ends_with('\n') {
+            writeln!(f)?;
+        }
+        writeln!(f, "dist/")?;
+        println!("Added 'dist/' to {}", gitignore_path);
+    }
+
     Ok(())
 }
 

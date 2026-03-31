@@ -30,6 +30,11 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
             return Ok(path);
         }
     }
+    // Fallback: if Cargo.toml exists, use a default config instead of erroring.
+    if Path::new("Cargo.toml").exists() {
+        eprintln!("WARNING: no anodize config found; using defaults from Cargo.toml");
+        return Ok(PathBuf::from("Cargo.toml"));
+    }
     bail!(
         "no anodize config file found (tried: {}). Run `anodize init` to generate one.",
         candidates.join(", ")
@@ -66,60 +71,19 @@ fn merge_yaml(base: &mut serde_yaml_ng::Value, overlay: &serde_yaml_ng::Value) {
 /// always takes priority over values from included files — includes provide defaults,
 /// not overrides.
 pub fn load_config(path: &Path) -> Result<Config> {
+    // Special case: Cargo.toml fallback returns a default Config. The
+    // find_config function returns "Cargo.toml" when no anodize config file
+    // exists but a Cargo.toml is present in the working directory.
+    if path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+        return Ok(Config::default());
+    }
+
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let config = match ext {
-        "yaml" | "yml" => {
-            let base: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)
-                .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
-
-            // Extract include paths before merging
-            let include_paths: Vec<String> = base
-                .get("includes")
-                .and_then(|v| v.as_sequence())
-                .map(|seq| {
-                    seq.iter()
-                        .filter_map(|v| v.as_str().map(str::to_owned))
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            // Accumulate all included files into a merged defaults value.
-            // The base config is then merged on top so its values always win.
-            let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-            let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
-            for include in &include_paths {
-                // Reject absolute paths in includes to prevent unexpected file reads.
-                if Path::new(include).is_absolute() {
-                    bail!(
-                        "includes: absolute paths are not allowed (got '{}' in {})",
-                        include,
-                        path.display()
-                    );
-                }
-                let include_path = base_dir.join(include);
-                let include_content =
-                    std::fs::read_to_string(&include_path).with_context(|| {
-                        format!(
-                            "failed to read include file '{}' (referenced from {})",
-                            include_path.display(),
-                            path.display()
-                        )
-                    })?;
-                let overlay: serde_yaml_ng::Value = serde_yaml_ng::from_str(&include_content)
-                    .with_context(|| {
-                        format!("failed to parse include file: {}", include_path.display())
-                    })?;
-                merge_yaml(&mut merged, &overlay);
-            }
-            // Merge base config on top of the accumulated defaults (base wins).
-            merge_yaml(&mut merged, &base);
-
-            serde_yaml_ng::from_value(merged)
-                .with_context(|| format!("failed to deserialize config: {}", path.display()))?
-        }
-        "toml" => toml::from_str(&content)?,
+        "yaml" | "yml" => load_yaml_config_with_includes(path, &content)?,
+        "toml" => load_toml_config_with_includes(path, &content)?,
         _ => bail!("unsupported config format: {}", ext),
     };
 
@@ -127,6 +91,150 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodize_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     Ok(config)
+}
+
+/// Load a YAML config, processing `includes` by deep-merging included files
+/// as defaults and then merging the base (local) config on top.
+fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> {
+    let base: serde_yaml_ng::Value = serde_yaml_ng::from_str(content)
+        .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
+
+    // Extract include paths before merging
+    let include_paths: Vec<String> = base
+        .get("includes")
+        .and_then(|v| v.as_sequence())
+        .map(|seq| {
+            seq.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Accumulate all included files into a merged defaults value.
+    // The base config is then merged on top so its values always win.
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    for include in &include_paths {
+        // Reject absolute paths in includes to prevent unexpected file reads.
+        if Path::new(include).is_absolute() {
+            bail!(
+                "includes: absolute paths are not allowed (got '{}' in {})",
+                include,
+                path.display()
+            );
+        }
+        let include_path = base_dir.join(include);
+        let include_content = std::fs::read_to_string(&include_path).with_context(|| {
+            format!(
+                "failed to read include file '{}' (referenced from {})",
+                include_path.display(),
+                path.display()
+            )
+        })?;
+        let overlay = load_include_as_yaml(&include_path, &include_content)?;
+        merge_yaml(&mut merged, &overlay);
+    }
+    // Merge base config on top of the accumulated defaults (base wins).
+    merge_yaml(&mut merged, &base);
+
+    serde_yaml_ng::from_value(merged)
+        .with_context(|| format!("failed to deserialize config: {}", path.display()))
+}
+
+/// Load a TOML config, processing `includes` using the same merge strategy
+/// as YAML: included files provide defaults, the base config wins.
+fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> {
+    // Parse the base TOML to a generic toml::Value first to extract includes.
+    let base_toml: toml::Value = toml::from_str(content)
+        .with_context(|| format!("failed to parse TOML config: {}", path.display()))?;
+
+    let include_paths: Vec<String> = base_toml
+        .get("includes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if include_paths.is_empty() {
+        // No includes — fast path: deserialize directly from TOML.
+        return toml::from_str(content)
+            .with_context(|| format!("failed to deserialize TOML config: {}", path.display()));
+    }
+
+    // Convert the base TOML to a YAML Value so we can use the existing
+    // deep-merge logic. Round-trip through serde_json::Value as an
+    // intermediate format that both serde_yaml_ng and toml support.
+    let base_json = serde_json::to_value(&base_toml)
+        .with_context(|| "failed to convert TOML config to JSON for merging")?;
+    let base_yaml: serde_yaml_ng::Value = serde_yaml_ng::to_value(&base_json)
+        .with_context(|| "failed to convert TOML config to YAML for merging")?;
+
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
+    for include in &include_paths {
+        if Path::new(include).is_absolute() {
+            bail!(
+                "includes: absolute paths are not allowed (got '{}' in {})",
+                include,
+                path.display()
+            );
+        }
+        let include_path = base_dir.join(include);
+        let include_content = std::fs::read_to_string(&include_path).with_context(|| {
+            format!(
+                "failed to read include file '{}' (referenced from {})",
+                include_path.display(),
+                path.display()
+            )
+        })?;
+        let overlay = load_include_as_yaml(&include_path, &include_content)?;
+        merge_yaml(&mut merged, &overlay);
+    }
+    // Merge base config on top of the accumulated defaults (base wins).
+    merge_yaml(&mut merged, &base_yaml);
+
+    serde_yaml_ng::from_value(merged)
+        .with_context(|| format!("failed to deserialize config: {}", path.display()))
+}
+
+/// Parse an include file as a serde_yaml_ng::Value, auto-detecting format
+/// by extension (YAML or TOML).
+fn load_include_as_yaml(
+    include_path: &Path,
+    include_content: &str,
+) -> Result<serde_yaml_ng::Value> {
+    let ext = include_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    match ext {
+        "toml" => {
+            let toml_val: toml::Value = toml::from_str(include_content).with_context(|| {
+                format!("failed to parse include file: {}", include_path.display())
+            })?;
+            let json_val = serde_json::to_value(&toml_val).with_context(|| {
+                format!(
+                    "failed to convert TOML include to JSON: {}",
+                    include_path.display()
+                )
+            })?;
+            serde_yaml_ng::to_value(&json_val).with_context(|| {
+                format!(
+                    "failed to convert TOML include to YAML: {}",
+                    include_path.display()
+                )
+            })
+        }
+        _ => {
+            // Default: parse as YAML (works for .yaml, .yml, and extensionless)
+            serde_yaml_ng::from_str(include_content).with_context(|| {
+                format!("failed to parse include file: {}", include_path.display())
+            })
+        }
+    }
 }
 
 // run_hooks is re-exported from anodize_core::hooks
@@ -145,6 +253,39 @@ impl Pipeline {
     }
 
     pub fn run(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
+        // Validate --skip values against known stage names.
+        const KNOWN_STAGES: &[&str] = &[
+            "build",
+            "upx",
+            "archive",
+            "nfpm",
+            "snapcraft",
+            "snapcraft-publish",
+            "dmg",
+            "msi",
+            "pkg",
+            "nsis",
+            "appbundle",
+            "source",
+            "changelog",
+            "checksum",
+            "sign",
+            "release",
+            "publish",
+            "docker",
+            "blob",
+            "announce",
+        ];
+        for skip in &ctx.options.skip_stages {
+            if !KNOWN_STAGES.contains(&skip.as_str()) {
+                eprintln!(
+                    "WARNING: unknown skip stage '{}'; valid stages: {}",
+                    skip,
+                    KNOWN_STAGES.join(", ")
+                );
+            }
+        }
+
         for stage in &self.stages {
             let name = stage.name();
             if ctx.should_skip(name) {
@@ -188,29 +329,35 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_docker::DockerStage;
     use anodize_stage_msi::MsiStage;
     use anodize_stage_nfpm::NfpmStage;
+    use anodize_stage_nsis::NsisStage;
     use anodize_stage_pkg::PkgStage;
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
     use anodize_stage_sign::SignStage;
-    use anodize_stage_snapcraft::SnapcraftStage;
+    use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
     use anodize_stage_upx::UpxStage;
+    use anodize_stage_appbundle::AppBundleStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));
     p.add(Box::new(UpxStage));
+    // Changelog runs before archive so release notes are available for archive naming.
+    p.add(Box::new(ChangelogStage));
     p.add(Box::new(ArchiveStage));
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SnapcraftStage));
     p.add(Box::new(DmgStage));
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
+    p.add(Box::new(NsisStage));
+    p.add(Box::new(AppBundleStage));
     p.add(Box::new(SourceStage));
-    p.add(Box::new(ChangelogStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
+    p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(DockerStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(AnnounceStage));
@@ -228,15 +375,17 @@ pub fn build_split_pipeline() -> Pipeline {
     p
 }
 
-/// Build a publish-only pipeline: release, publish, blob stages.
+/// Build a publish-only pipeline: release, publish, snapcraft-publish, blob stages.
 pub fn build_publish_pipeline() -> Pipeline {
     use anodize_stage_blob::BlobStage;
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
+    use anodize_stage_snapcraft::SnapcraftPublishStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
+    p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(BlobStage));
     p
 }
@@ -261,26 +410,32 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_docker::DockerStage;
     use anodize_stage_msi::MsiStage;
     use anodize_stage_nfpm::NfpmStage;
+    use anodize_stage_nsis::NsisStage;
     use anodize_stage_pkg::PkgStage;
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
     use anodize_stage_sign::SignStage;
-    use anodize_stage_snapcraft::SnapcraftStage;
+    use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
+    use anodize_stage_appbundle::AppBundleStage;
 
     let mut p = Pipeline::new();
+    // Changelog runs before archive so release notes are available for archive naming.
+    p.add(Box::new(ChangelogStage));
     p.add(Box::new(ArchiveStage));
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SnapcraftStage));
     p.add(Box::new(DmgStage));
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
+    p.add(Box::new(NsisStage));
+    p.add(Box::new(AppBundleStage));
     p.add(Box::new(SourceStage));
-    p.add(Box::new(ChangelogStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
+    p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(DockerStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(AnnounceStage));

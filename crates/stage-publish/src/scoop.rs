@@ -37,6 +37,9 @@ pub struct ArchEntry {
     pub scoop_arch: String,
     pub url: String,
     pub hash: String,
+    /// When the archive wraps contents in a top-level directory, this holds that
+    /// directory name.  Bin entries will be prefixed with it (e.g. `dir\bin.exe`).
+    pub wrap_in_directory: Option<String>,
 }
 
 /// Generate a Scoop JSON manifest string for a Windows binary.
@@ -52,6 +55,7 @@ pub fn generate_manifest(
         scoop_arch: "64bit".to_string(),
         url: url.to_string(),
         hash: hash.to_string(),
+        wrap_in_directory: None,
     }];
     generate_manifest_with_opts(
         name,
@@ -84,22 +88,53 @@ pub fn generate_manifest_with_opts(
     let homepage = opts.homepage.unwrap_or(&default_homepage);
 
     // Scoop bin entry: use explicit binary names when provided, otherwise
-    // derive from the manifest name.  Each name gets `.exe` appended.
-    let bin_value: serde_json::Value = match opts.bin {
-        Some(bins) if !bins.is_empty() => {
-            let exe_names: Vec<String> = bins.iter().map(|b| format!("{}.exe", b)).collect();
-            if exe_names.len() == 1 {
-                serde_json::json!(exe_names[0])
-            } else {
-                serde_json::json!(exe_names)
+    // derive from the manifest name. Append `.exe` only if not already present.
+    // GoReleaser uses artifact metadata binary names as-is (they already include .exe).
+    let ensure_exe = |b: &str| -> String {
+        if b.ends_with(".exe") {
+            b.to_string()
+        } else {
+            format!("{}.exe", b)
+        }
+    };
+
+    // Compute bin value for a given wrap_in_directory prefix.
+    // When wrap_in_directory is set, each bin entry becomes a pair:
+    //   ["wrap_dir\\binary.exe", "alias"]
+    // where alias is the binary name without the .exe extension.
+    // This matches GoReleaser's WrappedIn handling for Scoop manifests.
+    let make_bin_value = |wrap_dir: Option<&str>| -> serde_json::Value {
+        let raw_bins: Vec<String> = match opts.bin {
+            Some(bins) if !bins.is_empty() => bins.iter().map(|b| ensure_exe(b)).collect(),
+            _ => vec![ensure_exe(name)],
+        };
+        match wrap_dir {
+            Some(dir) if !dir.is_empty() => {
+                let pairs: Vec<serde_json::Value> = raw_bins
+                    .iter()
+                    .map(|exe| {
+                        let alias = exe.strip_suffix(".exe").unwrap_or(exe);
+                        serde_json::json!([format!("{}\\{}", dir, exe), alias])
+                    })
+                    .collect();
+                serde_json::json!(pairs)
+            }
+            _ => {
+                // Single binary: plain string; multiple: array.
+                // This matches the original Scoop manifest format.
+                if raw_bins.len() == 1 {
+                    serde_json::json!(raw_bins[0])
+                } else {
+                    serde_json::json!(raw_bins)
+                }
             }
         }
-        _ => serde_json::json!(format!("{}.exe", name)),
     };
 
     // Build the architecture block from entries.
     let mut arch_obj = serde_json::Map::new();
     for entry in arch_entries {
+        let bin_value = make_bin_value(entry.wrap_in_directory.as_deref());
         arch_obj.insert(
             entry.scoop_arch.clone(),
             serde_json::json!({
@@ -205,9 +240,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         scoop_cfg.bucket.as_ref().map(|b| b.owner.as_str()),
         scoop_cfg.bucket.as_ref().map(|b| b.name.as_str()),
     )
-    .ok_or_else(|| {
-        anyhow::anyhow!("scoop: no repository/bucket config for '{}'", crate_name)
-    })?;
+    .ok_or_else(|| anyhow::anyhow!("scoop: no repository/bucket config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -219,27 +252,29 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
     let version = ctx.version();
 
-    let description = scoop_cfg
-        .description
-        .clone()
-        .unwrap_or_else(|| crate_name.to_string());
+    let description_raw = scoop_cfg.description.as_deref().unwrap_or(crate_name);
+    let description = ctx
+        .render_template(description_raw)
+        .unwrap_or_else(|_| description_raw.to_string());
 
     let license = scoop_cfg
         .license
         .clone()
         .unwrap_or_else(|| "MIT".to_string());
 
-    // Use name override if set, otherwise crate name.
-    let manifest_name = scoop_cfg.name.as_deref().unwrap_or(crate_name);
+    // Use name override if set, otherwise crate name; render through template engine.
+    let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
+    let manifest_name_rendered = ctx
+        .render_template(manifest_name_raw)
+        .unwrap_or_else(|_| manifest_name_raw.to_string());
+    let manifest_name = manifest_name_rendered.as_str();
 
     // Find all Windows Archive artifacts, applying IDs filter when configured.
     let ids_filter = scoop_cfg.ids.as_deref();
     let url_template = scoop_cfg.url_template.as_deref();
 
     let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
-    let all_artifacts = ctx
-        .artifacts
-        .by_kind_and_crate(artifact_kind, crate_name);
+    let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
 
     let arch_entries: Vec<ArchEntry> = all_artifacts
         .into_iter()
@@ -288,17 +323,22 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
             };
 
             let hash = a.metadata.get("sha256").cloned().unwrap_or_default();
+            let wrap_in_directory = a.metadata.get("wrap_in_directory").cloned();
 
             ArchEntry {
                 scoop_arch: scoop_arch.to_string(),
                 url,
                 hash,
+                wrap_in_directory,
             }
         })
         .collect();
 
     if arch_entries.is_empty() {
-        anyhow::bail!("scoop: no Windows archive artifact found for crate '{}'", crate_name);
+        anyhow::bail!(
+            "scoop: no Windows archive artifact found for crate '{}'",
+            crate_name
+        );
     }
 
     // Collect binary names from artifact metadata.  The archive stage stores
@@ -309,15 +349,23 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
         let all_win = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
         for a in &all_win {
-            let is_win = a.target.as_deref()
+            let is_win = a
+                .target
+                .as_deref()
                 .map(|t| t.to_ascii_lowercase().contains("windows"))
                 .unwrap_or(false)
-                || a.path.to_string_lossy().to_ascii_lowercase().contains("windows");
-            if !is_win { continue; }
+                || a.path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("windows");
+            if !is_win {
+                continue;
+            }
             if let Some(bin) = a.metadata.get("binary")
-                && !names.contains(bin) {
-                    names.push(bin.clone());
-                }
+                && !names.contains(bin)
+            {
+                names.push(bin.clone());
+            }
         }
         names
     };
@@ -355,7 +403,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     );
 
     // Clone bucket repo, write manifest, commit, push.
-    let token = util::resolve_repo_token(ctx, scoop_cfg.repository.as_ref(), Some("SCOOP_BUCKET_TOKEN"));
+    let token = util::resolve_repo_token(
+        ctx,
+        scoop_cfg.repository.as_ref(),
+        Some("SCOOP_BUCKET_TOKEN"),
+    );
 
     let tmp_dir = tempfile::tempdir().context("scoop: create temp dir")?;
     let repo_path = tmp_dir.path();
@@ -531,6 +583,7 @@ mod tests {
             scoop_arch: "64bit".to_string(),
             url: url.to_string(),
             hash: hash.to_string(),
+            wrap_in_directory: None,
         }]
     }
 
@@ -699,14 +752,8 @@ mod tests {
             "https://example.com/release-tool-5.0.0-windows-amd64.zip",
             "hash",
         );
-        let manifest = generate_manifest_with_opts(
-            "release-tool",
-            "5.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("release-tool", "5.0.0", &entries, "desc", "MIT", &opts);
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let auto_url = json["autoupdate"]["architecture"]["64bit"]["url"]
@@ -716,7 +763,8 @@ mod tests {
         // The autoupdate URL should follow the pattern:
         // https://github.com/<owner>/<repo>/releases/download/v$version/<name>-$version-windows-amd64.zip
         assert!(
-            auto_url.starts_with("https://github.com/myorg/release-tool/releases/download/v$version/")
+            auto_url
+                .starts_with("https://github.com/myorg/release-tool/releases/download/v$version/")
         );
         assert!(auto_url.ends_with("-windows-amd64.zip"));
         assert!(auto_url.contains("release-tool-$version-"));
@@ -756,14 +804,8 @@ mod tests {
             ..Default::default()
         };
         let entries = arch_64("https://example.com/mytool.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "2.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "2.0.0", &entries, "desc", "MIT", &opts);
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["checkver"], "github");
@@ -825,14 +867,8 @@ mod tests {
             ..Default::default()
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "1.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["homepage"], "https://example.com/mytool");
     }
@@ -859,14 +895,8 @@ mod tests {
             ..Default::default()
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "1.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["persist"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -882,14 +912,8 @@ mod tests {
             ..Default::default()
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "1.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["depends"].as_array().unwrap();
         assert_eq!(arr, &["git", "7zip"]);
@@ -903,14 +927,8 @@ mod tests {
             ..Default::default()
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "1.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["pre_install"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -925,14 +943,8 @@ mod tests {
             ..Default::default()
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "1.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["post_install"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -954,14 +966,8 @@ mod tests {
             ..Default::default()
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "1.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["shortcuts"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -1006,14 +1012,8 @@ mod tests {
             bin: None,
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
-        let manifest = generate_manifest_with_opts(
-            "mytool",
-            "1.0.0",
-            &entries,
-            "desc",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["homepage"], "https://example.com");
         assert!(json["persist"].is_array());
@@ -1034,30 +1034,27 @@ mod tests {
                 scoop_arch: "64bit".to_string(),
                 url: "https://example.com/app-1.0.0-windows-amd64.zip".to_string(),
                 hash: "hash_amd64".to_string(),
+                wrap_in_directory: None,
             },
             ArchEntry {
                 scoop_arch: "32bit".to_string(),
                 url: "https://example.com/app-1.0.0-windows-386.zip".to_string(),
                 hash: "hash_386".to_string(),
+                wrap_in_directory: None,
             },
             ArchEntry {
                 scoop_arch: "arm64".to_string(),
                 url: "https://example.com/app-1.0.0-windows-arm64.zip".to_string(),
                 hash: "hash_arm64".to_string(),
+                wrap_in_directory: None,
             },
         ];
         let opts = ManifestOptions {
             github_slug: Some("myorg/app".to_string()),
             ..Default::default()
         };
-        let manifest = generate_manifest_with_opts(
-            "app",
-            "1.0.0",
-            &entries,
-            "A multi-arch app",
-            "MIT",
-            &opts,
-        );
+        let manifest =
+            generate_manifest_with_opts("app", "1.0.0", &entries, "A multi-arch app", "MIT", &opts);
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
 
         // Verify all three architecture blocks
@@ -1067,15 +1064,24 @@ mod tests {
         assert!(arch["arm64"].is_object(), "arm64 block should exist");
 
         // Verify URLs and hashes
-        assert_eq!(arch["64bit"]["url"], "https://example.com/app-1.0.0-windows-amd64.zip");
+        assert_eq!(
+            arch["64bit"]["url"],
+            "https://example.com/app-1.0.0-windows-amd64.zip"
+        );
         assert_eq!(arch["64bit"]["hash"], "hash_amd64");
         assert_eq!(arch["64bit"]["bin"], "app.exe");
 
-        assert_eq!(arch["32bit"]["url"], "https://example.com/app-1.0.0-windows-386.zip");
+        assert_eq!(
+            arch["32bit"]["url"],
+            "https://example.com/app-1.0.0-windows-386.zip"
+        );
         assert_eq!(arch["32bit"]["hash"], "hash_386");
         assert_eq!(arch["32bit"]["bin"], "app.exe");
 
-        assert_eq!(arch["arm64"]["url"], "https://example.com/app-1.0.0-windows-arm64.zip");
+        assert_eq!(
+            arch["arm64"]["url"],
+            "https://example.com/app-1.0.0-windows-arm64.zip"
+        );
         assert_eq!(arch["arm64"]["hash"], "hash_arm64");
         assert_eq!(arch["arm64"]["bin"], "app.exe");
 
@@ -1087,11 +1093,96 @@ mod tests {
 
         // Verify autoupdate URLs use correct arch suffixes
         let auto_64_url = auto["64bit"]["url"].as_str().unwrap();
-        assert!(auto_64_url.contains("amd64"), "autoupdate 64bit should use amd64 suffix");
+        assert!(
+            auto_64_url.contains("amd64"),
+            "autoupdate 64bit should use amd64 suffix"
+        );
         let auto_32_url = auto["32bit"]["url"].as_str().unwrap();
-        assert!(auto_32_url.contains("386"), "autoupdate 32bit should use 386 suffix");
+        assert!(
+            auto_32_url.contains("386"),
+            "autoupdate 32bit should use 386 suffix"
+        );
         let auto_arm_url = auto["arm64"]["url"].as_str().unwrap();
-        assert!(auto_arm_url.contains("arm64"), "autoupdate arm64 should use arm64 suffix");
+        assert!(
+            auto_arm_url.contains("arm64"),
+            "autoupdate arm64 should use arm64 suffix"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // wrap_in_directory tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_manifest_wrap_in_directory_single_bin() {
+        let entries = vec![ArchEntry {
+            scoop_arch: "64bit".to_string(),
+            url: "https://example.com/app-1.0.0-windows-amd64.zip".to_string(),
+            hash: "hash123".to_string(),
+            wrap_in_directory: Some("app-1.0.0".to_string()),
+        }];
+        let manifest = generate_manifest_with_opts(
+            "app",
+            "1.0.0",
+            &entries,
+            "An app",
+            "MIT",
+            &ManifestOptions::default(),
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        // With wrap_in_directory, single bin becomes a pair: ["dir\\bin.exe", "alias"]
+        let bin = &json["architecture"]["64bit"]["bin"];
+        assert!(bin.is_array(), "bin should be an array");
+        let pair = &bin[0];
+        assert!(pair.is_array(), "bin entry should be a [path, alias] pair");
+        assert_eq!(pair[0], "app-1.0.0\\app.exe");
+        assert_eq!(pair[1], "app");
+    }
+
+    #[test]
+    fn test_manifest_wrap_in_directory_multiple_bins() {
+        let entries = vec![ArchEntry {
+            scoop_arch: "64bit".to_string(),
+            url: "https://example.com/suite-1.0.0.zip".to_string(),
+            hash: "hash456".to_string(),
+            wrap_in_directory: Some("suite-1.0.0".to_string()),
+        }];
+        let bins = vec!["cli".to_string(), "daemon".to_string()];
+        let opts = ManifestOptions {
+            bin: Some(&bins),
+            ..Default::default()
+        };
+        let manifest =
+            generate_manifest_with_opts("suite", "1.0.0", &entries, "A suite", "MIT", &opts);
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        let bin = &json["architecture"]["64bit"]["bin"];
+        assert!(bin.is_array());
+        assert_eq!(bin.as_array().unwrap().len(), 2);
+        assert_eq!(bin[0][0], "suite-1.0.0\\cli.exe");
+        assert_eq!(bin[0][1], "cli");
+        assert_eq!(bin[1][0], "suite-1.0.0\\daemon.exe");
+        assert_eq!(bin[1][1], "daemon");
+    }
+
+    #[test]
+    fn test_manifest_no_wrap_preserves_simple_bin() {
+        let entries = vec![ArchEntry {
+            scoop_arch: "64bit".to_string(),
+            url: "https://example.com/app.zip".to_string(),
+            hash: "hash789".to_string(),
+            wrap_in_directory: None,
+        }];
+        let manifest = generate_manifest_with_opts(
+            "app",
+            "1.0.0",
+            &entries,
+            "An app",
+            "MIT",
+            &ManifestOptions::default(),
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        // Without wrap_in_directory, single bin is a plain string.
+        assert_eq!(json["architecture"]["64bit"]["bin"], "app.exe");
     }
 
     // -----------------------------------------------------------------------
@@ -1233,8 +1324,7 @@ mod tests {
 
     #[test]
     fn test_scoop_commit_msg_default() {
-        let msg =
-            crate::homebrew::render_commit_msg(None, "mytool", "1.2.3", "manifest");
+        let msg = crate::homebrew::render_commit_msg(None, "mytool", "1.2.3", "manifest");
         assert_eq!(msg, "chore: update mytool manifest to 1.2.3");
     }
 

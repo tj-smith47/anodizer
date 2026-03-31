@@ -68,6 +68,8 @@ fn main() {
             draft,
             release_header,
             release_footer,
+            release_notes_tmpl,
+            fail_fast,
             split,
             merge,
         } => {
@@ -105,10 +107,12 @@ fn main() {
                     parallelism,
                     single_target: resolved_single_target,
                     release_notes,
+                    release_notes_tmpl,
                     workspace,
                     draft,
                     release_header,
                     release_footer,
+                    fail_fast,
                     split,
                     merge,
                 })
@@ -120,6 +124,7 @@ fn main() {
             parallelism,
             single_target,
             workspace,
+            output,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
             let config_override = cli.config.clone();
@@ -138,6 +143,7 @@ fn main() {
                     parallelism,
                     single_target: resolved_single_target,
                     workspace,
+                    output,
                 })
             })
         }
@@ -158,6 +164,17 @@ fn main() {
         ),
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
+        Commands::Man => {
+            let cmd = anodize_cli::build_cli();
+            let man = clap_mangen::Man::new(cmd);
+            let mut buf = Vec::new();
+            man.render(&mut buf)
+                .map_err(|e| anyhow::anyhow!("failed to render man page: {}", e))
+                .and_then(|()| {
+                    std::io::Write::write_all(&mut std::io::stdout(), &buf)
+                        .map_err(|e| anyhow::anyhow!("failed to write man page: {}", e))
+                })
+        }
         Commands::Jsonschema => commands::jsonschema::run(),
         Commands::Tag {
             dry_run,
@@ -795,6 +812,124 @@ mod tests {
             release_help.contains("--merge"),
             "release help should mention --merge flag, got: {}",
             release_help
+        );
+    }
+
+    // ---- New CLI flag tests ----
+
+    #[test]
+    fn test_cli_parses_fail_fast() {
+        let cli = Cli::try_parse_from(["anodize", "release", "--fail-fast"]);
+        assert!(cli.is_ok(), "CLI should parse --fail-fast: {:?}", cli.err());
+        if let Commands::Release { fail_fast, .. } = cli.unwrap().command {
+            assert!(fail_fast, "--fail-fast should be true");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_fail_fast_defaults_false() {
+        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        if let Commands::Release { fail_fast, .. } = cli.command {
+            assert!(!fail_fast, "--fail-fast should default to false");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_release_notes_tmpl() {
+        let cli = Cli::try_parse_from([
+            "anodize",
+            "release",
+            "--release-notes-tmpl",
+            "/tmp/notes.md.tmpl",
+        ]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse --release-notes-tmpl: {:?}",
+            cli.err()
+        );
+        if let Commands::Release {
+            release_notes_tmpl, ..
+        } = cli.unwrap().command
+        {
+            assert_eq!(
+                release_notes_tmpl,
+                Some(std::path::PathBuf::from("/tmp/notes.md.tmpl"))
+            );
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_build_output() {
+        let cli = Cli::try_parse_from(["anodize", "build", "-o", "./myapp"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse build -o: {:?}",
+            cli.err()
+        );
+        if let Commands::Build { output, .. } = cli.unwrap().command {
+            assert_eq!(output, Some(std::path::PathBuf::from("./myapp")));
+        } else {
+            panic!("expected Build command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_build_output_long() {
+        let cli = Cli::try_parse_from(["anodize", "build", "--output", "/usr/local/bin/myapp"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse build --output: {:?}",
+            cli.err()
+        );
+        if let Commands::Build { output, .. } = cli.unwrap().command {
+            assert_eq!(
+                output,
+                Some(std::path::PathBuf::from("/usr/local/bin/myapp"))
+            );
+        } else {
+            panic!("expected Build command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_man_command() {
+        let cli = Cli::try_parse_from(["anodize", "man"]);
+        assert!(cli.is_ok(), "CLI should parse man command: {:?}", cli.err());
+        assert!(matches!(cli.unwrap().command, Commands::Man));
+    }
+
+    #[test]
+    fn test_help_output_contains_new_flags() {
+        let mut cmd = Cli::command();
+        let release_help = cmd
+            .find_subcommand_mut("release")
+            .expect("release subcommand should exist")
+            .render_help()
+            .to_string();
+        assert!(
+            release_help.contains("--fail-fast"),
+            "release help should mention --fail-fast"
+        );
+        assert!(
+            release_help.contains("--release-notes-tmpl"),
+            "release help should mention --release-notes-tmpl"
+        );
+
+        let mut cmd2 = Cli::command();
+        let build_help = cmd2
+            .find_subcommand_mut("build")
+            .expect("build subcommand should exist")
+            .render_help()
+            .to_string();
+        assert!(
+            build_help.contains("--output"),
+            "build help should mention --output"
         );
     }
 

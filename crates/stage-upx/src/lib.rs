@@ -12,6 +12,17 @@ use anodize_core::util::find_binary;
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Format a byte count as a human-readable string (B/KB/MB).
+fn format_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1}MB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
 /// Match a target string against a glob-style pattern.
 /// Supports `*` as a wildcard that matches any sequence of characters.
 pub(crate) fn target_matches_pattern(target: &str, pattern: &str) -> bool {
@@ -131,11 +142,22 @@ impl Stage for UpxStage {
                 let target_label = target.as_deref().unwrap_or("unknown");
 
                 if ctx.is_dry_run() {
+                    let mut extra_flags = Vec::new();
+                    if let Some(ref level) = upx_cfg.compress {
+                        extra_flags.push(format!("-{}", level));
+                    }
+                    if upx_cfg.lzma.unwrap_or(false) {
+                        extra_flags.push("--lzma".to_string());
+                    }
+                    if upx_cfg.brute.unwrap_or(false) {
+                        extra_flags.push("--brute".to_string());
+                    }
+                    extra_flags.extend(upx_cfg.args.iter().cloned());
                     log.status(&format!(
                         "(dry-run) [{}] would run: {} --quiet {} {}",
                         id_label,
                         binary,
-                        upx_cfg.args.join(" "),
+                        extra_flags.join(" "),
                         artifact_str,
                     ));
                     continue;
@@ -146,14 +168,33 @@ impl Stage for UpxStage {
                     id_label, artifact_str, target_label,
                 ));
 
-                let output = Command::new(binary)
-                    .arg("--quiet")
-                    .args(&upx_cfg.args)
-                    .arg(artifact_path)
-                    .output()
-                    .with_context(|| {
-                        format!("upx: failed to spawn '{}' for {}", binary, artifact_str)
-                    })?;
+                let size_before = std::fs::metadata(artifact_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+
+                let mut cmd = Command::new(binary);
+                cmd.arg("--quiet");
+                // Wire compress/lzma/brute config fields to UPX CLI flags.
+                if let Some(ref level) = upx_cfg.compress {
+                    // "best" maps to "--best" (not "-best"); all other levels
+                    // are single-character flags like "-9", "-1", etc.
+                    if level == "best" {
+                        cmd.arg("--best");
+                    } else {
+                        cmd.arg(format!("-{}", level));
+                    }
+                }
+                if upx_cfg.lzma.unwrap_or(false) {
+                    cmd.arg("--lzma");
+                }
+                if upx_cfg.brute.unwrap_or(false) {
+                    cmd.arg("--brute");
+                }
+                cmd.args(&upx_cfg.args);
+                cmd.arg(artifact_path);
+                let output = cmd.output().with_context(|| {
+                    format!("upx: failed to spawn '{}' for {}", binary, artifact_str)
+                })?;
 
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -168,6 +209,7 @@ impl Stage for UpxStage {
                         "AlreadyPackedException",
                         "NotCompressibleException",
                         "UnknownExecutableFormatException",
+                        "IOException",
                     ];
 
                     if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
@@ -181,6 +223,23 @@ impl Stage for UpxStage {
                     } else {
                         log.check_output(output, binary)?;
                     }
+                } else {
+                    // Compression succeeded — log the ratio
+                    let size_after = std::fs::metadata(artifact_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let ratio = if size_before > 0 {
+                        (size_after * 100) / size_before
+                    } else {
+                        100
+                    };
+                    log.status(&format!(
+                        "compressed {} ({} -> {}, {}%)",
+                        artifact_path.display(),
+                        format_size(size_before),
+                        format_size(size_after),
+                        ratio,
+                    ));
                 }
             }
         }
@@ -553,6 +612,7 @@ crates: []
         let mut ctx = TestContextBuilder::new().upx(upx).build();
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -574,6 +634,7 @@ crates: []
         let mut ctx = TestContextBuilder::new().upx(upx).build();
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -596,6 +657,7 @@ crates: []
         let mut ctx = TestContextBuilder::new().upx(upx).build();
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -629,6 +691,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -657,6 +720,7 @@ crates: []
         // Add a non-Binary artifact — should be ignored
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -681,6 +745,7 @@ crates: []
         // Matching artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -694,6 +759,7 @@ crates: []
         // Non-matching artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/other"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -721,6 +787,7 @@ crates: []
         // Matching target
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp-linux"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -730,6 +797,7 @@ crates: []
         // Non-matching target
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp-arm"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "test".to_string(),
@@ -763,6 +831,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp-linux"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
@@ -771,6 +840,7 @@ crates: []
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("/tmp/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "test".to_string(),

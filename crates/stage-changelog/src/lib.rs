@@ -92,8 +92,8 @@ pub(crate) fn apply_filters(
 ) -> Result<Vec<CommitInfo>> {
     let mut patterns: Vec<Regex> = Vec::with_capacity(exclude.len());
     for p in exclude {
-        let re = Regex::new(p)
-            .map_err(|e| anyhow::anyhow!("invalid exclude regex {:?}: {}", p, e))?;
+        let re =
+            Regex::new(p).map_err(|e| anyhow::anyhow!("invalid exclude regex {:?}: {}", p, e))?;
         patterns.push(re);
     }
 
@@ -122,8 +122,8 @@ pub(crate) fn apply_include_filters(
     }
     let mut patterns: Vec<Regex> = Vec::with_capacity(include.len());
     for p in include {
-        let re = Regex::new(p)
-            .map_err(|e| anyhow::anyhow!("invalid include regex {:?}: {}", p, e))?;
+        let re =
+            Regex::new(p).map_err(|e| anyhow::anyhow!("invalid include regex {:?}: {}", p, e))?;
         patterns.push(re);
     }
 
@@ -149,7 +149,10 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) -> Result<()
         "desc" => commits.sort_by(|a, b| b.raw_message.cmp(&a.raw_message)),
         // Empty — preserve original git log order
         "" => {}
-        other => anyhow::bail!("invalid changelog sort direction: {:?} (expected \"asc\", \"desc\", or empty)", other),
+        other => anyhow::bail!(
+            "invalid changelog sort direction: {:?} (expected \"asc\", \"desc\", or empty)",
+            other
+        ),
     }
     Ok(())
 }
@@ -199,15 +202,13 @@ fn group_commits_inner(
     sorted_groups.sort_by_key(|g| g.order.unwrap_or(i32::MAX));
 
     // Compile regexes once. Invalid patterns are hard errors.
-    let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> = Vec::with_capacity(sorted_groups.len());
+    let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> =
+        Vec::with_capacity(sorted_groups.len());
     for g in &sorted_groups {
         let re = match g.regexp.as_deref() {
             Some(p) => {
                 let re = Regex::new(p).map_err(|e| {
-                    anyhow::anyhow!(
-                        "invalid group regex {:?} for group {:?}: {}",
-                        p, g.title, e
-                    )
+                    anyhow::anyhow!("invalid group regex {:?} for group {:?}: {}", p, g.title, e)
                 })?;
                 Some(re)
             }
@@ -219,8 +220,19 @@ fn group_commits_inner(
     let mut buckets: Vec<Vec<CommitInfo>> = vec![Vec::new(); compiled.len()];
     let mut others: Vec<CommitInfo> = Vec::new();
 
+    // Track which group index (if any) is a catch-all (regexp is None/empty).
+    // GoReleaser treats a group with empty Regexp as a catch-all that captures
+    // all remaining unmatched entries; groups after the catch-all are ignored.
+    let catch_all_idx: Option<usize> = compiled.iter().position(|(re_opt, _)| re_opt.is_none());
+
     'commit: for commit in commits {
         for (idx, (re_opt, _)) in compiled.iter().enumerate() {
+            // Once we reach the catch-all, stop checking further groups.
+            // The catch-all itself doesn't do regex matching — it collects
+            // all remaining unmatched commits below.
+            if catch_all_idx == Some(idx) {
+                break;
+            }
             if let Some(re) = re_opt
                 && re.is_match(&commit.raw_message)
             {
@@ -229,6 +241,12 @@ fn group_commits_inner(
             }
         }
         others.push(commit.clone());
+    }
+
+    // If there is a catch-all group, move all remaining unmatched commits into
+    // that group's bucket and clear the "others" list.
+    if let Some(ci_idx) = catch_all_idx {
+        buckets[ci_idx].append(&mut others);
     }
 
     let mut result: Vec<GroupedCommits> = Vec::new();
@@ -280,20 +298,28 @@ fn group_commits_inner(
 /// means "use the full SHA" (no truncation). Negative values (like GoReleaser's
 /// `-1`) omit the hash entirely.
 ///
-/// If `format_template` is `None`, the default format `{{ ShortSHA }} {{ Message }}`
-/// is used (matching GoReleaser defaults). When `abbrev < 0`, the default format
-/// becomes `{{ Message }}` (no hash prefix). Available template variables:
+/// If `format_template` is `None`, the default format depends on the SCM backend:
+/// - `git` backend (default): `{{ ShortSHA }} {{ Message }}`
+/// - `github`/`gitlab`/`gitea` backend: `{{ ShortSHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)`
+///   Falls back to `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
+///
+/// When `abbrev < 0`, the default format becomes `{{ Message }}` (no hash prefix)
+/// regardless of the backend. Available template variables:
 /// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`, `Login`, `Logins`.
 pub(crate) fn render_changelog(
     grouped: &[GroupedCommits],
     abbrev: i32,
     format_template: Option<&str>,
     logins: &str,
+    use_source: &str,
 ) -> String {
     let default_format = if abbrev < 0 {
         "{{ Message }}"
     } else {
-        "{{ ShortSHA }} {{ Message }}"
+        match use_source {
+            "github" | "gitlab" | "gitea" => "{{ ShortSHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})",
+            _ => "{{ ShortSHA }} {{ Message }}",
+        }
     };
     let tmpl = format_template.unwrap_or(default_format);
     let mut out = String::new();
@@ -316,7 +342,13 @@ fn render_groups(
     }
     let hashes = "#".repeat(depth);
     for group in groups {
-        out.push_str(&format!("{} {}\n\n", hashes, group.title));
+        // Only emit a heading when the group has a non-empty title.
+        // When no changelog groups are configured, the default group has an
+        // empty title so commits render as a plain bullet list without a
+        // spurious "## Changes" heading — matching GoReleaser behaviour.
+        if !group.title.is_empty() {
+            out.push_str(&format!("{} {}\n\n", hashes, group.title));
+        }
         for commit in &group.commits {
             render_commit_line(out, commit, abbrev, tmpl, logins);
         }
@@ -342,7 +374,13 @@ fn render_groups(
 /// - `AuthorEmail` — commit author email
 /// - `Login` — per-commit GitHub username (populated only with `github` backend)
 /// - `Logins` — comma-separated list of all GitHub usernames in the release
-fn render_commit_line(out: &mut String, commit: &CommitInfo, abbrev: i32, tmpl: &str, logins: &str) {
+fn render_commit_line(
+    out: &mut String,
+    commit: &CommitInfo,
+    abbrev: i32,
+    tmpl: &str,
+    logins: &str,
+) {
     let short_sha = if abbrev < 0 {
         // Negative abbrev (e.g. GoReleaser's -1) means omit hash entirely.
         String::new()
@@ -365,14 +403,13 @@ fn render_commit_line(out: &mut String, commit: &CommitInfo, abbrev: i32, tmpl: 
     vars.set("AuthorEmail", &commit.author_email);
     vars.set("Logins", logins);
     vars.set("Login", &commit.login);
-    let rendered = template::render(tmpl, &vars)
-        .unwrap_or_else(|_| {
-            if abbrev < 0 {
-                commit.description.clone()
-            } else {
-                format!("{} {}", short_sha, commit.description)
-            }
-        });
+    let rendered = template::render(tmpl, &vars).unwrap_or_else(|_| {
+        if abbrev < 0 {
+            commit.description.clone()
+        } else {
+            format!("{} {}", short_sha, commit.description)
+        }
+    });
     out.push_str(&format!("- {}\n", rendered));
 }
 
@@ -389,6 +426,10 @@ impl Stage for ChangelogStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("changelog");
+
+        // Note: GoReleaser skips changelog in snapshot mode (changelog.go:46-48),
+        // but we intentionally generate it for testing/preview purposes.
+
         let changelog_cfg = ctx.config.changelog.clone();
 
         // If --release-notes was provided, read the file and use it directly,
@@ -419,12 +460,12 @@ impl Stage for ChangelogStage {
                     .insert(crate_cfg.name.clone(), content.clone());
             }
 
-            // Write to dist/RELEASE_NOTES.md (skip during dry-run).
+            // Write to dist/CHANGELOG.md (skip during dry-run).
             if !ctx.is_dry_run() {
                 let dist = ctx.config.dist.clone();
                 std::fs::create_dir_all(&dist)
                     .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
-                let notes_out = dist.join("RELEASE_NOTES.md");
+                let notes_out = dist.join("CHANGELOG.md");
                 std::fs::write(&notes_out, &content)
                     .with_context(|| format!("changelog: write {}", notes_out.display()))?;
                 log.status(&format!("wrote {}", notes_out.display()));
@@ -475,9 +516,7 @@ impl Stage for ChangelogStage {
         }
 
         let cfg = changelog_cfg.as_ref();
-        let sort_order = cfg
-            .and_then(|c| c.sort.clone())
-            .unwrap_or_default();
+        let sort_order = cfg.and_then(|c| c.sort.clone()).unwrap_or_default();
         let filters = cfg.and_then(|c| c.filters.as_ref());
         let exclude_filters: Vec<String> =
             filters.and_then(|f| f.exclude.clone()).unwrap_or_default();
@@ -486,7 +525,7 @@ impl Stage for ChangelogStage {
         let groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
         let header: Option<String> = cfg.and_then(|c| c.header.clone());
         let footer: Option<String> = cfg.and_then(|c| c.footer.clone());
-        let abbrev: i32 = cfg.and_then(|c| c.abbrev).unwrap_or(7);
+        let abbrev: i32 = cfg.and_then(|c| c.abbrev).unwrap_or(0);
         let format_template: Option<String> = cfg.and_then(|c| c.format.clone());
 
         let selected = ctx.options.selected_crates.clone();
@@ -525,11 +564,17 @@ impl Stage for ChangelogStage {
                             "GitHub API fetch failed, falling back to git: {}",
                             e
                         ));
-                        (fetch_git_commits(&prev_tag, path_filter, &crate_name, &log), String::new())
+                        (
+                            fetch_git_commits(&prev_tag, path_filter, &crate_name, &log),
+                            String::new(),
+                        )
                     }
                 }
             } else {
-                (fetch_git_commits(&prev_tag, path_filter, &crate_name, &log), String::new())
+                (
+                    fetch_git_commits(&prev_tag, path_filter, &crate_name, &log),
+                    String::new(),
+                )
             };
 
             // GoReleaser treats include and exclude as mutually exclusive:
@@ -546,12 +591,15 @@ impl Stage for ChangelogStage {
 
             // Group commits.
             let grouped = if groups.is_empty() {
-                // No groups configured — put everything in a single "Changes" group.
+                // No groups configured — render commits as a flat list without
+                // any group heading.  GoReleaser only emits a "## Changes"
+                // heading when groups ARE configured (for the "others" bucket);
+                // with no groups the changelog is a plain bullet list.
                 if sorted.is_empty() {
                     vec![]
                 } else {
                     vec![GroupedCommits {
-                        title: "Changes".to_string(),
+                        title: String::new(),
                         commits: sorted,
                         subgroups: Vec::new(),
                     }]
@@ -561,7 +609,13 @@ impl Stage for ChangelogStage {
             };
 
             // Render the markdown for this crate.
-            let markdown = render_changelog(&grouped, abbrev, format_template.as_deref(), &logins_str);
+            let markdown = render_changelog(
+                &grouped,
+                abbrev,
+                format_template.as_deref(),
+                &logins_str,
+                &use_source,
+            );
 
             // Store per-crate changelog in context for the release stage.
             ctx.changelogs.insert(crate_name.clone(), markdown.clone());
@@ -573,23 +627,29 @@ impl Stage for ChangelogStage {
         // the template engine so variables like {{ .ProjectName }} are expanded.
         //
         // NOTE: These changelog header/footer values only affect the disk file
-        // (dist/RELEASE_NOTES.md). They do NOT affect the GitHub release body.
+        // (dist/CHANGELOG.md). They do NOT affect the GitHub release body.
         // The release stage has its own separate header/footer (in ReleaseConfig)
         // that wraps the per-crate changelog body for the GitHub release.
         let mut final_markdown = String::new();
         if let Some(ref h) = header {
-            let rendered = ctx.render_template(h).unwrap_or_else(|_| h.clone());
+            let rendered = ctx.render_template(h).unwrap_or_else(|e| {
+                log.warn(&format!("changelog: failed to render header template: {e}"));
+                h.clone()
+            });
             final_markdown.push_str(&rendered);
             final_markdown.push('\n');
         }
         final_markdown.push_str(&combined_markdown);
         if let Some(ref f) = footer {
-            let rendered = ctx.render_template(f).unwrap_or_else(|_| f.clone());
+            let rendered = ctx.render_template(f).unwrap_or_else(|e| {
+                log.warn(&format!("changelog: failed to render footer template: {e}"));
+                f.clone()
+            });
             final_markdown.push_str(&rendered);
             final_markdown.push('\n');
         }
 
-        // Write to dist/RELEASE_NOTES.md (skip during dry-run — this is the only side effect).
+        // Write to dist/CHANGELOG.md (skip during dry-run — this is the only side effect).
         if ctx.is_dry_run() {
             log.status("(dry-run) skipping write to disk");
             return Ok(());
@@ -597,7 +657,7 @@ impl Stage for ChangelogStage {
 
         std::fs::create_dir_all(&dist)
             .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
-        let notes_path = dist.join("RELEASE_NOTES.md");
+        let notes_path = dist.join("CHANGELOG.md");
         std::fs::write(&notes_path, &final_markdown)
             .with_context(|| format!("changelog: write {}", notes_path.display()))?;
 
@@ -668,9 +728,7 @@ fn fetch_github_commits(
     // so we use `gh_api_get` instead of `gh_api_get_paginated` to avoid
     // corrupting the response by splitting on `]`.
     let (items, compare_files) = if let Some(tag) = prev_tag {
-        let endpoint = format!(
-            "/repos/{owner}/{repo}/compare/{tag}...HEAD"
-        );
+        let endpoint = format!("/repos/{owner}/{repo}/compare/{tag}...HEAD");
         let response = gh_api_get(&endpoint, token)?;
         // Extract the "commits" array from the single compare object.
         let commits_arr = response
@@ -697,28 +755,29 @@ fn fetch_github_commits(
 
     // When using the Compare API with a path filter, filter commits to only
     // those that touched files under the specified path.
-    let filtered_shas: Option<std::collections::HashSet<String>> = match (path_filter, &compare_files) {
-        (Some(prefix), Some(files)) => {
-            // Build set of SHAs for commits that touched files under the prefix.
-            // The compare response's "files" doesn't map directly to commits,
-            // so we filter based on whether the file list contains matching paths.
-            // For a more precise filter, we check each commit's individual files.
-            // However, the compare endpoint only gives a flat file list, not per-commit.
-            // As a pragmatic approach: if any file matches the path prefix, include
-            // all commits. If no files match, include none.
-            let has_matching_files = files.iter().any(|f| {
-                f.get("filename")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|name| name.starts_with(prefix))
-            });
-            if !has_matching_files {
-                Some(std::collections::HashSet::new()) // empty set = filter out all
-            } else {
-                None // no filtering needed, all commits are relevant
+    let filtered_shas: Option<std::collections::HashSet<String>> =
+        match (path_filter, &compare_files) {
+            (Some(prefix), Some(files)) => {
+                // Build set of SHAs for commits that touched files under the prefix.
+                // The compare response's "files" doesn't map directly to commits,
+                // so we filter based on whether the file list contains matching paths.
+                // For a more precise filter, we check each commit's individual files.
+                // However, the compare endpoint only gives a flat file list, not per-commit.
+                // As a pragmatic approach: if any file matches the path prefix, include
+                // all commits. If no files match, include none.
+                let has_matching_files = files.iter().any(|f| {
+                    f.get("filename")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|name| name.starts_with(prefix))
+                });
+                if !has_matching_files {
+                    Some(std::collections::HashSet::new()) // empty set = filter out all
+                } else {
+                    None // no filtering needed, all commits are relevant
+                }
             }
-        }
-        _ => None,
-    };
+            _ => None,
+        };
 
     let mut logins = BTreeSet::new();
     let mut all_commit_infos = Vec::new();
@@ -875,7 +934,7 @@ mod tests {
                 subgroups: Vec::new(),
             },
         ];
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
         assert!(md.contains("## Features"));
         assert!(md.contains("add X"));
         assert!(md.contains("## Bug Fixes"));
@@ -944,7 +1003,7 @@ mod tests {
     fn test_render_changelog_short_hash() {
         // When hash is exactly 7 chars, it should appear as-is
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![ci(
                 "feat: short hash test",
                 "feat",
@@ -953,7 +1012,7 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
         assert!(md.contains("abc1234 short hash test"));
     }
 
@@ -979,7 +1038,7 @@ mod tests {
             commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
             subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None, "");
+        let body = render_changelog(&grouped, 7, None, "", "git");
 
         // Simulate the header/footer wrapping logic from ChangelogStage::run
         let header = "# My Release Notes";
@@ -1000,11 +1059,11 @@ mod tests {
     #[test]
     fn test_render_changelog_with_header_only() {
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![ci("fix: bug", "fix", "bug", "def5678")],
             subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None, "");
+        let body = render_changelog(&grouped, 7, None, "", "git");
 
         let header = "# Changelog";
         let mut final_md = String::new();
@@ -1012,17 +1071,18 @@ mod tests {
         final_md.push('\n');
         final_md.push_str(&body);
 
-        assert!(final_md.starts_with("# Changelog\n## Changes"));
+        // No groups configured => no "## Changes" heading; commits follow header directly
+        assert!(final_md.starts_with("# Changelog\n- def5678 bug"));
     }
 
     #[test]
     fn test_render_changelog_with_footer_only() {
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![ci("fix: bug", "fix", "bug", "def5678")],
             subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None, "");
+        let body = render_changelog(&grouped, 7, None, "", "git");
 
         let footer = "-- end --";
         let mut final_md = String::new();
@@ -1030,7 +1090,9 @@ mod tests {
         final_md.push_str(footer);
         final_md.push('\n');
 
-        assert!(final_md.contains("## Changes"));
+        // No groups configured => no "## Changes" heading
+        assert!(!final_md.contains("## Changes"));
+        assert!(final_md.contains("- def5678 bug"));
         assert!(final_md.ends_with("-- end --\n"));
     }
 
@@ -1108,7 +1170,10 @@ mod tests {
         // Invalid regex should be a hard error.
         let include = vec!["[invalid".to_string(), "^feat".to_string()];
         let result = apply_include_filters(&commits, &include, &test_logger());
-        assert!(result.is_err(), "invalid include regex should return an error");
+        assert!(
+            result.is_err(),
+            "invalid include regex should return an error"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1118,7 +1183,7 @@ mod tests {
     #[test]
     fn test_abbrev_controls_hash_length() {
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![ci(
                 "feat: test abbrev",
                 "feat",
@@ -1128,7 +1193,7 @@ mod tests {
             subgroups: Vec::new(),
         }];
         // abbrev = 5 should truncate to "abc12"
-        let md = render_changelog(&grouped, 5, None, "");
+        let md = render_changelog(&grouped, 5, None, "", "git");
         assert!(
             md.contains("abc12 test abbrev"),
             "expected 'abc12 test abbrev' in: {}",
@@ -1140,19 +1205,19 @@ mod tests {
     #[test]
     fn test_abbrev_longer_than_hash_uses_full_hash() {
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![ci("feat: short", "feat", "short", "abc")],
             subgroups: Vec::new(),
         }];
         // abbrev = 10, but hash is only 3 chars — use full hash
-        let md = render_changelog(&grouped, 10, None, "");
+        let md = render_changelog(&grouped, 10, None, "", "git");
         assert!(md.contains("abc short"), "expected 'abc short' in: {}", md);
     }
 
     #[test]
     fn test_abbrev_default_is_seven() {
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![ci(
                 "feat: default abbrev",
                 "feat",
@@ -1161,7 +1226,7 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
         assert!(
             md.contains("abc1234 default abbrev"),
             "expected 'abc1234 default abbrev' in: {}",
@@ -1274,7 +1339,8 @@ abbrev: 10
             &commits,
             &["^feat".to_string(), "^fix".to_string()],
             &test_logger(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(included.len(), 3); // both feat commits + fix
         assert_eq!(included[0].description, "good feature");
         assert_eq!(included[1].description, "work in progress");
@@ -1408,7 +1474,7 @@ abbrev: 10
         }
 
         // Render
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
 
         // Verify structural output
         assert!(
@@ -1495,7 +1561,8 @@ abbrev: 10
             &commits,
             &["^feat".to_string(), "^fix".to_string()],
             &test_logger(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(included.len(), 3);
 
         // Sort the filtered list, then group
@@ -1517,7 +1584,7 @@ abbrev: 10
         ];
         let grouped = group_commits(&sorted, &groups, &test_logger()).unwrap();
 
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
 
         // Features and Bug Fixes should appear, but not chore or refactor
         assert!(md.contains("## Features"));
@@ -1547,12 +1614,12 @@ abbrev: 10
             .collect();
 
         let grouped = vec![GroupedCommits {
-            title: "Changes".to_string(),
+            title: String::new(),
             commits,
             subgroups: Vec::new(),
         }];
 
-        let body = render_changelog(&grouped, 7, None, "");
+        let body = render_changelog(&grouped, 7, None, "", "git");
 
         // Simulate header/footer wrapping as ChangelogStage.run does
         let header = "# Release v1.0.0";
@@ -1565,8 +1632,8 @@ abbrev: 10
         final_md.push_str(footer);
         final_md.push('\n');
 
-        // Verify structure
-        assert!(final_md.starts_with("# Release v1.0.0\n## Changes"));
+        // No groups configured => no "## Changes" heading; commits follow header directly
+        assert!(final_md.starts_with("# Release v1.0.0\n- abc1234 initial release"));
         assert!(final_md.contains("- abc1234 initial release"));
         assert!(final_md.contains("- def5678 typo in config"));
         assert!(final_md.ends_with("compare/v0.9.0...v1.0.0\n"));
@@ -1584,7 +1651,8 @@ abbrev: 10
             &commits,
             &["^ci:".to_string(), "^docs:".to_string()],
             &test_logger(),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(filtered.is_empty());
 
         let grouped = group_commits(
@@ -1596,10 +1664,11 @@ abbrev: 10
                 groups: None,
             }],
             &test_logger(),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(grouped.is_empty());
 
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
         assert!(
             md.is_empty(),
             "changelog should be empty when all commits are filtered"
@@ -1747,9 +1816,9 @@ abbrev: 10
             "docs commit should be filtered out"
         );
 
-        // Verify RELEASE_NOTES.md was written
-        let notes_path = repo.join("dist").join("RELEASE_NOTES.md");
-        assert!(notes_path.exists(), "RELEASE_NOTES.md should be written");
+        // Verify CHANGELOG.md was written
+        let notes_path = repo.join("dist").join("CHANGELOG.md");
+        assert!(notes_path.exists(), "CHANGELOG.md should be written");
         let notes_content = std::fs::read_to_string(&notes_path).unwrap();
         assert!(
             notes_content.starts_with("# Changelog\n"),
@@ -1772,7 +1841,7 @@ abbrev: 10
             commits: vec![ci("feat: new feature", "feat", "new feature", "abc1234")],
             subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None, "");
+        let body = render_changelog(&grouped, 7, None, "", "git");
 
         // Simulate the stage's header/footer assembly
         let mut final_md = String::new();
@@ -1796,7 +1865,7 @@ abbrev: 10
             commits: vec![ci("fix: crash", "fix", "crash", "def5678")],
             subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None, "");
+        let body = render_changelog(&grouped, 7, None, "", "git");
 
         let mut final_md = String::new();
         final_md.push_str(&body);
@@ -1825,7 +1894,8 @@ abbrev: 10
             &commits,
             &["^feat".to_string(), "^fix".to_string()],
             &test_logger(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|c| c.kind == "feat" || c.kind == "fix"));
         // Excluded types should not be present
@@ -1836,13 +1906,13 @@ abbrev: 10
     #[test]
     fn test_abbrev_truncates_to_specified_length() {
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![ci("feat: test", "feat", "test", "abcdef1234567890")],
             subgroups: Vec::new(),
         }];
 
         // abbrev = 3 should produce "abc test"
-        let md = render_changelog(&grouped, 3, None, "");
+        let md = render_changelog(&grouped, 3, None, "", "git");
         assert!(
             md.contains("abc test"),
             "abbrev=3 expected 'abc test', got: {}",
@@ -1850,7 +1920,7 @@ abbrev: 10
         );
 
         // abbrev = 10 should produce "abcdef1234 test"
-        let md10 = render_changelog(&grouped, 10, None, "");
+        let md10 = render_changelog(&grouped, 10, None, "", "git");
         assert!(
             md10.contains("abcdef1234 test"),
             "abbrev=10 expected 'abcdef1234 test', got: {}",
@@ -1863,13 +1933,13 @@ abbrev: 10
         let mut commit = ci("feat: test", "feat", "test", "abcdef");
         commit.full_hash = "abcdef1234567890abcdef1234567890abcdef12".to_string();
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![commit],
             subgroups: Vec::new(),
         }];
 
         // abbrev = 0 should show the full SHA (no truncation)
-        let md = render_changelog(&grouped, 0, None, "");
+        let md = render_changelog(&grouped, 0, None, "", "git");
         assert!(
             md.contains("abcdef1234567890abcdef1234567890abcdef12 test"),
             "abbrev=0 should show full SHA, got: {}",
@@ -1909,11 +1979,12 @@ abbrev: 10
         let commits = vec![ci("ci: pipeline fix", "ci", "pipeline fix", "a")];
 
         // Include filter that matches nothing
-        let result = apply_include_filters(&commits, &["^feat".to_string()], &test_logger()).unwrap();
+        let result =
+            apply_include_filters(&commits, &["^feat".to_string()], &test_logger()).unwrap();
         assert!(result.is_empty());
 
         let grouped = group_commits(&result, &[], &test_logger()).unwrap();
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
         assert!(
             md.is_empty(),
             "changelog should be empty when no commits match"
@@ -1982,11 +2053,11 @@ abbrev: 10
         std::env::set_current_dir(&original_dir).unwrap();
         result.unwrap();
 
-        // RELEASE_NOTES.md should be written to the dist directory
-        let notes_path = custom_dist.join("RELEASE_NOTES.md");
+        // CHANGELOG.md should be written to the dist directory
+        let notes_path = custom_dist.join("CHANGELOG.md");
         assert!(
             notes_path.exists(),
-            "RELEASE_NOTES.md should be in the dist directory: {}",
+            "CHANGELOG.md should be in the dist directory: {}",
             custom_dist.display()
         );
     }
@@ -1999,7 +2070,10 @@ abbrev: 10
         // Invalid regex: unclosed group
         let filters = vec!["^feat(".to_string()];
         let result = apply_filters(&commits, &filters, &test_logger());
-        assert!(result.is_err(), "invalid exclude regex should return an error");
+        assert!(
+            result.is_err(),
+            "invalid exclude regex should return an error"
+        );
     }
 
     #[test]
@@ -2007,7 +2081,10 @@ abbrev: 10
         let commits = vec![ci("fix: a bug", "fix", "a bug", "def")];
         let filters = vec!["[invalid".to_string()];
         let result = apply_include_filters(&commits, &filters, &test_logger());
-        assert!(result.is_err(), "invalid include regex should return an error");
+        assert!(
+            result.is_err(),
+            "invalid include regex should return an error"
+        );
     }
 
     #[test]
@@ -2020,7 +2097,10 @@ abbrev: 10
             groups: None,
         }];
         let result = group_commits(&commits, &groups, &test_logger());
-        assert!(result.is_err(), "invalid group regex should return an error");
+        assert!(
+            result.is_err(),
+            "invalid group regex should return an error"
+        );
     }
 
     #[test]
@@ -2043,9 +2123,15 @@ abbrev: 10
             ci("a: first", "other", "first", "2"),
         ];
         let result = sort_commits(&mut commits, "invalid_order");
-        assert!(result.is_err(), "invalid sort direction should return an error");
         assert!(
-            result.unwrap_err().to_string().contains("invalid changelog sort direction"),
+            result.is_err(),
+            "invalid sort direction should return an error"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid changelog sort direction"),
             "error message should mention the invalid direction"
         );
     }
@@ -2053,7 +2139,7 @@ abbrev: 10
     #[test]
     fn test_render_changelog_empty_groups() {
         let grouped: Vec<GroupedCommits> = vec![];
-        let result = render_changelog(&grouped, 7, None, "");
+        let result = render_changelog(&grouped, 7, None, "", "git");
         assert_eq!(
             result, "",
             "rendering empty groups should produce empty string"
@@ -2067,7 +2153,7 @@ abbrev: 10
             commits: vec![ci("feat: x", "feat", "x", "ab")], // shorter than abbrev
             subgroups: Vec::new(),
         }];
-        let result = render_changelog(&grouped, 7, None, "");
+        let result = render_changelog(&grouped, 7, None, "", "git");
         // Short hash should be used as-is without truncation
         assert!(
             result.contains("ab x"),
@@ -2163,11 +2249,11 @@ abbrev: 10
         git(&["add", "."]);
         git(&["commit", "-m", "feat: initial"]);
 
-        // Create the dist dir, then place a directory where RELEASE_NOTES.md
+        // Create the dist dir, then place a directory where CHANGELOG.md
         // would go, so fs::write fails (can't write to a directory path).
         let dist = repo.join("dist");
         std::fs::create_dir_all(&dist).unwrap();
-        let notes_blocker = dist.join("RELEASE_NOTES.md");
+        let notes_blocker = dist.join("CHANGELOG.md");
         std::fs::create_dir_all(&notes_blocker).unwrap();
 
         let config = Config {
@@ -2191,11 +2277,11 @@ abbrev: 10
 
         assert!(
             result.is_err(),
-            "writing RELEASE_NOTES.md where a directory exists should fail"
+            "writing CHANGELOG.md where a directory exists should fail"
         );
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("RELEASE_NOTES") || err.contains("changelog") || err.contains("write"),
+            err.contains("CHANGELOG") || err.contains("changelog") || err.contains("write"),
             "error should mention the write failure context, got: {err}"
         );
     }
@@ -2285,6 +2371,7 @@ abbrev: 10
             7,
             Some("{{ SHA }} {{ Message }} ({{ AuthorName }} <{{ AuthorEmail }}>)"),
             "",
+            "git",
         );
         assert!(
             md.contains(
@@ -2297,7 +2384,7 @@ abbrev: 10
     #[test]
     fn test_default_format_unchanged() {
         let grouped = vec![GroupedCommits {
-            title: "Changes".into(),
+            title: String::new(),
             commits: vec![CommitInfo {
                 raw_message: "fix: bug".into(),
                 kind: "fix".into(),
@@ -2311,7 +2398,7 @@ abbrev: 10
             subgroups: Vec::new(),
         }];
         // Default format: "{{ ShortSHA }} {{ Message }}"
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
         assert!(
             md.contains("- def5678 bug"),
             "default format should be 'ShortSHA Message', got: {md}"
@@ -2394,8 +2481,8 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     fn test_header_footer_template_rendering() {
         // Simulate what ChangelogStage::run does: render header/footer through
         // ctx.render_template() before inserting them.
-        use anodize_core::context::{Context, ContextOptions};
         use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -2415,8 +2502,8 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     #[test]
     fn test_header_with_plain_string_passes_through() {
         // A header without template variables should pass through unchanged.
-        use anodize_core::context::{Context, ContextOptions};
         use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
@@ -2500,9 +2587,7 @@ groups:
         // Second group should have no subgroups
         let fix_group = &groups[1];
         assert_eq!(fix_group.title, "Bug Fixes");
-        assert!(
-            fix_group.groups.is_none() || fix_group.groups.as_ref().unwrap().is_empty()
-        );
+        assert!(fix_group.groups.is_none() || fix_group.groups.as_ref().unwrap().is_empty());
     }
 
     #[test]
@@ -2519,10 +2604,15 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     #[test]
     fn test_render_abbrev_negative_one_omits_hash() {
         let grouped = vec![GroupedCommits::new(
-            "Changes",
-            vec![ci("feat: no hash test", "feat", "no hash test", "abc1234567890")],
+            "",
+            vec![ci(
+                "feat: no hash test",
+                "feat",
+                "no hash test",
+                "abc1234567890",
+            )],
         )];
-        let md = render_changelog(&grouped, -1, None, "");
+        let md = render_changelog(&grouped, -1, None, "", "git");
         // With abbrev=-1, the default format is "{{ Message }}" (no hash)
         assert!(
             md.contains("- no hash test"),
@@ -2537,11 +2627,17 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     #[test]
     fn test_render_abbrev_negative_one_custom_format_empty_short_sha() {
         let grouped = vec![GroupedCommits::new(
-            "Changes",
+            "",
             vec![ci("feat: test", "feat", "test", "abc1234567890")],
         )];
         // Custom format referencing ShortSHA should get an empty string when abbrev=-1
-        let md = render_changelog(&grouped, -1, Some("{{ ShortSHA }}|{{ Message }}"), "");
+        let md = render_changelog(
+            &grouped,
+            -1,
+            Some("{{ ShortSHA }}|{{ Message }}"),
+            "",
+            "git",
+        );
         assert!(
             md.contains("- |test"),
             "ShortSHA should be empty with abbrev=-1, got: {md}"
@@ -2560,11 +2656,16 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
                 ),
                 GroupedCommits::new(
                     "API Features",
-                    vec![ci("feat(api): add endpoint", "feat", "add endpoint", "bbb5678")],
+                    vec![ci(
+                        "feat(api): add endpoint",
+                        "feat",
+                        "add endpoint",
+                        "bbb5678",
+                    )],
                 ),
             ],
         }];
-        let md = render_changelog(&grouped, 7, None, "");
+        let md = render_changelog(&grouped, 7, None, "", "git");
         // Parent group should be ## level
         assert!(
             md.contains("## Features"),
@@ -2624,7 +2725,11 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         assert_eq!(result.len(), 2, "should have Features and Bug Fixes");
         assert_eq!(result[0].title, "Features");
         // Features group distributes commits into subgroups
-        assert_eq!(result[0].subgroups.len(), 3, "should have Core, API, and Others subgroups");
+        assert_eq!(
+            result[0].subgroups.len(),
+            3,
+            "should have Core, API, and Others subgroups"
+        );
         assert_eq!(result[0].subgroups[0].title, "Core");
         assert_eq!(result[0].subgroups[0].commits.len(), 1);
         assert_eq!(result[0].subgroups[1].title, "API");
@@ -2640,7 +2745,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     #[test]
     fn test_render_logins_variable_in_format() {
         let grouped = vec![GroupedCommits::new(
-            "Changes",
+            "",
             vec![CommitInfo {
                 raw_message: "feat: add feature".into(),
                 kind: "feat".into(),
@@ -2657,6 +2762,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
             7,
             Some("{{ ShortSHA }} {{ Message }} cc {{ Logins }}"),
             "alice,bob",
+            "git",
         );
         assert!(
             md.contains("abc1234 add feature cc alice,bob"),
@@ -2676,7 +2782,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     #[test]
     fn test_render_per_commit_login_variable() {
         let grouped = vec![GroupedCommits::new(
-            "Changes",
+            "",
             vec![CommitInfo {
                 raw_message: "feat: add feature".into(),
                 kind: "feat".into(),
@@ -2693,6 +2799,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
             7,
             Some("{{ ShortSHA }} {{ Message }} (@{{ Login }})"),
             "",
+            "git",
         );
         assert!(
             md.contains("abc1234 add feature (@octocat)"),
@@ -2704,12 +2811,9 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     fn test_abbrev_zero_custom_format_shows_full_sha() {
         let mut commit = ci("feat: test", "feat", "test", "abc1234567890");
         commit.full_hash = "abc1234567890def1234567890abc1234567890de".to_string();
-        let grouped = vec![GroupedCommits::new(
-            "Changes",
-            vec![commit],
-        )];
+        let grouped = vec![GroupedCommits::new("", vec![commit])];
         // Custom format referencing ShortSHA should get the full SHA when abbrev=0
-        let md = render_changelog(&grouped, 0, Some("{{ ShortSHA }}|{{ Message }}"), "");
+        let md = render_changelog(&grouped, 0, Some("{{ ShortSHA }}|{{ Message }}"), "", "git");
         assert!(
             md.contains("- abc1234567890def1234567890abc1234567890de|test"),
             "ShortSHA should be full SHA with abbrev=0, got: {md}"

@@ -7,6 +7,21 @@ use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Set a process-level environment variable.
+///
+/// # Safety contract
+///
+/// `std::env::set_var` is unsafe because it mutates global process state that
+/// other threads may be reading concurrently.  This function must ONLY be
+/// called during single-threaded pipeline setup (i.e., inside `setup_env`)
+/// before any worker threads are spawned.  All later stages that need env
+/// values should read from the `Context` template vars or pass them
+/// explicitly via `Command::envs()`.
+fn set_env_var_single_threaded(key: &str, value: &str) {
+    // SAFETY: Caller guarantees no other threads exist yet.
+    unsafe { std::env::set_var(key, value) };
+}
+
 /// Apply a workspace's configuration overlay onto the top-level config.
 ///
 /// - `crates` is always replaced.
@@ -39,7 +54,24 @@ pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
 /// Finds the first selected crate (or the first crate in config), looks up
 /// the latest tag matching its `tag_template`, detects git info, and
 /// populates the context's template variables.
-pub fn resolve_git_context(ctx: &mut Context, config: &Config, log: &StageLogger) {
+pub fn resolve_git_context(
+    ctx: &mut Context,
+    config: &Config,
+    log: &StageLogger,
+) -> anyhow::Result<()> {
+    // Warn on shallow clones where tag discovery may be incomplete.
+    if git::is_shallow_clone() {
+        eprintln!(
+            "WARNING: shallow clone detected; tag discovery may be incomplete. Use `git fetch --unshallow` in CI."
+        );
+    }
+
+    // Allow env var overrides for tag discovery (like GoReleaser's
+    // GORELEASER_CURRENT_TAG / GORELEASER_PREVIOUS_TAG).
+    let tag_override = std::env::var("ANODIZE_CURRENT_TAG")
+        .ok()
+        .filter(|s| !s.is_empty());
+
     let first_crate = ctx
         .options
         .selected_crates
@@ -48,25 +80,120 @@ pub fn resolve_git_context(ctx: &mut Context, config: &Config, log: &StageLogger
         .or_else(|| config.crates.first());
 
     if let Some(crate_cfg) = first_crate {
-        let latest_tag = git::find_latest_tag_matching(&crate_cfg.tag_template)
-            .ok()
-            .flatten();
-        let tag = latest_tag.clone().unwrap_or_else(|| "v0.0.0".to_string());
+        let tag = if let Some(ref override_tag) = tag_override {
+            log.verbose(&format!(
+                "using ANODIZE_CURRENT_TAG override: {}",
+                override_tag
+            ));
+            override_tag.clone()
+        } else {
+            let latest_tag = match git::find_latest_tag_matching(&crate_cfg.tag_template) {
+                Ok(found) => found,
+                Err(e) => {
+                    log.warn(&format!("error finding tags matching template: {e}"));
+                    None
+                }
+            };
+            match latest_tag {
+                Some(t) => t,
+                None => {
+                    if ctx.options.snapshot {
+                        log.warn("no git tags found, defaulting to v0.0.0 (snapshot mode).");
+                        "v0.0.0".to_string()
+                    } else if ctx.options.dry_run {
+                        log.warn("no git tags found, defaulting to v0.0.0 (dry-run mode).");
+                        "v0.0.0".to_string()
+                    } else {
+                        anyhow::bail!("no git tag found; create a tag or use --snapshot");
+                    }
+                }
+            }
+        };
+
+        // Validate HEAD points at the tag (like GoReleaser's ErrWrongRef).
+        // Skip this check for the synthetic v0.0.0 tag since it doesn't exist in git.
+        let is_synthetic_tag = tag == "v0.0.0" && tag_override.is_none();
+        if !is_synthetic_tag {
+            if let Ok(false) = git::tag_points_at_head(&tag) {
+                if !ctx.options.snapshot {
+                    let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
+                    anyhow::bail!(
+                        "tag {} does not point at HEAD ({}). Check out the tag or use --snapshot to skip this check.",
+                        tag,
+                        head
+                    );
+                }
+            }
+        }
 
         match git::detect_git_info(&tag) {
             Ok(mut git_info) => {
-                git_info.previous_tag = latest_tag;
+                // Validate dirty working tree: error in non-snapshot/non-dry-run mode,
+                // matching GoReleaser's CheckDirty behavior.
+                if git_info.dirty && !ctx.options.snapshot {
+                    if ctx.options.dry_run {
+                        log.warn(
+                            "git is in a dirty state; run `git status` to see what changed."
+                        );
+                    } else {
+                        anyhow::bail!(
+                            "git is in a dirty state; run `git status` to see what changed. \
+                             Use --snapshot to force."
+                        );
+                    }
+                }
+
+                // Allow ANODIZE_PREVIOUS_TAG env override for the previous tag.
+                if let Ok(prev_override) = std::env::var("ANODIZE_PREVIOUS_TAG") {
+                    log.verbose(&format!(
+                        "using ANODIZE_PREVIOUS_TAG override: {}",
+                        prev_override
+                    ));
+                    git_info.previous_tag = Some(prev_override);
+                } else {
+                    git_info.previous_tag = git::find_previous_tag(&tag).ok().flatten();
+                }
                 ctx.git_info = Some(git_info);
                 ctx.populate_git_vars();
             }
             Err(e) => {
-                log.warn(&format!("could not detect git info: {e}"));
-                ctx.populate_git_vars();
+                if ctx.options.snapshot {
+                    log.warn(&format!(
+                        "could not detect git info in snapshot mode, using defaults: {e}"
+                    ));
+                    ctx.git_info = Some(git::GitInfo {
+                        tag: tag.clone(),
+                        commit: "none".to_string(),
+                        short_commit: "none".to_string(),
+                        branch: "none".to_string(),
+                        dirty: true,
+                        semver: git::SemVer {
+                            major: 0,
+                            minor: 0,
+                            patch: 0,
+                            prerelease: None,
+                            build_metadata: None,
+                        },
+                        commit_date: String::new(),
+                        commit_timestamp: String::new(),
+                        previous_tag: None,
+                        remote_url: String::new(),
+                        summary: "snapshot".to_string(),
+                        tag_subject: String::new(),
+                        tag_contents: String::new(),
+                        tag_body: String::new(),
+                        first_commit: None,
+                    });
+                    ctx.populate_git_vars();
+                } else {
+                    return Err(anyhow::anyhow!("could not detect git info: {e}"));
+                }
             }
         }
     } else {
         ctx.populate_git_vars();
     }
+    Ok(())
 }
 
 /// Load process environment variables, `.env` files, and user-defined env vars
@@ -99,10 +226,38 @@ pub fn setup_env(
         }
     }
 
-    // Populate user-defined env vars into template context (highest priority)
+    // Populate user-defined env vars into template context (highest priority).
+    // GoReleaser renders env values through the template engine.
     if let Some(ref env_map) = config.env {
         for (key, value) in env_map {
-            ctx.template_vars_mut().set_env(key, value);
+            let rendered = ctx.render_template(value).unwrap_or_else(|_| value.clone());
+            ctx.template_vars_mut().set_env(key, &rendered);
+            // Also set in the process environment so that child processes which
+            // inherit env (docker, lipo, rustup, git, hook scripts) see these
+            // values. Some commands use explicit `.envs()`, but many rely on
+            // process-level inheritance.
+            //
+            // SAFETY: This is called during single-threaded pipeline setup in
+            // `setup_env`, before any worker threads are spawned. No concurrent
+            // readers of the process environment exist at this point.
+            set_env_var_single_threaded(key, &rendered);
+        }
+    }
+
+    // Early token presence check (like GoReleaser's ErrMissingToken in env.go).
+    // Warn if no GitHub token is available and the pipeline will need one.
+    // Don't hard-error — snapshot mode and dry-run can proceed without a token.
+    let has_token = ctx.options.token.is_some()
+        || std::env::var("ANODIZE_GITHUB_TOKEN").is_ok()
+        || std::env::var("GITHUB_TOKEN").is_ok();
+    if !has_token && !ctx.is_snapshot() {
+        let needs_token = config.crates.iter().any(|c| c.release.is_some())
+            && !ctx.should_skip("release");
+        if needs_token {
+            log.warn(
+                "no GitHub token found; release/publish stages may fail. \
+                 Set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN.",
+            );
         }
     }
 
@@ -161,6 +316,7 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", a.kind))?;
         ctx.artifacts.add(Artifact {
             kind,
+            name: String::new(),
             path: std::path::PathBuf::from(&a.path),
             target: a.target,
             crate_name: a.crate_name,

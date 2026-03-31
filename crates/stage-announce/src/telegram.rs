@@ -60,20 +60,19 @@ pub fn send_telegram(
 
     // Telegram can return HTTP 200 with ok:false for logical errors.
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body)
-        && json.get("ok") == Some(&serde_json::Value::Bool(false)) {
-            let error_code = json.get("error_code")
-                .and_then(|v| v.as_i64())
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            let description = json.get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("no description");
-            anyhow::bail!(
-                "telegram: API error (code {}): {}",
-                error_code,
-                description
-            );
-        }
+        && json.get("ok") == Some(&serde_json::Value::Bool(false))
+    {
+        let error_code = json
+            .get("error_code")
+            .and_then(|v| v.as_i64())
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let description = json
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("no description");
+        anyhow::bail!("telegram: API error (code {}): {}", error_code, description);
+    }
 
     Ok(())
 }
@@ -98,8 +97,12 @@ mod tests {
 
     #[test]
     fn test_telegram_payload_with_parse_mode() {
-        let payload =
-            telegram_payload("-100123", "myapp v1.0.0 released!", Some("MarkdownV2"), None);
+        let payload = telegram_payload(
+            "-100123",
+            "myapp v1.0.0 released!",
+            Some("MarkdownV2"),
+            None,
+        );
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["chat_id"], "-100123");
         assert_eq!(json["text"], "myapp v1.0.0 released!");
@@ -115,12 +118,7 @@ mod tests {
 
     #[test]
     fn test_telegram_payload_with_message_thread_id() {
-        let payload = telegram_payload(
-            "-100123",
-            "released!",
-            Some("MarkdownV2"),
-            Some(42),
-        );
+        let payload = telegram_payload("-100123", "released!", Some("MarkdownV2"), Some(42));
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["message_thread_id"], 42);
         assert_eq!(json["parse_mode"], "MarkdownV2");

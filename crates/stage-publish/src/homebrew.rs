@@ -271,7 +271,7 @@ fn generate_cask_from_context(
     {
         let target = macos_artifact.target.as_deref().unwrap_or("");
         let (os, arch) = anodize_core::target::map_target(target);
-        crate::util::render_url_template(tmpl, &macos_artifact.name(), &version, &arch, &os)
+        crate::util::render_url_template(tmpl, macos_artifact.name(), &version, &arch, &os)
     } else {
         macos_artifact
             .metadata
@@ -537,16 +537,28 @@ pub fn generate_formula_with_opts(
     // Ruby class name: GoReleaser-compatible conversion.
     //
     // Rules (from GoReleaser's formulaNameFor):
+    // - Lowercase the entire name first
     // - `+` is replaced with `x`
-    // - `@` is replaced with `AT`
+    // - `@` is replaced with `AT` only when followed by a digit
     // - Split on `-`, `_`, and `.` (all are word separators)
     // - Each segment is Title-cased and joined
     let class_name: String = {
-        let s = name.replace('+', "x");
-        // Replace `@` with `AT` — this keeps `@` as a standalone word or prefix.
-        let s = s.replace('@', "AT");
-        // Split on `-`, `_`, and `.` as word boundaries.
-        s.split(['-', '_', '.'])
+        let name_lower = name.to_lowercase();
+        let s = name_lower.replace('+', "x");
+        // Replace `@` with `AT` only when followed by a digit (e.g., foo@2 -> fooAT2,
+        // but foo@bar stays as foo@bar).
+        let mut at_replaced = String::new();
+        let chars: Vec<char> = s.chars().collect();
+        for (i, ch) in chars.iter().enumerate() {
+            if *ch == '@' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+                at_replaced.push_str("AT");
+            } else {
+                at_replaced.push(*ch);
+            }
+        }
+        // Split on `-`, `_`, `.`, and ` ` as word boundaries (matching GoReleaser).
+        at_replaced
+            .split(['-', '_', '.', ' '])
             .map(|seg| {
                 let mut c = seg.chars();
                 match c.next() {
@@ -573,12 +585,14 @@ pub fn generate_formula_with_opts(
     ctx.insert("description", description);
     ctx.insert("license", license);
 
-    // Homepage: explicit > GitHub owner/repo > bare name fallback.
+    // Homepage: explicit > GitHub owner/repo > empty string.
+    // When no github_slug is available we leave homepage blank rather than
+    // producing a broken URL from the bare crate name.
     let default_homepage = opts
         .github_slug
         .as_deref()
         .map(|slug| format!("https://github.com/{}", slug))
-        .unwrap_or_else(|| format!("https://github.com/{}", name));
+        .unwrap_or_default();
     let homepage = opts.homepage.unwrap_or(&default_homepage);
     ctx.insert("homepage", homepage);
 
@@ -707,6 +721,10 @@ pub fn generate_formula_with_opts(
                 _ => global.push(entry),
             }
         }
+        // GoReleaser sorts dependencies alphabetically in the formula output.
+        global.sort_by(|a, b| a.name.cmp(&b.name));
+        mac.sort_by(|a, b| a.name.cmp(&b.name));
+        linux.sort_by(|a, b| a.name.cmp(&b.name));
         (global, mac, linux)
     } else {
         (Vec::new(), Vec::new(), Vec::new())
@@ -795,12 +813,17 @@ pub fn generate_formula_with_opts(
 
 /// Check whether a `skip_upload` value means "skip this publish".
 ///
+/// The value is first rendered through the template engine so that
+/// expressions like `{{ .Env.SKIP }}` resolve before comparison.
+///
 /// - `"true"` always skips.
 /// - `"auto"` skips when the current version is a prerelease (the `Prerelease`
 ///   template variable is non-empty).
 /// - Anything else (including `None`) does not skip.
 pub(crate) fn should_skip_upload(skip_upload: Option<&str>, ctx: &Context) -> bool {
-    match skip_upload {
+    let rendered =
+        skip_upload.map(|raw| ctx.render_template(raw).unwrap_or_else(|_| raw.to_string()));
+    match rendered.as_deref() {
         Some("true") => true,
         Some("auto") => {
             let pre = ctx
@@ -875,9 +898,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         hb_cfg.tap.as_ref().map(|t| t.owner.as_str()),
         hb_cfg.tap.as_ref().map(|t| t.name.as_str()),
     )
-    .ok_or_else(|| {
-        anyhow::anyhow!("homebrew: no repository/tap config for '{}'", crate_name)
-    })?;
+    .ok_or_else(|| anyhow::anyhow!("homebrew: no repository/tap config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -889,11 +910,18 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
 
     let version = ctx.version();
 
-    let description = hb_cfg
-        .description
-        .clone()
-        .unwrap_or_else(|| crate_name.to_string());
-    let license = hb_cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
+    let description_raw = hb_cfg.description.as_deref().unwrap_or(crate_name);
+    let description = ctx
+        .render_template(description_raw)
+        .unwrap_or_else(|_| description_raw.to_string());
+    let license_raw = hb_cfg.license.as_deref().unwrap_or("MIT");
+    let license = ctx
+        .render_template(license_raw)
+        .unwrap_or_else(|_| license_raw.to_string());
+    let homepage_rendered = hb_cfg
+        .homepage
+        .as_deref()
+        .map(|h| ctx.render_template(h).unwrap_or_else(|_| h.to_string()));
 
     // Build template vars so install/test/extra_install/post_install can use
     // {{ name }} and {{ version }} (GoReleaser parity).
@@ -905,22 +933,23 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         .install
         .clone()
         .unwrap_or_else(|| format!("bin.install \"{}\"", crate_name));
-    let install = template::render(&install_raw, &tmpl_vars)
-        .unwrap_or_else(|_| install_raw.clone());
+    let install =
+        template::render(&install_raw, &tmpl_vars).unwrap_or_else(|_| install_raw.clone());
     let test_raw = hb_cfg
         .test
         .clone()
         .unwrap_or_else(|| format!("system \"#{{bin}}/{}\", \"--version\"", crate_name));
-    let test_block = template::render(&test_raw, &tmpl_vars)
-        .unwrap_or_else(|_| test_raw.clone());
+    let test_block = template::render(&test_raw, &tmpl_vars).unwrap_or_else(|_| test_raw.clone());
 
     // Template-render extra_install and post_install if provided.
-    let extra_install_rendered = hb_cfg.extra_install.as_deref().map(|s| {
-        template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string())
-    });
-    let post_install_rendered = hb_cfg.post_install.as_deref().map(|s| {
-        template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string())
-    });
+    let extra_install_rendered = hb_cfg
+        .extra_install
+        .as_deref()
+        .map(|s| template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string()));
+    let post_install_rendered = hb_cfg
+        .post_install
+        .as_deref()
+        .map(|s| template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string()));
 
     // Derive GitHub slug (owner/repo) for homepage fallback.
     let github_slug = _crate_cfg
@@ -930,7 +959,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         .map(|gh| format!("{}/{}", gh.owner, gh.name));
 
     let opts = FormulaOptions {
-        homepage: hb_cfg.homepage.as_deref(),
+        homepage: homepage_rendered.as_deref(),
         github_slug,
         dependencies: hb_cfg.dependencies.as_deref(),
         conflicts: hb_cfg.conflicts.as_deref(),
@@ -945,12 +974,18 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         service: hb_cfg.service.as_deref(),
     };
 
-    // Collect Archive artifacts for this crate to build the formula entries.
+    // Collect Archive and Binary artifacts for this crate to build the formula entries.
+    // GoReleaser supports both UploadableArchive and UploadableBinary types here.
     // Apply IDs filter if configured.
     let ids_filter = hb_cfg.ids.as_deref();
-    let archive_data: Vec<(String, String, String)> = ctx
+    let mut all_artifacts = ctx
         .artifacts
-        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
+        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name);
+    all_artifacts.extend(
+        ctx.artifacts
+            .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Binary, crate_name),
+    );
+    let archive_data: Vec<(String, String, String)> = all_artifacts
         .iter()
         .filter(|a| {
             if let Some(ids) = ids_filter {
@@ -968,7 +1003,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             // otherwise use the artifact metadata URL (from the release stage).
             let url = if let Some(tmpl) = hb_cfg.url_template.as_deref() {
                 let (os, arch) = anodize_core::target::map_target(target);
-                crate::util::render_url_template(tmpl, &a.name(), &version, &arch, &os)
+                crate::util::render_url_template(tmpl, a.name(), &version, &arch, &os)
             } else {
                 a.metadata.get("url")?.to_string()
             };
@@ -976,13 +1011,35 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             Some((target.to_string(), url, sha256))
         })
         .collect();
+
+    // Check for duplicate OS+Arch combinations — Homebrew formulas support
+    // only one archive per OS/Arch pair.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for (target, _, _) in &archive_data {
+            let (os, arch) = anodize_core::target::map_target(target);
+            let key = format!("{}_{}", os, arch);
+            if !seen.insert(key.clone()) {
+                anyhow::bail!(
+                    "multiple archives found for {}: only one archive per OS/arch combination \
+                     is allowed in Homebrew formulas",
+                    key
+                );
+            }
+        }
+    }
+
     let archives: Vec<(&str, &str, &str)> = archive_data
         .iter()
         .map(|(t, u, s)| (t.as_str(), u.as_str(), s.as_str()))
         .collect();
 
-    // Use name override if set, otherwise crate name.
-    let formula_name = hb_cfg.name.as_deref().unwrap_or(crate_name);
+    // Use name override if set, otherwise crate name; render through template engine.
+    let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
+    let formula_name_rendered = ctx
+        .render_template(formula_name_raw)
+        .unwrap_or_else(|_| formula_name_raw.to_string());
+    let formula_name = formula_name_rendered.as_str();
 
     let formula = generate_formula_with_opts(
         formula_name,
@@ -999,7 +1056,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     let tmp_dir = tempfile::tempdir().context("homebrew: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    let token = crate::util::resolve_repo_token(ctx, hb_cfg.repository.as_ref(), Some("HOMEBREW_TAP_TOKEN"));
+    let token = crate::util::resolve_repo_token(
+        ctx,
+        hb_cfg.repository.as_ref(),
+        Some("HOMEBREW_TAP_TOKEN"),
+    );
     crate::util::clone_repo(
         hb_cfg.repository.as_ref(),
         &repo_owner,
@@ -1038,14 +1099,12 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
 
         let casks_dir = repo_path.join("Casks");
-        std::fs::create_dir_all(&casks_dir).with_context(|| {
-            format!("homebrew cask: create Casks dir {}", casks_dir.display())
-        })?;
+        std::fs::create_dir_all(&casks_dir)
+            .with_context(|| format!("homebrew cask: create Casks dir {}", casks_dir.display()))?;
 
         let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
-        std::fs::write(&cask_path, &cask_result.content).with_context(|| {
-            format!("homebrew cask: write cask file {}", cask_path.display())
-        })?;
+        std::fs::write(&cask_path, &cask_result.content)
+            .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
 
         log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
         cask_path_lossy = Some(cask_path.to_string_lossy().into_owned());
@@ -1278,8 +1337,8 @@ mod tests {
         // Verify desc field
         assert!(formula.contains("  desc \"Release automation for Rust projects\"\n"));
 
-        // Verify homepage
-        assert!(formula.contains("  homepage \"https://github.com/anodize\"\n"));
+        // Verify homepage (no github_slug provided, so fallback is empty string)
+        assert!(formula.contains("  homepage \"\"\n"));
 
         // Verify license
         assert!(formula.contains("  license \"Apache-2.0\"\n"));
@@ -1616,7 +1675,8 @@ mod tests {
     }
 
     #[test]
-    fn test_formula_homepage_fallback_to_github() {
+    fn test_formula_homepage_fallback_no_slug() {
+        // When no homepage and no github_slug, homepage is empty.
         let formula = generate_formula(
             "mytool",
             "1.0.0",
@@ -1626,7 +1686,27 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
         );
-        assert!(formula.contains("homepage \"https://github.com/mytool\""));
+        assert!(formula.contains("homepage \"\""));
+    }
+
+    #[test]
+    fn test_formula_homepage_fallback_with_github_slug() {
+        // When github_slug is set, homepage falls back to owner/repo URL.
+        let opts = FormulaOptions {
+            github_slug: Some("myorg/mytool".to_string()),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(formula.contains("homepage \"https://github.com/myorg/mytool\""));
     }
 
     #[test]
@@ -1700,6 +1780,57 @@ mod tests {
         assert!(formula.contains("on_macos do\n    depends_on \"macos-dep\""));
         // linux dep wrapped in on_linux block
         assert!(formula.contains("on_linux do\n    depends_on \"linux-dep\""));
+    }
+
+    #[test]
+    fn test_formula_dependencies_sorted_alphabetically() {
+        use anodize_core::config::HomebrewDependency;
+        // Provide deps in reverse-alphabetical order; they should be sorted in output.
+        let deps = vec![
+            HomebrewDependency {
+                name: "zlib".to_string(),
+                os: None,
+                dep_type: None,
+                version: None,
+            },
+            HomebrewDependency {
+                name: "autoconf".to_string(),
+                os: None,
+                dep_type: None,
+                version: None,
+            },
+            HomebrewDependency {
+                name: "libgit2".to_string(),
+                os: None,
+                dep_type: None,
+                version: None,
+            },
+        ];
+        let opts = FormulaOptions {
+            dependencies: Some(&deps),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        let autoconf_pos = formula
+            .find("depends_on \"autoconf\"")
+            .expect("autoconf present");
+        let libgit2_pos = formula
+            .find("depends_on \"libgit2\"")
+            .expect("libgit2 present");
+        let zlib_pos = formula.find("depends_on \"zlib\"").expect("zlib present");
+        assert!(
+            autoconf_pos < libgit2_pos && libgit2_pos < zlib_pos,
+            "dependencies should be sorted alphabetically: autoconf < libgit2 < zlib"
+        );
     }
 
     #[test]
@@ -1860,6 +1991,26 @@ mod tests {
     }
 
     #[test]
+    fn test_should_skip_upload_template_rendered() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+        // Set an env variable that resolves to "true" via template.
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set_env("SKIP", "true");
+        // The template {{ .Env.SKIP }} should render to "true" and cause skip.
+        assert!(should_skip_upload(Some("{{ .Env.SKIP }}"), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_template_rendered_false() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set_env("SKIP", "false");
+        assert!(!should_skip_upload(Some("{{ .Env.SKIP }}"), &ctx));
+    }
+
+    #[test]
     fn test_publish_to_homebrew_skip_upload_true() {
         use anodize_core::config::{Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig};
         use anodize_core::context::{Context, ContextOptions};
@@ -1973,12 +2124,7 @@ mod tests {
     #[test]
     fn test_render_commit_msg_invalid_template_fallback() {
         // An invalid Tera template should fall back to the default format.
-        let msg = render_commit_msg(
-            Some("bad {{ unclosed"),
-            "mytool",
-            "1.0.0",
-            "formula",
-        );
+        let msg = render_commit_msg(Some("bad {{ unclosed"), "mytool", "1.0.0", "formula");
         assert_eq!(msg, "chore: update mytool formula to 1.0.0");
     }
 
@@ -2128,10 +2274,7 @@ mod tests {
             "amd64",
             "linux",
         );
-        assert_eq!(
-            url,
-            "https://example.com/mytool/1.2.3/linux-amd64.tar.gz"
-        );
+        assert_eq!(url, "https://example.com/mytool/1.2.3/linux-amd64.tar.gz");
     }
 
     // -----------------------------------------------------------------------
@@ -2386,9 +2529,18 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
         );
-        assert!(!formula.contains("plist_options"), "no plist_options when plist not set");
-        assert!(!formula.contains("def plist"), "no def plist when plist not set");
-        assert!(!formula.contains("service do"), "no service block when service not set");
+        assert!(
+            !formula.contains("plist_options"),
+            "no plist_options when plist not set"
+        );
+        assert!(
+            !formula.contains("def plist"),
+            "no def plist when plist not set"
+        );
+        assert!(
+            !formula.contains("service do"),
+            "no service block when service not set"
+        );
     }
 
     #[test]
@@ -2403,8 +2555,16 @@ mod tests {
             "mytool",
             "1.0.0",
             &[
-                ("darwin-amd64", "https://example.com/mac-amd64.tar.gz", "aaa"),
-                ("linux-amd64", "https://example.com/linux-amd64.tar.gz", "bbb"),
+                (
+                    "darwin-amd64",
+                    "https://example.com/mac-amd64.tar.gz",
+                    "aaa",
+                ),
+                (
+                    "linux-amd64",
+                    "https://example.com/linux-amd64.tar.gz",
+                    "bbb",
+                ),
             ],
             "desc",
             "MIT",
@@ -2517,8 +2677,7 @@ mod tests {
         let cask = generate_cask(&params);
 
         assert!(cask.contains("zap trash: ["));
-        assert!(cask
-            .contains("\"~/Library/Preferences/com.example.MyApp.plist\""));
+        assert!(cask.contains("\"~/Library/Preferences/com.example.MyApp.plist\""));
         assert!(cask.contains("\"~/Library/Caches/com.example.MyApp\""));
     }
 
@@ -2673,15 +2832,12 @@ mod tests {
         assert!(cask.contains("  name \"My Application\"\n"));
         assert!(cask.contains("  desc \"A feature-rich macOS application\"\n"));
         assert!(cask.contains("  app \"MyApp.app\"\n"));
-        assert!(cask
-            .contains("  binary \"MyApp.app/Contents/MacOS/my-cli\"\n"));
+        assert!(cask.contains("  binary \"MyApp.app/Contents/MacOS/my-cli\"\n"));
         assert!(cask.contains("caveats <<~EOS"));
         assert!(cask.contains("Run my-cli init after installing."));
         assert!(cask.contains("uninstall quit: \"com.example.MyApp\""));
         assert!(cask.contains("zap trash: ["));
-        assert!(cask.contains(
-            "\"~/Library/Preferences/com.example.plist\""
-        ));
+        assert!(cask.contains("\"~/Library/Preferences/com.example.plist\""));
         assert!(cask.ends_with("end\n"));
     }
 

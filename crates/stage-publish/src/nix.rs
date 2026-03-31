@@ -177,8 +177,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
     ctx.insert("has_post_install", &!params.post_install_lines.is_empty());
     ctx.insert("post_install_lines", &params.post_install_lines);
 
-    tera.render("nix", &ctx)
-        .expect("nix: render expression")
+    tera.render("nix", &ctx).expect("nix: render expression")
 }
 
 // ---------------------------------------------------------------------------
@@ -538,16 +537,15 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     // Resolve repository config.
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
-        nix_cfg.repository.as_ref(),
-        None,
-        None,
-    )
-    .ok_or_else(|| {
-        anyhow::anyhow!("nix: no repository config for '{}'", crate_name)
-    })?;
+    let (repo_owner, repo_name) =
+        crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref(), None, None)
+            .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
 
-    let name = nix_cfg.name.as_deref().unwrap_or(crate_name);
+    let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
+    let name_rendered = ctx
+        .render_template(name_raw)
+        .unwrap_or_else(|_| name_raw.to_string());
+    let name = name_rendered.as_str();
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -558,8 +556,16 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     let version = ctx.version();
-    let description = nix_cfg.description.as_deref().unwrap_or("");
-    let homepage = nix_cfg.homepage.as_deref().unwrap_or("");
+    let description_raw = nix_cfg.description.as_deref().unwrap_or("");
+    let description_rendered = ctx
+        .render_template(description_raw)
+        .unwrap_or_else(|_| description_raw.to_string());
+    let description = description_rendered.as_str();
+    let homepage_raw = nix_cfg.homepage.as_deref().unwrap_or("");
+    let homepage_rendered = ctx
+        .render_template(homepage_raw)
+        .unwrap_or_else(|_| homepage_raw.to_string());
+    let homepage = homepage_rendered.as_str();
     let license = nix_cfg.license.as_deref().unwrap_or("mit");
 
     // Validate license identifier against known Nix licenses.
@@ -600,13 +606,14 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .collect();
 
     if archives.is_empty() {
-        anyhow::bail!("nix: no Linux/Darwin archive artifacts found for '{}'", crate_name);
+        anyhow::bail!(
+            "nix: no Linux/Darwin archive artifacts found for '{}'",
+            crate_name
+        );
     }
 
     // Check if any archive is a zip (needs unzip dep)
-    let needs_unzip = all_artifacts
-        .iter()
-        .any(|a| a.url.ends_with(".zip"));
+    let needs_unzip = all_artifacts.iter().any(|a| a.url.ends_with(".zip"));
 
     // Check if dependencies are configured (needs makeWrapper)
     let deps = nix_cfg.dependencies.as_deref().unwrap_or(&[]);
@@ -656,15 +663,27 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             // Build lib.makeBinPath argument list with optional platform guards.
             let mut list_parts: Vec<String> = Vec::new();
             if !darwin_deps.is_empty() {
-                let items = darwin_deps.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ");
+                let items = darwin_deps
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 list_parts.push(format!("lib.optionals stdenvNoCC.isDarwin [ {items} ]"));
             }
             if !linux_deps.is_empty() {
-                let items = linux_deps.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ");
+                let items = linux_deps
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 list_parts.push(format!("lib.optionals stdenvNoCC.isLinux [ {items} ]"));
             }
             if !all_os_deps.is_empty() {
-                let items = all_os_deps.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" ");
+                let items = all_os_deps
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
                 list_parts.push(format!("[ {items} ]"));
             }
 
@@ -684,6 +703,23 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .map(|s| s.lines().map(|l| l.to_string()).collect())
         .unwrap_or_default();
 
+    // Determine sourceRoot from the archive config's wrap_in_directory setting.
+    // When an archive wraps contents in a directory, Nix needs to know the
+    // extraction root.  We use a placeholder default name since the exact
+    // archive stem is not available here; the template in wrap_in_directory
+    // is typically a string like "myapp-1.0.0".
+    let source_root = {
+        let wrap_dir = match &_crate_cfg.archives {
+            anodize_core::config::ArchivesConfig::Configs(cfgs) => cfgs.first().and_then(|c| {
+                c.wrap_in_directory
+                    .as_ref()
+                    .and_then(|w| w.directory_name(&format!("{}-{}", name, version)))
+            }),
+            anodize_core::config::ArchivesConfig::Disabled => None,
+        };
+        wrap_dir.unwrap_or_else(|| ".".to_string())
+    };
+
     let nix_expr = generate_nix_expression(&NixParams {
         name,
         version: &version,
@@ -696,7 +732,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         needs_unzip,
         needs_make_wrapper,
         dep_args: &dep_args,
-        source_root: ".",
+        source_root: &source_root,
     });
 
     // Optionally format with alejandra or nixfmt
@@ -746,7 +782,10 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                         log.warn(&format!("nix: {} formatting failed", formatter));
                     }
                 } else {
-                    log.warn(&format!("nix: {} not available, skipping format", formatter));
+                    log.warn(&format!(
+                        "nix: {} not available, skipping format",
+                        formatter
+                    ));
                 }
             }
             _ => {
@@ -763,11 +802,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         &version,
         "package",
     );
-    let commit_opts = util::resolve_commit_opts(
-        nix_cfg.commit_author.as_ref(),
-        None,
-        None,
-    );
+    let commit_opts = util::resolve_commit_opts(nix_cfg.commit_author.as_ref(), None, None);
     let branch = util::resolve_branch(nix_cfg.repository.as_ref());
     util::commit_and_push_with_opts(
         repo_path,
@@ -812,10 +847,22 @@ mod tests {
 
     #[test]
     fn test_nix_system_mapping() {
-        assert_eq!(nix_system("linux", "amd64"), Some("x86_64-linux".to_string()));
-        assert_eq!(nix_system("linux", "arm64"), Some("aarch64-linux".to_string()));
-        assert_eq!(nix_system("darwin", "amd64"), Some("x86_64-darwin".to_string()));
-        assert_eq!(nix_system("darwin", "arm64"), Some("aarch64-darwin".to_string()));
+        assert_eq!(
+            nix_system("linux", "amd64"),
+            Some("x86_64-linux".to_string())
+        );
+        assert_eq!(
+            nix_system("linux", "arm64"),
+            Some("aarch64-linux".to_string())
+        );
+        assert_eq!(
+            nix_system("darwin", "amd64"),
+            Some("x86_64-darwin".to_string())
+        );
+        assert_eq!(
+            nix_system("darwin", "arm64"),
+            Some("aarch64-darwin".to_string())
+        );
         assert_eq!(nix_system("linux", "386"), Some("i686-linux".to_string()));
         assert_eq!(nix_system("windows", "amd64"), None);
     }
@@ -823,8 +870,16 @@ mod tests {
     #[test]
     fn test_generate_nix_expression_basic() {
         let archives = vec![
-            ("x86_64-linux".to_string(), "https://example.com/tool-linux-amd64.tar.gz".to_string(), "abc123".to_string()),
-            ("aarch64-darwin".to_string(), "https://example.com/tool-darwin-arm64.tar.gz".to_string(), "def456".to_string()),
+            (
+                "x86_64-linux".to_string(),
+                "https://example.com/tool-linux-amd64.tar.gz".to_string(),
+                "abc123".to_string(),
+            ),
+            (
+                "aarch64-darwin".to_string(),
+                "https://example.com/tool-darwin-arm64.tar.gz".to_string(),
+                "def456".to_string(),
+            ),
         ];
         let install_lines = vec![
             "mkdir -p $out/bin".to_string(),
@@ -860,9 +915,11 @@ mod tests {
 
     #[test]
     fn test_generate_nix_expression_with_unzip() {
-        let archives = vec![
-            ("x86_64-linux".to_string(), "https://example.com/tool.zip".to_string(), "abc".to_string()),
-        ];
+        let archives = vec![(
+            "x86_64-linux".to_string(),
+            "https://example.com/tool.zip".to_string(),
+            "abc".to_string(),
+        )];
         let install = vec!["mkdir -p $out/bin".to_string()];
 
         let expr = generate_nix_expression(&NixParams {
@@ -885,9 +942,11 @@ mod tests {
 
     #[test]
     fn test_generate_nix_expression_with_post_install() {
-        let archives = vec![
-            ("x86_64-linux".to_string(), "https://example.com/tool.tar.gz".to_string(), "abc".to_string()),
-        ];
+        let archives = vec![(
+            "x86_64-linux".to_string(),
+            "https://example.com/tool.tar.gz".to_string(),
+            "abc".to_string(),
+        )];
         let install = vec!["mkdir -p $out/bin".to_string()];
         let post = vec!["installShellCompletion --bash comp.bash".to_string()];
 
@@ -913,8 +972,16 @@ mod tests {
     #[test]
     fn test_generate_nix_expression_with_deps_uses_make_bin_path() {
         let archives = vec![
-            ("x86_64-linux".to_string(), "https://example.com/tool.tar.gz".to_string(), "abc".to_string()),
-            ("aarch64-darwin".to_string(), "https://example.com/tool-darwin.tar.gz".to_string(), "def".to_string()),
+            (
+                "x86_64-linux".to_string(),
+                "https://example.com/tool.tar.gz".to_string(),
+                "abc".to_string(),
+            ),
+            (
+                "aarch64-darwin".to_string(),
+                "https://example.com/tool-darwin.tar.gz".to_string(),
+                "def".to_string(),
+            ),
         ];
         // Simulate install lines that publish_to_nix would generate with deps.
         let install = vec![
@@ -944,7 +1011,10 @@ mod tests {
         });
 
         // Verify lib.makeBinPath pattern is used (not lib.getBin)
-        assert!(expr.contains("lib.makeBinPath"), "should use lib.makeBinPath");
+        assert!(
+            expr.contains("lib.makeBinPath"),
+            "should use lib.makeBinPath"
+        );
         assert!(!expr.contains("lib.getBin"), "should not use lib.getBin");
         // Verify platform-conditional lists
         assert!(expr.contains("lib.optionals stdenvNoCC.isDarwin [ darwin_dep ]"));
@@ -955,9 +1025,11 @@ mod tests {
 
     #[test]
     fn test_generate_nix_expression_deps_in_native_build_inputs() {
-        let archives = vec![
-            ("x86_64-linux".to_string(), "https://example.com/tool.tar.gz".to_string(), "abc".to_string()),
-        ];
+        let archives = vec![(
+            "x86_64-linux".to_string(),
+            "https://example.com/tool.tar.gz".to_string(),
+            "abc".to_string(),
+        )];
         let install = vec!["mkdir -p $out/bin".to_string()];
         let dep_args = vec!["git".to_string(), "curl".to_string()];
 
@@ -977,22 +1049,36 @@ mod tests {
         });
 
         // Verify dep_args appear in nativeBuildInputs
-        assert!(expr.contains("nativeBuildInputs"), "should have nativeBuildInputs");
+        assert!(
+            expr.contains("nativeBuildInputs"),
+            "should have nativeBuildInputs"
+        );
         // The deps should appear inside the nativeBuildInputs block
         let nbi_start = expr.find("nativeBuildInputs").unwrap();
         let nbi_section = &expr[nbi_start..];
         let bracket_end = nbi_section.find("];").unwrap();
         let nbi_block = &nbi_section[..bracket_end];
-        assert!(nbi_block.contains("git"), "nativeBuildInputs should contain git");
-        assert!(nbi_block.contains("curl"), "nativeBuildInputs should contain curl");
-        assert!(nbi_block.contains("makeWrapper"), "nativeBuildInputs should contain makeWrapper");
+        assert!(
+            nbi_block.contains("git"),
+            "nativeBuildInputs should contain git"
+        );
+        assert!(
+            nbi_block.contains("curl"),
+            "nativeBuildInputs should contain curl"
+        );
+        assert!(
+            nbi_block.contains("makeWrapper"),
+            "nativeBuildInputs should contain makeWrapper"
+        );
     }
 
     #[test]
     fn test_generate_nix_expression_no_rec() {
-        let archives = vec![
-            ("x86_64-linux".to_string(), "https://example.com/tool.tar.gz".to_string(), "abc".to_string()),
-        ];
+        let archives = vec![(
+            "x86_64-linux".to_string(),
+            "https://example.com/tool.tar.gz".to_string(),
+            "abc".to_string(),
+        )];
         let install = vec!["mkdir -p $out/bin".to_string()];
 
         let expr = generate_nix_expression(&NixParams {
@@ -1010,8 +1096,14 @@ mod tests {
             source_root: ".",
         });
 
-        assert!(!expr.contains("mkDerivation rec"), "should not contain 'rec'");
-        assert!(expr.contains("mkDerivation {"), "should contain mkDerivation without rec");
+        assert!(
+            !expr.contains("mkDerivation rec"),
+            "should not contain 'rec'"
+        );
+        assert!(
+            expr.contains("mkDerivation {"),
+            "should contain mkDerivation without rec"
+        );
     }
 
     #[test]
@@ -1042,18 +1134,26 @@ mod tests {
         let result = validate_nix_license("not-a-real-license");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("not-a-real-license"), "error should contain the bad license name");
-        assert!(msg.contains("unknown license"), "error should say unknown license");
+        assert!(
+            msg.contains("not-a-real-license"),
+            "error should contain the bad license name"
+        );
+        assert!(
+            msg.contains("unknown license"),
+            "error should say unknown license"
+        );
     }
 
     #[test]
     fn test_hex_sha256_to_sri_valid() {
         // SHA256 of empty string: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-        let sri = hex_sha256_to_sri(
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        )
-        .unwrap();
-        assert!(sri.starts_with("sha256-"), "SRI hash should start with 'sha256-'");
+        let sri =
+            hex_sha256_to_sri("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                .unwrap();
+        assert!(
+            sri.starts_with("sha256-"),
+            "SRI hash should start with 'sha256-'"
+        );
         assert_eq!(sri, "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
     }
 
@@ -1070,7 +1170,9 @@ mod tests {
 
     #[test]
     fn test_publish_to_nix_dry_run() {
-        use anodize_core::config::{Config, CrateConfig, NixConfig, PublishConfig, RepositoryConfig};
+        use anodize_core::config::{
+            Config, CrateConfig, NixConfig, PublishConfig, RepositoryConfig,
+        };
         use anodize_core::context::{Context, ContextOptions};
         use anodize_core::log::{StageLogger, Verbosity};
 
@@ -1097,7 +1199,13 @@ mod tests {
             ..Default::default()
         };
 
-        let ctx = Context::new(config, ContextOptions { dry_run: true, ..Default::default() });
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
         let log = StageLogger::new("publish", Verbosity::Normal);
         assert!(publish_to_nix(&ctx, "mytool", &log).is_ok());
     }

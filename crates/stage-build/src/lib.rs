@@ -236,23 +236,25 @@ fn detect_cargo_profile(flags: Option<&str>) -> &str {
     // Check for --profile=<name> (equals form)
     for token in &tokens {
         if let Some(name) = token.strip_prefix("--profile=")
-            && !name.is_empty() {
-                return match name {
-                    "dev" => "debug",
-                    _ => name,
-                };
-            }
+            && !name.is_empty()
+        {
+            return match name {
+                "dev" => "debug",
+                _ => name,
+            };
+        }
     }
 
     // Check for --profile <name> (space-separated form)
     for i in 0..tokens.len() {
         if tokens[i] == "--profile"
-            && let Some(&name) = tokens.get(i + 1) {
-                return match name {
-                    "dev" => "debug",
-                    _ => name,
-                };
-            }
+            && let Some(&name) = tokens.get(i + 1)
+        {
+            return match name {
+                "dev" => "debug",
+                _ => name,
+            };
+        }
     }
 
     // Check for --release flag
@@ -373,16 +375,28 @@ fn build_universal_binary(
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "lipo failed for {crate_name}: {}",
-                stderr.trim()
-            );
+            anyhow::bail!("lipo failed for {crate_name}: {}", stderr.trim());
         }
+    }
+
+    // Apply mod_timestamp if configured
+    if let Some(ref ts) = ub.mod_timestamp
+        && !dry_run
+        && out_path.exists()
+    {
+        let rendered_ts = ctx.render_template(ts).unwrap_or_else(|_| ts.clone());
+        let mtime = anodize_core::util::parse_mod_timestamp(&rendered_ts)?;
+        anodize_core::util::set_file_mtime(&out_path, mtime)?;
+        log.verbose(&format!(
+            "applied mod_timestamp={rendered_ts} to {}",
+            out_path.display()
+        ));
     }
 
     // Register the universal binary artifact
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Binary,
+        name: String::new(),
         path: out_path,
         target: Some("darwin-universal".to_string()),
         crate_name: crate_name.to_string(),
@@ -449,8 +463,147 @@ const DEFAULT_TARGETS: &[&str] = &[
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
     "aarch64-unknown-linux-gnu",
 ];
+
+// ---------------------------------------------------------------------------
+// Known Rust target triples (Tier 1 + Tier 2) for validation
+// ---------------------------------------------------------------------------
+
+const KNOWN_TARGETS: &[&str] = &[
+    // Tier 1
+    "aarch64-unknown-linux-gnu",
+    "i686-pc-windows-gnu",
+    "i686-pc-windows-msvc",
+    "i686-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    // Tier 2 with host tools
+    "aarch64-apple-darwin",
+    "aarch64-pc-windows-msvc",
+    "aarch64-unknown-linux-musl",
+    "arm-unknown-linux-gnueabi",
+    "arm-unknown-linux-gnueabihf",
+    "armv7-unknown-linux-gnueabihf",
+    "loongarch64-unknown-linux-gnu",
+    "loongarch64-unknown-linux-musl",
+    "powerpc-unknown-linux-gnu",
+    "powerpc64-unknown-linux-gnu",
+    "powerpc64le-unknown-linux-gnu",
+    "riscv64gc-unknown-linux-gnu",
+    "s390x-unknown-linux-gnu",
+    "x86_64-unknown-freebsd",
+    "x86_64-unknown-illumos",
+    "x86_64-unknown-linux-musl",
+    "x86_64-unknown-netbsd",
+    // Common Tier 2
+    "aarch64-linux-android",
+    "aarch64-unknown-linux-ohos",
+    "armv7-linux-androideabi",
+    "i686-linux-android",
+    "i686-unknown-linux-musl",
+    "thumbv7neon-unknown-linux-gnueabihf",
+    "wasm32-unknown-unknown",
+    "wasm32-wasi",
+    "x86_64-linux-android",
+    "x86_64-apple-ios",
+    "aarch64-apple-ios",
+    "aarch64-apple-ios-sim",
+];
+
+// ---------------------------------------------------------------------------
+// find_workspace_root — walk up from crate path to find workspace Cargo.toml
+// ---------------------------------------------------------------------------
+
+/// Walk up from `crate_path` looking for a `Cargo.toml` that contains a
+/// `[workspace]` section.  Returns the directory containing the workspace
+/// root `Cargo.toml`, or `None` if no workspace root is found.
+fn find_workspace_root(crate_path: &str) -> Option<PathBuf> {
+    let mut dir = std::fs::canonicalize(crate_path).ok()?;
+    // Walk upward from the crate directory
+    loop {
+        let cargo_toml = dir.join("Cargo.toml");
+        if cargo_toml.exists()
+            && let Ok(content) = std::fs::read_to_string(&cargo_toml)
+            && let Ok(doc) = content.parse::<toml_edit::DocumentMut>()
+            && doc.get("workspace").is_some()
+        {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// resolve_binary_path — check both relative target/ and workspace root target/
+// ---------------------------------------------------------------------------
+
+/// Resolve the actual binary path after a build.
+///
+/// Cargo places build artifacts in the workspace root's `target/` directory,
+/// not in per-crate `target/` directories.  When the expected relative path
+/// does not exist, this function tries the workspace root's target directory.
+fn resolve_binary_path(expected: &Path, crate_path: &str) -> PathBuf {
+    if expected.exists() {
+        return expected.to_path_buf();
+    }
+    // Try workspace root target directory
+    if let Some(ws_root) = find_workspace_root(crate_path) {
+        let ws_path = ws_root.join(expected);
+        if ws_path.exists() {
+            return ws_path;
+        }
+    }
+    // Return the original path — the caller will handle the error.
+    expected.to_path_buf()
+}
+
+// ---------------------------------------------------------------------------
+// cargo_target_dir — respect CARGO_TARGET_DIR / CARGO_BUILD_TARGET_DIR env vars
+// ---------------------------------------------------------------------------
+
+/// Return the Cargo target directory.
+///
+/// Checks per-build env vars (from `build.env` config) first, then falls back
+/// to `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR` from the process
+/// environment, and finally defaults to `target`.
+///
+/// The `build_env` parameter carries the per-target env map from config, which
+/// is passed to the cargo Command but also needs to be reflected here so that
+/// the predicted binary path matches where cargo actually writes it.
+fn cargo_target_dir(build_env: Option<&HashMap<String, String>>) -> PathBuf {
+    // Check per-build env vars first — these override process env
+    if let Some(env) = build_env {
+        if let Some(dir) = env.get("CARGO_TARGET_DIR")
+            && !dir.is_empty()
+        {
+            return PathBuf::from(dir);
+        }
+        if let Some(dir) = env.get("CARGO_BUILD_TARGET_DIR")
+            && !dir.is_empty()
+        {
+            return PathBuf::from(dir);
+        }
+    }
+    // Fall back to process environment
+    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+    if let Ok(dir) = std::env::var("CARGO_BUILD_TARGET_DIR")
+        && !dir.is_empty()
+    {
+        return PathBuf::from(dir);
+    }
+    PathBuf::from("target")
+}
 
 // run_hooks is imported from anodize_core::hooks
 
@@ -459,10 +612,17 @@ const DEFAULT_TARGETS: &[&str] = &[
 // ---------------------------------------------------------------------------
 
 fn resolve_reproducible_epoch(commit_timestamp: &str) -> i64 {
-    std::env::var("SOURCE_DATE_EPOCH")
+    let epoch = std::env::var("SOURCE_DATE_EPOCH")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| commit_timestamp.parse::<i64>().unwrap_or(0))
+        .unwrap_or_else(|| commit_timestamp.parse::<i64>().unwrap_or(0));
+    if epoch == 0 {
+        eprintln!(
+            "Warning: [build] reproducible build requested but could not determine epoch \
+             from SOURCE_DATE_EPOCH or CommitTimestamp; mtime will not be set"
+        );
+    }
+    epoch
 }
 
 // ---------------------------------------------------------------------------
@@ -495,9 +655,7 @@ fn resolve_copy_from(
         .by_kind(ArtifactKind::Binary)
         .into_iter()
         .find(|a| {
-            a.target.as_deref() == Some(target)
-                && a.crate_name == crate_name
-                && a.path == *src
+            a.target.as_deref() == Some(target) && a.crate_name == crate_name && a.path == *src
         })
         .map(|a| a.path.clone())
         .unwrap_or_else(|| src.to_path_buf());
@@ -509,6 +667,49 @@ fn resolve_copy_from(
             dst.display()
         )
     })?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ensure_targets_installed — run `rustup target add` for cross-compilation targets
+// ---------------------------------------------------------------------------
+
+/// For each unique non-host target, run `rustup target add` to ensure the
+/// target toolchain is installed. If `rustup` is not available (e.g. when
+/// using cargo-cross or a pre-configured environment), this is silently skipped.
+fn ensure_targets_installed(
+    targets: &[String],
+    log: &anodize_core::log::StageLogger,
+    dry_run: bool,
+) -> Result<()> {
+    let host = anodize_core::partial::detect_host_target().unwrap_or_default();
+    for target in targets {
+        if target == &host {
+            continue;
+        }
+        if dry_run {
+            log.status(&format!("(dry-run) would run: rustup target add {target}"));
+            continue;
+        }
+        let output = Command::new("rustup")
+            .args(["target", "add", target])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                log.verbose(&format!("ensured target installed: {target}"));
+            }
+            Ok(o) => {
+                log.warn(&format!(
+                    "rustup target add {target} failed: {}",
+                    String::from_utf8_lossy(&o.stderr)
+                ));
+            }
+            Err(_) => {
+                log.verbose("rustup not found, skipping target installation");
+                return Ok(()); // If rustup isn't available, skip all
+            }
+        }
+    }
     Ok(())
 }
 
@@ -611,6 +812,10 @@ impl Stage for BuildStage {
             post_hooks: Vec<HookEntry>,
             /// When true, output binaries to flat dist/ instead of dist/{target}/.
             no_unique_dist_dir: bool,
+            /// Crate path (for workspace root resolution).
+            crate_path: String,
+            /// Optional mod_timestamp override for the built binary.
+            mod_timestamp: Option<String>,
         }
 
         /// Result of executing a build job.
@@ -684,14 +889,13 @@ impl Stage for BuildStage {
                 }
 
                 // Render binary name through template engine
-                let binary_name = ctx.render_template(&build.binary)
-                    .unwrap_or_else(|e| {
-                        log.warn(&format!(
-                            "failed to render binary template '{}': {}, using raw value",
-                            build.binary, e
-                        ));
-                        build.binary.clone()
-                    });
+                let binary_name = ctx.render_template(&build.binary).unwrap_or_else(|e| {
+                    log.warn(&format!(
+                        "failed to render binary template '{}': {}, using raw value",
+                        build.binary, e
+                    ));
+                    build.binary.clone()
+                });
 
                 // Targets: per-build override (even if empty), else global defaults.
                 // An explicitly empty list (Some(vec![])) means "skip this build".
@@ -737,6 +941,16 @@ impl Stage for BuildStage {
                         crate_cfg.name, binary_name
                     ));
                     continue;
+                }
+
+                // Validate targets against known list (warn, not error)
+                for target in &targets {
+                    if !KNOWN_TARGETS.contains(&target.as_str()) {
+                        log.warn(&format!(
+                            "target '{}' is not in the known targets list; it may be invalid",
+                            target
+                        ));
+                    }
                 }
 
                 // Strategy: per-crate override, else global default
@@ -812,7 +1026,7 @@ impl Stage for BuildStage {
                     let profile = detect_cargo_profile(effective_flags.as_deref());
 
                     let is_wasm_target = target.contains("wasm32");
-                    let (os, _arch) = map_target(target);
+                    let (os, arch) = map_target(target);
 
                     // Determine the output file name based on target and crate type
                     let (output_name, artifact_kind) = if is_wasm_target && is_wasm_crate {
@@ -840,8 +1054,14 @@ impl Stage for BuildStage {
                         (name, ArtifactKind::Binary)
                     };
 
-                    // Workspace root target directory (not per-crate)
-                    let bin_path = PathBuf::from("target")
+                    // Per-target env from build config (used below for
+                    // cargo_target_dir prediction and later for the Command).
+                    let raw_target_env: Option<&HashMap<String, String>> =
+                        build.env.as_ref().and_then(|m| m.get(target.as_str()));
+
+                    // Workspace root target directory (not per-crate);
+                    // respects per-build CARGO_TARGET_DIR, then process env.
+                    let bin_path = cargo_target_dir(raw_target_env)
                         .join(target)
                         .join(profile)
                         .join(&output_name);
@@ -853,7 +1073,7 @@ impl Stage for BuildStage {
                         } else {
                             src_binary.clone()
                         };
-                        let src_path = PathBuf::from("target")
+                        let src_path = cargo_target_dir(raw_target_env)
                             .join(target)
                             .join(profile)
                             .join(&src_name);
@@ -871,6 +1091,8 @@ impl Stage for BuildStage {
                             pre_hooks: Vec::new(),
                             post_hooks: Vec::new(),
                             no_unique_dist_dir: crate_cfg.no_unique_dist_dir.unwrap_or(false),
+                            crate_path: crate_cfg.path.clone(),
+                            mod_timestamp: build.mod_timestamp.clone(),
                         });
                         continue;
                     }
@@ -882,6 +1104,39 @@ impl Stage for BuildStage {
                         .and_then(|m| m.get(target.as_str()))
                         .cloned()
                         .unwrap_or_default();
+
+                    // Add per-target template variables (Target, Os, Arch) so that
+                    // env value templates can reference them, matching GoReleaser's
+                    // {{ .Target }}, {{ .Os }}, {{ .Arch }} availability.
+                    ctx.template_vars_mut().set("Target", target);
+                    ctx.template_vars_mut().set("Os", &os);
+                    ctx.template_vars_mut().set("Arch", &arch);
+
+                    // Set architecture sub-variant template variables matching
+                    // GoReleaser's Arm, Arm64, Amd64, I386, etc.
+                    let first_component = target.split('-').next().unwrap_or("");
+                    match first_component {
+                        "aarch64" => {
+                            ctx.template_vars_mut().set("Arm64", "v8");
+                        }
+                        "armv7" | "armv7l" => {
+                            ctx.template_vars_mut().set("Arm", "7");
+                        }
+                        "armv6" | "armv6l" | "arm" => {
+                            ctx.template_vars_mut().set("Arm", "6");
+                        }
+                        "x86_64" => {
+                            ctx.template_vars_mut().set("Amd64", "v1");
+                        }
+                        "i686" | "i386" | "i586" => {
+                            ctx.template_vars_mut().set("I386", "sse2");
+                        }
+                        _ => {}
+                    }
+
+                    // Set ArtifactExt based on the target OS
+                    let artifact_ext = if os == "windows" { ".exe" } else { "" };
+                    ctx.template_vars_mut().set("ArtifactExt", artifact_ext);
 
                     // Render env values through template engine
                     let mut rendered_env: HashMap<String, String> = HashMap::new();
@@ -912,6 +1167,17 @@ impl Stage for BuildStage {
                             target_env.insert(k.clone(), rendered_val);
                         }
                     }
+
+                    // Remove per-target template variables to avoid leaking
+                    // to other builds/targets.
+                    ctx.template_vars_mut().set("Target", "");
+                    ctx.template_vars_mut().set("Os", "");
+                    ctx.template_vars_mut().set("Arch", "");
+                    ctx.template_vars_mut().set("Arm64", "");
+                    ctx.template_vars_mut().set("Arm", "");
+                    ctx.template_vars_mut().set("Amd64", "");
+                    ctx.template_vars_mut().set("I386", "");
+                    ctx.template_vars_mut().set("ArtifactExt", "");
 
                     // Reproducible builds: inject SOURCE_DATE_EPOCH and RUSTFLAGS
                     if build.reproducible.unwrap_or(false) {
@@ -970,18 +1236,57 @@ impl Stage for BuildStage {
                         binary_name: binary_name.clone(),
                         build_id: build.id.clone(),
                         reproducible: build.reproducible.unwrap_or(false),
-                        pre_hooks: build.hooks.as_ref().and_then(|h| h.pre.clone()).unwrap_or_default(),
-                        post_hooks: build.hooks.as_ref().and_then(|h| h.post.clone()).unwrap_or_default(),
+                        pre_hooks: build
+                            .hooks
+                            .as_ref()
+                            .and_then(|h| h.pre.clone())
+                            .unwrap_or_default(),
+                        post_hooks: build
+                            .hooks
+                            .as_ref()
+                            .and_then(|h| h.post.clone())
+                            .unwrap_or_default(),
                         no_unique_dist_dir: crate_cfg.no_unique_dist_dir.unwrap_or(false),
+                        crate_path: crate_cfg.path.clone(),
+                        mod_timestamp: build.mod_timestamp.clone(),
                     });
                 }
             }
         }
 
         // -----------------------------------------------------------------
+        // Phase 1.5: Ensure cross-compilation targets are installed via rustup.
+        // -----------------------------------------------------------------
+
+        {
+            let unique_targets: Vec<String> = {
+                let mut seen = std::collections::HashSet::new();
+                build_jobs
+                    .iter()
+                    .filter_map(|j| {
+                        if seen.insert(j.target.clone()) {
+                            Some(j.target.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+            ensure_targets_installed(&unique_targets, &log, dry_run)?;
+        }
+
+        // -----------------------------------------------------------------
         // Phase 2: Execute build jobs (with parallelism) then copy_from jobs.
         // -----------------------------------------------------------------
 
+        // Rust builds sharing the same workspace target/ directory can deadlock
+        // when multiple cargo invocations run in parallel (they contend on
+        // target/ directory locks). GoReleaser explicitly serializes Rust builds
+        // for this reason. Force sequential execution unless the user has only
+        // a single build job.
+        let effective_parallelism = if build_jobs.len() > 1 { 1 } else { parallelism };
+
+        let template_vars = ctx.template_vars().clone();
         let dist_dir = ctx.config.dist.clone();
 
         // Helper: register a build artifact, respecting no_unique_dist_dir.
@@ -990,13 +1295,14 @@ impl Stage for BuildStage {
         // flattened path is registered as the artifact. In dry-run mode, the
         // flat path is registered without actually copying.
         let add_artifact = |ctx: &mut Context,
-                                job_bin_path: &Path,
-                                artifact_kind: ArtifactKind,
-                                target: &str,
-                                crate_name: &str,
-                                binary_name: &str,
-                                build_id: &Option<String>,
-                                no_unique_dist_dir: bool| -> Result<()> {
+                            job_bin_path: &Path,
+                            artifact_kind: ArtifactKind,
+                            target: &str,
+                            crate_name: &str,
+                            binary_name: &str,
+                            build_id: &Option<String>,
+                            no_unique_dist_dir: bool|
+         -> Result<()> {
             ctx.template_vars_mut().set("Binary", binary_name);
             let mut meta = artifact_meta(binary_name, build_id);
 
@@ -1032,6 +1338,7 @@ impl Stage for BuildStage {
 
             ctx.artifacts.add(Artifact {
                 kind: artifact_kind,
+                name: String::new(),
                 path: artifact_path,
                 target: Some(target.to_string()),
                 crate_name: crate_name.to_string(),
@@ -1045,7 +1352,13 @@ impl Stage for BuildStage {
             for job in build_jobs.iter().chain(copy_jobs.iter()) {
                 // Log pre-hooks (dry-run)
                 if !job.pre_hooks.is_empty() {
-                    run_hooks(&job.pre_hooks, "pre-build", true, &log)?;
+                    run_hooks(
+                        &job.pre_hooks,
+                        "pre-build",
+                        true,
+                        &log,
+                        Some(&template_vars),
+                    )?;
                 }
                 if let Some(ref cmd) = job.cmd {
                     log.status(&format!("(dry-run) {} {}", cmd.program, cmd.args.join(" ")));
@@ -1058,7 +1371,13 @@ impl Stage for BuildStage {
                 }
                 // Log post-hooks (dry-run)
                 if !job.post_hooks.is_empty() {
-                    run_hooks(&job.post_hooks, "post-build", true, &log)?;
+                    run_hooks(
+                        &job.post_hooks,
+                        "post-build",
+                        true,
+                        &log,
+                        Some(&template_vars),
+                    )?;
                 }
                 add_artifact(
                     ctx,
@@ -1071,12 +1390,18 @@ impl Stage for BuildStage {
                     job.no_unique_dist_dir,
                 )?;
             }
-        } else if parallelism <= 1 || build_jobs.len() <= 1 {
+        } else if effective_parallelism <= 1 || build_jobs.len() <= 1 {
             // Sequential execution (parallelism == 1 or single job).
             for job in &build_jobs {
                 // Execute pre-build hooks
                 if !job.pre_hooks.is_empty() {
-                    run_hooks(&job.pre_hooks, "pre-build", false, &log)?;
+                    run_hooks(
+                        &job.pre_hooks,
+                        "pre-build",
+                        false,
+                        &log,
+                        Some(&template_vars),
+                    )?;
                 }
 
                 let cmd = job.cmd.as_ref().unwrap();
@@ -1089,22 +1414,54 @@ impl Stage for BuildStage {
                     .with_context(|| format!("failed to spawn {}", cmd.program))?;
                 log.check_output(output, &cmd.program)?;
 
+                // Resolve the binary path — try workspace root if not at
+                // the expected relative location.
+                let resolved_bin = resolve_binary_path(&job.bin_path, &job.crate_path);
+
+                // Verify the binary was actually produced
+                if !resolved_bin.exists() {
+                    anyhow::bail!(
+                        "build succeeded but binary not found at {} (also checked workspace root): \
+                         check that the binary name matches your Cargo.toml [bin] section",
+                        job.bin_path.display()
+                    );
+                }
+
                 // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
-                if job.reproducible && job.bin_path.exists() {
+                if job.reproducible && resolved_bin.exists() {
                     let epoch = resolve_reproducible_epoch(&commit_timestamp);
                     if epoch > 0 {
-                        set_file_mtime(&job.bin_path, epoch)?;
+                        set_file_mtime(&resolved_bin, epoch)?;
                     }
+                }
+
+                // Apply mod_timestamp if configured (overrides reproducible mtime)
+                if let Some(ref ts) = job.mod_timestamp
+                    && resolved_bin.exists()
+                {
+                    let rendered_ts = ctx.render_template(ts).unwrap_or_else(|_| ts.clone());
+                    let mtime = anodize_core::util::parse_mod_timestamp(&rendered_ts)?;
+                    anodize_core::util::set_file_mtime(&resolved_bin, mtime)?;
+                    log.verbose(&format!(
+                        "applied mod_timestamp={rendered_ts} to {}",
+                        resolved_bin.display()
+                    ));
                 }
 
                 // Execute post-build hooks
                 if !job.post_hooks.is_empty() {
-                    run_hooks(&job.post_hooks, "post-build", false, &log)?;
+                    run_hooks(
+                        &job.post_hooks,
+                        "post-build",
+                        false,
+                        &log,
+                        Some(&template_vars),
+                    )?;
                 }
 
                 add_artifact(
                     ctx,
-                    &job.bin_path,
+                    &resolved_bin,
                     job.artifact_kind,
                     &job.target,
                     &job.crate_name,
@@ -1136,10 +1493,10 @@ impl Stage for BuildStage {
             log.status(&format!(
                 "building {} jobs with parallelism={}",
                 build_jobs.len(),
-                parallelism
+                effective_parallelism
             ));
 
-            for chunk in build_jobs.chunks(parallelism) {
+            for chunk in build_jobs.chunks(effective_parallelism) {
                 // Each chunk runs in parallel via thread::scope.
                 // Pre/post hooks run inside each thread so they properly bracket
                 // their specific build, matching the sequential path's semantics.
@@ -1160,16 +1517,19 @@ impl Stage for BuildStage {
                             let build_id = job.build_id.clone();
                             let reproducible = job.reproducible;
                             let no_unique_dist_dir = job.no_unique_dist_dir;
+                            let job_crate_path = job.crate_path.clone();
                             let commit_ts = commit_timestamp.clone();
                             let pre_hooks = job.pre_hooks.clone();
                             let post_hooks = job.post_hooks.clone();
+                            let job_mod_timestamp = job.mod_timestamp.clone();
+                            let thread_tvars = template_vars.clone();
                             // StageLogger is not Clone, so create a fresh one per thread
                             let thread_log = anodize_core::log::StageLogger::new("build", log.verbosity());
 
                             s.spawn(move || -> Result<BuildResult> {
                                 // Execute pre-build hooks before compilation
                                 if !pre_hooks.is_empty() {
-                                    run_hooks(&pre_hooks, "pre-build", false, &thread_log)?;
+                                    run_hooks(&pre_hooks, "pre-build", false, &thread_log, Some(&thread_tvars))?;
                                 }
 
                                 let output = Command::new(&program)
@@ -1196,6 +1556,19 @@ impl Stage for BuildStage {
                                     anyhow::bail!("{}", msg);
                                 }
 
+                                // Resolve the binary path — try workspace root
+                                // if not at the expected relative location.
+                                let bin_path = resolve_binary_path(&bin_path, &job_crate_path);
+
+                                // Verify the binary was actually produced
+                                if !bin_path.exists() {
+                                    anyhow::bail!(
+                                        "build succeeded but binary not found at {} (also checked workspace root): \
+                                         check that the binary name matches your Cargo.toml [bin] section",
+                                        bin_path.display()
+                                    );
+                                }
+
                                 // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
                                 if reproducible && bin_path.exists() {
                                     let epoch = resolve_reproducible_epoch(&commit_ts);
@@ -1204,9 +1577,25 @@ impl Stage for BuildStage {
                                     }
                                 }
 
+                                // Apply mod_timestamp if configured (overrides reproducible mtime)
+                                if let Some(ref ts) = job_mod_timestamp
+                                    && bin_path.exists()
+                                {
+                                    // Thread context doesn't have ctx for template rendering,
+                                    // so render using Tera directly with thread-local vars.
+                                    let rendered_ts = anodize_core::template::render(ts, &thread_tvars)
+                                        .unwrap_or_else(|_| ts.clone());
+                                    let mtime = anodize_core::util::parse_mod_timestamp(&rendered_ts)?;
+                                    anodize_core::util::set_file_mtime(&bin_path, mtime)?;
+                                    thread_log.verbose(&format!(
+                                        "applied mod_timestamp={rendered_ts} to {}",
+                                        bin_path.display()
+                                    ));
+                                }
+
                                 // Execute post-build hooks after compilation
                                 if !post_hooks.is_empty() {
-                                    run_hooks(&post_hooks, "post-build", false, &thread_log)?;
+                                    run_hooks(&post_hooks, "post-build", false, &thread_log, Some(&thread_tvars))?;
                                 }
 
                                 Ok(BuildResult {
@@ -1291,6 +1680,7 @@ impl Stage for BuildStage {
 mod tests {
     use super::*;
     use anodize_core::log::{StageLogger, Verbosity};
+    use serial_test::serial;
 
     fn test_logger() -> StageLogger {
         StageLogger::new("build", Verbosity::Normal)
@@ -1871,6 +2261,7 @@ crate_type = ["dylib"]
         );
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path,
             target: Some(target.to_string()),
             crate_name: crate_name.to_string(),
@@ -1894,6 +2285,8 @@ crate_type = ["dylib"]
                 name_template: None,
                 replace: None,
                 ids: None,
+                hooks: None,
+                mod_timestamp: None,
             }]),
             ..Default::default()
         });
@@ -1924,6 +2317,8 @@ crate_type = ["dylib"]
                 name_template: None,
                 replace: None,
                 ids: None,
+                hooks: None,
+                mod_timestamp: None,
             },
             &mut ctx,
             true, // dry_run
@@ -1979,6 +2374,8 @@ crate_type = ["dylib"]
             name_template: Some("{{ .ProjectName }}-universal".to_string()),
             replace: None,
             ids: None,
+            hooks: None,
+            mod_timestamp: None,
         };
 
         let result = build_universal_binary("myapp", &ub, &mut ctx, true);
@@ -2026,6 +2423,8 @@ crate_type = ["dylib"]
             name_template: None,
             replace: None,
             ids: None,
+            hooks: None,
+            mod_timestamp: None,
         };
 
         let result = build_universal_binary("myapp", &ub, &mut ctx, true);
@@ -2075,6 +2474,8 @@ crate_type = ["dylib"]
             name_template: None,
             replace: None,
             ids: None,
+            hooks: None,
+            mod_timestamp: None,
         };
 
         // Ask for "myapp" universal — should be skipped since myapp has no arch binaries
@@ -2123,6 +2524,8 @@ crate_type = ["dylib"]
             name_template: None,
             replace: None,
             ids: None,
+            hooks: None,
+            mod_timestamp: None,
         };
 
         build_universal_binary("myapp", &ub, &mut ctx, true).unwrap();
@@ -2330,13 +2733,129 @@ crate_type = ["dylib"]
     // ---- Fix 5: DEFAULT_TARGETS const test ----
 
     #[test]
-    fn test_default_targets_has_five_entries() {
-        assert_eq!(DEFAULT_TARGETS.len(), 5);
+    fn test_default_targets_has_six_entries() {
+        assert_eq!(DEFAULT_TARGETS.len(), 6);
         assert!(DEFAULT_TARGETS.contains(&"x86_64-unknown-linux-gnu"));
         assert!(DEFAULT_TARGETS.contains(&"x86_64-apple-darwin"));
         assert!(DEFAULT_TARGETS.contains(&"aarch64-apple-darwin"));
         assert!(DEFAULT_TARGETS.contains(&"x86_64-pc-windows-msvc"));
+        assert!(DEFAULT_TARGETS.contains(&"aarch64-pc-windows-msvc"));
         assert!(DEFAULT_TARGETS.contains(&"aarch64-unknown-linux-gnu"));
+    }
+
+    // ---- cargo_target_dir tests ----
+    //
+    // NOTE: These tests manipulate process-wide env vars, which is inherently
+    // racy with other tests. We save/restore the original values and run
+    // serially via unique test names (cargo test runs each #[test] in its own
+    // thread but the env is shared). The save/restore pattern minimises
+    // interference.
+
+    /// SAFETY: `set_var` / `remove_var` are unsafe in edition 2024 because
+    /// they mutate process-wide state. These test helpers are only called
+    /// from single-threaded test bodies.
+    fn with_clean_target_env<F: FnOnce()>(f: F) {
+        let saved1 = std::env::var("CARGO_TARGET_DIR").ok();
+        let saved2 = std::env::var("CARGO_BUILD_TARGET_DIR").ok();
+        // SAFETY: test-only, env mutation is intentional
+        unsafe {
+            std::env::remove_var("CARGO_TARGET_DIR");
+            std::env::remove_var("CARGO_BUILD_TARGET_DIR");
+        }
+        f();
+        // Restore
+        unsafe {
+            match saved1 {
+                Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
+                None => std::env::remove_var("CARGO_TARGET_DIR"),
+            }
+            match saved2 {
+                Some(v) => std::env::set_var("CARGO_BUILD_TARGET_DIR", v),
+                None => std::env::remove_var("CARGO_BUILD_TARGET_DIR"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_cargo_target_dir_default() {
+        with_clean_target_env(|| {
+            assert_eq!(cargo_target_dir(None), PathBuf::from("target"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_cargo_target_dir_from_env() {
+        with_clean_target_env(|| {
+            // SAFETY: test-only env mutation
+            unsafe { std::env::set_var("CARGO_TARGET_DIR", "/tmp/my-target") };
+            assert_eq!(cargo_target_dir(None), PathBuf::from("/tmp/my-target"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_cargo_target_dir_empty_falls_through() {
+        with_clean_target_env(|| {
+            // SAFETY: test-only env mutation
+            unsafe { std::env::set_var("CARGO_TARGET_DIR", "") };
+            assert_eq!(cargo_target_dir(None), PathBuf::from("target"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_cargo_build_target_dir_fallback() {
+        with_clean_target_env(|| {
+            // SAFETY: test-only env mutation
+            unsafe { std::env::set_var("CARGO_BUILD_TARGET_DIR", "/tmp/build-target") };
+            assert_eq!(cargo_target_dir(None), PathBuf::from("/tmp/build-target"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_cargo_target_dir_takes_precedence() {
+        with_clean_target_env(|| {
+            // SAFETY: test-only env mutation
+            unsafe {
+                std::env::set_var("CARGO_TARGET_DIR", "/tmp/primary");
+                std::env::set_var("CARGO_BUILD_TARGET_DIR", "/tmp/secondary");
+            }
+            assert_eq!(cargo_target_dir(None), PathBuf::from("/tmp/primary"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_cargo_target_dir_from_build_env() {
+        with_clean_target_env(|| {
+            let mut env = HashMap::new();
+            env.insert(
+                "CARGO_TARGET_DIR".to_string(),
+                "/tmp/build-env-target".to_string(),
+            );
+            assert_eq!(
+                cargo_target_dir(Some(&env)),
+                PathBuf::from("/tmp/build-env-target")
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_cargo_target_dir_build_env_overrides_process_env() {
+        with_clean_target_env(|| {
+            // SAFETY: test-only env mutation
+            unsafe { std::env::set_var("CARGO_TARGET_DIR", "/tmp/process-env") };
+            let mut env = HashMap::new();
+            env.insert("CARGO_TARGET_DIR".to_string(), "/tmp/build-env".to_string());
+            assert_eq!(
+                cargo_target_dir(Some(&env)),
+                PathBuf::from("/tmp/build-env")
+            );
+        });
     }
 
     // ---- Fix 5: resolve_build_program tests ----

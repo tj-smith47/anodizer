@@ -3,7 +3,7 @@ use crate::pipeline;
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::log::{StageLogger, Verbosity};
 use anodize_core::stage::Stage;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 
 pub struct BuildOpts {
@@ -15,6 +15,7 @@ pub struct BuildOpts {
     pub parallelism: usize,
     pub single_target: Option<String>,
     pub workspace: Option<String>,
+    pub output: Option<PathBuf>,
 }
 
 pub fn run(opts: BuildOpts) -> Result<()> {
@@ -37,6 +38,9 @@ pub fn run(opts: BuildOpts) -> Result<()> {
 
     log.status("building (snapshot)");
 
+    let has_single_target = opts.single_target.is_some();
+    let output_path = opts.output;
+
     let ctx_opts = ContextOptions {
         snapshot: true, // build command always runs in snapshot mode
         quiet: opts.quiet,
@@ -55,7 +59,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     helpers::setup_env(&mut ctx, &config, &log)?;
 
     // Resolve git info
-    helpers::resolve_git_context(&mut ctx, &config, &log);
+    helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
     // Run build stage
     let build_stage = anodize_stage_build::BuildStage;
@@ -66,6 +70,53 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     let upx_stage = anodize_stage_upx::UpxStage;
     log.verbose("running upx stage");
     upx_stage.run(&mut ctx)?;
+
+    // --output: copy the built binary to the specified path
+    if let Some(ref output_path) = output_path {
+        if !has_single_target {
+            anyhow::bail!("--output requires --single-target (only one binary can be copied)");
+        }
+
+        // Find the single binary artifact
+        let binaries: Vec<_> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == anodize_core::artifact::ArtifactKind::Binary)
+            .collect();
+
+        if binaries.is_empty() {
+            anyhow::bail!("--output: no binary artifacts found after build");
+        }
+        if binaries.len() > 1 {
+            anyhow::bail!(
+                "--output: found {} binary artifacts; use --crate to select a single crate",
+                binaries.len()
+            );
+        }
+
+        let binary = &binaries[0];
+        let dest = if output_path.to_string_lossy() == "." {
+            // "." means use the binary's filename in the current directory
+            PathBuf::from(
+                binary
+                    .path
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("binary has no filename"))?,
+            )
+        } else {
+            output_path.clone()
+        };
+
+        std::fs::copy(&binary.path, &dest).with_context(|| {
+            format!(
+                "failed to copy binary from {} to {}",
+                binary.path.display(),
+                dest.display()
+            )
+        })?;
+        log.status(&format!("copied binary to {}", dest.display()));
+    }
 
     log.status("build complete");
     Ok(())
@@ -79,7 +130,6 @@ mod tests {
     fn test_build_opts_defaults() {
         let opts = BuildOpts {
             crate_names: vec![],
-
             config_override: None,
             verbose: false,
             debug: false,
@@ -87,6 +137,7 @@ mod tests {
             parallelism: 4,
             single_target: None,
             workspace: None,
+            output: None,
         };
         assert_eq!(opts.parallelism, 4);
         assert!(opts.single_target.is_none());
@@ -105,6 +156,7 @@ mod tests {
             parallelism: 2,
             single_target: Some("x86_64-unknown-linux-gnu".to_string()),
             workspace: None,
+            output: None,
         };
         assert_eq!(
             opts.single_target.as_deref(),
@@ -116,7 +168,6 @@ mod tests {
     fn test_build_opts_with_workspace() {
         let opts = BuildOpts {
             crate_names: vec![],
-
             config_override: None,
             verbose: false,
             debug: false,
@@ -124,6 +175,7 @@ mod tests {
             parallelism: 4,
             single_target: None,
             workspace: Some("frontend".to_string()),
+            output: None,
         };
         assert_eq!(opts.workspace.as_deref(), Some("frontend"));
     }

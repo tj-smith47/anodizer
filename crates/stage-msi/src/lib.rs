@@ -190,6 +190,7 @@ fn make_msi_artifact(
 
     Artifact {
         kind: ArtifactKind::Installer,
+        name: String::new(),
         path: msi_path,
         target: target.clone(),
         crate_name: crate_name.to_string(),
@@ -719,6 +720,7 @@ mod tests {
         // Register a Windows binary artifact so the stage picks it up
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -788,6 +790,7 @@ mod tests {
         // Register a Windows binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("aarch64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -841,6 +844,7 @@ mod tests {
         // Register a Windows binary so the stage doesn't skip before wxs check
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -997,6 +1001,7 @@ crates:
         // Register a Windows binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1075,6 +1080,7 @@ crates:
         // Register a Windows binary and a corresponding archive
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1082,6 +1088,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/myapp_1.0.0_windows_amd64.zip"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1195,6 +1202,7 @@ crates:
         // Register two Windows binaries with different ids
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp-amd64.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1202,6 +1210,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp-arm64.exe"),
             target: Some("aarch64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1262,6 +1271,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1321,6 +1331,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1393,6 +1404,7 @@ crates:
         // Add a Windows binary artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp.exe"),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1515,6 +1527,7 @@ crates:
         let binary_path_str = "dist/myapp.exe";
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from(binary_path_str),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),

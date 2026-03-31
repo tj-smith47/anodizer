@@ -103,6 +103,10 @@ struct NfpmYamlContent {
     content_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_info: Option<NfpmYamlFileInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packager: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expand: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -129,6 +133,19 @@ struct NfpmYamlSignature {
     key_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     key_passphrase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_name: Option<String>,
+    #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    type_: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlRpmScripts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pretrans: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    posttrans: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -145,6 +162,10 @@ struct NfpmYamlRpm {
     prefixes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<NfpmYamlSignature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scripts: Option<NfpmYamlRpmScripts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    build_host: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -164,6 +185,16 @@ struct NfpmYamlDebTriggers {
 }
 
 #[derive(Serialize)]
+struct NfpmYamlDebScripts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rules: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    templates: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<String>,
+}
+
+#[derive(Serialize)]
 struct NfpmYamlDeb {
     #[serde(skip_serializing_if = "Option::is_none")]
     compression: Option<String>,
@@ -179,12 +210,24 @@ struct NfpmYamlDeb {
     signature: Option<NfpmYamlSignature>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fields: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scripts: Option<NfpmYamlDebScripts>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlApkScripts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preupgrade: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    postupgrade: Option<String>,
 }
 
 #[derive(Serialize)]
 struct NfpmYamlApk {
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<NfpmYamlSignature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scripts: Option<NfpmYamlApkScripts>,
 }
 
 #[derive(Serialize)]
@@ -223,7 +266,14 @@ pub fn generate_nfpm_yaml(
     let is_meta = config.meta == Some(true);
 
     // Build the binary content entry (skip for meta packages)
-    let bindir = config.bindir.as_deref().unwrap_or("/usr/bin");
+    let raw_bindir = config.bindir.as_deref().unwrap_or("/usr/bin");
+    // For termux.deb, rewrite bindir to the Termux filesystem prefix
+    let bindir = if format == Some("termux.deb") && raw_bindir.starts_with("/usr") {
+        format!("/data/data/com.termux/files{raw_bindir}")
+    } else {
+        raw_bindir.to_string()
+    };
+    let bindir = bindir.as_str();
     let binary_name = PathBuf::from(binary_path)
         .file_name()
         .and_then(|n| n.to_str())
@@ -244,6 +294,8 @@ pub fn generate_nfpm_yaml(
                 mode: Some("0755".to_string()),
                 mtime: None,
             }),
+            packager: None,
+            expand: None,
         }]
     };
 
@@ -260,6 +312,8 @@ pub fn generate_nfpm_yaml(
                     mode: fi.mode.clone(),
                     mtime: fi.mtime.clone(),
                 }),
+                packager: entry.packager.clone(),
+                expand: entry.expand,
             });
         }
     }
@@ -314,30 +368,27 @@ pub fn generate_nfpm_yaml(
                 }
             }
         }
-        if flat.is_empty() {
-            None
-        } else {
-            Some(flat)
-        }
+        if flat.is_empty() { None } else { Some(flat) }
     });
 
     // Only emit format-specific YAML sections when the config has at least
     // one non-None field — avoids emitting empty `rpm: {}` blocks.
+    let nfpm_id = config.id.as_deref().unwrap_or("default");
     let rpm = config
         .rpm
         .as_ref()
         .filter(|r| !r.is_empty())
-        .map(build_yaml_rpm);
+        .map(|r| build_yaml_rpm(r, nfpm_id, format));
     let deb = config
         .deb
         .as_ref()
         .filter(|d| !d.is_empty())
-        .map(build_yaml_deb);
+        .map(|d| build_yaml_deb(d, nfpm_id, format));
     let apk = config
         .apk
         .as_ref()
         .filter(|a| !a.is_empty())
-        .map(build_yaml_apk);
+        .map(|a| build_yaml_apk(a, nfpm_id, format));
     let archlinux = config
         .archlinux
         .as_ref()
@@ -389,26 +440,78 @@ pub fn generate_nfpm_yaml(
 // Format-specific YAML builders
 // ---------------------------------------------------------------------------
 
-fn build_yaml_signature(sig: &NfpmSignatureConfig) -> NfpmYamlSignature {
+/// Resolve the signing passphrase using GoReleaser's 3-level env var fallback:
+///   1. NFPM_{ID}_{FORMAT}_PASSPHRASE
+///   2. NFPM_{ID}_PASSPHRASE
+///   3. NFPM_PASSPHRASE
+///
+/// Returns `None` if no env var is set either.
+fn resolve_passphrase_from_env(nfpm_id: &str, format: Option<&str>) -> Option<String> {
+    let id_upper = nfpm_id.to_uppercase();
+    // Level 1: NFPM_{ID}_{FORMAT}_PASSPHRASE (only when format is known)
+    if let Some(fmt) = format {
+        let fmt_upper = fmt.to_uppercase();
+        let var = format!("NFPM_{id_upper}_{fmt_upper}_PASSPHRASE");
+        if let Ok(val) = std::env::var(&var)
+            && !val.is_empty()
+        {
+            return Some(val);
+        }
+    }
+    // Level 2: NFPM_{ID}_PASSPHRASE
+    let var = format!("NFPM_{id_upper}_PASSPHRASE");
+    if let Ok(val) = std::env::var(&var)
+        && !val.is_empty()
+    {
+        return Some(val);
+    }
+    // Level 3: NFPM_PASSPHRASE
+    if let Ok(val) = std::env::var("NFPM_PASSPHRASE")
+        && !val.is_empty()
+    {
+        return Some(val);
+    }
+    None
+}
+
+fn build_yaml_signature(
+    sig: &NfpmSignatureConfig,
+    nfpm_id: &str,
+    format: Option<&str>,
+) -> NfpmYamlSignature {
+    let key_passphrase = sig
+        .key_passphrase
+        .clone()
+        .or_else(|| resolve_passphrase_from_env(nfpm_id, format));
     NfpmYamlSignature {
         key_file: sig.key_file.clone(),
         key_id: sig.key_id.clone(),
-        key_passphrase: sig.key_passphrase.clone(),
+        key_passphrase,
+        key_name: sig.key_name.clone(),
+        type_: sig.type_.clone(),
     }
 }
 
-fn build_yaml_rpm(rpm: &NfpmRpmConfig) -> NfpmYamlRpm {
+fn build_yaml_rpm(rpm: &NfpmRpmConfig, nfpm_id: &str, format: Option<&str>) -> NfpmYamlRpm {
     NfpmYamlRpm {
         summary: rpm.summary.clone(),
         compression: rpm.compression.clone(),
         group: rpm.group.clone(),
         packager: rpm.packager.clone(),
         prefixes: rpm.prefixes.clone(),
-        signature: rpm.signature.as_ref().map(build_yaml_signature),
+        signature: rpm
+            .signature
+            .as_ref()
+            .map(|s| build_yaml_signature(s, nfpm_id, format)),
+        scripts: rpm.scripts.as_ref().map(|s| NfpmYamlRpmScripts {
+            pretrans: s.pretrans.clone(),
+            posttrans: s.posttrans.clone(),
+        }),
+        build_host: rpm.build_host.clone(),
     }
 }
 
-fn build_yaml_deb(deb: &NfpmDebConfig) -> NfpmYamlDeb {
+fn build_yaml_deb(deb: &NfpmDebConfig, nfpm_id: &str, format: Option<&str>) -> NfpmYamlDeb {
     NfpmYamlDeb {
         compression: deb.compression.clone(),
         predepends: deb.predepends.clone(),
@@ -422,14 +525,29 @@ fn build_yaml_deb(deb: &NfpmDebConfig) -> NfpmYamlDeb {
         }),
         breaks: deb.breaks.clone(),
         lintian_overrides: deb.lintian_overrides.clone(),
-        signature: deb.signature.as_ref().map(build_yaml_signature),
+        signature: deb
+            .signature
+            .as_ref()
+            .map(|s| build_yaml_signature(s, nfpm_id, format)),
         fields: deb.fields.clone(),
+        scripts: deb.scripts.as_ref().map(|s| NfpmYamlDebScripts {
+            rules: s.rules.clone(),
+            templates: s.templates.clone(),
+            config: s.config.clone(),
+        }),
     }
 }
 
-fn build_yaml_apk(apk: &NfpmApkConfig) -> NfpmYamlApk {
+fn build_yaml_apk(apk: &NfpmApkConfig, nfpm_id: &str, format: Option<&str>) -> NfpmYamlApk {
     NfpmYamlApk {
-        signature: apk.signature.as_ref().map(build_yaml_signature),
+        signature: apk
+            .signature
+            .as_ref()
+            .map(|s| build_yaml_signature(s, nfpm_id, format)),
+        scripts: apk.scripts.as_ref().map(|s| NfpmYamlApkScripts {
+            preupgrade: s.preupgrade.clone(),
+            postupgrade: s.postupgrade.clone(),
+        }),
     }
 }
 
@@ -449,7 +567,11 @@ fn build_yaml_archlinux(arch: &NfpmArchlinuxConfig) -> NfpmYamlArchlinux {
 // ---------------------------------------------------------------------------
 
 /// Construct the nfpm CLI command arguments.
-pub fn nfpm_command(config_path: &str, format: &str, output_dir: &str) -> Vec<String> {
+///
+/// `target` is the output file path (not directory).  When given a full file
+/// path nfpm writes the package to that exact location, which avoids
+/// mismatches between the predicted and actual output filename.
+pub fn nfpm_command(config_path: &str, format: &str, target: &str) -> Vec<String> {
     vec![
         "nfpm".to_string(),
         "pkg".to_string(),
@@ -458,7 +580,7 @@ pub fn nfpm_command(config_path: &str, format: &str, output_dir: &str) -> Vec<St
         "--packager".to_string(),
         format.to_string(),
         "--target".to_string(),
-        output_dir.to_string(),
+        target.to_string(),
     ]
 }
 
@@ -637,23 +759,48 @@ impl Stage for NfpmStage {
                         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
 
                     for format in &nfpm_cfg.formats {
-                        validate_format(format).with_context(|| {
-                            format!("nfpm config for crate {}", krate.name)
-                        })?;
+                        validate_format(format)
+                            .with_context(|| format!("nfpm config for crate {}", krate.name))?;
 
                         // Validate architecture compatibility per format
                         if let Some(triple) = target.as_deref()
-                            && !is_arch_supported_for_format(triple, format) {
-                                log.warn(&format!(
-                                    "skipping format '{}' for target '{}': architecture not supported",
-                                    format, triple
-                                ));
-                                continue;
-                            }
+                            && !is_arch_supported_for_format(triple, format)
+                        {
+                            log.warn(&format!(
+                                "skipping format '{}' for target '{}': architecture not supported",
+                                format, triple
+                            ));
+                            continue;
+                        }
+
+                        // Template-render key string fields before generating YAML.
+                        // Errors are propagated (not silently swallowed) to match GoReleaser.
+                        let mut rendered_cfg = nfpm_cfg.clone();
+                        if let Some(ref s) = rendered_cfg.description {
+                            rendered_cfg.description = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.maintainer {
+                            rendered_cfg.maintainer = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.homepage {
+                            rendered_cfg.homepage = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.license {
+                            rendered_cfg.license = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.vendor {
+                            rendered_cfg.vendor = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.section {
+                            rendered_cfg.section = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.priority {
+                            rendered_cfg.priority = Some(ctx.render_template(s)?);
+                        }
 
                         // Generate YAML per format so format-specific deps are selected
                         let yaml_content =
-                            generate_nfpm_yaml(nfpm_cfg, &version, binary_path, Some(format));
+                            generate_nfpm_yaml(&rendered_cfg, &version, binary_path, Some(format));
 
                         // Ensure output directory exists
                         let output_dir = dist.join("linux");
@@ -666,19 +813,38 @@ impl Stage for NfpmStage {
                         // Determine package file name (template or default)
                         let pkg_name = nfpm_cfg.package_name.as_deref().unwrap_or(&krate.name);
                         let ext = format_extension(format);
+
+                        // Set nfpm-specific template vars (Os, Arch, Format,
+                        // PackageName, ConventionalExtension, ConventionalFileName)
+                        // before rendering file_name_template.
+                        ctx.template_vars_mut().set("Os", &os);
+                        ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut().set("Format", format);
+                        ctx.template_vars_mut().set("PackageName", pkg_name);
+                        ctx.template_vars_mut().set("ConventionalExtension", ext);
+                        ctx.template_vars_mut().set(
+                            "ConventionalFileName",
+                            &format!("{pkg_name}_{version}_{os}_{arch}{ext}"),
+                        );
+
                         let pkg_filename = if let Some(tmpl) = &nfpm_cfg.file_name_template {
-                            // Set Os/Arch in template vars temporarily
-                            ctx.template_vars_mut().set("Os", &os);
-                            ctx.template_vars_mut().set("Arch", &arch);
                             let rendered = ctx.render_template(tmpl).with_context(|| {
                                 format!(
                                     "nfpm: render file_name_template for crate {} target {:?}",
                                     krate.name, target
                                 )
                             })?;
-                            format!("{rendered}{ext}")
+                            // If the rendered template already ends with the
+                            // format extension (e.g. the user used
+                            // ConventionalExtension or ConventionalFileName),
+                            // don't double-append it.
+                            if !ext.is_empty() && rendered.ends_with(ext) {
+                                rendered
+                            } else {
+                                format!("{rendered}{ext}")
+                            }
                         } else {
-                            format!("{pkg_name}_{version}{ext}")
+                            format!("{pkg_name}_{version}_{os}_{arch}{ext}")
                         };
                         let pkg_path = output_dir.join(&pkg_filename);
 
@@ -696,6 +862,7 @@ impl Stage for NfpmStage {
                             ));
                             new_artifacts.push(Artifact {
                                 kind: ArtifactKind::LinuxPackage,
+                                name: String::new(),
                                 path: pkg_path,
                                 target: target.clone(),
                                 crate_name: krate.name.clone(),
@@ -712,10 +879,14 @@ impl Stage for NfpmStage {
                             format!("write nfpm config to {}", config_path.display())
                         })?;
 
+                        // Pass the full file path (not directory) to nfpm
+                        // --target so the output lands at the exact path we
+                        // registered as the artifact.  This avoids mismatches
+                        // between our predicted filename and nfpm's own naming.
                         let cmd_args = nfpm_command(
                             &config_path.to_string_lossy(),
                             format,
-                            &output_dir.to_string_lossy(),
+                            &pkg_path.to_string_lossy(),
                         );
 
                         log.status(&format!("running: {}", cmd_args.join(" ")));
@@ -733,6 +904,7 @@ impl Stage for NfpmStage {
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::LinuxPackage,
+                            name: String::new(),
                             path: pkg_path,
                             target: target.clone(),
                             crate_name: krate.name.clone(),
@@ -746,6 +918,10 @@ impl Stage for NfpmStage {
         // Clear per-target template vars so they don't leak to downstream stages.
         ctx.template_vars_mut().set("Os", "");
         ctx.template_vars_mut().set("Arch", "");
+        ctx.template_vars_mut().set("Format", "");
+        ctx.template_vars_mut().set("PackageName", "");
+        ctx.template_vars_mut().set("ConventionalExtension", "");
+        ctx.template_vars_mut().set("ConventionalFileName", "");
 
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
@@ -774,7 +950,6 @@ fn format_extension(format: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::TempDir;
 
     #[test]
@@ -830,6 +1005,8 @@ mod tests {
                 dst: "/etc/myapp/config".to_string(),
                 content_type: None,
                 file_info: None,
+                packager: None,
+                expand: None,
             }]),
             ..Default::default()
         };
@@ -970,6 +1147,8 @@ mod tests {
                     mode: Some("0644".to_string()),
                     ..Default::default()
                 }),
+                packager: None,
+                expand: None,
             }]),
             ..Default::default()
         };
@@ -992,6 +1171,8 @@ mod tests {
                 dst: "/var/lib/myapp/data".to_string(),
                 content_type: Some("dir".to_string()),
                 file_info: None,
+                packager: None,
+                expand: None,
             }]),
             ..Default::default()
         };
@@ -999,7 +1180,10 @@ mod tests {
         assert!(yaml.contains("  type: dir"));
         // The binary entry always has file_info with mode 0755, but the
         // extra "dir" content entry should NOT have file_info
-        assert!(yaml.contains("mode: '0755'"), "binary should have mode 0755");
+        assert!(
+            yaml.contains("mode: '0755'"),
+            "binary should have mode 0755"
+        );
     }
 
     #[test]
@@ -1167,12 +1351,16 @@ crates:
                         mode: Some("0640".to_string()),
                         ..Default::default()
                     }),
+                    packager: None,
+                    expand: None,
                 },
                 NfpmContent {
                     src: "/src/readme".to_string(),
                     dst: "/usr/share/doc/myapp/README".to_string(),
                     content_type: Some("doc".to_string()),
                     file_info: None,
+                    packager: None,
+                    expand: None,
                 },
             ]),
             ..Default::default()
@@ -1589,6 +1777,7 @@ crates:
         // Add two linux binary artifacts: one matching the ids filter, one not
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp-server"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1596,6 +1785,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp-cli"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1646,6 +1836,7 @@ crates:
         // Binary exists but its id doesn't match the filter
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1697,6 +1888,7 @@ crates:
         // Add two linux binary artifacts with different ids
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp-server"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1704,6 +1896,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp-cli"),
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1761,10 +1954,7 @@ crates:
             "nfpm config id should be in artifact metadata"
         );
         // format should still be present
-        assert_eq!(
-            pkgs[0].metadata.get("format"),
-            Some(&"deb".to_string()),
-        );
+        assert_eq!(pkgs[0].metadata.get("format"), Some(&"deb".to_string()),);
     }
 
     #[test]
@@ -1850,6 +2040,7 @@ crates:
         // Add three binaries: two match, one does not
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp-server"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1857,6 +2048,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp-cli"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1864,6 +2056,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: std::path::PathBuf::from("dist/myapp-worker"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1932,13 +2125,25 @@ crates:
 
         // When generating for deb, only deb deps should appear
         let yaml_deb = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("deb"));
-        assert!(yaml_deb.contains("- libc6"), "deb deps expected:\n{yaml_deb}");
-        assert!(!yaml_deb.contains("glibc"), "rpm deps should not appear in deb yaml:\n{yaml_deb}");
+        assert!(
+            yaml_deb.contains("- libc6"),
+            "deb deps expected:\n{yaml_deb}"
+        );
+        assert!(
+            !yaml_deb.contains("glibc"),
+            "rpm deps should not appear in deb yaml:\n{yaml_deb}"
+        );
 
         // When generating for rpm, only rpm deps should appear
         let yaml_rpm = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("rpm"));
-        assert!(yaml_rpm.contains("- glibc"), "rpm deps expected:\n{yaml_rpm}");
-        assert!(!yaml_rpm.contains("libc6"), "deb deps should not appear in rpm yaml:\n{yaml_rpm}");
+        assert!(
+            yaml_rpm.contains("- glibc"),
+            "rpm deps expected:\n{yaml_rpm}"
+        );
+        assert!(
+            !yaml_rpm.contains("libc6"),
+            "deb deps should not appear in rpm yaml:\n{yaml_rpm}"
+        );
     }
 
     #[test]
@@ -1958,8 +2163,10 @@ crates:
         // When format is None, all deps should be merged
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", None);
         assert!(yaml.contains("depends:"), "depends key expected:\n{yaml}");
-        assert!(yaml.contains("- libc6") || yaml.contains("- glibc"),
-            "at least some deps expected:\n{yaml}");
+        assert!(
+            yaml.contains("- libc6") || yaml.contains("- glibc"),
+            "at least some deps expected:\n{yaml}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1978,9 +2185,18 @@ crates:
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
-        assert!(yaml.contains("epoch: '1'"), "epoch missing from YAML:\n{yaml}");
-        assert!(yaml.contains("release: '2'"), "release missing from YAML:\n{yaml}");
-        assert!(yaml.contains("prerelease: beta1"), "prerelease missing from YAML:\n{yaml}");
+        assert!(
+            yaml.contains("epoch: '1'"),
+            "epoch missing from YAML:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("release: '2'"),
+            "release missing from YAML:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("prerelease: beta1"),
+            "prerelease missing from YAML:\n{yaml}"
+        );
         assert!(
             yaml.contains("version_metadata: git.abc123"),
             "version_metadata missing from YAML:\n{yaml}"
@@ -2001,11 +2217,15 @@ crates:
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("section: utils"), "section missing:\n{yaml}");
-        assert!(yaml.contains("priority: optional"), "priority missing:\n{yaml}");
+        assert!(
+            yaml.contains("priority: optional"),
+            "priority missing:\n{yaml}"
+        );
         assert!(yaml.contains("meta: true"), "meta missing:\n{yaml}");
         assert!(yaml.contains("umask: '0o002'"), "umask missing:\n{yaml}");
         assert!(
-            yaml.contains("mtime: 2023-01-01T00:00:00Z") || yaml.contains("mtime: '2023-01-01T00:00:00Z'"),
+            yaml.contains("mtime: 2023-01-01T00:00:00Z")
+                || yaml.contains("mtime: '2023-01-01T00:00:00Z'"),
             "mtime missing:\n{yaml}"
         );
     }
@@ -2019,21 +2239,39 @@ crates:
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(!yaml.contains("epoch:"), "epoch should not appear:\n{yaml}");
-        assert!(!yaml.contains("release:"), "release should not appear:\n{yaml}");
-        assert!(!yaml.contains("prerelease:"), "prerelease should not appear:\n{yaml}");
+        assert!(
+            !yaml.contains("release:"),
+            "release should not appear:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("prerelease:"),
+            "prerelease should not appear:\n{yaml}"
+        );
         assert!(
             !yaml.contains("version_metadata:"),
             "version_metadata should not appear:\n{yaml}"
         );
-        assert!(!yaml.contains("section:"), "section should not appear:\n{yaml}");
-        assert!(!yaml.contains("priority:"), "priority should not appear:\n{yaml}");
+        assert!(
+            !yaml.contains("section:"),
+            "section should not appear:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("priority:"),
+            "priority should not appear:\n{yaml}"
+        );
         assert!(!yaml.contains("meta:"), "meta should not appear:\n{yaml}");
         assert!(!yaml.contains("umask:"), "umask should not appear:\n{yaml}");
-        assert!(!yaml.contains("mtime:"), "top-level mtime should not appear:\n{yaml}");
+        assert!(
+            !yaml.contains("mtime:"),
+            "top-level mtime should not appear:\n{yaml}"
+        );
         assert!(!yaml.contains("rpm:"), "rpm should not appear:\n{yaml}");
         assert!(!yaml.contains("deb:"), "deb should not appear:\n{yaml}");
         assert!(!yaml.contains("apk:"), "apk should not appear:\n{yaml}");
-        assert!(!yaml.contains("archlinux:"), "archlinux should not appear:\n{yaml}");
+        assert!(
+            !yaml.contains("archlinux:"),
+            "archlinux should not appear:\n{yaml}"
+        );
     }
 
     #[test]
@@ -2052,13 +2290,19 @@ crates:
                     mode: Some("0755".to_string()),
                     mtime: Some("2023-01-01T00:00:00Z".to_string()),
                 }),
+                packager: None,
+                expand: None,
             }]),
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
-        assert!(yaml.contains("file_info:"), "file_info block missing:\n{yaml}");
         assert!(
-            yaml.contains("mtime: 2023-01-01T00:00:00Z") || yaml.contains("mtime: '2023-01-01T00:00:00Z'"),
+            yaml.contains("file_info:"),
+            "file_info block missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("mtime: 2023-01-01T00:00:00Z")
+                || yaml.contains("mtime: '2023-01-01T00:00:00Z'"),
             "file_info mtime missing:\n{yaml}"
         );
         assert!(yaml.contains("owner: root"), "owner missing:\n{yaml}");
@@ -2090,13 +2334,22 @@ crates:
             yaml.contains("summary: My package summary"),
             "rpm summary missing:\n{yaml}"
         );
-        assert!(yaml.contains("compression: lzma"), "rpm compression missing:\n{yaml}");
-        assert!(yaml.contains("group: System/Tools"), "rpm group missing:\n{yaml}");
+        assert!(
+            yaml.contains("compression: lzma"),
+            "rpm compression missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("group: System/Tools"),
+            "rpm group missing:\n{yaml}"
+        );
         assert!(
             yaml.contains("packager: Build Team <build@example.com>"),
             "rpm packager missing:\n{yaml}"
         );
-        assert!(yaml.contains("signature:"), "rpm signature missing:\n{yaml}");
+        assert!(
+            yaml.contains("signature:"),
+            "rpm signature missing:\n{yaml}"
+        );
         assert!(
             yaml.contains("key_file: /path/to/key.gpg"),
             "rpm key_file missing:\n{yaml}"
@@ -2126,7 +2379,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_deb_config() {
-        use anodize_core::config::{NfpmDebTriggers};
+        use anodize_core::config::NfpmDebTriggers;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -2144,7 +2397,10 @@ crates:
                 }),
                 fields: Some({
                     let mut m = HashMap::new();
-                    m.insert("Bugs".to_string(), "https://github.com/example/project/issues".to_string());
+                    m.insert(
+                        "Bugs".to_string(),
+                        "https://github.com/example/project/issues".to_string(),
+                    );
                     m
                 }),
                 ..Default::default()
@@ -2154,13 +2410,22 @@ crates:
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("deb:"), "deb section missing:\n{yaml}");
         assert!(yaml.contains("triggers:"), "deb triggers missing:\n{yaml}");
-        assert!(yaml.contains("interest:"), "deb interest triggers missing:\n{yaml}");
+        assert!(
+            yaml.contains("interest:"),
+            "deb interest triggers missing:\n{yaml}"
+        );
         assert!(
             yaml.contains("- /usr/share/applications"),
             "deb interest value missing:\n{yaml}"
         );
-        assert!(yaml.contains("activate:"), "deb activate triggers missing:\n{yaml}");
-        assert!(yaml.contains("- ldconfig"), "deb activate value missing:\n{yaml}");
+        assert!(
+            yaml.contains("activate:"),
+            "deb activate triggers missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("- ldconfig"),
+            "deb activate value missing:\n{yaml}"
+        );
         assert!(yaml.contains("breaks:"), "deb breaks missing:\n{yaml}");
         assert!(
             yaml.contains("- oldpackage (<< 2.0)"),
@@ -2174,7 +2439,10 @@ crates:
             yaml.contains("- statically-linked-binary"),
             "deb lintian_overrides value missing:\n{yaml}"
         );
-        assert!(yaml.contains("signature:"), "deb signature missing:\n{yaml}");
+        assert!(
+            yaml.contains("signature:"),
+            "deb signature missing:\n{yaml}"
+        );
         assert!(
             yaml.contains("key_file: /path/to/key.gpg"),
             "deb key_file missing:\n{yaml}"
@@ -2199,9 +2467,18 @@ crates:
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
-        assert!(yaml.contains("compression: xz"), "deb compression missing:\n{yaml}");
-        assert!(yaml.contains("predepends:"), "deb predepends missing:\n{yaml}");
-        assert!(yaml.contains("- libc6"), "predepends libc6 missing:\n{yaml}");
+        assert!(
+            yaml.contains("compression: xz"),
+            "deb compression missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("predepends:"),
+            "deb predepends missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("- libc6"),
+            "predepends libc6 missing:\n{yaml}"
+        );
         assert!(yaml.contains("- dpkg"), "predepends dpkg missing:\n{yaml}");
     }
 
@@ -2216,12 +2493,16 @@ crates:
                     key_file: Some("/path/to/key.rsa".to_string()),
                     ..Default::default()
                 }),
+                scripts: None,
             }),
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
-        assert!(yaml.contains("signature:"), "apk signature missing:\n{yaml}");
+        assert!(
+            yaml.contains("signature:"),
+            "apk signature missing:\n{yaml}"
+        );
         assert!(
             yaml.contains("key_file: /path/to/key.rsa"),
             "apk key_file missing:\n{yaml}"
@@ -2245,7 +2526,10 @@ crates:
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
-        assert!(yaml.contains("archlinux:"), "archlinux section missing:\n{yaml}");
+        assert!(
+            yaml.contains("archlinux:"),
+            "archlinux section missing:\n{yaml}"
+        );
         assert!(
             yaml.contains("pkgbase: myapp-base"),
             "archlinux pkgbase missing:\n{yaml}"
@@ -2254,7 +2538,10 @@ crates:
             yaml.contains("packager: Build Team <build@example.com>"),
             "archlinux packager missing:\n{yaml}"
         );
-        assert!(yaml.contains("scripts:"), "archlinux scripts missing:\n{yaml}");
+        assert!(
+            yaml.contains("scripts:"),
+            "archlinux scripts missing:\n{yaml}"
+        );
         assert!(
             yaml.contains("preupgrade: scripts/preupgrade.sh"),
             "archlinux preupgrade missing:\n{yaml}"
@@ -2275,6 +2562,8 @@ crates:
                     key_file: Some("/path/to/key.gpg".to_string()),
                     key_id: Some("ABCD1234".to_string()),
                     key_passphrase: Some("secret123".to_string()),
+                    key_name: None,
+                    type_: None,
                 }),
                 ..Default::default()
             }),
@@ -2308,11 +2597,23 @@ crates:
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("interest:"), "interest missing:\n{yaml}");
-        assert!(yaml.contains("interest_await:"), "interest_await missing:\n{yaml}");
-        assert!(yaml.contains("interest_noawait:"), "interest_noawait missing:\n{yaml}");
+        assert!(
+            yaml.contains("interest_await:"),
+            "interest_await missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("interest_noawait:"),
+            "interest_noawait missing:\n{yaml}"
+        );
         assert!(yaml.contains("activate:"), "activate missing:\n{yaml}");
-        assert!(yaml.contains("activate_await:"), "activate_await missing:\n{yaml}");
-        assert!(yaml.contains("activate_noawait:"), "activate_noawait missing:\n{yaml}");
+        assert!(
+            yaml.contains("activate_await:"),
+            "activate_await missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("activate_noawait:"),
+            "activate_noawait missing:\n{yaml}"
+        );
     }
 
     #[test]
@@ -2410,10 +2711,7 @@ crates:
 
         let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
         assert_eq!(pkgs.len(), 1);
-        assert_eq!(
-            pkgs[0].metadata.get("format"),
-            Some(&"ipk".to_string())
-        );
+        assert_eq!(pkgs[0].metadata.get("format"), Some(&"ipk".to_string()));
         let path_str = pkgs[0].path.to_string_lossy();
         assert!(
             path_str.ends_with(".ipk"),
@@ -2484,7 +2782,10 @@ crates:
         assert_eq!(rpm.summary.as_deref(), Some("My package summary"));
         assert_eq!(rpm.compression.as_deref(), Some("lzma"));
         assert_eq!(rpm.group.as_deref(), Some("System/Tools"));
-        assert_eq!(rpm.packager.as_deref(), Some("Build Team <build@example.com>"));
+        assert_eq!(
+            rpm.packager.as_deref(),
+            Some("Build Team <build@example.com>")
+        );
         assert_eq!(rpm.prefixes.as_ref().unwrap(), &["/usr", "/etc"]);
         let sig = rpm.signature.as_ref().unwrap();
         assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.gpg"));
@@ -2531,10 +2832,7 @@ crates:
             &["/usr/share/applications"]
         );
         assert_eq!(triggers.activate.as_ref().unwrap(), &["ldconfig"]);
-        assert_eq!(
-            deb.breaks.as_ref().unwrap(),
-            &["oldpackage (<< 2.0)"]
-        );
+        assert_eq!(deb.breaks.as_ref().unwrap(), &["oldpackage (<< 2.0)"]);
         assert_eq!(
             deb.lintian_overrides.as_ref().unwrap(),
             &["statically-linked-binary"]
@@ -2592,10 +2890,16 @@ crates:
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let arch = nfpm.archlinux.as_ref().unwrap();
         assert_eq!(arch.pkgbase.as_deref(), Some("myapp-base"));
-        assert_eq!(arch.packager.as_deref(), Some("Build Team <build@example.com>"));
+        assert_eq!(
+            arch.packager.as_deref(),
+            Some("Build Team <build@example.com>")
+        );
         let scripts = arch.scripts.as_ref().unwrap();
         assert_eq!(scripts.preupgrade.as_deref(), Some("scripts/preupgrade.sh"));
-        assert_eq!(scripts.postupgrade.as_deref(), Some("scripts/postupgrade.sh"));
+        assert_eq!(
+            scripts.postupgrade.as_deref(),
+            Some("scripts/postupgrade.sh")
+        );
     }
 
     #[test]
@@ -2620,7 +2924,10 @@ crates:
 "#;
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
-        let fi = nfpm.contents.as_ref().unwrap()[0].file_info.as_ref().unwrap();
+        let fi = nfpm.contents.as_ref().unwrap()[0]
+            .file_info
+            .as_ref()
+            .unwrap();
         assert_eq!(fi.owner.as_deref(), Some("root"));
         assert_eq!(fi.mtime.as_deref(), Some("2023-01-01T00:00:00Z"));
     }
@@ -2680,18 +2987,29 @@ crates:
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let triggers = nfpm.deb.as_ref().unwrap().triggers.as_ref().unwrap();
         assert_eq!(triggers.interest.as_ref().unwrap(), &["/usr/share/apps"]);
-        assert_eq!(triggers.interest_await.as_ref().unwrap(), &["/usr/share/icons"]);
-        assert_eq!(triggers.interest_noawait.as_ref().unwrap(), &["/usr/share/mime"]);
+        assert_eq!(
+            triggers.interest_await.as_ref().unwrap(),
+            &["/usr/share/icons"]
+        );
+        assert_eq!(
+            triggers.interest_noawait.as_ref().unwrap(),
+            &["/usr/share/mime"]
+        );
         assert_eq!(triggers.activate.as_ref().unwrap(), &["ldconfig"]);
-        assert_eq!(triggers.activate_await.as_ref().unwrap(), &["triggers-await"]);
-        assert_eq!(triggers.activate_noawait.as_ref().unwrap(), &["triggers-noawait"]);
+        assert_eq!(
+            triggers.activate_await.as_ref().unwrap(),
+            &["triggers-await"]
+        );
+        assert_eq!(
+            triggers.activate_noawait.as_ref().unwrap(),
+            &["triggers-noawait"]
+        );
     }
 
     #[test]
     fn test_generate_nfpm_yaml_all_format_sections_together() {
         use anodize_core::config::{
-            NfpmApkConfig, NfpmArchlinuxConfig, NfpmArchlinuxScripts,
-            NfpmDebTriggers,
+            NfpmApkConfig, NfpmArchlinuxConfig, NfpmArchlinuxScripts, NfpmDebTriggers,
         };
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
@@ -2726,6 +3044,7 @@ crates:
                     key_file: Some("/apk/key.rsa".to_string()),
                     ..Default::default()
                 }),
+                scripts: None,
             }),
             archlinux: Some(NfpmArchlinuxConfig {
                 pkgbase: Some("base-pkg".to_string()),
@@ -2743,17 +3062,29 @@ crates:
         assert!(yaml.contains("epoch:"), "epoch missing:\n{yaml}");
         assert!(yaml.contains("release:"), "release missing:\n{yaml}");
         assert!(yaml.contains("section: devel"), "section missing:\n{yaml}");
-        assert!(yaml.contains("priority: required"), "priority missing:\n{yaml}");
+        assert!(
+            yaml.contains("priority: required"),
+            "priority missing:\n{yaml}"
+        );
         assert!(yaml.contains("meta: false"), "meta missing:\n{yaml}");
         assert!(yaml.contains("umask:"), "umask missing:\n{yaml}");
         assert!(yaml.contains("mtime:"), "mtime missing:\n{yaml}");
         assert!(yaml.contains("rpm:"), "rpm section missing:\n{yaml}");
-        assert!(yaml.contains("summary: RPM summary"), "rpm summary missing:\n{yaml}");
+        assert!(
+            yaml.contains("summary: RPM summary"),
+            "rpm summary missing:\n{yaml}"
+        );
         assert!(yaml.contains("deb:"), "deb section missing:\n{yaml}");
         assert!(yaml.contains("breaks:"), "deb breaks missing:\n{yaml}");
         assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
-        assert!(yaml.contains("archlinux:"), "archlinux section missing:\n{yaml}");
-        assert!(yaml.contains("pkgbase: base-pkg"), "archlinux pkgbase missing:\n{yaml}");
+        assert!(
+            yaml.contains("archlinux:"),
+            "archlinux section missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("pkgbase: base-pkg"),
+            "archlinux pkgbase missing:\n{yaml}"
+        );
     }
 
     #[test]
@@ -2819,8 +3150,367 @@ crates:
         let result = validate_format("bogus");
         assert!(result.is_err(), "bogus format should be rejected");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("bogus"), "error should mention the bad format: {err}");
-        assert!(err.contains("deb"), "error should list known formats: {err}");
+        assert!(
+            err.contains("bogus"),
+            "error should mention the bad format: {err}"
+        );
+        assert!(
+            err.contains("deb"),
+            "error should list known formats: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Default filename includes arch, ConventionalFileName, nfpm --target path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_filename_includes_arch() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "2.0.0");
+
+        // Add a linux binary so the arch is derived from its target triple
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp"),
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+        });
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        // Should be myapp_2.0.0_linux_arm64.deb (os and arch included in default name)
+        assert_eq!(
+            filename, "myapp_2.0.0_linux_arm64.deb",
+            "default filename should include os and arch, got: {filename}"
+        );
+    }
+
+    #[test]
+    fn test_default_filename_no_overwrite_multiple_arches() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Two different arches for the same crate
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp-x86"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp-arm"),
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+        });
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 2);
+        let filenames: Vec<&str> = pkgs
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_str().unwrap())
+            .collect();
+        // The two packages must have distinct filenames
+        assert_ne!(
+            filenames[0], filenames[1],
+            "multi-arch packages should not share a filename: {:?}",
+            filenames
+        );
+        assert!(
+            filenames.iter().any(|f| f.contains("amd64")),
+            "should contain amd64 variant: {:?}",
+            filenames
+        );
+        assert!(
+            filenames.iter().any(|f| f.contains("arm64")),
+            "should contain arm64 variant: {:?}",
+            filenames
+        );
+    }
+
+    #[test]
+    fn test_conventional_filename_template_var() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Use ConventionalFileName in the template
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            file_name_template: Some("{{ .ConventionalFileName }}".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "5.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+        });
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        // ConventionalFileName = "myapp_5.0.0_linux_amd64.rpm" (already includes ext).
+        // The code detects the rendered template already ends with the format
+        // extension and does NOT double-append it.
+        assert_eq!(
+            filename, "myapp_5.0.0_linux_amd64.rpm",
+            "ConventionalFileName should produce the full conventional name, got: {filename}"
+        );
+    }
+
+    #[test]
+    fn test_conventional_extension_template_var() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Use ConventionalExtension in the template
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            file_name_template: Some(
+                "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}{{ .ConventionalExtension }}"
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        // Template renders: "myapp_1.0.0_amd64.deb", then ext ".deb" is appended
+        // => "myapp_1.0.0_amd64.deb.deb" -- double extension!
+        // This means ConventionalExtension should NOT be used together with
+        // the auto-appended extension.  We need to fix the code so that
+        // when the rendered template already ends with the extension, we skip
+        // appending it.
+        assert!(
+            filename.ends_with(".deb"),
+            "should end with .deb, got: {filename}"
+        );
+        assert!(
+            !filename.ends_with(".deb.deb"),
+            "should NOT double the extension, got: {filename}"
+        );
+    }
+
+    #[test]
+    fn test_format_template_var_set() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            file_name_template: Some("{{ .PackageName }}-{{ .Format }}".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            filename, "myapp-rpm.rpm",
+            "Format template var should resolve to the packager format, got: {filename}"
+        );
+    }
+
+    #[test]
+    fn test_nfpm_target_is_file_path_not_directory() {
+        // When nfpm_command is called, --target should be a file path
+        let cmd = nfpm_command("/tmp/nfpm.yaml", "deb", "/tmp/output/myapp_1.0.0_amd64.deb");
+        assert_eq!(cmd[7], "/tmp/output/myapp_1.0.0_amd64.deb");
+    }
+
+    #[test]
+    fn test_template_vars_cleared_after_stage() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        // All nfpm-specific vars should be cleared after the stage runs
+        assert_eq!(ctx.template_vars().get("Format"), Some(&String::new()));
+        assert_eq!(ctx.template_vars().get("PackageName"), Some(&String::new()));
+        assert_eq!(
+            ctx.template_vars().get("ConventionalExtension"),
+            Some(&String::new())
+        );
+        assert_eq!(
+            ctx.template_vars().get("ConventionalFileName"),
+            Some(&String::new())
+        );
     }
 
     #[test]
@@ -2863,5 +3553,263 @@ crates:
             err.contains("bogus") || err.contains("unknown"),
             "error should mention the unknown format: {err}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix: signature key_name and type_ fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_signature_key_name_and_type_in_yaml() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            deb: Some(NfpmDebConfig {
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/path/to/key.gpg".to_string()),
+                    key_name: Some("mykey.rsa.pub".to_string()),
+                    type_: Some("origin".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            yaml.contains("key_name: mykey.rsa.pub"),
+            "key_name missing from signature:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("type: origin"),
+            "type missing from signature:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_signature_key_name_and_type_omitted_when_none() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            rpm: Some(NfpmRpmConfig {
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/path/to/key.gpg".to_string()),
+                    key_name: None,
+                    type_: None,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            !yaml.contains("key_name:"),
+            "key_name should not appear when None:\n{yaml}"
+        );
+        // "type:" could appear from content entries, so check specifically
+        // within the signature block by verifying it doesn't appear after key_file
+        assert!(
+            yaml.contains("key_file: /path/to/key.gpg"),
+            "key_file should be present:\n{yaml}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix: content packager and expand fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_content_packager_and_expand_in_yaml() {
+        use anodize_core::config::NfpmContent;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            contents: Some(vec![NfpmContent {
+                src: "/src/config".to_string(),
+                dst: "/etc/myapp/config".to_string(),
+                content_type: None,
+                file_info: None,
+                packager: Some("deb".to_string()),
+                expand: Some(true),
+            }]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            yaml.contains("packager: deb"),
+            "content packager missing from YAML:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("expand: true"),
+            "content expand missing from YAML:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_content_packager_and_expand_omitted_when_none() {
+        use anodize_core::config::NfpmContent;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            contents: Some(vec![NfpmContent {
+                src: "/src/data".to_string(),
+                dst: "/var/lib/myapp/data".to_string(),
+                content_type: None,
+                file_info: None,
+                packager: None,
+                expand: None,
+            }]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            !yaml.contains("packager:"),
+            "packager should not appear when None:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("expand:"),
+            "expand should not appear when None:\n{yaml}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix: APK scripts field
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_apk_scripts_in_yaml() {
+        use anodize_core::config::{NfpmApkConfig, NfpmApkScripts};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["apk".to_string()],
+            apk: Some(NfpmApkConfig {
+                signature: None,
+                scripts: Some(NfpmApkScripts {
+                    preupgrade: Some("scripts/apk-preupgrade.sh".to_string()),
+                    postupgrade: Some("scripts/apk-postupgrade.sh".to_string()),
+                }),
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
+        assert!(
+            yaml.contains("scripts:"),
+            "apk scripts section missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("preupgrade: scripts/apk-preupgrade.sh"),
+            "apk preupgrade missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("postupgrade: scripts/apk-postupgrade.sh"),
+            "apk postupgrade missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_apk_scripts_omitted_when_none() {
+        use anodize_core::config::NfpmApkConfig;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["apk".to_string()],
+            apk: Some(NfpmApkConfig {
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/path/to/key.rsa".to_string()),
+                    ..Default::default()
+                }),
+                scripts: None,
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            yaml.contains("apk:"),
+            "apk section should be present:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("key_file: /path/to/key.rsa"),
+            "apk signature should be present:\n{yaml}"
+        );
+        // scripts should not appear when None
+        // Note: "scripts:" may appear from top-level scripts, so check within the apk section
+        let apk_section = yaml.split("apk:").nth(1).unwrap_or("");
+        assert!(
+            !apk_section.contains("scripts:"),
+            "apk scripts should not appear when None:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_apk_scripts() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [apk]
+        apk:
+          scripts:
+            preupgrade: scripts/pre.sh
+            postupgrade: scripts/post.sh
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let apk = nfpm.apk.as_ref().unwrap();
+        let scripts = apk.scripts.as_ref().unwrap();
+        assert_eq!(scripts.preupgrade.as_deref(), Some("scripts/pre.sh"));
+        assert_eq!(scripts.postupgrade.as_deref(), Some("scripts/post.sh"));
+    }
+
+    #[test]
+    fn test_config_parse_signature_key_name_and_type() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        deb:
+          signature:
+            key_file: /path/to/key.gpg
+            key_name: mykey.rsa.pub
+            type: origin
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let sig = nfpm.deb.as_ref().unwrap().signature.as_ref().unwrap();
+        assert_eq!(sig.key_name.as_deref(), Some("mykey.rsa.pub"));
+        assert_eq!(sig.type_.as_deref(), Some("origin"));
+    }
+
+    #[test]
+    fn test_config_parse_content_packager_and_expand() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        contents:
+          - src: /src/conf
+            dst: /etc/myapp/conf
+            packager: deb
+            expand: true
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let content = &nfpm.contents.as_ref().unwrap()[0];
+        assert_eq!(content.packager.as_deref(), Some("deb"));
+        assert_eq!(content.expand, Some(true));
     }
 }

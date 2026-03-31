@@ -44,10 +44,38 @@ impl Ord for SemVer {
             .then(match (&self.prerelease, &other.prerelease) {
                 (Some(_), None) => std::cmp::Ordering::Less, // prerelease < release
                 (None, Some(_)) => std::cmp::Ordering::Greater, // release > prerelease
-                (Some(a), Some(b)) => a.cmp(b),
+                (Some(a), Some(b)) => compare_prerelease(a, b),
                 (None, None) => std::cmp::Ordering::Equal,
             })
     }
+}
+
+/// Compare two prerelease strings per SemVer 2.0.0 section 11.
+///
+/// Dot-separated identifiers are compared individually: numeric identifiers are
+/// compared as integers, alphanumeric identifiers are compared lexicographically,
+/// and numeric identifiers always have lower precedence than alphanumeric ones.
+/// A shorter set of identifiers has lower precedence when all preceding
+/// identifiers are equal.
+fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let a_ids: Vec<&str> = a.split('.').collect();
+    let b_ids: Vec<&str> = b.split('.').collect();
+
+    for (ai, bi) in a_ids.iter().zip(b_ids.iter()) {
+        let ord = match (ai.parse::<u64>(), bi.parse::<u64>()) {
+            (Ok(an), Ok(bn)) => an.cmp(&bn), // both numeric: compare as integers
+            (Ok(_), Err(_)) => Ordering::Less, // numeric < alphanumeric
+            (Err(_), Ok(_)) => Ordering::Greater, // alphanumeric > numeric
+            (Err(_), Err(_)) => ai.cmp(bi),  // both alpha: lexicographic
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    // Shorter set has lower precedence
+    a_ids.len().cmp(&b_ids.len())
 }
 
 /// Compiled once and reused across all calls to [`parse_semver`].
@@ -55,10 +83,13 @@ impl Ord for SemVer {
 /// Captures: 1=major, 2=minor, 3=patch, 4=prerelease (optional), 5=build metadata (optional).
 /// Prerelease is after `-` but before `+`. Build metadata is after `+`.
 static SEMVER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"v?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+(.+))?$").unwrap());
+    LazyLock::new(|| Regex::new(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+(.+))?$").unwrap());
 
-/// Parse a semver version from a tag string like "v1.2.3", "v1.0.0-rc.1", "v1.0.0+build.42",
-/// "v1.0.0-rc.1+build.42", or "cfgd-core-v2.1.0"
+/// Parse a strict semver version from a string like "v1.2.3", "1.2.3", "v1.0.0-rc.1",
+/// "v1.0.0+build.42", or "v1.0.0-rc.1+build.42".
+///
+/// The string must start with an optional `v` prefix followed by the version.
+/// For prefixed tags like "cfgd-core-v2.1.0", use [`parse_semver_tag`] instead.
 pub fn parse_semver(tag: &str) -> Result<SemVer> {
     let caps = SEMVER_RE
         .captures(tag)
@@ -72,6 +103,25 @@ pub fn parse_semver(tag: &str) -> Result<SemVer> {
     })
 }
 
+/// Parse a semver version from a prefixed tag string.
+///
+/// Strips everything up to and including the last `-` or `_` before the version
+/// portion, then delegates to [`parse_semver`]. Handles tags like
+/// "cfgd-core-v2.1.0", "my_project-v1.0.0-rc.1", or plain "v1.2.3".
+pub fn parse_semver_tag(tag: &str) -> Result<SemVer> {
+    // Try strict parse first (handles "v1.2.3" and "1.2.3")
+    if let Ok(sv) = parse_semver(tag) {
+        return Ok(sv);
+    }
+    // Find the version portion: look for `v?\d+.\d+.\d+` after a separator
+    static PREFIX_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[-_/](v?\d+\.\d+\.\d+(?:-[^+]+)?(?:\+.+)?)$").unwrap());
+    if let Some(caps) = PREFIX_RE.captures(tag) {
+        return parse_semver(&caps[1]);
+    }
+    anyhow::bail!("not a valid semver tag: {}", tag)
+}
+
 #[derive(Debug, Clone)]
 pub struct GitInfo {
     pub tag: String,
@@ -80,7 +130,7 @@ pub struct GitInfo {
     pub branch: String,
     pub dirty: bool,
     pub semver: SemVer,
-    /// ISO 8601 author date of HEAD commit (from `git log -1 --format=%aI`)
+    /// ISO 8601 committer date of HEAD commit (from `git log -1 --format=%cI`)
     pub commit_date: String,
     /// Unix timestamp of HEAD commit (from `git log -1 --format=%at`)
     pub commit_timestamp: String,
@@ -97,6 +147,8 @@ pub struct GitInfo {
     pub tag_contents: String,
     /// Tag message body (everything after first line) or commit message body.
     pub tag_body: String,
+    /// First commit hash in the repository (for changelog range when no previous tag).
+    pub first_commit: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,28 +197,49 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     let short_commit = git_output(&["rev-parse", "--short", "HEAD"])?;
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
     let dirty = is_git_dirty();
-    let commit_date = git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%aI"]).unwrap_or_default();
-    let commit_timestamp = git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%at"]).unwrap_or_default();
+    let commit_date = git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%cI"])
+        .unwrap_or_default();
+    let commit_timestamp =
+        git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%at"])
+            .unwrap_or_default();
     let remote_url_raw = git_output(&["remote", "get-url", "origin"]).unwrap_or_default();
     // Strip credentials from HTTPS URLs (e.g. https://user:token@github.com/... → https://github.com/...)
     let remote_url = strip_url_credentials(&remote_url_raw);
-    let summary = git_output(&["-c", "log.showSignature=false", "describe", "--tags", "--always"]).unwrap_or_default();
+    let summary = git_output(&[
+        "-c",
+        "log.showSignature=false",
+        "describe",
+        "--tags",
+        "--always",
+        "--dirty",
+    ])
+    .unwrap_or_default();
 
     // Try annotated tag message fields first; fall back to commit message fields.
     let tag_subject = git_output(&["tag", "-l", "--format=%(subject)", tag])
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%s"]).unwrap_or_default());
+        .unwrap_or_else(|| {
+            git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%s"])
+                .unwrap_or_default()
+        });
     let tag_contents = git_output(&["tag", "-l", "--format=%(contents)", tag])
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%B"]).unwrap_or_default());
+        .unwrap_or_else(|| {
+            git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%B"])
+                .unwrap_or_default()
+        });
     let tag_body = git_output(&["tag", "-l", "--format=%(body)", tag])
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%b"]).unwrap_or_default());
+        .unwrap_or_else(|| {
+            git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%b"])
+                .unwrap_or_default()
+        });
 
-    let semver = parse_semver(tag)?;
+    let semver = parse_semver_tag(tag)?;
+    let first_commit = get_first_commit().ok();
     Ok(GitInfo {
         tag: tag.to_string(),
         commit,
@@ -182,6 +255,7 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
         tag_subject,
         tag_contents,
         tag_body,
+        first_commit,
     })
 }
 
@@ -235,7 +309,7 @@ pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
     let mut matching: Vec<(SemVer, String)> = tags_output
         .lines()
         .filter(|t| re.is_match(t))
-        .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
+        .filter_map(|t| parse_semver_tag(t).ok().map(|v| (v, t.to_string())))
         .collect();
 
     matching.sort_by(|a, b| a.0.cmp(&b.0));
@@ -270,7 +344,13 @@ fn parse_commit_output(output: &str) -> Vec<Commit> {
 /// Get commits between two refs, optionally filtered to a path.
 pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> Result<Vec<Commit>> {
     let range = format!("{}..{}", from, to);
-    let mut args = vec!["-c", "log.showSignature=false", "log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", &range];
+    let mut args = vec![
+        "-c",
+        "log.showSignature=false",
+        "log",
+        "--pretty=format:%H%n%h%n%s%n%an%n%ae",
+        &range,
+    ];
     if let Some(path) = path_filter {
         args.push("--");
         args.push(path);
@@ -282,7 +362,13 @@ pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> R
 /// Get all commits reachable from HEAD, optionally filtered to a path.
 /// Used for initial releases where there is no previous tag.
 pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
-    let mut args = vec!["-c", "log.showSignature=false", "log", "--pretty=format:%H%n%h%n%s%n%an%n%ae", "HEAD"];
+    let mut args = vec![
+        "-c",
+        "log.showSignature=false",
+        "log",
+        "--pretty=format:%H%n%h%n%s%n%an%n%ae",
+        "HEAD",
+    ];
     if let Some(path) = path_filter {
         args.push("--");
         args.push(path);
@@ -301,7 +387,7 @@ fn collect_semver_tags(git_args: &[&str], prefix: &str) -> Result<Vec<String>> {
     let mut matching: Vec<(SemVer, String)> = tags_output
         .lines()
         .filter(|t| t.starts_with(prefix))
-        .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
+        .filter_map(|t| parse_semver_tag(t).ok().map(|v| (v, t.to_string())))
         .collect();
     matching.sort_by(|a, b| b.0.cmp(&a.0));
     Ok(matching.into_iter().map(|(_, tag)| tag).collect())
@@ -413,7 +499,9 @@ pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<s
         if trimmed.is_empty() {
             continue;
         }
-        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Ok(serde_json::Value::Array(arr)) =
+            serde_json::from_str::<serde_json::Value>(trimmed)
+        {
             all_items.extend(arr);
         } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
             all_items.push(val);
@@ -532,13 +620,25 @@ pub fn create_tag_via_github_api(
 
 /// Get last N commit subjects.
 pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
-    let output = git_output(&["-c", "log.showSignature=false", "log", &format!("-{count}"), "--pretty=format:%s"])?;
+    let output = git_output(&[
+        "-c",
+        "log.showSignature=false",
+        "log",
+        &format!("-{count}"),
+        "--pretty=format:%s",
+    ])?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Get commit subjects between two refs.
 pub fn get_commit_messages_between(from: &str, to: &str) -> Result<Vec<String>> {
-    let output = git_output(&["-c", "log.showSignature=false", "log", "--pretty=format:%s", &format!("{from}..{to}")])?;
+    let output = git_output(&[
+        "-c",
+        "log.showSignature=false",
+        "log",
+        "--pretty=format:%s",
+        &format!("{from}..{to}"),
+    ])?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
@@ -603,6 +703,74 @@ pub fn detect_github_repo() -> Result<(String, String)> {
     })
 }
 
+/// Find the tag immediately before `current_tag` in commit history.
+///
+/// Uses `git describe --tags --abbrev=0 {current_tag}^` to locate the previous
+/// tag. If that fails (e.g. `current_tag` is the very first tag), falls back to
+/// returning `None`.
+pub fn find_previous_tag(current_tag: &str) -> Result<Option<String>> {
+    let parent_ref = format!("{}^", current_tag);
+    match git_output(&["describe", "--tags", "--abbrev=0", &parent_ref]) {
+        Ok(tag) if !tag.is_empty() => Ok(Some(tag)),
+        _ => Ok(None),
+    }
+}
+
+/// Return the SHA of the very first commit in the repository.
+///
+/// Runs `git rev-list --max-parents=0 HEAD` and returns the first line
+/// (repositories with multiple roots will return the oldest).
+pub fn get_first_commit() -> Result<String> {
+    let output = git_output(&["rev-list", "--max-parents=0", "HEAD"])?;
+    // In repos with multiple roots, take the last line (oldest commit).
+    output
+        .lines()
+        .last()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("no commits found in repository"))
+}
+
+/// Check whether `tag` points at the current HEAD commit.
+///
+/// Compares the dereferenced tag object (`git rev-parse {tag}^{{}}`) with
+/// `git rev-parse HEAD`. Returns `false` if either command fails.
+pub fn tag_points_at_head(tag: &str) -> Result<bool> {
+    let deref = format!("{}^{{}}", tag);
+    let tag_sha = git_output(&["rev-parse", &deref])?;
+    let head_sha = git_output(&["rev-parse", "HEAD"])?;
+    Ok(tag_sha == head_sha)
+}
+
+/// Check whether `git` is available in PATH.
+pub fn check_git_available() -> Result<()> {
+    let output = Command::new("git").arg("--version").output();
+    match output {
+        Ok(o) if o.status.success() => Ok(()),
+        _ => bail!("git is not installed or not in PATH. Install git and try again."),
+    }
+}
+
+/// Check whether the current directory is inside a git repository.
+pub fn is_git_repo() -> bool {
+    git_output(&["rev-parse", "--git-dir"]).is_ok()
+}
+
+/// Return the `git status --porcelain` output showing dirty files.
+pub fn git_status_porcelain() -> String {
+    git_output(&["status", "--porcelain"]).unwrap_or_default()
+}
+
+/// Check whether the current repository is a shallow clone.
+///
+/// Returns `true` if the `.git/shallow` sentinel file exists, which git creates
+/// when a repository was cloned with `--depth`.
+pub fn is_shallow_clone() -> bool {
+    // Use `git rev-parse --git-dir` to find the actual .git directory,
+    // which handles worktrees and non-standard layouts.
+    let git_dir = git_output(&["rev-parse", "--git-dir"]).unwrap_or_else(|_| ".git".to_string());
+    std::path::Path::new(&git_dir).join("shallow").exists()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -644,10 +812,34 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_semver_with_prefix() {
-        let v = parse_semver("cfgd-core-v2.1.0").unwrap();
+    fn test_parse_semver_rejects_prefix() {
+        // Strict parse_semver rejects prefixed tags (use parse_semver_tag instead)
+        assert!(parse_semver("cfgd-core-v2.1.0").is_err());
+        assert!(parse_semver("release-notes-v1.2.3").is_err());
+    }
+
+    #[test]
+    fn test_parse_semver_tag_with_prefix() {
+        let v = parse_semver_tag("cfgd-core-v2.1.0").unwrap();
         assert_eq!(v.major, 2);
         assert_eq!(v.minor, 1);
+        assert_eq!(v.patch, 0);
+    }
+
+    #[test]
+    fn test_parse_semver_tag_plain() {
+        // parse_semver_tag also handles plain versions
+        let v = parse_semver_tag("v1.2.3").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.minor, 2);
+        assert_eq!(v.patch, 3);
+    }
+
+    #[test]
+    fn test_parse_semver_tag_with_prerelease_prefix() {
+        let v = parse_semver_tag("my-project-v1.0.0-rc.1").unwrap();
+        assert_eq!(v.major, 1);
+        assert_eq!(v.prerelease, Some("rc.1".to_string()));
     }
 
     #[test]
@@ -727,5 +919,68 @@ mod tests {
             strip_url_credentials("https://user@github.com/owner/repo.git"),
             "https://github.com/owner/repo.git"
         );
+    }
+
+    #[test]
+    fn test_compare_prerelease_numeric() {
+        // rc.9 < rc.10 (numeric comparison, not lexicographic)
+        assert_eq!(
+            compare_prerelease("rc.9", "rc.10"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_prerelease("rc.10", "rc.9"),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn test_compare_prerelease_numeric_less_than_alpha() {
+        // Numeric identifiers always have lower precedence than alphanumeric
+        assert_eq!(compare_prerelease("1", "alpha"), std::cmp::Ordering::Less);
+        assert_eq!(
+            compare_prerelease("alpha", "1"),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn test_compare_prerelease_alpha_lexicographic() {
+        assert_eq!(
+            compare_prerelease("alpha", "beta"),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_compare_prerelease_shorter_lower_precedence() {
+        // alpha < alpha.1 (shorter set = lower precedence)
+        assert_eq!(
+            compare_prerelease("alpha", "alpha.1"),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_compare_prerelease_equal() {
+        assert_eq!(
+            compare_prerelease("rc.1", "rc.1"),
+            std::cmp::Ordering::Equal
+        );
+    }
+
+    #[test]
+    fn test_semver_ord_prerelease_less_than_release() {
+        let pre = parse_semver("v1.0.0-rc.1").unwrap();
+        let rel = parse_semver("v1.0.0").unwrap();
+        assert!(pre < rel);
+    }
+
+    #[test]
+    fn test_semver_ord_prerelease_numeric_sorting() {
+        // v1.0.0-rc.9 < v1.0.0-rc.10 (SemVer 2.0.0 compliant)
+        let rc9 = parse_semver("v1.0.0-rc.9").unwrap();
+        let rc10 = parse_semver("v1.0.0-rc.10").unwrap();
+        assert!(rc9 < rc10);
     }
 }

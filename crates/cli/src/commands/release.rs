@@ -28,10 +28,12 @@ pub struct ReleaseOpts {
     pub parallelism: usize,
     pub single_target: Option<String>,
     pub release_notes: Option<PathBuf>,
+    pub release_notes_tmpl: Option<PathBuf>,
     pub workspace: Option<String>,
     pub draft: bool,
     pub release_header: Option<PathBuf>,
     pub release_footer: Option<PathBuf>,
+    pub fail_fast: bool,
     pub split: bool,
     pub merge: bool,
 }
@@ -41,6 +43,9 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         "release",
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
+
+    // Check git is available before doing anything else.
+    git::check_git_available()?;
 
     if opts.snapshot && opts.nightly {
         anyhow::bail!("--snapshot and --nightly cannot be combined");
@@ -85,10 +90,28 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         release.footer = Some(anodize_core::config::ContentSource::Inline(footer_content));
     }
 
-    if opts.clean {
+    if opts.clean && !opts.dry_run {
         let dist = &config.dist;
         if dist.exists() {
             std::fs::remove_dir_all(dist)?;
+        }
+    } else if opts.clean && opts.dry_run {
+        log.status("(dry-run) would clean dist directory");
+    }
+
+    // Error if dist directory is non-empty and --clean was not passed
+    // (like GoReleaser's ErrDirtyDist).
+    if !opts.clean {
+        let dist = &config.dist;
+        if dist.exists() {
+            if let Ok(mut entries) = dist.read_dir() {
+                if entries.next().is_some() {
+                    anyhow::bail!(
+                        "dist directory '{}' is not empty; use --clean to remove it first",
+                        dist.display()
+                    );
+                }
+            }
         }
     }
 
@@ -109,20 +132,45 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Run hooks before pipeline
     if let Some(before) = &config.before
-        && let Some(ref hooks) = before.pre {
-            pipeline::run_hooks(hooks, "before", opts.dry_run, &log)?;
-        }
+        && let Some(ref hooks) = before.pre
+    {
+        pipeline::run_hooks(hooks, "before", opts.dry_run, &log, None)?;
+    }
 
     let mut skip_stages = opts.skip;
-    // Snapshot mode automatically skips publish, announce, and release stages
-    // (like GoReleaser) since there is no real tag to release against.
+    // Snapshot mode automatically skips publish and announce stages
+    // (like GoReleaser). The release stage is NOT skipped — it handles
+    // snapshot mode internally (e.g. creating draft releases for testing).
     if opts.snapshot {
-        for stage in &["publish", "announce", "release"] {
+        for stage in &["publish", "announce"] {
             if !skip_stages.iter().any(|s| s == stage) {
                 skip_stages.push(stage.to_string());
             }
         }
     }
+
+    // Skipping publish implies skipping announce (like GoReleaser).
+    if skip_stages.contains(&"publish".to_string())
+        && !skip_stages.contains(&"announce".to_string())
+    {
+        skip_stages.push("announce".to_string());
+    }
+
+    // Determine release notes path: --release-notes-tmpl overrides --release-notes.
+    // Template files are rendered using template vars and written to dist/.
+    let release_notes_path = if let Some(ref tmpl_path) = opts.release_notes_tmpl {
+        let content = std::fs::read_to_string(tmpl_path).with_context(|| {
+            format!(
+                "failed to read release notes template: {}",
+                tmpl_path.display()
+            )
+        })?;
+        // We'll render the template after context is created (need template vars).
+        // Store raw content for now, render after populate.
+        Some((tmpl_path.clone(), content))
+    } else {
+        None
+    };
 
     let ctx_opts = ContextOptions {
         snapshot: opts.snapshot,
@@ -137,6 +185,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         parallelism: opts.parallelism,
         single_target: opts.single_target,
         release_notes_path: opts.release_notes,
+        fail_fast: opts.fail_fast,
         partial_target: None, // Set by --split mode in run_split()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
@@ -147,7 +196,40 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     helpers::setup_env(&mut ctx, &config, &log)?;
 
     // Resolve tag and populate git variables before running the pipeline.
-    helpers::resolve_git_context(&mut ctx, &config, &log);
+    helpers::resolve_git_context(&mut ctx, &config, &log)?;
+
+    // Render --release-notes-tmpl now that template vars are populated.
+    // This overrides --release-notes.
+    if let Some((_tmpl_path, raw_content)) = release_notes_path {
+        let rendered = template::render(&raw_content, ctx.template_vars()).with_context(|| {
+            format!(
+                "failed to render release notes template: {}",
+                _tmpl_path.display()
+            )
+        })?;
+        // Write rendered content to dist/release-notes.md and use that as the notes path
+        let dist = &config.dist;
+        std::fs::create_dir_all(dist).ok();
+        let rendered_path = dist.join("release-notes.md");
+        std::fs::write(&rendered_path, &rendered).with_context(|| {
+            format!(
+                "failed to write rendered release notes: {}",
+                rendered_path.display()
+            )
+        })?;
+        ctx.options.release_notes_path = Some(rendered_path);
+        log.verbose("rendered release notes template");
+    }
+
+    // Dirty repo gate: error out if the repo has uncommitted changes unless
+    // running in snapshot, nightly, or dry-run mode (matching GoReleaser behaviour).
+    if git::is_git_dirty() && !ctx.is_snapshot() && !ctx.is_nightly() && !ctx.is_dry_run() {
+        let status = git::git_status_porcelain();
+        anyhow::bail!(
+            "git repository is dirty; use --snapshot to release from a dirty tree, or commit your changes first.\n\nDirty files:\n{}",
+            status
+        );
+    }
 
     // Apply nightly overrides after git vars are populated.
     if ctx.is_nightly() {
@@ -197,19 +279,48 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         ));
     }
 
-    // Apply snapshot name_template if configured.
-    if ctx.is_snapshot()
-        && let Some(ref snapshot_cfg) = config.snapshot
-    {
-        let rendered_name = template::render(&snapshot_cfg.name_template, ctx.template_vars())
-            .with_context(|| {
+    // Apply snapshot version template (GoReleaser always applies one).
+    // Default: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}" when no snapshot config exists.
+    if ctx.is_snapshot() {
+        let snapshot_tmpl = config
+            .snapshot
+            .as_ref()
+            .map(|s| s.name_template.as_str())
+            .unwrap_or("{{ Version }}-SNAPSHOT-{{ ShortCommit }}");
+        let rendered_name =
+            template::render(snapshot_tmpl, ctx.template_vars()).with_context(|| {
                 format!(
-                    "failed to render snapshot name_template: {}",
-                    snapshot_cfg.name_template
+                    "failed to render snapshot version_template: {}",
+                    snapshot_tmpl
                 )
             })?;
+        ctx.template_vars_mut().set("Version", &rendered_name);
+        ctx.template_vars_mut().set("RawVersion", &rendered_name);
         ctx.template_vars_mut().set("ReleaseName", &rendered_name);
-        log.verbose(&format!("snapshot: release_name={}", rendered_name));
+        log.verbose(&format!(
+            "snapshot: version={}, release_name={}",
+            rendered_name, rendered_name
+        ));
+    }
+
+    // Dump effective (resolved) config to dist/config.yaml before pipeline runs.
+    if !opts.dry_run {
+        let dist = config.dist.as_os_str();
+        std::fs::create_dir_all(&config.dist).with_context(|| {
+            format!(
+                "failed to create dist directory: {}",
+                dist.to_string_lossy()
+            )
+        })?;
+        let effective_path = config.dist.join("config.yaml");
+        let yaml =
+            serde_yaml_ng::to_string(&config).context("failed to serialize effective config")?;
+        std::fs::write(&effective_path, &yaml)
+            .with_context(|| format!("failed to write {}", effective_path.display()))?;
+        log.verbose(&format!(
+            "wrote effective config to {}",
+            effective_path.display()
+        ));
     }
 
     // --split: run only the build stage, serialize artifacts to dist/, then exit
@@ -272,14 +383,16 @@ fn run_post_pipeline(
             ctx.template_vars(),
             dry_run,
             log,
+            ctx.options.parallelism,
         )?;
     }
 
     // Run after hooks
     if let Some(after) = &config.after
-        && let Some(ref hooks) = after.post {
-            pipeline::run_hooks(hooks, "after", dry_run, log)?;
-        }
+        && let Some(ref hooks) = after.post
+    {
+        pipeline::run_hooks(hooks, "after", dry_run, log, Some(ctx.template_vars()))?;
+    }
 
     Ok(())
 }
@@ -301,10 +414,10 @@ fn detect_changed_crates(crates: &[CrateConfig]) -> Result<Vec<String>> {
                     changed.push(c.name.clone());
                 }
                 // Track the earliest tag for workspace-level check
-                if let Ok(sv) = git::parse_semver(tag) {
+                if let Ok(sv) = git::parse_semver_tag(tag) {
                     let is_older = oldest_tag
                         .as_ref()
-                        .and_then(|t| git::parse_semver(t).ok())
+                        .and_then(|t| git::parse_semver_tag(t).ok())
                         .is_none_or(|osv| sv < osv);
                     if is_older {
                         oldest_tag = Some(tag.clone());
@@ -493,7 +606,7 @@ pub struct MatrixEntry {
 /// Convert Artifact to SplitArtifact for serialization.
 fn artifact_to_split(a: &artifact::Artifact) -> SplitArtifact {
     SplitArtifact {
-        name: a.name(),
+        name: a.name().to_string(),
         path: a.path.to_string_lossy().into_owned(),
         goos: a.goos(),
         goarch: a.goarch(),
@@ -606,8 +719,7 @@ fn run_split(
             .unwrap_or("goos");
 
         let matrix = build_matrix(&all_targets, split_by);
-        let matrix_json =
-            serde_json::to_string_pretty(&matrix).context("serialize matrix")?;
+        let matrix_json = serde_json::to_string_pretty(&matrix).context("serialize matrix")?;
         let matrix_path = original_dist.join("matrix.json");
         std::fs::create_dir_all(&original_dist)?;
         std::fs::write(&matrix_path, &matrix_json)
@@ -726,6 +838,7 @@ pub fn run_merge(
                 .collect();
             ctx.artifacts.add(artifact::Artifact {
                 kind,
+                name: String::new(),
                 path: PathBuf::from(&sa.path),
                 target: sa.target.clone(),
                 crate_name: sa.crate_name.clone(),
@@ -791,6 +904,7 @@ fn run_merge_legacy(
                 .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", sa.kind))?;
             ctx.artifacts.add(artifact::Artifact {
                 kind,
+                name: String::new(),
                 path: PathBuf::from(&sa.path),
                 target: sa.target.clone(),
                 crate_name: sa.crate_name.clone(),
@@ -1257,11 +1371,8 @@ mod tests {
 
     #[test]
     fn test_split_artifact_serialization_roundtrip() {
-        let artifact = make_split_artifact(
-            "binary",
-            "/tmp/myapp",
-            Some("x86_64-unknown-linux-gnu"),
-        );
+        let artifact =
+            make_split_artifact("binary", "/tmp/myapp", Some("x86_64-unknown-linux-gnu"));
 
         let json = serde_json::to_string(&artifact).unwrap();
         let deserialized: SplitArtifact = serde_json::from_str(&json).unwrap();
@@ -1284,9 +1395,7 @@ mod tests {
                 ("Tag".to_string(), "v1.0.0".to_string()),
                 ("ProjectName".to_string(), "myapp".to_string()),
             ]),
-            env_vars: HashMap::from([
-                ("GITHUB_TOKEN".to_string(), "ghp_secret".to_string()),
-            ]),
+            env_vars: HashMap::from([("GITHUB_TOKEN".to_string(), "ghp_secret".to_string())]),
             git_tag: Some("v1.0.0".to_string()),
             git_commit: Some("abc123".to_string()),
             git_branch: Some("main".to_string()),
@@ -1522,7 +1631,11 @@ mod tests {
             "aarch64-unknown-linux-gnu".to_string(),
         ];
         let matrix = build_matrix(&targets, "target");
-        assert_eq!(matrix.include.len(), 2, "target mode should not deduplicate");
+        assert_eq!(
+            matrix.include.len(),
+            2,
+            "target mode should not deduplicate"
+        );
     }
 
     #[test]

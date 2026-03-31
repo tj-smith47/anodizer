@@ -91,10 +91,7 @@ pub fn resolve_partial_target(config: &Option<PartialConfig>) -> Result<PartialT
     match by {
         "goos" => {
             let (os, _) = target::map_target(&host);
-            Ok(PartialTarget::OsArch {
-                os,
-                arch: None,
-            })
+            Ok(PartialTarget::OsArch { os, arch: None })
         }
         "target" => Ok(PartialTarget::Exact(host)),
         other => anyhow::bail!(
@@ -189,10 +186,7 @@ mod tests {
         let filtered = target.filter_targets(&targets);
         assert_eq!(
             filtered,
-            vec![
-                "x86_64-unknown-linux-gnu",
-                "aarch64-unknown-linux-gnu",
-            ]
+            vec!["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",]
         );
     }
 
@@ -354,11 +348,7 @@ mod tests {
             by: Some("invalid".to_string()),
         });
         let err = resolve_partial_target(&config).unwrap_err();
-        assert!(
-            err.to_string().contains("unknown value"),
-            "got: {}",
-            err
-        );
+        assert!(err.to_string().contains("unknown value"), "got: {}", err);
     }
 
     // -----------------------------------------------------------------------

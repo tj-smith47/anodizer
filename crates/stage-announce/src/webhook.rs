@@ -8,7 +8,7 @@ use anyhow::Result;
 /// Build the request body for a generic HTTP webhook.
 ///
 /// When content_type is `application/json` and the message is not already valid
-/// JSON, wraps the message in a `{"text": ...}` JSON object.  For all other
+/// JSON, wraps the message in a `{"message": ...}` JSON object.  For all other
 /// content types the raw message is returned as-is.
 pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
     if content_type == "application/json" {
@@ -17,7 +17,7 @@ pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
             return message.to_string();
         }
         // Otherwise wrap in a simple JSON envelope.
-        serde_json::json!({ "text": message }).to_string()
+        serde_json::json!({ "message": message }).to_string()
     } else {
         message.to_string()
     }
@@ -123,10 +123,10 @@ mod tests {
 
     #[test]
     fn test_webhook_body_json_wraps_plain_text() {
-        // Plain text is wrapped in {"text": ...} when content_type is application/json
+        // Plain text is wrapped in {"message": ...} when content_type is application/json
         let body = webhook_body("Release v1.0.0 is out!", "application/json");
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["text"], "Release v1.0.0 is out!");
+        assert_eq!(json["message"], "Release v1.0.0 is out!");
     }
 
     #[test]

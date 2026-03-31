@@ -67,9 +67,22 @@ fn test_init_generates_config() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("project_name:"));
-    assert!(stdout.contains("test-project"));
-    assert!(stdout.contains("tag_template:"));
+    assert!(stdout.contains("Created .anodize.yaml"));
+
+    // Read the generated config file
+    let config_content =
+        fs::read_to_string(tmp.path().join(".anodize.yaml")).expect(".anodize.yaml should exist");
+    assert!(config_content.contains("project_name:"));
+    assert!(config_content.contains("test-project"));
+    assert!(config_content.contains("tag_template:"));
+
+    // Verify .gitignore was updated
+    let gitignore =
+        fs::read_to_string(tmp.path().join(".gitignore")).expect(".gitignore should exist");
+    assert!(
+        gitignore.contains("dist/"),
+        ".gitignore should contain dist/"
+    );
 }
 
 #[test]
@@ -872,15 +885,18 @@ fn test_e2e_init_generates_parseable_yaml() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Read the generated config file
+    let config_content = fs::read_to_string(tmp.path().join(".anodize.yaml"))
+        .expect(".anodize.yaml should exist after init");
 
     // Verify the output is valid YAML by parsing it
-    let parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&stdout).unwrap_or_else(|e| {
-        panic!(
-            "init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
-            e, stdout
-        );
-    });
+    let parsed: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&config_content).unwrap_or_else(|e| {
+            panic!(
+                "init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
+                e, config_content
+            );
+        });
 
     // Verify key fields exist in the parsed YAML
     let map = parsed
@@ -920,7 +936,7 @@ fn test_e2e_init_generates_parseable_yaml() {
     let tmp2 = TempDir::new().unwrap();
     create_test_project(tmp2.path());
     init_git_repo(tmp2.path());
-    create_config(tmp2.path(), &stdout);
+    create_config(tmp2.path(), &config_content);
 
     let check_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
         .arg("check")
@@ -1101,42 +1117,50 @@ fn test_e2e_init_workspace_generates_depends_on() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Read the generated config file
+    let config_content = fs::read_to_string(tmp.path().join(".anodize.yaml"))
+        .expect(".anodize.yaml should exist after init");
 
-    // Verify the output mentions all three crates
+    // Verify the config mentions all three crates
     assert!(
-        stdout.contains("core-lib"),
+        config_content.contains("core-lib"),
         "init output should mention core-lib"
     );
     assert!(
-        stdout.contains("helper-lib"),
+        config_content.contains("helper-lib"),
         "init output should mention helper-lib"
     );
-    assert!(stdout.contains("myapp"), "init output should mention myapp");
+    assert!(
+        config_content.contains("myapp"),
+        "init output should mention myapp"
+    );
 
     // Verify depends_on relationships are detected
     assert!(
-        stdout.contains("depends_on"),
+        config_content.contains("depends_on"),
         "init output should include depends_on for workspace deps"
     );
 
     // Verify topological order: core-lib should appear before myapp
-    let core_pos = stdout
+    let core_pos = config_content
         .find("name: core-lib")
         .expect("core-lib should appear");
-    let app_pos = stdout.find("name: myapp").expect("myapp should appear");
+    let app_pos = config_content
+        .find("name: myapp")
+        .expect("myapp should appear");
     assert!(
         core_pos < app_pos,
         "core-lib should appear before myapp (topological order)"
     );
 
     // Verify the generated YAML is parseable
-    let _parsed: serde_yaml_ng::Value = serde_yaml_ng::from_str(&stdout).unwrap_or_else(|e| {
-        panic!(
-            "workspace init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
-            e, stdout
-        );
-    });
+    let _parsed: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&config_content).unwrap_or_else(|e| {
+            panic!(
+                "workspace init output should be valid YAML.\nParse error: {}\nOutput:\n{}",
+                e, config_content
+            );
+        });
 }
 
 /// E2E: `anodize check` detects invalid depends_on references in workspace config.
@@ -1263,6 +1287,7 @@ crates:
         .args([
             "release",
             "--dry-run",
+            "--snapshot",
             "--all",
             "--single-target",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
@@ -2030,11 +2055,11 @@ crates:
         stderr
     );
 
-    // Verify RELEASE_NOTES.md was created in dist/
-    let notes_path = tmp.path().join("dist/RELEASE_NOTES.md");
+    // Verify CHANGELOG.md was created in dist/
+    let notes_path = tmp.path().join("dist/CHANGELOG.md");
     assert!(
         notes_path.exists(),
-        "dist/RELEASE_NOTES.md should exist after changelog stage"
+        "dist/CHANGELOG.md should exist after changelog stage"
     );
 
     let notes = fs::read_to_string(&notes_path).unwrap();
@@ -2103,7 +2128,9 @@ fn test_e2e_config_validation_round_trip() {
         String::from_utf8_lossy(&init_output.stderr)
     );
 
-    let generated_config = String::from_utf8_lossy(&init_output.stdout).to_string();
+    // init now writes to .anodize.yaml instead of stdout
+    let generated_config = std::fs::read_to_string(tmp.path().join(".anodize.yaml"))
+        .expect("init should create .anodize.yaml");
 
     // Step 2: Parse the generated config, replace targets with only the host
     // target to avoid cross-compilation failures, then write back.
@@ -2691,6 +2718,7 @@ crates:
         .args([
             "release",
             "--dry-run",
+            "--snapshot",
             "--skip=release,publish,docker,announce,nfpm",
             "--timeout",
             "5m",
@@ -2727,11 +2755,11 @@ crates:
         stderr
     );
 
-    // No RELEASE_NOTES.md should exist (changelog dry-run skips disk write)
-    let notes_path = tmp.path().join("dist/RELEASE_NOTES.md");
+    // No CHANGELOG.md should exist (changelog dry-run skips disk write)
+    let notes_path = tmp.path().join("dist/CHANGELOG.md");
     assert!(
         !notes_path.exists(),
-        "RELEASE_NOTES.md should NOT exist after dry-run"
+        "CHANGELOG.md should NOT exist after dry-run"
     );
 }
 
@@ -2805,7 +2833,9 @@ fn test_e2e_init_yaml_structural_round_trip() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let yaml_str = String::from_utf8_lossy(&output.stdout).to_string();
+    // Read the generated config file
+    let yaml_str = fs::read_to_string(tmp.path().join(".anodize.yaml"))
+        .expect(".anodize.yaml should exist after init");
 
     // Parse as generic YAML
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml_str).unwrap_or_else(|e| {
@@ -3040,7 +3070,7 @@ fn test_e2e_healthcheck_detects_tools() {
 }
 
 /// E2E #16: Changelog with header and footer — verify that header/footer
-/// strings are included in the generated RELEASE_NOTES.md.
+/// strings are included in the generated CHANGELOG.md.
 #[test]
 fn test_e2e_changelog_header_footer() {
     let tmp = TempDir::new().unwrap();
@@ -3120,8 +3150,8 @@ crates:
         stderr
     );
 
-    let notes_path = tmp.path().join("dist/RELEASE_NOTES.md");
-    assert!(notes_path.exists(), "RELEASE_NOTES.md should exist");
+    let notes_path = tmp.path().join("dist/CHANGELOG.md");
+    assert!(notes_path.exists(), "CHANGELOG.md should exist");
 
     let notes = fs::read_to_string(&notes_path).unwrap();
     assert!(
@@ -3244,8 +3274,8 @@ crates:
         stderr
     );
 
-    let notes_path = tmp.path().join("dist/RELEASE_NOTES.md");
-    assert!(notes_path.exists(), "RELEASE_NOTES.md should exist");
+    let notes_path = tmp.path().join("dist/CHANGELOG.md");
+    assert!(notes_path.exists(), "CHANGELOG.md should exist");
 
     let notes = fs::read_to_string(&notes_path).unwrap();
     assert!(

@@ -95,8 +95,7 @@ fn hmac_sha1_base64(key: &[u8], data: &[u8]) -> Result<String> {
     use hmac::{Hmac, Mac};
     use sha1::Sha1;
     type HmacSha1 = Hmac<Sha1>;
-    let mut mac =
-        HmacSha1::new_from_slice(key).map_err(|e| anyhow::anyhow!("HMAC error: {e}"))?;
+    let mut mac = HmacSha1::new_from_slice(key).map_err(|e| anyhow::anyhow!("HMAC error: {e}"))?;
     mac.update(data);
     Ok(base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes()))
 }
@@ -115,8 +114,8 @@ fn percent_encode(s: &str) -> String {
 }
 
 fn generate_nonce() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::hash::{Hash, Hasher};
+    use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -152,9 +151,15 @@ mod tests {
 
     #[test]
     fn test_oauth1_header_format() {
-        let header =
-            build_oauth1_header("POST", "https://api.x.com/2/tweets", "ck", "cs", "at", "ats")
-                .unwrap();
+        let header = build_oauth1_header(
+            "POST",
+            "https://api.x.com/2/tweets",
+            "ck",
+            "cs",
+            "at",
+            "ats",
+        )
+        .unwrap();
         assert!(header.starts_with("OAuth "));
         assert!(header.contains("oauth_consumer_key=\"ck\""));
         assert!(header.contains("oauth_token=\"at\""));
@@ -168,7 +173,8 @@ mod tests {
     #[test]
     fn test_hmac_sha1_base64_known_value() {
         // Known HMAC-SHA1 test vector
-        let result = hmac_sha1_base64(b"key", b"The quick brown fox jumps over the lazy dog").unwrap();
+        let result =
+            hmac_sha1_base64(b"key", b"The quick brown fox jumps over the lazy dog").unwrap();
         assert_eq!(result, "3nybhbi3iqa8ino29wqQcBydtNk=");
     }
 

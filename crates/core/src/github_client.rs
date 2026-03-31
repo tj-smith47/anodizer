@@ -17,6 +17,7 @@
 //!     id: 42,
 //!     html_url: "https://github.com/owner/repo/releases/42".to_string(),
 //!     tag_name: "v1.0.0".to_string(),
+//!     name: Some("Release v1.0.0".to_string()),
 //!     draft: false,
 //! }));
 //!
@@ -39,6 +40,7 @@ pub struct ReleaseInfo {
     pub id: u64,
     pub html_url: String,
     pub tag_name: String,
+    pub name: Option<String>,
     pub draft: bool,
 }
 
@@ -302,6 +304,7 @@ mod tests {
             id: 42,
             html_url: "https://github.com/owner/repo/releases/42".to_string(),
             tag_name: "v1.0.0".to_string(),
+            name: Some("Release v1.0.0".to_string()),
             draft: false,
         }));
 
@@ -356,6 +359,7 @@ mod tests {
             id: 1,
             html_url: "https://github.com/owner/repo/releases/1".to_string(),
             tag_name: "v0.9.0".to_string(),
+            name: Some("Release v0.9.0".to_string()),
             draft: false,
         }]));
 

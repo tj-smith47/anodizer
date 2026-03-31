@@ -53,6 +53,8 @@ anodize-stage-dmg = { path = "crates/stage-dmg", version = "0.1.0" }
 anodize-stage-msi = { path = "crates/stage-msi", version = "0.1.0" }
 anodize-stage-pkg = { path = "crates/stage-pkg", version = "0.1.0" }
 anodize-stage-blob = { path = "crates/stage-blob", version = "0.1.0" }
+anodize-stage-nsis = { path = "crates/stage-nsis", version = "0.1.0" }
+anodize-stage-appbundle = { path = "crates/stage-appbundle", version = "0.1.0" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

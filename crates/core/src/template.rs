@@ -41,10 +41,13 @@ fn increment_version(v: &str, part: VersionPart) -> String {
     let parts: Vec<&str> = stripped.splitn(3, '.').collect();
     let major: u64 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
     let minor: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-    let patch: u64 = parts.get(2).and_then(|s| {
-        // Handle prerelease suffix: "3-rc.1" → "3"
-        s.split('-').next().and_then(|n| n.parse().ok())
-    }).unwrap_or(0);
+    let patch: u64 = parts
+        .get(2)
+        .and_then(|s| {
+            // Handle prerelease suffix: "3-rc.1" → "3"
+            s.split('-').next().and_then(|n| n.parse().ok())
+        })
+        .unwrap_or(0);
     let prefix = if v.starts_with('v') { "v" } else { "" };
     match part {
         VersionPart::Major => format!("{}{}.0.0", prefix, major + 1),
@@ -57,7 +60,6 @@ fn increment_version(v: &str, part: VersionPart) -> String {
 // SAFETY: This is a compile-time regex literal; it is known to be valid.
 static GO_BLOCK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\{\{.*?\}\}|\{%.*?%\}").unwrap());
-
 
 /// Base Tera instance with custom filters pre-registered.
 /// Cloned per render() call (cheap — no templates to clone).
@@ -102,7 +104,11 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // envOrDefault(name="VAR", default="fallback") — return env var value or default
+    // envOrDefault and isEnvSet are registered as placeholder functions here in
+    // BASE_TERA so that Tera's parser recognizes them. They are overridden with
+    // context-aware closures in render() before actual rendering occurs.
+    // See render() for the real implementations that read from the template
+    // context's Env map.
     tera.register_function(
         "envOrDefault",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -115,8 +121,6 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             Ok(Value::String(value))
         },
     );
-
-    // isEnvSet(name="VAR") — return true if env var is set and non-empty
     tera.register_function(
         "isEnvSet",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -174,15 +178,13 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             $tera.register_function(
                 $name,
                 |args: &HashMap<String, Value>| -> tera::Result<Value> {
-                    let s = args
-                        .get("s")
-                        .and_then(|v| v.as_str())
-                        .ok_or_else(|| {
-                            tera::Error::msg(format!("{} requires `s` argument", $name))
-                        })?;
-                    // GoReleaser behavior: if the argument is a valid file path that
-                    // exists, hash the file contents; otherwise hash the string itself.
-                    let bytes = std::fs::read(s).unwrap_or_else(|_| s.as_bytes().to_vec());
+                    let s = args.get("s").and_then(|v| v.as_str()).ok_or_else(|| {
+                        tera::Error::msg(format!("{} requires `s` argument", $name))
+                    })?;
+                    // Read the file; error if it cannot be read (no silent fallback).
+                    let bytes = std::fs::read(s).map_err(|e| {
+                        tera::Error::msg(format!("{}: failed to read file '{}': {}", $name, s, e))
+                    })?;
                     Ok(Value::String($hash_fn(&bytes)))
                 },
             );
@@ -352,11 +354,7 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             let encoded: String = s
                 .bytes()
                 .map(|b| {
-                    if b.is_ascii_alphanumeric()
-                        || b == b'-'
-                        || b == b'_'
-                        || b == b'.'
-                        || b == b'~'
+                    if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~'
                     {
                         (b as char).to_string()
                     } else {
@@ -369,23 +367,20 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // mdv2escape — escape Telegram MarkdownV2 special characters
-    tera.register_filter(
-        "mdv2escape",
-        |value: &Value, _: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("mdv2escape", "value", String, value);
-            let escaped = s
-                .chars()
-                .map(|c| {
-                    if "_*[]()~`>#+-=|{}.!\\".contains(c) {
-                        format!("\\{}", c)
-                    } else {
-                        c.to_string()
-                    }
-                })
-                .collect::<String>();
-            Ok(Value::String(escaped))
-        },
-    );
+    tera.register_filter("mdv2escape", |value: &Value, _: &HashMap<String, Value>| {
+        let s = tera::try_get_value!("mdv2escape", "value", String, value);
+        let escaped = s
+            .chars()
+            .map(|c| {
+                if "_*[]()~`>#+-=|{}.!".contains(c) {
+                    format!("\\{}", c)
+                } else {
+                    c.to_string()
+                }
+            })
+            .collect::<String>();
+        Ok(Value::String(escaped))
+    });
 
     // --- Go-style compatibility functions ---
 
@@ -418,6 +413,7 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // englishJoin(items=[...], oxford=true) — join list items with commas and "and"
+    // GoReleaser filters out empty/whitespace-only items before joining.
     tera.register_function(
         "englishJoin",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -429,6 +425,7 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             let strs: Vec<String> = items
                 .iter()
                 .map(|v| v.as_str().unwrap_or("").to_string())
+                .filter(|s| !s.trim().is_empty())
                 .collect();
             let result = match strs.len() {
                 0 => String::new(),
@@ -447,15 +444,16 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
-    // filter(items=[...], regexp="pattern") — filter array elements by regex
+    // filter(items=<string|array>, regexp="pattern") — keep elements matching regex
+    // GoReleaser accepts a multiline STRING (splits by newline, filters lines, rejoins).
+    // We also accept an array for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
     tera.register_function(
         "filter",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
-            let items = args
+            let items_val = args
                 .get("items")
-                .and_then(|v| v.as_array())
                 .ok_or_else(|| tera::Error::msg("filter requires `items` argument"))?;
             let pattern = args
                 .get("regexp")
@@ -463,24 +461,41 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .ok_or_else(|| tera::Error::msg("filter requires `regexp` argument"))?;
             let re = Regex::new(pattern)
                 .map_err(|e| tera::Error::msg(format!("filter: invalid regex: {}", e)))?;
-            let filtered: Vec<Value> = items
-                .iter()
-                .filter(|v| v.as_str().is_some_and(|s| re.is_match(s)))
-                .cloned()
-                .collect();
-            Ok(Value::Array(filtered))
+
+            if let Some(s) = items_val.as_str() {
+                // String input: split by newlines, filter matching lines, rejoin
+                let filtered: String = s
+                    .lines()
+                    .filter(|line| re.is_match(line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(Value::String(filtered))
+            } else if let Some(arr) = items_val.as_array() {
+                // Array input: filter elements whose string value matches
+                let filtered: Vec<Value> = arr
+                    .iter()
+                    .filter(|v| v.as_str().is_some_and(|s| re.is_match(s)))
+                    .cloned()
+                    .collect();
+                Ok(Value::Array(filtered))
+            } else {
+                Err(tera::Error::msg(
+                    "filter: `items` must be a string or array",
+                ))
+            }
         },
     );
 
-    // reverseFilter(items=[...], regexp="pattern") — exclude array elements matching regex
+    // reverseFilter(items=<string|array>, regexp="pattern") — exclude elements matching regex
+    // GoReleaser accepts a multiline STRING (splits by newline, filters lines, rejoins).
+    // We also accept an array for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
     tera.register_function(
         "reverseFilter",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
-            let items = args
+            let items_val = args
                 .get("items")
-                .and_then(|v| v.as_array())
                 .ok_or_else(|| tera::Error::msg("reverseFilter requires `items` argument"))?;
             let pattern = args
                 .get("regexp")
@@ -488,12 +503,28 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .ok_or_else(|| tera::Error::msg("reverseFilter requires `regexp` argument"))?;
             let re = Regex::new(pattern)
                 .map_err(|e| tera::Error::msg(format!("reverseFilter: invalid regex: {}", e)))?;
-            let filtered: Vec<Value> = items
-                .iter()
-                .filter(|v| !v.as_str().is_some_and(|s| re.is_match(s)))
-                .cloned()
-                .collect();
-            Ok(Value::Array(filtered))
+
+            if let Some(s) = items_val.as_str() {
+                // String input: split by newlines, exclude matching lines, rejoin
+                let filtered: String = s
+                    .lines()
+                    .filter(|line| !re.is_match(line))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                Ok(Value::String(filtered))
+            } else if let Some(arr) = items_val.as_array() {
+                // Array input: exclude elements whose string value matches
+                let filtered: Vec<Value> = arr
+                    .iter()
+                    .filter(|v| !v.as_str().is_some_and(|s| re.is_match(s)))
+                    .cloned()
+                    .collect();
+                Ok(Value::Array(filtered))
+            } else {
+                Err(tera::Error::msg(
+                    "reverseFilter: `items` must be a string or array",
+                ))
+            }
         },
     );
 
@@ -509,10 +540,289 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("key")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("indexOrDefault requires `key` argument"))?;
-            let default = args.get("default").cloned().unwrap_or(Value::String(String::new()));
+            let default = args
+                .get("default")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
             Ok(map.get(key).cloned().unwrap_or(default))
         },
     );
+
+    // --- replace function (GoReleaser strings.ReplaceAll parity) ---
+    // Function form: replace(s="input", old="x", new="y")
+    tera.register_function(
+        "replace",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("replace requires `s` argument"))?;
+            let old = args
+                .get("old")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("replace requires `old` argument"))?;
+            let new = args
+                .get("new")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("replace requires `new` argument"))?;
+            Ok(Value::String(s.replace(old, new)))
+        },
+    );
+    // Filter form: {{ Field | replace(from="old", to="new") }}
+    // Overrides Tera's built-in replace filter. Uses `from`/`to` arg names
+    // (same as the built-in) so existing Tera templates continue to work.
+    tera.register_filter("replace", |value: &Value, args: &HashMap<String, Value>| {
+        let s = tera::try_get_value!("replace", "value", String, value);
+        let from = args
+            .get("from")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| tera::Error::msg("replace filter requires `from` argument"))?;
+        let to = args
+            .get("to")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| tera::Error::msg("replace filter requires `to` argument"))?;
+        Ok(Value::String(s.replace(from, to)))
+    });
+
+    // --- split function (GoReleaser strings.Split parity) ---
+    // split(s="a,b,c", sep=",") → ["a", "b", "c"]
+    tera.register_function(
+        "split",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("split requires `s` argument"))?;
+            let sep = args
+                .get("sep")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("split requires `sep` argument"))?;
+            let parts: Vec<Value> = s.split(sep).map(|p| Value::String(p.to_string())).collect();
+            Ok(Value::Array(parts))
+        },
+    );
+
+    // --- trim function (GoReleaser strings.TrimSpace parity) ---
+    // Function form: trim(s="  hello  ") → "hello"
+    // Tera already has a built-in `trim` filter, so we only add the function form.
+    tera.register_function(
+        "trim",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trim requires `s` argument"))?;
+            Ok(Value::String(s.trim().to_string()))
+        },
+    );
+
+    // --- title function (GoReleaser strings.ToTitle parity) ---
+    // Function form: title(s="hello world") → "Hello World"
+    // Tera already has a built-in `title` filter, so we only add the function form.
+    tera.register_function(
+        "title",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("title requires `s` argument"))?;
+            // Title-case: capitalize the first letter of each word.
+            let titled = s
+                .split_whitespace()
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        Some(c) => {
+                            let upper: String = c.to_uppercase().collect();
+                            format!("{}{}", upper, chars.as_str())
+                        }
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(Value::String(titled))
+        },
+    );
+
+    // --- Dual registration: existing filters also as functions ---
+
+    // tolower(s="...") — function form of tolower filter
+    tera.register_function(
+        "tolower",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("tolower requires `s` argument"))?;
+            Ok(Value::String(s.to_lowercase()))
+        },
+    );
+
+    // toupper(s="...") — function form of toupper filter
+    tera.register_function(
+        "toupper",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("toupper requires `s` argument"))?;
+            Ok(Value::String(s.to_uppercase()))
+        },
+    );
+
+    // trimprefix(s="...", prefix="...") — function form of trimprefix filter
+    tera.register_function(
+        "trimprefix",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimprefix requires `s` argument"))?;
+            let prefix = args
+                .get("prefix")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimprefix requires `prefix` argument"))?;
+            let result = s.strip_prefix(prefix).unwrap_or(s);
+            Ok(Value::String(result.to_string()))
+        },
+    );
+
+    // trimsuffix(s="...", suffix="...") — function form of trimsuffix filter
+    tera.register_function(
+        "trimsuffix",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimsuffix requires `s` argument"))?;
+            let suffix = args
+                .get("suffix")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimsuffix requires `suffix` argument"))?;
+            let result = s.strip_suffix(suffix).unwrap_or(s);
+            Ok(Value::String(result.to_string()))
+        },
+    );
+
+    // dir(s="...") — function form of dir filter
+    tera.register_function(
+        "dir",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("dir requires `s` argument"))?;
+            let p = std::path::Path::new(s);
+            Ok(Value::String(
+                p.parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            ))
+        },
+    );
+
+    // base(s="...") — function form of base filter
+    tera.register_function(
+        "base",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("base requires `s` argument"))?;
+            let p = std::path::Path::new(s);
+            Ok(Value::String(
+                p.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            ))
+        },
+    );
+
+    // abs(s="...") — function form of abs filter
+    tera.register_function(
+        "abs",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("abs requires `s` argument"))?;
+            let p = std::path::Path::new(s);
+            if p.is_absolute() {
+                Ok(Value::String(s.to_string()))
+            } else {
+                let abs = std::env::current_dir()
+                    .map(|cwd| cwd.join(p).to_string_lossy().to_string())
+                    .unwrap_or_else(|_| s.to_string());
+                Ok(Value::String(abs))
+            }
+        },
+    );
+
+    // urlPathEscape(s="...") — function form of urlPathEscape filter
+    tera.register_function(
+        "urlPathEscape",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("urlPathEscape requires `s` argument"))?;
+            let encoded: String = s
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~'
+                    {
+                        (b as char).to_string()
+                    } else {
+                        format!("%{:02X}", b)
+                    }
+                })
+                .collect();
+            Ok(Value::String(encoded))
+        },
+    );
+
+    // mdv2escape(s="...") — function form of mdv2escape filter
+    tera.register_function(
+        "mdv2escape",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let s = args
+                .get("s")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("mdv2escape requires `s` argument"))?;
+            let escaped = s
+                .chars()
+                .map(|c| {
+                    if "_*[]()~`>#+-=|{}.!".contains(c) {
+                        format!("\\{}", c)
+                    } else {
+                        c.to_string()
+                    }
+                })
+                .collect::<String>();
+            Ok(Value::String(escaped))
+        },
+    );
+
+    // --- Dual registration: existing functions also as filters ---
+
+    // incpatch — filter form: {{ "1.2.3" | incpatch }}
+    tera.register_filter("incpatch", |value: &Value, _: &HashMap<String, Value>| {
+        let v = tera::try_get_value!("incpatch", "value", String, value);
+        Ok(Value::String(increment_version(&v, VersionPart::Patch)))
+    });
+
+    // incminor — filter form: {{ "1.2.3" | incminor }}
+    tera.register_filter("incminor", |value: &Value, _: &HashMap<String, Value>| {
+        let v = tera::try_get_value!("incminor", "value", String, value);
+        Ok(Value::String(increment_version(&v, VersionPart::Minor)))
+    });
+
+    // incmajor — filter form: {{ "1.2.3" | incmajor }}
+    tera.register_filter("incmajor", |value: &Value, _: &HashMap<String, Value>| {
+        let v = tera::try_get_value!("incmajor", "value", String, value);
+        Ok(Value::String(increment_version(&v, VersionPart::Major)))
+    });
 
     tera
 });
@@ -610,8 +920,8 @@ fn preprocess(template: &str) -> String {
                 {
                     // Check if the preceding character is a word char — if so,
                     // this is chained access (e.g., `Env.VAR`) and we keep the dot.
-                    let prev_is_word = i > 0
-                        && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+                    let prev_is_word =
+                        i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
                     if prev_is_word {
                         result.push('.');
                     }
@@ -628,13 +938,28 @@ fn preprocess(template: &str) -> String {
         .to_string()
 }
 
+/// Known numeric template fields that should be inserted as integers into the
+/// Tera context so that numeric comparisons like `{% if Major == 1 %}` work
+/// correctly. Without this, they would be strings and `"1" != 1`.
+const NUMERIC_FIELDS: &[&str] = &["Major", "Minor", "Patch", "Timestamp", "CommitTimestamp"];
+
 /// Build a `tera::Context` from `TemplateVars`.
 /// - Regular vars are inserted at the top level: `ProjectName`, `Version`, etc.
 /// - Env vars are nested under an `Env` key as a HashMap, so `{{ Env.GITHUB_TOKEN }}` works.
 /// - String values of `"true"` / `"false"` are inserted as bools so `{% if Var %}` works.
+/// - Known numeric fields (`Major`, `Minor`, `Patch`, `Timestamp`, `CommitTimestamp`)
+///   are inserted as integers so `{% if Major == 1 %}` works correctly.
 fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     let mut ctx = tera::Context::new();
     for (k, v) in &vars.vars {
+        // For known numeric fields, parse as i64 and insert as a number so
+        // Tera comparisons like `{% if Major == 1 %}` work correctly.
+        if NUMERIC_FIELDS.contains(&k.as_str())
+            && let Ok(n) = v.parse::<i64>()
+        {
+            ctx.insert(k.as_str(), &n);
+            continue;
+        }
         match v.as_str() {
             "true" => ctx.insert(k.as_str(), &true),
             "false" => ctx.insert(k.as_str(), &false),
@@ -678,11 +1003,73 @@ pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
     // Clone the base instance (cheap — filters carry over, no templates to clone)
     let mut tera = BASE_TERA.clone();
 
+    // Override envOrDefault and isEnvSet with closures that read from the
+    // template context's Env map. This ensures .env file vars (loaded into
+    // TemplateVars via set_env) are visible, not just process env vars.
+    // Falls back to std::env::var for vars that exist in the process env
+    // but were not explicitly added to the template context.
+    let env_map = std::sync::Arc::new(vars.all_env().clone());
+    let env_map_for_default = env_map.clone();
+    tera.register_function(
+        "envOrDefault",
+        move |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("envOrDefault requires `name` argument"))?;
+            let default = args.get("default").and_then(|v| v.as_str()).unwrap_or("");
+            // Check template context Env map first, then fall back to process env.
+            let value = env_map_for_default
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+                .unwrap_or_else(|| default.to_string());
+            Ok(Value::String(value))
+        },
+    );
+
+    let env_map_for_isset = env_map.clone();
+    tera.register_function(
+        "isEnvSet",
+        move |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("isEnvSet requires `name` argument"))?;
+            // Check template context Env map first, then fall back to process env.
+            let is_set = env_map_for_isset
+                .get(name)
+                .map(|v| !v.is_empty())
+                .unwrap_or_else(|| std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false));
+            Ok(Value::Bool(is_set))
+        },
+    );
+
     tera.add_raw_template("__inline__", &preprocessed)
         .with_context(|| format!("failed to parse template: {}", template))?;
 
     tera.render("__inline__", &ctx)
         .with_context(|| format!("failed to render template: {}", template))
+}
+
+/// Validate that a template string contains only a single `{{ Env.VAR }}` reference.
+/// Used for credential fields (e.g. Docker registry passwords) to prevent
+/// hardcoded secrets mixed with env var references.
+///
+/// Accepts: `{{ .Env.VAR }}`, `{{ Env.VAR }}`, `{{.Env.VAR}}`, `{{Env.VAR}}`
+/// Rejects: `prefix-{{ .Env.VAR }}`, `{{ .Env.VAR }}-suffix`, any literal text
+pub fn validate_single_env_only(template: &str) -> Result<()> {
+    static ENV_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"^\s*\{\{\s*\.?Env\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}\s*$").unwrap()
+    });
+    if ENV_ONLY_RE.is_match(template) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "expected a single env var reference like '{{{{ .Env.VAR }}}}', got: {}",
+            template
+        )
+    }
 }
 
 #[cfg(test)]
@@ -1096,24 +1483,55 @@ mod tests {
     // ---- envOrDefault and isEnvSet function tests ----
 
     #[test]
-    fn test_env_or_default_returns_env_value_when_set() {
+    fn test_env_or_default_reads_from_template_env_map() {
+        // The primary path: envOrDefault reads from the template context Env map,
+        // NOT from the process environment. This is the .env file use case.
+        let mut vars = test_vars();
+        vars.set_env("MY_CUSTOM_VAR", "from-template-env");
+        let result = render(
+            "{{ envOrDefault(name=\"MY_CUSTOM_VAR\", default=\"fallback\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "from-template-env");
+    }
+
+    #[test]
+    fn test_env_or_default_template_env_takes_priority_over_process_env() {
+        // If a var exists in both the template Env map and the process env,
+        // the template Env map wins.
+        let mut vars = test_vars();
+        // SAFETY: Test-only; no other threads read this env var.
+        unsafe { std::env::set_var("ANODIZE_TEST_PRIORITY", "from-process") };
+        vars.set_env("ANODIZE_TEST_PRIORITY", "from-template");
+        let result = render(
+            "{{ envOrDefault(name=\"ANODIZE_TEST_PRIORITY\", default=\"fallback\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "from-template");
+        unsafe { std::env::remove_var("ANODIZE_TEST_PRIORITY") };
+    }
+
+    #[test]
+    fn test_env_or_default_falls_back_to_process_env() {
+        // If a var is NOT in the template Env map but IS in the process env,
+        // fall back to the process env.
         let vars = test_vars();
         // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::set_var("ANODIZE_TEST_ENV_OR_DEFAULT", "from-env") };
+        unsafe { std::env::set_var("ANODIZE_TEST_ENV_OR_DEFAULT", "from-process-env") };
         let result = render(
             "{{ envOrDefault(name=\"ANODIZE_TEST_ENV_OR_DEFAULT\", default=\"fallback\") }}",
             &vars,
         )
         .unwrap();
-        assert_eq!(result, "from-env");
+        assert_eq!(result, "from-process-env");
         unsafe { std::env::remove_var("ANODIZE_TEST_ENV_OR_DEFAULT") };
     }
 
     #[test]
     fn test_env_or_default_returns_default_when_unset() {
         let vars = test_vars();
-        // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::remove_var("ANODIZE_TEST_UNSET_VAR_XYZ") };
         let result = render(
             "{{ envOrDefault(name=\"ANODIZE_TEST_UNSET_VAR_XYZ\", default=\"fallback\") }}",
             &vars,
@@ -1125,8 +1543,6 @@ mod tests {
     #[test]
     fn test_env_or_default_returns_empty_when_no_default() {
         let vars = test_vars();
-        // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::remove_var("ANODIZE_TEST_UNSET_VAR_XYZ2") };
         let result = render(
             "{{ envOrDefault(name=\"ANODIZE_TEST_UNSET_VAR_XYZ2\") }}",
             &vars,
@@ -1143,7 +1559,35 @@ mod tests {
     }
 
     #[test]
-    fn test_is_env_set_true_when_set() {
+    fn test_is_env_set_reads_from_template_env_map() {
+        // The primary path: isEnvSet reads from the template context Env map.
+        let mut vars = test_vars();
+        vars.set_env("MY_CUSTOM_CHECK", "yes");
+        let result = render(
+            "{% if isEnvSet(name=\"MY_CUSTOM_CHECK\") %}SET{% else %}UNSET{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "SET");
+    }
+
+    #[test]
+    fn test_is_env_set_template_env_empty_returns_false() {
+        // An empty string in the template Env map should return false.
+        let mut vars = test_vars();
+        vars.set_env("MY_EMPTY_VAR", "");
+        let result = render(
+            "{% if isEnvSet(name=\"MY_EMPTY_VAR\") %}SET{% else %}UNSET{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "UNSET");
+    }
+
+    #[test]
+    fn test_is_env_set_falls_back_to_process_env() {
+        // If a var is NOT in the template Env map but IS in the process env,
+        // fall back to the process env.
         let vars = test_vars();
         // SAFETY: Test-only; no other threads read this env var.
         unsafe { std::env::set_var("ANODIZE_TEST_IS_SET", "yes") };
@@ -1159,28 +1603,12 @@ mod tests {
     #[test]
     fn test_is_env_set_false_when_unset() {
         let vars = test_vars();
-        // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::remove_var("ANODIZE_TEST_NOT_SET_XYZ") };
         let result = render(
             "{% if isEnvSet(name=\"ANODIZE_TEST_NOT_SET_XYZ\") %}SET{% else %}UNSET{% endif %}",
             &vars,
         )
         .unwrap();
         assert_eq!(result, "UNSET");
-    }
-
-    #[test]
-    fn test_is_env_set_false_when_empty() {
-        let vars = test_vars();
-        // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::set_var("ANODIZE_TEST_EMPTY_VAR", "") };
-        let result = render(
-            "{% if isEnvSet(name=\"ANODIZE_TEST_EMPTY_VAR\") %}SET{% else %}UNSET{% endif %}",
-            &vars,
-        )
-        .unwrap();
-        assert_eq!(result, "UNSET");
-        unsafe { std::env::remove_var("ANODIZE_TEST_EMPTY_VAR") };
     }
 
     #[test]
@@ -1191,18 +1619,30 @@ mod tests {
     }
 
     // ---- Hash function tests (known-answer vectors) ----
+    // Hash functions read file contents (GoReleaser parity), so tests use temp files.
+
+    fn hash_test_file() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hello.txt");
+        std::fs::write(&path, "hello").unwrap();
+        (dir, path.to_string_lossy().into_owned())
+    }
 
     #[test]
     fn test_hash_sha1() {
         let vars = test_vars();
-        let result = render("{{ sha1(s=\"hello\") }}", &vars).unwrap();
+        let (_dir, path) = hash_test_file();
+        let tmpl = format!("{{{{ sha1(s=\"{path}\") }}}}");
+        let result = render(&tmpl, &vars).unwrap();
         assert_eq!(result, "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d");
     }
 
     #[test]
     fn test_hash_sha256() {
         let vars = test_vars();
-        let result = render("{{ sha256(s=\"hello\") }}", &vars).unwrap();
+        let (_dir, path) = hash_test_file();
+        let tmpl = format!("{{{{ sha256(s=\"{path}\") }}}}");
+        let result = render(&tmpl, &vars).unwrap();
         assert_eq!(
             result,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
@@ -1212,7 +1652,9 @@ mod tests {
     #[test]
     fn test_hash_sha512() {
         let vars = test_vars();
-        let result = render("{{ sha512(s=\"hello\") }}", &vars).unwrap();
+        let (_dir, path) = hash_test_file();
+        let tmpl = format!("{{{{ sha512(s=\"{path}\") }}}}");
+        let result = render(&tmpl, &vars).unwrap();
         assert_eq!(
             result,
             "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043"
@@ -1222,14 +1664,18 @@ mod tests {
     #[test]
     fn test_hash_md5() {
         let vars = test_vars();
-        let result = render("{{ md5(s=\"hello\") }}", &vars).unwrap();
+        let (_dir, path) = hash_test_file();
+        let tmpl = format!("{{{{ md5(s=\"{path}\") }}}}");
+        let result = render(&tmpl, &vars).unwrap();
         assert_eq!(result, "5d41402abc4b2a76b9719d911017c592");
     }
 
     #[test]
     fn test_hash_blake3() {
         let vars = test_vars();
-        let result = render("{{ blake3(s=\"hello\") }}", &vars).unwrap();
+        let (_dir, path) = hash_test_file();
+        let tmpl = format!("{{{{ blake3(s=\"{path}\") }}}}");
+        let result = render(&tmpl, &vars).unwrap();
         assert_eq!(
             result,
             "ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"
@@ -1239,7 +1685,9 @@ mod tests {
     #[test]
     fn test_hash_crc32() {
         let vars = test_vars();
-        let result = render("{{ crc32(s=\"hello\") }}", &vars).unwrap();
+        let (_dir, path) = hash_test_file();
+        let tmpl = format!("{{{{ crc32(s=\"{path}\") }}}}");
+        let result = render(&tmpl, &vars).unwrap();
         assert_eq!(result, "3610a686");
     }
 
@@ -1247,7 +1695,10 @@ mod tests {
     fn test_hash_missing_s_arg_error() {
         let vars = test_vars();
         let result = render("{{ sha256() }}", &vars);
-        assert!(result.is_err(), "hash function without `s` arg should error");
+        assert!(
+            result.is_err(),
+            "hash function without `s` arg should error"
+        );
         // The anyhow error chain includes the tera error with our message
         let err = format!("{:#}", result.unwrap_err());
         assert!(
@@ -1313,9 +1764,11 @@ mod tests {
     #[test]
     fn test_read_file_nonexistent_returns_empty() {
         let vars = test_vars();
-        let result =
-            render("{{ readFile(path=\"/tmp/anodize_test_nonexistent_file_xyz\") }}", &vars)
-                .unwrap();
+        let result = render(
+            "{{ readFile(path=\"/tmp/anodize_test_nonexistent_file_xyz\") }}",
+            &vars,
+        )
+        .unwrap();
         assert_eq!(result, "");
     }
 
@@ -1423,44 +1876,28 @@ mod tests {
     fn test_english_join_zero_items() {
         let vars = test_vars();
         // Pass an empty array via list()
-        let result = render(
-            "{{ englishJoin(items=[]) }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ englishJoin(items=[]) }}", &vars).unwrap();
         assert_eq!(result, "");
     }
 
     #[test]
     fn test_english_join_one_item() {
         let vars = test_vars();
-        let result = render(
-            "{{ englishJoin(items=[\"a\"]) }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ englishJoin(items=[\"a\"]) }}", &vars).unwrap();
         assert_eq!(result, "a");
     }
 
     #[test]
     fn test_english_join_two_items() {
         let vars = test_vars();
-        let result = render(
-            "{{ englishJoin(items=[\"a\", \"b\"]) }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ englishJoin(items=[\"a\", \"b\"]) }}", &vars).unwrap();
         assert_eq!(result, "a and b");
     }
 
     #[test]
     fn test_english_join_three_items_oxford() {
         let vars = test_vars();
-        let result = render(
-            "{{ englishJoin(items=[\"a\", \"b\", \"c\"]) }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ englishJoin(items=[\"a\", \"b\", \"c\"]) }}", &vars).unwrap();
         assert_eq!(result, "a, b, and c");
     }
 
@@ -1511,10 +1948,7 @@ mod tests {
         // We need to construct a template that passes a map. Tera doesn't have inline map
         // literals in templates, so we test the function via the Rust API directly.
         let args: HashMap<String, Value> = [
-            (
-                "map".to_string(),
-                serde_json::json!({"foo": "bar"}),
-            ),
+            ("map".to_string(), serde_json::json!({"foo": "bar"})),
             ("key".to_string(), Value::String("foo".to_string())),
             ("default".to_string(), Value::String("fallback".to_string())),
         ]
@@ -1524,7 +1958,10 @@ mod tests {
         // Access the function via BASE_TERA - we test it indirectly by calling the logic
         let map = args.get("map").unwrap().as_object().unwrap();
         let key = args.get("key").unwrap().as_str().unwrap();
-        let default = args.get("default").cloned().unwrap_or(Value::String(String::new()));
+        let default = args
+            .get("default")
+            .cloned()
+            .unwrap_or(Value::String(String::new()));
         let result = map.get(key).cloned().unwrap_or(default);
         assert_eq!(result, Value::String("bar".to_string()));
     }
@@ -1532,10 +1969,7 @@ mod tests {
     #[test]
     fn test_index_or_default_key_missing() {
         let args: HashMap<String, Value> = [
-            (
-                "map".to_string(),
-                serde_json::json!({"foo": "bar"}),
-            ),
+            ("map".to_string(), serde_json::json!({"foo": "bar"})),
             ("key".to_string(), Value::String("missing".to_string())),
             ("default".to_string(), Value::String("fallback".to_string())),
         ]
@@ -1544,7 +1978,10 @@ mod tests {
 
         let map = args.get("map").unwrap().as_object().unwrap();
         let key = args.get("key").unwrap().as_str().unwrap();
-        let default = args.get("default").cloned().unwrap_or(Value::String(String::new()));
+        let default = args
+            .get("default")
+            .cloned()
+            .unwrap_or(Value::String(String::new()));
         let result = map.get(key).cloned().unwrap_or(default);
         assert_eq!(result, Value::String("fallback".to_string()));
     }
@@ -1556,6 +1993,9 @@ mod tests {
         let mut vars = test_vars();
         vars.set("RuntimeGoos", std::env::consts::OS);
         let result = render("{{ Runtime.Goos }}", &vars).unwrap();
-        assert!(!result.is_empty(), "Runtime.Goos should render to a non-empty string");
+        assert!(
+            !result.is_empty(),
+            "Runtime.Goos should render to a non-empty string"
+        );
     }
 }

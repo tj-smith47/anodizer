@@ -105,6 +105,25 @@ fn build_s3_store(
     // We set it as a default header on the client — since each blob config
     // gets its own ObjectStore client, this is per-config ACL.
     if let Some(ref acl) = config.acl {
+        // Validate against the S3 canned ACL enum.
+        const VALID_S3_ACLS: &[&str] = &[
+            "private",
+            "public-read",
+            "public-read-write",
+            "authenticated-read",
+            "aws-exec-read",
+            "bucket-owner-read",
+            "bucket-owner-full-control",
+            "log-delivery-write",
+        ];
+        if !VALID_S3_ACLS.contains(&acl.as_str()) {
+            anyhow::bail!(
+                "blobs: invalid S3 canned ACL '{}'. Valid values are: {}",
+                acl,
+                VALID_S3_ACLS.join(", ")
+            );
+        }
+
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::HeaderName::from_static("x-amz-acl"),
@@ -162,11 +181,7 @@ fn build_azure_store(container: &str) -> Result<Box<dyn ObjectStore>> {
 // Put options — headers (cache-control, content-disposition)
 // ---------------------------------------------------------------------------
 
-fn build_put_options(
-    config: &BlobConfig,
-    filename: &str,
-    ctx: &Context,
-) -> Result<PutOptions> {
+fn build_put_options(config: &BlobConfig, filename: &str, ctx: &Context) -> Result<PutOptions> {
     use object_store::Attribute;
 
     let mut attrs = object_store::Attributes::new();
@@ -245,10 +260,7 @@ fn resolve_extra_files(
         for path in matches {
             let upload_name = if let Some(ref name_tmpl) = ef.name {
                 // Template-render the name with standard vars + Filename
-                let filename = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("file");
+                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
                 let mut vars = ctx.template_vars().clone();
                 vars.set("Filename", filename);
                 template::render(name_tmpl, &vars)
@@ -347,11 +359,15 @@ struct UploadParams<'a> {
 
 fn upload_files(params: &UploadParams<'_>) -> Result<()> {
     // Use multi-threaded tokio runtime for actual parallel uploads
-    let rt = tokio::runtime::Runtime::new()
-        .context("blobs: failed to create tokio runtime")?;
+    let rt = tokio::runtime::Runtime::new().context("blobs: failed to create tokio runtime")?;
 
     rt.block_on(async {
-        let parallelism = params.ctx.options.parallelism.max(1);
+        // Prefer blob-specific parallelism; fall back to global setting.
+        let parallelism = params
+            .config
+            .parallelism
+            .unwrap_or(params.ctx.options.parallelism)
+            .max(1);
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
 
         let mut handles = Vec::new();
@@ -413,30 +429,42 @@ fn format_remote_path(provider: Provider, bucket: &str, directory: &str, key: &s
     }
 }
 
-fn handle_upload_error(err: object_store::Error, local_path: &str, remote_key: &str) -> anyhow::Error {
+fn handle_upload_error(
+    err: object_store::Error,
+    local_path: &str,
+    remote_key: &str,
+) -> anyhow::Error {
     match &err {
         object_store::Error::NotFound { path, .. } => {
             anyhow::anyhow!(
                 "blobs: bucket or object not found ({}): uploading {} -> {}",
-                path, local_path, remote_key
+                path,
+                local_path,
+                remote_key
             )
         }
         object_store::Error::Unauthenticated { path, .. } => {
             anyhow::anyhow!(
                 "blobs: authentication failed — check credentials. Uploading {} -> {} ({})",
-                local_path, remote_key, path
+                local_path,
+                remote_key,
+                path
             )
         }
         object_store::Error::PermissionDenied { path, .. } => {
             anyhow::anyhow!(
                 "blobs: access denied — check permissions. Uploading {} -> {} ({})",
-                local_path, remote_key, path
+                local_path,
+                remote_key,
+                path
             )
         }
         _ => {
             anyhow::anyhow!(
                 "blobs: upload failed for {} -> {}: {}",
-                local_path, remote_key, err
+                local_path,
+                remote_key,
+                err
             )
         }
     }
@@ -493,22 +521,22 @@ impl Stage for BlobStage {
                     anyhow::bail!("blobs: bucket is required for crate '{}'", krate.name);
                 }
 
-                let provider_str = ctx.render_template(&blob_cfg.provider)
-                    .with_context(|| {
-                        format!("blobs: render provider template '{}' for crate '{}'",
-                            blob_cfg.provider, krate.name)
-                    })?;
+                let provider_str = ctx.render_template(&blob_cfg.provider).with_context(|| {
+                    format!(
+                        "blobs: render provider template '{}' for crate '{}'",
+                        blob_cfg.provider, krate.name
+                    )
+                })?;
                 let provider = Provider::parse(&provider_str)?;
                 let config_label = blob_cfg.id.as_deref().unwrap_or(&provider_str);
 
                 // Render template fields
-                let rendered_bucket =
-                    ctx.render_template(&blob_cfg.bucket).with_context(|| {
-                        format!(
-                            "blobs[{}]: render bucket template for crate {}",
-                            config_label, krate.name
-                        )
-                    })?;
+                let rendered_bucket = ctx.render_template(&blob_cfg.bucket).with_context(|| {
+                    format!(
+                        "blobs[{}]: render bucket template for crate {}",
+                        config_label, krate.name
+                    )
+                })?;
 
                 let directory_template = blob_cfg
                     .directory
@@ -577,6 +605,17 @@ impl Stage for BlobStage {
                         ));
                     }
                 } else {
+                    // Log each file before upload
+                    for (local_path, remote_key) in &upload_items {
+                        let remote = format_remote_path(
+                            provider,
+                            &rendered_bucket,
+                            &rendered_directory,
+                            remote_key,
+                        );
+                        log.status(&format!("uploading {} -> {}", local_path.display(), remote,));
+                    }
+
                     let store: Arc<dyn ObjectStore> =
                         Arc::from(build_store(provider, blob_cfg, &rendered_bucket, ctx)?);
                     let params = UploadParams {
@@ -702,13 +741,10 @@ mod tests {
     #[test]
     fn test_put_options_cache_control_array_joined() {
         let config = BlobConfig {
-            cache_control: Some(vec![
-                "max-age=86400".to_string(),
-                "public".to_string(),
-            ]),
+            cache_control: Some(vec!["max-age=86400".to_string(), "public".to_string()]),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"file.tar.gz", &make_ctx()).unwrap();
+        let opts = build_put_options(&config, "file.tar.gz", &make_ctx()).unwrap();
         let cc = opts
             .attributes
             .get(&object_store::Attribute::CacheControl)
@@ -722,7 +758,7 @@ mod tests {
             cache_control: Some(vec!["no-cache".to_string()]),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"f.txt", &make_ctx()).unwrap();
+        let opts = build_put_options(&config, "f.txt", &make_ctx()).unwrap();
         let cc = opts
             .attributes
             .get(&object_store::Attribute::CacheControl)
@@ -733,7 +769,7 @@ mod tests {
     #[test]
     fn test_put_options_content_disposition_default() {
         let config = BlobConfig::default();
-        let opts = build_put_options(&config,"myapp-v1.tar.gz", &make_ctx()).unwrap();
+        let opts = build_put_options(&config, "myapp-v1.tar.gz", &make_ctx()).unwrap();
         let cd = opts
             .attributes
             .get(&object_store::Attribute::ContentDisposition)
@@ -747,11 +783,12 @@ mod tests {
             content_disposition: Some("-".to_string()),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"f.txt", &make_ctx()).unwrap();
-        assert!(opts
-            .attributes
-            .get(&object_store::Attribute::ContentDisposition)
-            .is_none());
+        let opts = build_put_options(&config, "f.txt", &make_ctx()).unwrap();
+        assert!(
+            opts.attributes
+                .get(&object_store::Attribute::ContentDisposition)
+                .is_none()
+        );
     }
 
     #[test]
@@ -760,7 +797,7 @@ mod tests {
             content_disposition: Some("inline".to_string()),
             ..Default::default()
         };
-        let opts = build_put_options(&config,"f.txt", &make_ctx()).unwrap();
+        let opts = build_put_options(&config, "f.txt", &make_ctx()).unwrap();
         let cd = opts
             .attributes
             .get(&object_store::Attribute::ContentDisposition)
@@ -789,15 +826,17 @@ mod tests {
 
     #[test]
     fn test_is_disabled_string_true() {
-        assert!(
-            is_disabled(&Some(StringOrBool::String("true".to_string())), &make_ctx()).unwrap()
-        );
+        assert!(is_disabled(&Some(StringOrBool::String("true".to_string())), &make_ctx()).unwrap());
     }
 
     #[test]
     fn test_is_disabled_string_false() {
         assert!(
-            !is_disabled(&Some(StringOrBool::String("false".to_string())), &make_ctx()).unwrap()
+            !is_disabled(
+                &Some(StringOrBool::String("false".to_string())),
+                &make_ctx()
+            )
+            .unwrap()
         );
     }
 
@@ -861,7 +900,10 @@ mod tests {
     fn test_handle_upload_error_not_found() {
         let err = object_store::Error::NotFound {
             path: "test/path".to_string(),
-            source: Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "not found")),
+            source: Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "not found",
+            )),
         };
         let anyhow_err = handle_upload_error(err, "local.tar.gz", "remote/file.tar.gz");
         let msg = anyhow_err.to_string();
@@ -1005,10 +1047,7 @@ blobs:
         assert_eq!(b.disable_ssl, Some(true));
         assert_eq!(b.s3_force_path_style, Some(true));
         assert_eq!(b.acl.as_deref(), Some("private"));
-        assert_eq!(
-            b.cache_control.as_ref().unwrap(),
-            &["no-cache", "no-store"]
-        );
+        assert_eq!(b.cache_control.as_ref().unwrap(), &["no-cache", "no-store"]);
         assert_eq!(b.content_disposition.as_deref(), Some("inline"));
         assert_eq!(b.kms_key.as_deref(), Some("key123"));
         assert_eq!(b.ids.as_ref().unwrap(), &["build-linux"]);
@@ -1030,10 +1069,7 @@ blobs:
 "#;
         let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
-        assert_eq!(
-            blobs[0].cache_control.as_ref().unwrap(),
-            &["max-age=86400"]
-        );
+        assert_eq!(blobs[0].cache_control.as_ref().unwrap(), &["max-age=86400"]);
     }
 
     #[test]
@@ -1150,10 +1186,8 @@ blobs:
 partial:
   by: goos
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(
-            &format!("project_name: test\ncrates: []\n{}", yaml),
-        )
-        .unwrap();
+        let config: anodize_core::config::Config =
+            serde_yaml_ng::from_str(&format!("project_name: test\ncrates: []\n{}", yaml)).unwrap();
         let partial = config.partial.unwrap();
         assert_eq!(partial.by.as_deref(), Some("goos"));
     }
@@ -1162,10 +1196,7 @@ partial:
     fn test_partial_config_by_target() {
         let yaml = "project_name: test\ncrates: []\npartial:\n  by: target\n";
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(
-            config.partial.unwrap().by.as_deref(),
-            Some("target")
-        );
+        assert_eq!(config.partial.unwrap().by.as_deref(), Some("target"));
     }
 
     #[test]
@@ -1247,6 +1278,7 @@ partial:
         let mut ctx = make_ctx();
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/a.tar.gz"),
             target: None,
             crate_name: "mycrate".to_string(),
@@ -1254,6 +1286,7 @@ partial:
         });
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/b.tar.gz"),
             target: None,
             crate_name: "othercrate".to_string(),
@@ -1270,6 +1303,7 @@ partial:
         let mut ctx = make_ctx();
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/a.tar.gz"),
             target: None,
             crate_name: "mycrate".to_string(),
@@ -1290,6 +1324,7 @@ partial:
         meta.insert("id".to_string(), "linux-build".to_string());
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/a.tar.gz"),
             target: None,
             crate_name: "mycrate".to_string(),
@@ -1297,6 +1332,7 @@ partial:
         });
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/b.tar.gz"),
             target: None,
             crate_name: "mycrate".to_string(),
@@ -1315,6 +1351,7 @@ partial:
         let mut ctx = make_ctx();
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Metadata,
+            name: String::new(),
             path: PathBuf::from("dist/metadata.json"),
             target: None,
             crate_name: "mycrate".to_string(),
@@ -1410,7 +1447,12 @@ partial:
         let stage = BlobStage;
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("provider is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("provider is required")
+        );
     }
 
     #[test]
@@ -1437,7 +1479,12 @@ partial:
         let stage = BlobStage;
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("bucket is required"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("bucket is required")
+        );
     }
 
     #[test]
@@ -1492,6 +1539,7 @@ partial:
         // Add an artifact so there's something to "upload"
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/test-v1.0.0.tar.gz"),
             target: None,
             crate_name: "mycrate".to_string(),
@@ -1531,8 +1579,6 @@ partial:
 
     #[test]
     fn test_upload_to_in_memory_store() {
-        use object_store::ObjectStoreExt as _;
-
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1548,7 +1594,7 @@ partial:
         ];
         let config = BlobConfig::default();
         let ctx = make_ctx();
-        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+        let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
 
         let params = UploadParams {
             store: Arc::clone(&store),
@@ -1592,7 +1638,7 @@ partial:
         let upload_items = vec![(file1, "file.txt".to_string())];
         let config = BlobConfig::default();
         let ctx = make_ctx();
-        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+        let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
 
         let params = UploadParams {
             store: Arc::clone(&store),
@@ -1630,7 +1676,7 @@ partial:
             ..Default::default()
         };
         let ctx = make_ctx();
-        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+        let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
 
         let params = UploadParams {
             store,

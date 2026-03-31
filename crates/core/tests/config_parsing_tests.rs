@@ -1103,7 +1103,7 @@ crates:
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(
             configs[0].wrap_in_directory,
-            Some("my-app-{{ version }}".to_string())
+            Some(WrapInDirectory::Name("my-app-{{ version }}".to_string()))
         );
     } else {
         panic!("expected ArchivesConfig::Configs");
@@ -2193,8 +2193,14 @@ after:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.before.as_ref().unwrap().pre.as_ref().unwrap().len(), 1);
-    assert_eq!(config.after.as_ref().unwrap().post.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        config.before.as_ref().unwrap().pre.as_ref().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        config.after.as_ref().unwrap().post.as_ref().unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -2214,7 +2220,16 @@ before:
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert!(config.before.as_ref().unwrap().pre.as_ref().unwrap().is_empty());
+    assert!(
+        config
+            .before
+            .as_ref()
+            .unwrap()
+            .pre
+            .as_ref()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ---- release.name_template tests ----
@@ -2683,7 +2698,10 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
-    assert_eq!(cl.disable, Some(anodize_core::config::StringOrBool::Bool(true)));
+    assert_eq!(
+        cl.disable,
+        Some(anodize_core::config::StringOrBool::Bool(true))
+    );
     // Groups are still parsed even when disabled
     assert_eq!(cl.groups.as_ref().unwrap().len(), 1);
 }
@@ -2907,8 +2925,14 @@ path = "."
 tag_template = "v{{ .Version }}"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.before.as_ref().unwrap().pre.as_ref().unwrap().len(), 2);
-    assert_eq!(config.after.as_ref().unwrap().post.as_ref().unwrap().len(), 1);
+    assert_eq!(
+        config.before.as_ref().unwrap().pre.as_ref().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        config.after.as_ref().unwrap().post.as_ref().unwrap().len(),
+        1
+    );
 }
 
 #[test]
@@ -3076,7 +3100,9 @@ crates: []
     let checksum = config.defaults.unwrap().checksum.unwrap();
     assert_eq!(
         checksum.disable,
-        Some(anodize_core::config::StringOrBool::String("yes".to_string()))
+        Some(anodize_core::config::StringOrBool::String(
+            "yes".to_string()
+        ))
     );
 }
 
@@ -3103,7 +3129,10 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
-    assert_eq!(cl.disable, Some(anodize_core::config::StringOrBool::Bool(true)));
+    assert_eq!(
+        cl.disable,
+        Some(anodize_core::config::StringOrBool::Bool(true))
+    );
     assert_eq!(cl.sort, Some("asc".to_string()));
     assert_eq!(cl.header, Some("header".to_string()));
     assert_eq!(cl.abbrev, Some(10));
@@ -3127,7 +3156,10 @@ crates:
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let release = config.crates[0].release.as_ref().unwrap();
     assert_eq!(release.draft, Some(true));
-    assert_eq!(release.skip_upload, Some(true));
+    assert_eq!(
+        release.skip_upload,
+        Some(anodize_core::config::StringOrBool::Bool(true))
+    );
     assert_eq!(release.replace_existing_draft, Some(true));
 }
 

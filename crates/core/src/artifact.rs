@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use colored::Colorize;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -13,6 +14,8 @@ pub enum ArtifactKind {
     DockerManifest,
     LinuxPackage,
     Metadata,
+    Signature,
+    Certificate,
     Library,
     Wasm,
     SourceArchive,
@@ -21,6 +24,12 @@ pub enum ArtifactKind {
     DiskImage,
     Installer,
     MacOsPackage,
+}
+
+impl std::fmt::Display for ArtifactKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 impl ArtifactKind {
@@ -34,6 +43,8 @@ impl ArtifactKind {
             ArtifactKind::DockerManifest => "docker_manifest",
             ArtifactKind::LinuxPackage => "linux_package",
             ArtifactKind::Metadata => "metadata",
+            ArtifactKind::Signature => "signature",
+            ArtifactKind::Certificate => "certificate",
             ArtifactKind::Library => "library",
             ArtifactKind::Wasm => "wasm",
             ArtifactKind::SourceArchive => "source_archive",
@@ -55,6 +66,8 @@ impl ArtifactKind {
             "docker_manifest" => Some(ArtifactKind::DockerManifest),
             "linux_package" => Some(ArtifactKind::LinuxPackage),
             "metadata" => Some(ArtifactKind::Metadata),
+            "signature" => Some(ArtifactKind::Signature),
+            "certificate" => Some(ArtifactKind::Certificate),
             "library" => Some(ArtifactKind::Library),
             "wasm" => Some(ArtifactKind::Wasm),
             "source_archive" => Some(ArtifactKind::SourceArchive),
@@ -72,33 +85,27 @@ impl ArtifactKind {
 pub struct Artifact {
     pub kind: ArtifactKind,
     pub path: PathBuf,
+    /// Canonical artifact name, set at add-time from the path's filename (trimmed).
+    pub name: String,
     pub target: Option<String>,
     pub crate_name: String,
     pub metadata: HashMap<String, String>,
 }
 
 impl Artifact {
-    /// Return the artifact filename (basename of the path).
-    pub fn name(&self) -> String {
-        self.path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("artifact")
-            .to_string()
+    /// Return the artifact filename.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     /// Return the OS component of the target (e.g., "linux", "darwin", "windows").
     pub fn goos(&self) -> Option<String> {
-        self.target
-            .as_ref()
-            .map(|t| crate::target::map_target(t).0)
+        self.target.as_ref().map(|t| crate::target::map_target(t).0)
     }
 
     /// Return the arch component of the target (e.g., "amd64", "arm64").
     pub fn goarch(&self) -> Option<String> {
-        self.target
-            .as_ref()
-            .map(|t| crate::target::map_target(t).1)
+        self.target.as_ref().map(|t| crate::target::map_target(t).1)
     }
 }
 
@@ -112,7 +119,42 @@ impl ArtifactRegistry {
         Self::default()
     }
 
-    pub fn add(&mut self, artifact: Artifact) {
+    pub fn add(&mut self, mut artifact: Artifact) {
+        // Set canonical name from path filename if the caller hasn't provided one.
+        let name = if artifact.name.is_empty() {
+            let derived = artifact
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("artifact")
+                .trim()
+                .to_string();
+            artifact.name = derived.clone();
+            derived
+        } else {
+            artifact.name.clone()
+        };
+
+        // Normalize path: convert to forward slashes for cross-platform consistency.
+        let path_str = artifact.path.to_string_lossy().replace('\\', "/");
+        artifact.path = PathBuf::from(path_str);
+
+        // Warn on duplicate names for uploadable artifact types.
+        if is_uploadable(artifact.kind)
+            && let Some(existing) = self
+                .artifacts
+                .iter()
+                .find(|a| is_uploadable(a.kind) && a.name == name)
+        {
+            eprintln!(
+                "{} artifact '{}' already registered (existing: {}, new: {}); upload may fail with duplicate error",
+                "Warning:".yellow().bold(),
+                name,
+                existing.path.display(),
+                artifact.path.display()
+            );
+        }
+
         self.artifacts.push(artifact);
     }
 
@@ -140,6 +182,29 @@ impl ArtifactRegistry {
     pub fn to_metadata_json(&self) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::to_value(&self.artifacts)?)
     }
+}
+
+/// Artifact kinds that are uploadable to releases/blob storage.
+/// Single source of truth — used by release and blob stages.
+pub fn uploadable_kinds() -> &'static [ArtifactKind] {
+    &[
+        ArtifactKind::Archive,
+        ArtifactKind::Checksum,
+        ArtifactKind::LinuxPackage,
+        ArtifactKind::Snap,
+        ArtifactKind::DiskImage,
+        ArtifactKind::Installer,
+        ArtifactKind::MacOsPackage,
+        ArtifactKind::SourceArchive,
+        ArtifactKind::Sbom,
+        ArtifactKind::Signature,
+        ArtifactKind::Certificate,
+    ]
+}
+
+/// Check if an artifact kind is uploadable.
+fn is_uploadable(kind: ArtifactKind) -> bool {
+    uploadable_kinds().contains(&kind)
 }
 
 /// Format a byte count into a human-readable string (e.g. "4.2 MB").
@@ -213,6 +278,7 @@ mod tests {
         let mut registry = ArtifactRegistry::new();
         registry.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/cfgd"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "cfgd".to_string(),
@@ -220,6 +286,7 @@ mod tests {
         });
         registry.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/cfgd.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "cfgd".to_string(),
@@ -254,6 +321,7 @@ mod tests {
         meta.insert("format".to_string(), "tar.gz".to_string());
         registry.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/myapp-1.0.0-linux-amd64.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -261,6 +329,7 @@ mod tests {
         });
         registry.add(Artifact {
             kind: ArtifactKind::Checksum,
+            name: String::new(),
             path: PathBuf::from("dist/myapp_1.0.0_checksums.txt"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -290,6 +359,7 @@ mod tests {
         let mut registry = ArtifactRegistry::new();
         registry.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -358,6 +428,7 @@ mod tests {
         let mut registry = ArtifactRegistry::new();
         registry.add(Artifact {
             kind: ArtifactKind::Library,
+            name: String::new(),
             path: PathBuf::from("target/libmylib.so"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "mylib".to_string(),
@@ -365,6 +436,7 @@ mod tests {
         });
         registry.add(Artifact {
             kind: ArtifactKind::Wasm,
+            name: String::new(),
             path: PathBuf::from("target/mylib.wasm"),
             target: Some("wasm32-unknown-unknown".to_string()),
             crate_name: "mylib".to_string(),

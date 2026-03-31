@@ -147,7 +147,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         let prev_tag = find_previous_tag(&cfg)?;
         let base_version = match &prev_tag {
             Some(tag) => {
-                let sv = git::parse_semver(tag)?;
+                let sv = git::parse_semver_tag(tag)?;
                 format!("{}.{}.{}", sv.major, sv.minor, sv.patch)
             }
             None => cfg.initial_version.clone(),
@@ -213,16 +213,15 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     // Determine base version
     let base = match &prev_tag {
-        Some(tag) => git::parse_semver(tag)?,
-        None => git::parse_semver(&format!("{}{}", cfg.tag_prefix, cfg.initial_version)).unwrap_or(
-            git::SemVer {
+        Some(tag) => git::parse_semver_tag(tag)?,
+        None => git::parse_semver_tag(&format!("{}{}", cfg.tag_prefix, cfg.initial_version))
+            .unwrap_or(git::SemVer {
                 major: 0,
                 minor: 0,
                 patch: 0,
                 prerelease: None,
                 build_metadata: None,
-            },
-        ),
+            }),
     };
 
     // Apply bump

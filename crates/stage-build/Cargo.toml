@@ -18,4 +18,5 @@ toml_edit.workspace = true
 
 [dev-dependencies]
 serde_yaml_ng.workspace = true
+serial_test.workspace = true
 tempfile = "3"

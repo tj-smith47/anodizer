@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
@@ -10,6 +11,7 @@ use anyhow::{Context as _, Result};
 ///
 /// For each publisher, filter the artifact set by `ids` and `artifact_types`,
 /// then render and execute the command for each matching artifact.
+/// Artifacts within a single publisher are processed in parallel up to `parallelism`.
 /// In dry-run mode, the command is logged but not executed.
 pub fn run_publishers(
     publishers: &[PublisherConfig],
@@ -17,7 +19,9 @@ pub fn run_publishers(
     base_vars: &TemplateVars,
     dry_run: bool,
     log: &StageLogger,
+    parallelism: usize,
 ) -> Result<()> {
+    let parallelism = parallelism.max(1);
     for (i, publisher) in publishers.iter().enumerate() {
         let default_label = format!("publisher[{}]", i);
         let label = publisher.name.as_deref().unwrap_or(&default_label);
@@ -41,9 +45,58 @@ pub fn run_publishers(
             continue;
         }
 
+        // Resolve extra_files globs into additional artifacts
+        let mut extra_artifacts: Vec<Artifact> = Vec::new();
+        if let Some(ref extra_files) = publisher.extra_files {
+            for ef in extra_files {
+                let rendered_glob = template::render(&ef.glob, base_vars)
+                    .unwrap_or_else(|_| ef.glob.clone());
+                let paths: Vec<PathBuf> = glob::glob(&rendered_glob)
+                    .into_iter()
+                    .flat_map(|entries| entries.filter_map(|e| e.ok()))
+                    .collect();
+
+                if paths.is_empty() {
+                    log.verbose(&format!(
+                        "[publisher] {} -- extra_files glob '{}' matched no files",
+                        label, rendered_glob
+                    ));
+                    continue;
+                }
+
+                // If name_template is set and glob matches multiple files, error
+                if ef.name.is_some() && paths.len() > 1 {
+                    anyhow::bail!(
+                        "publisher {}: extra_files glob '{}' matched {} files but name_template is set (requires exactly 1 match)",
+                        label, rendered_glob, paths.len()
+                    );
+                }
+
+                for path in paths {
+                    let name = if let Some(ref name_tmpl) = ef.name {
+                        template::render(name_tmpl, base_vars)
+                            .unwrap_or_else(|_| name_tmpl.clone())
+                    } else {
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    };
+                    extra_artifacts.push(Artifact {
+                        kind: ArtifactKind::Archive,
+                        name,
+                        path,
+                        target: None,
+                        crate_name: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                    });
+                }
+            }
+        }
+
         let matching: Vec<&Artifact> = artifacts
             .iter()
             .filter(|a| matches_publisher_filter(a, publisher))
+            .chain(extra_artifacts.iter())
             .collect();
 
         if matching.is_empty() {
@@ -51,7 +104,8 @@ pub fn run_publishers(
             continue;
         }
 
-        for artifact in &matching {
+        // Execute publisher command per artifact, with parallelism
+        let run_for_artifact = |artifact: &&Artifact| -> Result<()> {
             let (rendered_cmd, rendered_args) = build_publisher_command(
                 &publisher.cmd,
                 publisher.args.as_deref(),
@@ -72,18 +126,15 @@ pub fn run_publishers(
                 let mut cmd = Command::new("sh");
                 cmd.arg("-c");
 
-                // Build the full shell command string
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
                 cmd.arg(&full_cmd);
 
-                // Apply publisher working directory (template-rendered)
                 if let Some(ref dir) = publisher.dir {
                     let rendered_dir =
                         template::render(dir, base_vars).unwrap_or_else(|_| dir.clone());
                     cmd.current_dir(rendered_dir);
                 }
 
-                // Apply publisher-specific env vars
                 if let Some(ref env_map) = publisher.env {
                     for (k, v) in env_map {
                         cmd.env(k, v);
@@ -95,6 +146,44 @@ pub fn run_publishers(
                     .with_context(|| format!("failed to spawn publisher command: {}", full_cmd))?;
 
                 log.check_output(output, &format!("publisher {}", label))?;
+            }
+            Ok(())
+        };
+
+        if parallelism <= 1 || dry_run {
+            // Sequential execution
+            for artifact in &matching {
+                run_for_artifact(artifact)?;
+            }
+        } else {
+            // Parallel execution: process artifacts in chunks of `parallelism`
+            use std::sync::Mutex;
+            let errors: Mutex<Vec<anyhow::Error>> = Mutex::new(Vec::new());
+
+            for chunk in matching.chunks(parallelism) {
+                std::thread::scope(|s| {
+                    for artifact in chunk {
+                        s.spawn(|| {
+                            if let Err(e) = run_for_artifact(artifact) {
+                                errors.lock().unwrap().push(e);
+                            }
+                        });
+                    }
+                });
+                // Check for errors after each chunk
+                let errs = errors.lock().unwrap();
+                if !errs.is_empty() {
+                    break;
+                }
+            }
+
+            let mut errs = errors.into_inner().unwrap();
+            if !errs.is_empty() {
+                // Return first error, log the rest
+                for e in errs.iter().skip(1) {
+                    log.status(&format!("[publisher] {} -- additional error: {}", label, e));
+                }
+                return Err(errs.remove(0));
             }
         }
     }
@@ -113,8 +202,8 @@ pub fn run_publishers(
 /// - If neither filter is set, all non-metadata artifacts match (subject to
 ///   checksum/signature rules above).
 pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig) -> bool {
-    // Never publish metadata artifacts through custom publishers
-    if artifact.kind == ArtifactKind::Metadata {
+    // Metadata artifacts excluded by default unless meta=true
+    if artifact.kind == ArtifactKind::Metadata && !publisher.meta.unwrap_or(false) {
         return false;
     }
 
@@ -232,6 +321,7 @@ mod tests {
         }
         Artifact {
             kind,
+            name: String::new(),
             path: PathBuf::from(path),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -255,6 +345,8 @@ mod tests {
             disable: None,
             checksum: None,
             signature: None,
+            meta: None,
+            extra_files: None,
         }
     }
 
@@ -288,15 +380,21 @@ mod tests {
             !matches_publisher_filter(&checksum, &publisher),
             "checksums excluded by default"
         );
+        // Metadata excluded by default unless meta=true
         assert!(
             !matches_publisher_filter(&metadata, &publisher),
-            "metadata artifacts should never match"
+            "metadata artifacts excluded by default"
         );
 
         // Opt in to checksums
         let mut pub_with_checksums = make_publisher("echo", None, None);
         pub_with_checksums.checksum = Some(true);
         assert!(matches_publisher_filter(&checksum, &pub_with_checksums));
+
+        // Opt in to metadata
+        let mut pub_with_meta = make_publisher("echo", None, None);
+        pub_with_meta.meta = Some(true);
+        assert!(matches_publisher_filter(&metadata, &pub_with_meta));
     }
 
     #[test]
@@ -420,11 +518,13 @@ mod tests {
             disable: None,
             checksum: None,
             signature: None,
+            meta: None,
+            extra_files: None,
         }];
 
         // In dry-run mode, the command is never executed, so a non-existent
         // command should not cause an error.
-        let result = run_publishers(&publishers, &artifacts, &vars, true, &test_logger());
+        let result = run_publishers(&publishers, &artifacts, &vars, true, &test_logger(), 1);
         assert!(
             result.is_ok(),
             "dry-run should not execute commands: {:?}",
@@ -439,7 +539,7 @@ mod tests {
         let vars = base_vars();
         let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
 
-        let result = run_publishers(&[], &artifacts, &vars, false, &test_logger());
+        let result = run_publishers(&[], &artifacts, &vars, false, &test_logger(), 1);
         assert!(result.is_ok());
     }
 
@@ -460,9 +560,11 @@ mod tests {
             disable: None,
             checksum: None,
             signature: None,
+            meta: None,
+            extra_files: None,
         }];
 
-        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
+        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger(), 1);
         assert!(result.is_ok());
     }
 
@@ -615,6 +717,8 @@ crates:
             disable: None,
             checksum: None,
             signature: None,
+            meta: None,
+            extra_files: None,
         };
         assert_eq!(publisher.dir.as_deref(), Some("/tmp/work"));
     }
@@ -638,10 +742,12 @@ crates:
             disable: Some("true".to_string()),
             checksum: None,
             signature: None,
+            meta: None,
+            extra_files: None,
         }];
 
         // Publisher with disable="true" should be skipped entirely
-        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
+        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger(), 1);
         assert!(
             result.is_ok(),
             "disabled publisher should be skipped without error: {:?}",
@@ -670,14 +776,86 @@ crates:
             disable: Some("{{ IsSnapshot }}".to_string()),
             checksum: None,
             signature: None,
+            meta: None,
+            extra_files: None,
         }];
 
         // When IsSnapshot is "true", the disable template renders to "true" and publisher is skipped
-        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
+        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger(), 1);
         assert!(
             result.is_ok(),
             "conditionally disabled publisher should be skipped: {:?}",
             result.err()
         );
+    }
+
+    // --- Meta field tests ---
+
+    #[test]
+    fn test_meta_false_excludes_metadata() {
+        let publisher = make_publisher("echo", None, None);
+        let metadata = make_artifact(ArtifactKind::Metadata, "dist/metadata.json", None);
+        assert!(!matches_publisher_filter(&metadata, &publisher));
+    }
+
+    #[test]
+    fn test_meta_true_includes_metadata() {
+        let mut publisher = make_publisher("echo", None, None);
+        publisher.meta = Some(true);
+        let metadata = make_artifact(ArtifactKind::Metadata, "dist/metadata.json", None);
+        assert!(matches_publisher_filter(&metadata, &publisher));
+    }
+
+    // --- Extra files config parsing ---
+
+    #[test]
+    fn test_publisher_config_parses_meta_and_extra_files() {
+        use anodize_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+publishers:
+  - name: deploy
+    cmd: "deploy.sh"
+    meta: true
+    extra_files:
+      - glob: "docs/*.md"
+      - glob: "LICENSE"
+        name: "LICENSE.txt"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let publishers = config.publishers.as_ref().unwrap();
+        assert_eq!(publishers.len(), 1);
+
+        let p = &publishers[0];
+        assert_eq!(p.meta, Some(true));
+
+        let extra = p.extra_files.as_ref().unwrap();
+        assert_eq!(extra.len(), 2);
+        assert_eq!(extra[0].glob, "docs/*.md");
+        assert!(extra[0].name.is_none());
+        assert_eq!(extra[1].glob, "LICENSE");
+        assert_eq!(extra[1].name.as_deref(), Some("LICENSE.txt"));
+    }
+
+    // --- Parallel execution test ---
+
+    #[test]
+    fn test_parallel_dry_run_is_sequential() {
+        let vars = base_vars();
+        let artifacts = vec![
+            make_artifact(ArtifactKind::Archive, "/dist/a.tar.gz", None),
+            make_artifact(ArtifactKind::Archive, "/dist/b.tar.gz", None),
+            make_artifact(ArtifactKind::Archive, "/dist/c.tar.gz", None),
+        ];
+        let publishers = vec![make_publisher("echo {{ ArtifactPath }}", None, None)];
+
+        // Even with parallelism > 1, dry_run should use sequential path
+        let result = run_publishers(&publishers, &artifacts, &vars, true, &test_logger(), 4);
+        assert!(result.is_ok());
     }
 }

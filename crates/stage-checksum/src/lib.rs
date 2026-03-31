@@ -85,8 +85,7 @@ pub fn sha3_512_file(path: &Path) -> Result<String> {
 }
 
 pub fn blake3_file(path: &Path) -> Result<String> {
-    let mut file =
-        File::open(path).with_context(|| format!("blake3: open {}", path.display()))?;
+    let mut file = File::open(path).with_context(|| format!("blake3: open {}", path.display()))?;
     let mut hasher = blake3::Hasher::new();
     let mut buf = [0u8; 8192];
     loop {
@@ -102,8 +101,7 @@ pub fn blake3_file(path: &Path) -> Result<String> {
 }
 
 pub fn crc32_file(path: &Path) -> Result<String> {
-    let mut file =
-        File::open(path).with_context(|| format!("crc32: open {}", path.display()))?;
+    let mut file = File::open(path).with_context(|| format!("crc32: open {}", path.display()))?;
     let mut hasher = crc32fast::Hasher::new();
     let mut buf = [0u8; 8192];
     loop {
@@ -120,6 +118,28 @@ pub fn crc32_file(path: &Path) -> Result<String> {
 
 pub fn md5_file(path: &Path) -> Result<String> {
     hash_file_with::<Md5>(path, "md5")
+}
+
+/// Return the hex-encoded output length for a given hash algorithm.
+/// Used to generate correctly-sized placeholder hashes in dry-run mode.
+fn hash_hex_len(algorithm: &str) -> usize {
+    match algorithm {
+        "md5" => 32,     // 128-bit / 16 bytes
+        "sha1" => 40,    // 160-bit / 20 bytes
+        "sha224" => 56,  // 224-bit / 28 bytes
+        "sha256" => 64,  // 256-bit / 32 bytes
+        "sha384" => 96,  // 384-bit / 48 bytes
+        "sha512" => 128, // 512-bit / 64 bytes
+        "sha3-224" => 56,
+        "sha3-256" => 64,
+        "sha3-384" => 96,
+        "sha3-512" => 128,
+        "blake2b" => 128, // Blake2b-512
+        "blake2s" => 64,  // Blake2s-256
+        "blake3" => 64,   // 256-bit default
+        "crc32" => 8,     // 32-bit / 4 bytes
+        _ => 64,          // fallback
+    }
 }
 
 pub fn hash_file(path: &Path, algorithm: &str) -> Result<String> {
@@ -213,10 +233,7 @@ impl Stage for ChecksumStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("checksum");
-        if ctx.is_dry_run() {
-            log.status("(dry-run) skipping checksum generation");
-            return Ok(());
-        }
+        let dry_run = ctx.is_dry_run();
 
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
@@ -325,6 +342,7 @@ impl Stage for ChecksumStage {
                     }
                     source_artifacts.push(Artifact {
                         kind: ArtifactKind::Archive, // treated as a checksummable file
+                        name: String::new(),
                         path: ef.path,
                         target: None,
                         crate_name: crate_name.clone(),
@@ -346,12 +364,23 @@ impl Stage for ChecksumStage {
             let mut combined_lines: Vec<String> = Vec::new();
 
             for artifact in &source_artifacts {
-                let hash = hash_file(&artifact.path, &algorithm).with_context(|| {
-                    format!(
-                        "checksum: hashing {} for crate {crate_name}",
+                // In dry-run mode, files may not exist on disk; skip with placeholder
+                let hash = if dry_run && !artifact.path.exists() {
+                    log.verbose(&format!(
+                        "(dry-run) skipping hash for non-existent {}",
                         artifact.path.display()
-                    )
-                })?;
+                    ));
+                    // Produce a placeholder hash with the correct length for the algorithm
+                    let hash_len = hash_hex_len(&algorithm);
+                    "0".repeat(hash_len)
+                } else {
+                    hash_file(&artifact.path, &algorithm).with_context(|| {
+                        format!(
+                            "checksum: hashing {} for crate {crate_name}",
+                            artifact.path.display()
+                        )
+                    })?
+                };
 
                 let filename = artifact
                     .path
@@ -361,8 +390,7 @@ impl Stage for ChecksumStage {
 
                 // Determine the display name for this artifact in the checksum line.
                 // If the extra file has a name_template, render it to get an alias.
-                let checksum_name = if let Some(tmpl) =
-                    artifact.metadata.get("extra_name_template")
+                let checksum_name = if let Some(tmpl) = artifact.metadata.get("extra_name_template")
                 {
                     let mut vars = ctx.template_vars().clone();
                     vars.set("ArtifactName", filename);
@@ -381,8 +409,8 @@ impl Stage for ChecksumStage {
                         // Use name_template for sidecar naming when provided
                         let mut vars = ctx.template_vars().clone();
                         vars.set("ArtifactName", filename);
-                        let rendered = anodize_core::template::render(tmpl, &vars)
-                            .with_context(|| {
+                        let rendered =
+                            anodize_core::template::render(tmpl, &vars).with_context(|| {
                                 format!(
                                     "checksum: render split name_template for {}",
                                     artifact.path.display()
@@ -402,16 +430,20 @@ impl Stage for ChecksumStage {
                             .join(format!("{}.{}", filename, ext))
                     };
 
-                    let sidecar_line = format_checksum_line(&hash, &checksum_name);
-                    let mut sidecar_file = File::create(&sidecar_path).with_context(|| {
-                        format!("checksum: create sidecar {}", sidecar_path.display())
-                    })?;
-                    writeln!(sidecar_file, "{}", sidecar_line).with_context(|| {
-                        format!("checksum: write sidecar {}", sidecar_path.display())
-                    })?;
+                    // GoReleaser writes ONLY the raw hex hash in sidecar files
+                    // (no filename, no trailing newline).
+                    if !dry_run {
+                        let mut sidecar_file = File::create(&sidecar_path).with_context(|| {
+                            format!("checksum: create sidecar {}", sidecar_path.display())
+                        })?;
+                        write!(sidecar_file, "{}", hash).with_context(|| {
+                            format!("checksum: write sidecar {}", sidecar_path.display())
+                        })?;
+                    }
 
                     log.verbose(&format!(
-                        "{} -> {} ({})",
+                        "{}{} -> {} ({})",
+                        if dry_run { "(dry-run) " } else { "" },
                         artifact.path.display(),
                         sidecar_path.display(),
                         algorithm
@@ -420,6 +452,7 @@ impl Stage for ChecksumStage {
                     // Register sidecar as a Checksum artifact
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::Checksum,
+                        name: String::new(),
                         path: sidecar_path,
                         target: artifact.target.clone(),
                         crate_name: crate_name.clone(),
@@ -455,25 +488,37 @@ impl Stage for ChecksumStage {
                 };
 
                 let combined_path = dist.join(&combined_filename);
-                std::fs::create_dir_all(&dist)
-                    .with_context(|| format!("checksum: create dist dir {}", dist.display()))?;
 
-                let mut combined_file = File::create(&combined_path).with_context(|| {
-                    format!("checksum: create combined file {}", combined_path.display())
-                })?;
-                for line in &combined_lines {
-                    writeln!(combined_file, "{}", line).with_context(|| {
+                // Only write files in non-dry-run mode; hash computation and
+                // artifact registration always happen so downstream stages
+                // (sign, release) can reference checksums.
+                if !dry_run {
+                    std::fs::create_dir_all(&dist)
+                        .with_context(|| format!("checksum: create dist dir {}", dist.display()))?;
+
+                    let mut combined_file = File::create(&combined_path).with_context(|| {
+                        format!("checksum: create combined file {}", combined_path.display())
+                    })?;
+                    // Match GoReleaser: each line gets "\n" appended, then
+                    // all are joined with no separator (strings.Join(lines, "")).
+                    let content: String = combined_lines
+                        .iter()
+                        .map(|l| format!("{}\n", l))
+                        .collect();
+                    write!(combined_file, "{}", content).with_context(|| {
                         format!("checksum: write combined file {}", combined_path.display())
                     })?;
                 }
 
                 log.status(&format!(
-                    "combined checksums -> {}",
+                    "{}combined checksums -> {}",
+                    if dry_run { "(dry-run) " } else { "" },
                     combined_path.display()
                 ));
 
                 new_artifacts.push(Artifact {
                     kind: ArtifactKind::Checksum,
+                    name: String::new(),
                     path: combined_path,
                     target: None,
                     crate_name: crate_name.clone(),
@@ -623,7 +668,9 @@ mod tests {
         let f = tmp.path().join("test.txt");
         fs::write(&f, b"hello world").unwrap();
         let hash = sha3_512_file(&f).unwrap();
-        assert!(hash.starts_with("840006653e9ac9e95117a15c915caab81662918e925de9e004f774ff82d7079a"));
+        assert!(
+            hash.starts_with("840006653e9ac9e95117a15c915caab81662918e925de9e004f774ff82d7079a")
+        );
         assert_eq!(hash.len(), 128); // SHA3-512 hex length
     }
 
@@ -785,6 +832,7 @@ ids:
         // Register an Archive artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -796,11 +844,18 @@ ids:
 
         // Default (non-split) mode: only combined file, no sidecars
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert_eq!(checksums.len(), 1, "non-split mode should only produce combined file");
+        assert_eq!(
+            checksums.len(),
+            1,
+            "non-split mode should only produce combined file"
+        );
 
         // Sidecar file should NOT exist in non-split mode
         let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
-        assert!(!sidecar.exists(), "sidecar file should NOT exist in non-split mode");
+        assert!(
+            !sidecar.exists(),
+            "sidecar file should NOT exist in non-split mode"
+        );
 
         // Combined file should exist in dist
         let combined = dist.join("myapp_1.0.0_checksums.txt");
@@ -836,6 +891,7 @@ ids:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path.clone(),
             target: None,
             crate_name: "myapp".to_string(),
@@ -845,9 +901,15 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
-        // In dry-run, no Checksum artifacts are registered
+        // In dry-run, Checksum artifacts are still registered (so downstream
+        // stages like sign/release can reference them), but no files are
+        // written to disk.
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert!(checksums.is_empty());
+        assert!(!checksums.is_empty());
+
+        // The combined checksums file should NOT exist on disk in dry-run.
+        let checksum_file = dist.join("myapp_1.0.0_checksums.txt");
+        assert!(!checksum_file.exists());
     }
 
     #[test]
@@ -880,6 +942,7 @@ ids:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path.clone(),
             target: None,
             crate_name: "myapp".to_string(),
@@ -891,7 +954,10 @@ ids:
 
         // Non-split mode: no sidecar, only combined
         let sidecar = dist.join("myapp.tar.gz.sha512");
-        assert!(!sidecar.exists(), "sidecar should NOT exist in non-split mode");
+        assert!(
+            !sidecar.exists(),
+            "sidecar should NOT exist in non-split mode"
+        );
 
         let combined = dist.join("myapp_1.0.0_checksums.txt");
         assert!(combined.exists());
@@ -962,6 +1028,7 @@ ids:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path,
             target: None,
             crate_name: "myapp".to_string(),
@@ -1006,6 +1073,7 @@ ids:
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path,
             target: None,
             crate_name: "myapp".to_string(),
@@ -1060,6 +1128,7 @@ ids:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path.clone(),
             target: None,
             crate_name: "myapp".to_string(),
@@ -1116,6 +1185,7 @@ ids:
         // Archive with matching id
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive1.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1129,6 +1199,7 @@ ids:
         // Archive with non-matching id
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive2.clone(),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -1192,6 +1263,7 @@ ids:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: file1.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "app".to_string(),
@@ -1199,6 +1271,7 @@ ids:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: file2.clone(),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "app".to_string(),
@@ -1210,9 +1283,15 @@ ids:
 
         // Non-split mode: no sidecars, only combined file
         let sidecar1 = dist.join("app-linux.tar.gz.sha256");
-        assert!(!sidecar1.exists(), "sidecar should NOT exist in non-split mode");
+        assert!(
+            !sidecar1.exists(),
+            "sidecar should NOT exist in non-split mode"
+        );
         let sidecar2 = dist.join("app-darwin.tar.gz.sha256");
-        assert!(!sidecar2.exists(), "sidecar should NOT exist in non-split mode");
+        assert!(
+            !sidecar2.exists(),
+            "sidecar should NOT exist in non-split mode"
+        );
 
         // Verify combined checksums file has correct multi-line format
         let combined = dist.join("app_2.0.0_checksums.txt");
@@ -1237,8 +1316,12 @@ ids:
         }
 
         // Verify the combined file contains both filenames with correct hashes
-        assert!(combined_content.contains("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9  app-linux.tar.gz"));
-        assert!(combined_content.contains("916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9  app-darwin.tar.gz"));
+        assert!(combined_content.contains(
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9  app-linux.tar.gz"
+        ));
+        assert!(combined_content.contains(
+            "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9  app-darwin.tar.gz"
+        ));
     }
 
     #[test]
@@ -1272,6 +1355,7 @@ ids:
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive.clone(),
             target: None,
             crate_name: "fox".to_string(),
@@ -1286,7 +1370,10 @@ ids:
 
         // Non-split mode: no sidecar, verify via combined file
         let sidecar = dist.join("release.tar.gz.sha256");
-        assert!(!sidecar.exists(), "sidecar should NOT exist in non-split mode");
+        assert!(
+            !sidecar.exists(),
+            "sidecar should NOT exist in non-split mode"
+        );
 
         let combined = dist.join("fox_1.0.0_checksums.txt");
         let combined_content = fs::read_to_string(&combined).unwrap();
@@ -1330,6 +1417,7 @@ ids:
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive.clone(),
             target: None,
             crate_name: "pkg".to_string(),
@@ -1341,7 +1429,10 @@ ids:
 
         // Non-split mode: verify via combined file
         let sidecar = dist.join("pkg.tar.gz.sha512");
-        assert!(!sidecar.exists(), "sidecar should NOT exist in non-split mode");
+        assert!(
+            !sidecar.exists(),
+            "sidecar should NOT exist in non-split mode"
+        );
 
         let combined = dist.join("pkg_1.0.0_checksums.txt");
         assert!(combined.exists());
@@ -1380,6 +1471,7 @@ ids:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: fake_bin.clone(),
             target: None,
             crate_name: "checksum-test".to_string(),
@@ -1459,6 +1551,7 @@ ids:
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive,
             target: None,
             crate_name: "myapp".to_string(),
@@ -1469,7 +1562,11 @@ ids:
 
         // Non-split mode: only combined artifact (no sidecars)
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert_eq!(checksums.len(), 1, "non-split mode should only produce combined file");
+        assert_eq!(
+            checksums.len(),
+            1,
+            "non-split mode should only produce combined file"
+        );
 
         // All checksum artifacts should have kind = Checksum
         for a in &checksums {
@@ -1513,6 +1610,7 @@ ids:
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: nonexistent,
             target: None,
             crate_name: "myapp".to_string(),
@@ -1568,6 +1666,7 @@ ids:
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive,
             target: None,
             crate_name: "app".to_string(),
@@ -1627,6 +1726,7 @@ ids:
         // Add 3 artifacts, only 2 have matching ids
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: linux,
             target: None,
             crate_name: "app".to_string(),
@@ -1638,6 +1738,7 @@ ids:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: darwin,
             target: None,
             crate_name: "app".to_string(),
@@ -1649,6 +1750,7 @@ ids:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: windows,
             target: None,
             crate_name: "app".to_string(),
@@ -1815,6 +1917,7 @@ algorithm: "sha256"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1875,6 +1978,7 @@ algorithm: "sha256"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1894,7 +1998,10 @@ algorithm: "sha256"
         );
 
         let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
-        assert!(!sidecar.exists(), "sidecar should NOT exist when split=false");
+        assert!(
+            !sidecar.exists(),
+            "sidecar should NOT exist when split=false"
+        );
 
         let combined = dist.join("myapp_1.0.0_checksums.txt");
         assert!(
@@ -1930,6 +2037,7 @@ algorithm: "sha256"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path,
             target: None,
             crate_name: "myapp".to_string(),
@@ -1983,6 +2091,7 @@ algorithm: "sha256"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path,
             target: None,
             crate_name: "myapp".to_string(),
@@ -2028,6 +2137,7 @@ algorithm: "sha256"
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "coolapp".to_string(),
@@ -2124,7 +2234,10 @@ extra_files:
         assert_eq!(extra.len(), 2);
         assert_eq!(extra[0], ExtraFileSpec::Glob("dist/*.bin".to_string()));
         match &extra[1] {
-            ExtraFileSpec::Detailed { glob, name_template } => {
+            ExtraFileSpec::Detailed {
+                glob,
+                name_template,
+            } => {
                 assert_eq!(glob, "release/*.deb");
                 assert_eq!(
                     name_template.as_deref(),
@@ -2163,6 +2276,7 @@ extra_files:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive1,
             target: None,
             crate_name: "app".to_string(),
@@ -2170,6 +2284,7 @@ extra_files:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive2,
             target: None,
             crate_name: "app".to_string(),
@@ -2230,6 +2345,7 @@ extra_files:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive1,
             target: None,
             crate_name: "app".to_string(),
@@ -2237,6 +2353,7 @@ extra_files:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive2,
             target: None,
             crate_name: "app".to_string(),
@@ -2298,6 +2415,7 @@ extra_files:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive.clone(),
             target: None,
             crate_name: "app".to_string(),
@@ -2325,11 +2443,11 @@ extra_files:
             "default sidecar name should NOT be used when name_template is set"
         );
 
-        // Verify content is correct
+        // Verify content is correct — GoReleaser writes ONLY the raw hex hash
+        // in sidecar files (no filename, no trailing newline).
         let content = fs::read_to_string(&custom_sidecar).unwrap();
         let expected_hash = sha256_file(&archive).unwrap();
-        assert!(content.starts_with(&expected_hash));
-        assert!(content.contains("app-linux.tar.gz"));
+        assert_eq!(content, expected_hash);
     }
 
     #[test]
@@ -2363,6 +2481,7 @@ extra_files:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive,
             target: None,
             crate_name: "app".to_string(),
@@ -2373,7 +2492,10 @@ extra_files:
 
         // Should be disabled via template evaluation
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert!(checksums.is_empty(), "disable: 'true' string should disable checksums");
+        assert!(
+            checksums.is_empty(),
+            "disable: 'true' string should disable checksums"
+        );
     }
 
     #[test]
@@ -2421,6 +2543,7 @@ extra_files:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: archive,
             target: None,
             crate_name: "myapp".to_string(),
@@ -2431,7 +2554,11 @@ extra_files:
 
         // Non-split mode: only 1 combined artifact
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert_eq!(checksums.len(), 1, "non-split mode should produce one combined artifact");
+        assert_eq!(
+            checksums.len(),
+            1,
+            "non-split mode should produce one combined artifact"
+        );
 
         // Combined file should contain the custom-named entry for the extra file
         let combined = dist.join("myapp_1.0.0_checksums.txt");

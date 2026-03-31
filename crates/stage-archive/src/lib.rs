@@ -157,7 +157,9 @@ pub fn create_tar_gz(
         File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
     let enc = GzEncoder::new(out_file, Compression::best());
     let mut tar = tar::Builder::new(enc);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.gz")?;
+    write_tar_entries(
+        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.gz",
+    )?;
     tar.finish().context("tar.gz: finish")
 }
 
@@ -174,7 +176,9 @@ pub fn create_tar_xz(
         File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
     let enc = xz2::write::XzEncoder::new(out_file, 9);
     let mut tar = tar::Builder::new(enc);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.xz")?;
+    write_tar_entries(
+        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.xz",
+    )?;
     tar.finish().context("tar.xz: finish")
 }
 
@@ -189,9 +193,14 @@ pub fn create_tar_zst(
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
-    let enc = zstd::Encoder::new(out_file, 19).context("tar.zst: create zstd encoder")?;
+    // Level 3 is zstd's default, matching the Go zstd library used by
+    // GoReleaser's archiver dependency. Previously level 19 (near-max) which
+    // was much slower with marginal size improvement for release artifacts.
+    let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
     let mut tar = tar::Builder::new(enc);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.zst")?;
+    write_tar_entries(
+        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.zst",
+    )?;
     let enc = tar.into_inner().context("tar.zst: finish tar")?;
     enc.finish().context("tar.zst: finish zstd")?;
     Ok(())
@@ -228,8 +237,7 @@ pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
         File::create(output).with_context(|| format!("create gz: {}", output.display()))?;
     let mut enc = GzEncoder::new(out_file, Compression::best());
     let data = fs::read(file).with_context(|| format!("gz: read {}", file.display()))?;
-    enc.write_all(&data)
-        .context("gz: write compressed data")?;
+    enc.write_all(&data).context("gz: write compressed data")?;
     enc.finish().context("gz: finish")?;
     Ok(())
 }
@@ -355,6 +363,9 @@ pub struct ResolvedExtraFile {
     pub dst: Option<String>,
     /// File metadata to apply to the archive entry.
     pub info: Option<anodize_core::config::ArchiveFileInfo>,
+    /// When true, strip the parent directory from the source path so the file
+    /// is placed at the archive root (or directly under wrap_in_directory).
+    pub strip_parent: bool,
 }
 
 /// Resolve a list of ArchiveFileSpec entries into concrete file paths with
@@ -370,16 +381,24 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                         src: p,
                         dst: None,
                         info: None,
+                        strip_parent: false,
                     });
                 }
             }
-            ArchiveFileSpec::Detailed { src, dst, info } => {
+            ArchiveFileSpec::Detailed {
+                src,
+                dst,
+                info,
+                strip_parent,
+            } => {
                 let paths = resolve_glob_patterns(std::slice::from_ref(src))?;
+                let do_strip = strip_parent.unwrap_or(false);
                 for p in paths {
                     results.push(ResolvedExtraFile {
                         src: p,
                         dst: dst.clone(),
                         info: info.clone(),
+                        strip_parent: do_strip,
                     });
                 }
             }
@@ -414,6 +433,7 @@ fn resolve_default_extra_files() -> Vec<ResolvedExtraFile> {
                         src: entry,
                         dst: None,
                         info: None,
+                        strip_parent: false,
                     });
                 }
             }
@@ -472,14 +492,20 @@ fn write_archive_entries<W: std::io::Write>(
         if !entry.src.exists() {
             continue;
         }
-        append_tar_entry(tar, &entry.src, &entry.archive_name, mtime, entry.info.as_ref())
-            .with_context(|| {
-                format!(
-                    "{label}: adding {} as {}",
-                    entry.src.display(),
-                    entry.archive_name.display()
-                )
-            })?;
+        append_tar_entry(
+            tar,
+            &entry.src,
+            &entry.archive_name,
+            mtime,
+            entry.info.as_ref(),
+        )
+        .with_context(|| {
+            format!(
+                "{label}: adding {} as {}",
+                entry.src.display(),
+                entry.archive_name.display()
+            )
+        })?;
     }
     Ok(())
 }
@@ -530,8 +556,8 @@ fn write_zip_entries<W: std::io::Write + std::io::Seek>(
         let name = entry.archive_name.to_string_lossy().to_string();
         zip.start_file(&name, options)
             .with_context(|| format!("zip: start_file {name}"))?;
-        let data = fs::read(&entry.src)
-            .with_context(|| format!("zip: read {}", entry.src.display()))?;
+        let data =
+            fs::read(&entry.src).with_context(|| format!("zip: read {}", entry.src.display()))?;
         zip.write_all(&data)
             .with_context(|| format!("zip: write {name}"))?;
     }
@@ -586,7 +612,11 @@ pub fn format_for_target(
 // ---------------------------------------------------------------------------
 
 fn default_name_template() -> &'static str {
-    "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+}
+
+fn default_binary_name_template() -> &'static str {
+    "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +635,7 @@ impl Stage for ArchiveStage {
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
         let dry_run = ctx.options.dry_run;
+        let template_vars = ctx.template_vars().clone();
 
         // Global archive defaults
         let global_default_format = ctx
@@ -713,9 +744,7 @@ impl Stage for ArchiveStage {
                 .collect();
 
             // meta archives can skip the "no binaries" check
-            let has_any_meta = archive_cfgs
-                .iter()
-                .any(|cfg| cfg.meta.unwrap_or(false));
+            let has_any_meta = archive_cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
 
             if all_binaries.is_empty() && !has_any_meta {
                 log.warn(&format!("no binaries for crate {crate_name}, skipping"));
@@ -733,9 +762,7 @@ impl Stage for ArchiveStage {
                 } else if let Some(ref ids) = archive_cfg.ids {
                     all_binaries
                         .iter()
-                        .filter(|a| {
-                            matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
-                        })
+                        .filter(|a| matches!(a.metadata.get("id"), Some(id) if ids.contains(id)))
                         .cloned()
                         .collect()
                 } else {
@@ -761,11 +788,9 @@ impl Stage for ArchiveStage {
                 // allow_different_binary_count check: when false (default),
                 // error if different targets have different binary counts
                 // (matches GoReleaser behavior which errors, not warns)
-                if !archive_cfg.allow_different_binary_count.unwrap_or(false)
-                    && by_target.len() > 1
+                if !archive_cfg.allow_different_binary_count.unwrap_or(false) && by_target.len() > 1
                 {
-                    let counts: Vec<usize> =
-                        by_target.values().map(|bins| bins.len()).collect();
+                    let counts: Vec<usize> = by_target.values().map(|bins| bins.len()).collect();
                     let first = counts[0];
                     if counts.iter().any(|&c| c != first) {
                         let details: Vec<_> = by_target
@@ -795,6 +820,7 @@ impl Stage for ArchiveStage {
                 let binary_filter: Option<&Vec<String>> = archive_cfg.binaries.as_ref();
 
                 // Name template
+                let has_custom_name_tmpl = archive_cfg.name_template.is_some();
                 let default_tmpl = default_name_template();
                 let name_tmpl = archive_cfg.name_template.as_deref().unwrap_or(default_tmpl);
 
@@ -803,7 +829,7 @@ impl Stage for ArchiveStage {
 
                 // Pre-archive hooks
                 if let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()) {
-                    run_hooks(pre, "pre-archive", dry_run, &log)?;
+                    run_hooks(pre, "pre-archive", dry_run, &log, Some(&template_vars))?;
                 }
 
                 for (target, target_bins) in &by_target {
@@ -832,9 +858,7 @@ impl Stage for ArchiveStage {
                     // FormatOverride.formats plural).
                     let formats_to_produce: Vec<String> = match &archive_cfg.formats {
                         Some(fmts) if !fmts.is_empty() => fmts.clone(),
-                        _ => {
-                            formats_for_target(target, singular_format, &format_overrides)
-                        }
+                        _ => formats_for_target(target, singular_format, &format_overrides),
                     };
 
                     let (os, arch) = map_target(target);
@@ -857,22 +881,30 @@ impl Stage for ArchiveStage {
                     })?;
 
                     // Render wrap_in_directory (template-aware)
-                    // GoReleaser interprets:
-                    //   "true"  -> use the archive name (without extension) as the wrap dir
-                    //   "false" -> no wrapping
-                    //   other   -> treat as a template string to render
-                    let wrap_dir_rendered =
-                        if let Some(tmpl) = archive_cfg.wrap_in_directory.as_deref() {
-                            match tmpl {
-                                "false" => None,
-                                "true" => Some(archive_stem.clone()),
-                                _ => Some(ctx.render_template(tmpl).with_context(|| {
-                                    format!("render wrap_in_directory for {crate_name}/{target}")
-                                })?),
+                    // WrapInDirectory::Bool(true)  -> use the archive stem as the wrap dir
+                    // WrapInDirectory::Bool(false) -> no wrapping
+                    // WrapInDirectory::Name(s)     -> treat as a template string to render
+                    let wrap_dir_rendered = if let Some(ref wid) = archive_cfg.wrap_in_directory {
+                        match wid {
+                            anodize_core::config::WrapInDirectory::Bool(true) => {
+                                Some(archive_stem.clone())
                             }
-                        } else {
-                            None
-                        };
+                            anodize_core::config::WrapInDirectory::Bool(false) => None,
+                            anodize_core::config::WrapInDirectory::Name(tmpl) => {
+                                if tmpl.is_empty() {
+                                    None
+                                } else {
+                                    Some(ctx.render_template(tmpl).with_context(|| {
+                                        format!(
+                                            "render wrap_in_directory for {crate_name}/{target}"
+                                        )
+                                    })?)
+                                }
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let wrap_dir = wrap_dir_rendered.as_deref();
 
                     // Collect binary files — unless meta archive
@@ -946,7 +978,18 @@ impl Stage for ArchiveStage {
                         .map(|ef| {
                             let base_name = if let Some(ref dst) = ef.dst {
                                 dst.clone()
+                            } else if ef.strip_parent {
+                                // strip_parent: use only the filename, discarding
+                                // any parent directory components so the file ends
+                                // up at the archive root (or directly under
+                                // wrap_in_directory).
+                                ef.src
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "unknown".to_string())
                             } else {
+                                // Use just the filename — extra files go at archive
+                                // root (or under wrap_in_directory).
                                 ef.src
                                     .file_name()
                                     .map(|n| n.to_string_lossy().to_string())
@@ -975,7 +1018,8 @@ impl Stage for ArchiveStage {
                         .cloned()
                         .chain(extra_files.iter().map(|ef| ef.src.clone()))
                         .collect();
-                    let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
+                    let path_refs: Vec<&Path> =
+                        all_src_paths.iter().map(PathBuf::as_path).collect();
 
                     // Determine reproducible mtime: prefer CommitTimestamp from context
                     // when any crate has reproducible: true, fall back to SOURCE_DATE_EPOCH.
@@ -1005,9 +1049,16 @@ impl Stage for ArchiveStage {
                             continue;
                         }
 
-                        // For binary format, no extension; otherwise append format
+                        // For binary format, no extension; otherwise append format.
+                        // GoReleaser uses {{ .Binary }} prefix (not {{ .ProjectName }})
+                        // for binary format when no custom name_template is set.
                         let archive_filename = if format == "binary" {
-                            archive_stem.clone()
+                            if has_custom_name_tmpl {
+                                archive_stem.clone()
+                            } else {
+                                ctx.render_template(default_binary_name_template())
+                                    .unwrap_or_else(|_| archive_stem.clone())
+                            }
                         } else {
                             format!("{archive_stem}.{format}")
                         };
@@ -1031,67 +1082,113 @@ impl Stage for ArchiveStage {
                             log.status(&format!("creating {}", archive_path.display()));
                             match format.as_str() {
                                 "zip" => {
-                                    let out_file = File::create(&archive_path)
-                                        .with_context(|| format!("create zip: {}", archive_path.display()))?;
+                                    let out_file =
+                                        File::create(&archive_path).with_context(|| {
+                                            format!("create zip: {}", archive_path.display())
+                                        })?;
                                     let mut zip = zip::ZipWriter::new(out_file);
-                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
-                                        src: e.src.clone(),
-                                        archive_name: e.archive_name.clone(),
-                                        info: e.info.clone(),
-                                    }).collect();
+                                    let owned: Vec<ArchiveEntry> = all_entries
+                                        .iter()
+                                        .map(|e| ArchiveEntry {
+                                            src: e.src.clone(),
+                                            archive_name: e.archive_name.clone(),
+                                            info: e.info.clone(),
+                                        })
+                                        .collect();
                                     write_zip_entries(&mut zip, &owned, source_date_epoch)?;
                                     zip.finish().context("zip: finish")?;
                                 }
                                 "tar.gz" | "tgz" => {
-                                    let out_file = File::create(&archive_path)
-                                        .with_context(|| format!("create tar.gz: {}", archive_path.display()))?;
+                                    let out_file =
+                                        File::create(&archive_path).with_context(|| {
+                                            format!("create tar.gz: {}", archive_path.display())
+                                        })?;
                                     let enc = GzEncoder::new(out_file, Compression::best());
                                     let mut tar = tar::Builder::new(enc);
-                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
-                                        src: e.src.clone(),
-                                        archive_name: e.archive_name.clone(),
-                                        info: e.info.clone(),
-                                    }).collect();
-                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar.gz")?;
+                                    let owned: Vec<ArchiveEntry> = all_entries
+                                        .iter()
+                                        .map(|e| ArchiveEntry {
+                                            src: e.src.clone(),
+                                            archive_name: e.archive_name.clone(),
+                                            info: e.info.clone(),
+                                        })
+                                        .collect();
+                                    write_archive_entries(
+                                        &mut tar,
+                                        &owned,
+                                        source_date_epoch,
+                                        "tar.gz",
+                                    )?;
                                     tar.finish().context("tar.gz: finish")?;
                                 }
                                 "tar.xz" | "txz" => {
-                                    let out_file = File::create(&archive_path)
-                                        .with_context(|| format!("create tar.xz: {}", archive_path.display()))?;
+                                    let out_file =
+                                        File::create(&archive_path).with_context(|| {
+                                            format!("create tar.xz: {}", archive_path.display())
+                                        })?;
                                     let enc = xz2::write::XzEncoder::new(out_file, 9);
                                     let mut tar = tar::Builder::new(enc);
-                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
-                                        src: e.src.clone(),
-                                        archive_name: e.archive_name.clone(),
-                                        info: e.info.clone(),
-                                    }).collect();
-                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar.xz")?;
+                                    let owned: Vec<ArchiveEntry> = all_entries
+                                        .iter()
+                                        .map(|e| ArchiveEntry {
+                                            src: e.src.clone(),
+                                            archive_name: e.archive_name.clone(),
+                                            info: e.info.clone(),
+                                        })
+                                        .collect();
+                                    write_archive_entries(
+                                        &mut tar,
+                                        &owned,
+                                        source_date_epoch,
+                                        "tar.xz",
+                                    )?;
                                     tar.finish().context("tar.xz: finish")?;
                                 }
                                 "tar.zst" | "tzst" => {
-                                    let out_file = File::create(&archive_path)
-                                        .with_context(|| format!("create tar.zst: {}", archive_path.display()))?;
-                                    let enc = zstd::Encoder::new(out_file, 19).context("tar.zst: create zstd encoder")?;
+                                    let out_file =
+                                        File::create(&archive_path).with_context(|| {
+                                            format!("create tar.zst: {}", archive_path.display())
+                                        })?;
+                                    let enc = zstd::Encoder::new(out_file, 3)
+                                        .context("tar.zst: create zstd encoder")?;
                                     let mut tar = tar::Builder::new(enc);
-                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
-                                        src: e.src.clone(),
-                                        archive_name: e.archive_name.clone(),
-                                        info: e.info.clone(),
-                                    }).collect();
-                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar.zst")?;
+                                    let owned: Vec<ArchiveEntry> = all_entries
+                                        .iter()
+                                        .map(|e| ArchiveEntry {
+                                            src: e.src.clone(),
+                                            archive_name: e.archive_name.clone(),
+                                            info: e.info.clone(),
+                                        })
+                                        .collect();
+                                    write_archive_entries(
+                                        &mut tar,
+                                        &owned,
+                                        source_date_epoch,
+                                        "tar.zst",
+                                    )?;
                                     let enc = tar.into_inner().context("tar.zst: finish tar")?;
                                     enc.finish().context("tar.zst: finish zstd")?;
                                 }
                                 "tar" => {
-                                    let out_file = File::create(&archive_path)
-                                        .with_context(|| format!("create tar: {}", archive_path.display()))?;
+                                    let out_file =
+                                        File::create(&archive_path).with_context(|| {
+                                            format!("create tar: {}", archive_path.display())
+                                        })?;
                                     let mut tar = tar::Builder::new(out_file);
-                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
-                                        src: e.src.clone(),
-                                        archive_name: e.archive_name.clone(),
-                                        info: e.info.clone(),
-                                    }).collect();
-                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar")?;
+                                    let owned: Vec<ArchiveEntry> = all_entries
+                                        .iter()
+                                        .map(|e| ArchiveEntry {
+                                            src: e.src.clone(),
+                                            archive_name: e.archive_name.clone(),
+                                            info: e.info.clone(),
+                                        })
+                                        .collect();
+                                    write_archive_entries(
+                                        &mut tar,
+                                        &owned,
+                                        source_date_epoch,
+                                        "tar",
+                                    )?;
                                     tar.finish().context("tar: finish")?;
                                 }
                                 "gz" => {
@@ -1129,14 +1226,16 @@ impl Stage for ArchiveStage {
                             metadata.insert("meta".to_string(), "true".to_string());
                         }
                         if strip_bin_dir {
-                            metadata.insert(
-                                "strip_binary_directory".to_string(),
-                                "true".to_string(),
-                            );
+                            metadata
+                                .insert("strip_binary_directory".to_string(), "true".to_string());
+                        }
+                        if let Some(dir) = wrap_dir {
+                            metadata.insert("wrap_in_directory".to_string(), dir.to_string());
                         }
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::Archive,
+                            name: String::new(),
                             path: archive_path,
                             target: Some(target.clone()),
                             crate_name: crate_name.clone(),
@@ -1147,7 +1246,7 @@ impl Stage for ArchiveStage {
 
                 // Post-archive hooks
                 if let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()) {
-                    run_hooks(post, "post-archive", dry_run, &log)?;
+                    run_hooks(post, "post-archive", dry_run, &log, Some(&template_vars))?;
                 }
             }
         }
@@ -1424,7 +1523,15 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.xz");
-        create_tar_xz(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None, None).unwrap();
+        create_tar_xz(
+            &[&bin_path],
+            &archive_path,
+            None,
+            Some("myapp-1.0.0"),
+            None,
+            None,
+        )
+        .unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -1443,7 +1550,15 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.zst");
-        create_tar_zst(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None, None).unwrap();
+        create_tar_zst(
+            &[&bin_path],
+            &archive_path,
+            None,
+            Some("myapp-1.0.0"),
+            None,
+            None,
+        )
+        .unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -1481,7 +1596,9 @@ crates:
                 assert_eq!(cfgs.len(), 1);
                 assert_eq!(
                     cfgs[0].wrap_in_directory,
-                    Some("myapp-{{ .Version }}".to_string())
+                    Some(anodize_core::config::WrapInDirectory::Name(
+                        "myapp-{{ .Version }}".to_string()
+                    ))
                 );
                 assert_eq!(cfgs[0].format, Some("tar.gz".to_string()));
             }
@@ -1531,6 +1648,7 @@ crates:
         // Register a Binary artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1575,6 +1693,7 @@ crates:
         // Register a Binary artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/fake/path"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1635,6 +1754,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path.clone(),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -1698,6 +1818,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1762,6 +1883,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1833,7 +1955,15 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.gz");
-        create_tar_gz(&[&bin, &license, &readme], &archive_path, None, None, None, None).unwrap();
+        create_tar_gz(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Open the archive and verify all files are present with correct names
         let file = File::open(&archive_path).unwrap();
@@ -1923,7 +2053,15 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.xz");
-        create_tar_xz(&[&bin, &license, &readme], &archive_path, None, None, None, None).unwrap();
+        create_tar_xz(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -2001,7 +2139,15 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.zst");
-        create_tar_zst(&[&bin, &license, &readme], &archive_path, None, None, None, None).unwrap();
+        create_tar_zst(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -2156,6 +2302,7 @@ crates:
         // Register two binary artifacts for the same target
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin1.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2167,6 +2314,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin2.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2240,6 +2388,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin.clone(),
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -2303,6 +2452,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin.clone(),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -2373,6 +2523,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin.clone(),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2436,6 +2587,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -2481,7 +2633,9 @@ crates:
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some("myapp-linux-amd64".to_string()),
                 format: Some("tar.gz".to_string()),
-                wrap_in_directory: Some("{{ .ProjectName }}-{{ .Version }}".to_string()),
+                wrap_in_directory: Some(anodize_core::config::WrapInDirectory::Name(
+                    "{{ .ProjectName }}-{{ .Version }}".to_string(),
+                )),
                 files: None,
                 format_overrides: None,
                 binaries: None,
@@ -2501,6 +2655,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2561,6 +2716,7 @@ crates:
         // Register a binary artifact that doesn't exist on disk
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/nonexistent/path/to/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2664,6 +2820,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2675,10 +2832,7 @@ crates:
         });
 
         let result = ArchiveStage.run(&mut ctx);
-        assert!(
-            result.is_err(),
-            "unsupported format should return an error"
-        );
+        assert!(result.is_err(), "unsupported format should return an error");
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("unsupported archive format"),
@@ -2696,7 +2850,15 @@ crates:
 
         let archive_path = tmp.path().join("mybin-reproducible.tar.gz");
         let fixed_mtime: u64 = 1_700_000_000;
-        create_tar_gz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime), None).unwrap();
+        create_tar_gz(
+            &[&bin_path],
+            &archive_path,
+            None,
+            None,
+            Some(fixed_mtime),
+            None,
+        )
+        .unwrap();
 
         assert!(archive_path.exists());
 
@@ -2721,7 +2883,15 @@ crates:
 
         let archive_path = tmp.path().join("mybin-reproducible.tar.xz");
         let fixed_mtime: u64 = 1_700_000_000;
-        create_tar_xz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime), None).unwrap();
+        create_tar_xz(
+            &[&bin_path],
+            &archive_path,
+            None,
+            None,
+            Some(fixed_mtime),
+            None,
+        )
+        .unwrap();
 
         assert!(archive_path.exists());
 
@@ -2745,7 +2915,15 @@ crates:
 
         let archive_path = tmp.path().join("mybin-reproducible.tar.zst");
         let fixed_mtime: u64 = 1_700_000_000;
-        create_tar_zst(&[&bin_path], &archive_path, None, None, Some(fixed_mtime), None).unwrap();
+        create_tar_zst(
+            &[&bin_path],
+            &archive_path,
+            None,
+            None,
+            Some(fixed_mtime),
+            None,
+        )
+        .unwrap();
 
         assert!(archive_path.exists());
 
@@ -2821,6 +2999,7 @@ crates:
         // Register binaries with different build IDs
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: linux_bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2831,6 +3010,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: windows_bin,
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -2850,11 +3030,7 @@ crates:
             "only one archive should be created (linux-build only)"
         );
         assert!(
-            archives[0]
-                .target
-                .as_deref()
-                .unwrap()
-                .contains("linux"),
+            archives[0].target.as_deref().unwrap().contains("linux"),
             "archive should be for the linux target"
         );
     }
@@ -2889,6 +3065,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2941,6 +3118,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: linux_bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2951,6 +3129,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: win_bin,
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -3005,6 +3184,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3053,6 +3233,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3104,6 +3285,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3129,7 +3311,11 @@ crates:
 
         // Both archives should exist on disk
         for a in &archives {
-            assert!(a.path.exists(), "archive should exist: {}", a.path.display());
+            assert!(
+                a.path.exists(),
+                "archive should exist: {}",
+                a.path.display()
+            );
         }
 
         // Verify file extensions
@@ -3168,7 +3354,7 @@ crates:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.xz".to_string()),  // should be ignored
+                    format: Some("tar.xz".to_string()), // should be ignored
                     formats: Some(vec!["tar.gz".to_string(), "zip".to_string()]),
                     ..Default::default()
                 }]),
@@ -3178,6 +3364,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3233,6 +3420,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3282,6 +3470,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin_path,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3365,6 +3554,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3412,6 +3602,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3459,6 +3650,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3509,6 +3701,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3556,6 +3749,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3626,7 +3820,7 @@ crates:
             let files = cfgs[0].files.as_ref().unwrap();
             assert_eq!(files.len(), 2);
             match &files[0] {
-                ArchiveFileSpec::Detailed { src, dst, info } => {
+                ArchiveFileSpec::Detailed { src, dst, info, .. } => {
                     assert_eq!(src, "LICENSE*");
                     assert_eq!(dst.as_deref(), Some("licenses/"));
                     let info = info.as_ref().unwrap();
@@ -3637,7 +3831,7 @@ crates:
                 _ => panic!("expected Detailed variant for first entry"),
             }
             match &files[1] {
-                ArchiveFileSpec::Detailed { src, dst, info } => {
+                ArchiveFileSpec::Detailed { src, dst, info, .. } => {
                     assert_eq!(src, "completions/*");
                     assert!(dst.is_none());
                     assert!(info.is_none());
@@ -3814,6 +4008,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3890,7 +4085,11 @@ crates:
         let file = File::open(&archives[0].path).unwrap();
         let dec = flate2::read::GzDecoder::new(file);
         let found = read_tar_entries(tar::Archive::new(dec));
-        assert_eq!(found.len(), 1, "meta archive should contain only the extra file");
+        assert_eq!(
+            found.len(),
+            1,
+            "meta archive should contain only the extra file"
+        );
         assert!(found.contains_key("LICENSE"));
     }
 
@@ -3975,6 +4174,7 @@ crates:
         // Different binary counts per target
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: linux_bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -3982,6 +4182,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: win_bin1,
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -3989,6 +4190,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: win_bin2,
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
@@ -3997,7 +4199,10 @@ crates:
 
         // Should error when binary counts differ (matching GoReleaser behavior)
         let result = ArchiveStage.run(&mut ctx);
-        assert!(result.is_err(), "different binary counts should error, not warn");
+        assert!(
+            result.is_err(),
+            "different binary counts should error, not warn"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("binary counts differ"),
@@ -4042,6 +4247,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: bin,
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -4070,9 +4276,7 @@ crates:
         let license = tmp.path().join("LICENSE");
         fs::write(&license, b"MIT").unwrap();
 
-        let specs = vec![ArchiveFileSpec::Glob(
-            license.to_string_lossy().to_string(),
-        )];
+        let specs = vec![ArchiveFileSpec::Glob(license.to_string_lossy().to_string())];
         let resolved = resolve_file_specs(&specs).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].src, license);
@@ -4097,6 +4301,7 @@ crates:
                 mode: Some("0644".to_string()),
                 mtime: None,
             }),
+            strip_parent: None,
         }];
         let resolved = resolve_file_specs(&specs).unwrap();
         assert_eq!(resolved.len(), 1);
@@ -4130,14 +4335,7 @@ crates:
             mtime: None,
         };
 
-        append_tar_entry(
-            &mut tar,
-            &bin_path,
-            Path::new("mybin"),
-            None,
-            Some(&info),
-        )
-        .unwrap();
+        append_tar_entry(&mut tar, &bin_path, Path::new("mybin"), None, Some(&info)).unwrap();
         tar.finish().unwrap();
 
         // Read back the archive and verify permissions
@@ -4148,11 +4346,7 @@ crates:
         let header = entry.header();
 
         // Mode should be 0o755
-        assert_eq!(
-            header.mode().unwrap() & 0o777,
-            0o755,
-            "mode should be 0755"
-        );
+        assert_eq!(header.mode().unwrap() & 0o777, 0o755, "mode should be 0755");
         assert_eq!(
             header.username().unwrap().unwrap(),
             "deploy",

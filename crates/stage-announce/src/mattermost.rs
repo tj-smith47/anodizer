@@ -22,7 +22,16 @@ pub struct MattermostOptions<'a> {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) -> String {
-    let mut payload = json!({ "text": message });
+    let use_attachments = opts.color.is_some() || opts.title.is_some();
+
+    let mut payload = if use_attachments {
+        // When using attachments, do NOT include top-level `text` — message goes
+        // in the attachment only.  This matches GoReleaser behaviour.
+        json!({})
+    } else {
+        json!({ "text": message })
+    };
+
     if let Some(ch) = opts.channel {
         payload["channel"] = json!(ch);
     }
@@ -37,7 +46,7 @@ pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) ->
     }
 
     // Mattermost supports message attachments with optional color bar and title.
-    if opts.color.is_some() || opts.title.is_some() {
+    if use_attachments {
         let mut attachment = json!({
             "text": message,
         });
@@ -107,7 +116,8 @@ mod tests {
         };
         let payload = mattermost_payload("myapp v1.0.0 released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(json["text"], "myapp v1.0.0 released!");
+        // When using attachments, top-level text must NOT be present
+        assert!(json.get("text").is_none());
         assert_eq!(json["channel"], "town-square");
         assert_eq!(json["username"], "release-bot");
         assert_eq!(json["icon_url"], "https://example.com/icon.png");
@@ -115,6 +125,7 @@ mod tests {
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments[0]["color"], "#36a64f");
         assert_eq!(attachments[0]["title"], "Release v1.0");
+        assert_eq!(attachments[0]["text"], "myapp v1.0.0 released!");
     }
 
     #[test]
@@ -160,6 +171,8 @@ mod tests {
         };
         let payload = mattermost_payload("alert!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        // When using attachments, top-level text must NOT be present
+        assert!(json.get("text").is_none());
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0]["color"], "#FF0000");
@@ -178,6 +191,8 @@ mod tests {
         };
         let payload = mattermost_payload("Check the release notes.", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        // When using attachments, top-level text must NOT be present
+        assert!(json.get("text").is_none());
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments[0]["title"], "myapp v2.0 is out!");
         assert_eq!(attachments[0]["text"], "Check the release notes.");
@@ -195,6 +210,8 @@ mod tests {
         };
         let payload = mattermost_payload("New features!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        // When using attachments, top-level text must NOT be present
+        assert!(json.get("text").is_none());
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments[0]["title"], "Release v3.0");
         assert_eq!(attachments[0]["color"], "#36a64f");

@@ -469,7 +469,7 @@ mod tests {
             "partial",
             "workspaces",
             "source",
-            "sbom",
+            "sboms",
             "release",
         ] {
             assert!(

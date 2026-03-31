@@ -46,12 +46,12 @@ pub enum Commands {
             help = "Skip stages (comma-separated, e.g. docker,announce)"
         )]
         skip: Vec<String>,
-        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
+        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
         token: Option<String>,
         #[arg(
             long,
-            default_value = "30m",
-            help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)"
+            default_value = "60m",
+            help = "Pipeline timeout duration (e.g., 60m, 1h, 5s)"
         )]
         timeout: String,
         #[arg(long, short = 'p', default_value_t = num_cpus(), help = "Maximum number of parallel build jobs")]
@@ -75,6 +75,13 @@ pub enum Commands {
         release_footer: Option<PathBuf>,
         #[arg(
             long,
+            help = "Path to a template file for release notes (rendered with template variables, overrides --release-notes)"
+        )]
+        release_notes_tmpl: Option<PathBuf>,
+        #[arg(long, help = "Abort immediately on first error during publishing")]
+        fail_fast: bool,
+        #[arg(
+            long,
             conflicts_with = "merge",
             help = "Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/)"
         )]
@@ -92,8 +99,8 @@ pub enum Commands {
         crate_names: Vec<String>,
         #[arg(
             long,
-            default_value = "30m",
-            help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)"
+            default_value = "60m",
+            help = "Pipeline timeout duration (e.g., 60m, 1h, 5s)"
         )]
         timeout: String,
         #[arg(long, short = 'p', default_value_t = num_cpus(), help = "Maximum number of parallel build jobs")]
@@ -102,6 +109,12 @@ pub enum Commands {
         single_target: bool,
         #[arg(long, help = "Build a specific workspace in a monorepo config")]
         workspace: Option<String>,
+        #[arg(
+            long,
+            short = 'o',
+            help = "Copy the built binary to this path (requires --single-target and single crate)"
+        )]
+        output: Option<PathBuf>,
     },
     /// Validate configuration
     Check {
@@ -122,6 +135,8 @@ pub enum Commands {
     },
     /// Check availability of required external tools
     Healthcheck,
+    /// Generate man pages to stdout
+    Man,
     /// Output JSON Schema for .anodize.yaml
     Jsonschema,
     /// Auto-tag based on commit message directives
@@ -137,7 +152,10 @@ pub enum Commands {
     },
     /// Continue a split release by merging artifacts and running post-build stages
     Continue {
-        #[arg(long, help = "Merge artifacts from split build jobs and run post-build stages")]
+        #[arg(
+            long,
+            help = "Merge artifacts from split build jobs and run post-build stages"
+        )]
         merge: bool,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
@@ -149,14 +167,14 @@ pub enum Commands {
             help = "Skip stages (comma-separated, e.g. docker,announce)"
         )]
         skip: Vec<String>,
-        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
+        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
         token: Option<String>,
     },
     /// Run only the publish stages (release, publish, blob) from a completed dist/
     Publish {
         #[arg(long, help = "Run full pipeline without side effects")]
         dry_run: bool,
-        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
+        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
         token: Option<String>,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
@@ -167,13 +185,9 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
-        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
+        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
         token: Option<String>,
-        #[arg(
-            long,
-            value_delimiter = ',',
-            help = "Skip stages (comma-separated)"
-        )]
+        #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated)")]
         skip: Vec<String>,
     },
 }

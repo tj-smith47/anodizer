@@ -3,7 +3,7 @@ use anodize_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig, Prere
 use anodize_core::context::Context;
 use anodize_core::git;
 use anodize_core::stage::Stage;
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 
 // ---------------------------------------------------------------------------
 // should_mark_prerelease
@@ -16,7 +16,7 @@ use anyhow::{bail, Context as _, Result};
 /// - `None`     – default to `false`.
 pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &str) -> bool {
     match config {
-        Some(PrereleaseConfig::Auto) => git::parse_semver(tag)
+        Some(PrereleaseConfig::Auto) => git::parse_semver_tag(tag)
             .map(|sv| sv.is_prerelease())
             .unwrap_or(false),
         Some(PrereleaseConfig::Bool(b)) => *b,
@@ -87,14 +87,16 @@ pub(crate) fn collect_extra_files(
                     }
                 }
             }
-            ExtraFileSpec::Detailed { glob: pattern, name_template } => {
+            ExtraFileSpec::Detailed {
+                glob: pattern,
+                name_template,
+            } => {
                 if let Ok(entries) = glob::glob(pattern) {
                     for entry in entries.flatten() {
                         if entry.is_file() {
                             let name = name_template.as_ref().and_then(|tmpl| {
-                                let filename = entry.file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy();
+                                let filename =
+                                    entry.file_name().unwrap_or_default().to_string_lossy();
                                 let mut vars = ctx.template_vars().clone();
                                 vars.set("ArtifactName", &filename);
                                 anodize_core::template::render(tmpl, &vars).ok()
@@ -114,14 +116,36 @@ pub(crate) fn collect_extra_files(
 // ---------------------------------------------------------------------------
 
 /// Convert our config's `MakeLatestConfig` into octocrab's `MakeLatest` enum.
-pub(crate) fn resolve_make_latest(
+///
+/// When the config contains a template string (`MakeLatestConfig::String`), it is
+/// rendered through the provided `render` function first, then resolved:
+/// - `"true"` / `"1"` → `MakeLatest::True`
+/// - `"false"` / `"0"` / `""` → `MakeLatest::False`
+/// - `"auto"` → `MakeLatest::Legacy`
+///
+/// This matches GoReleaser, which renders `make_latest` through `tmpl.Apply` at
+/// publish time.
+pub(crate) fn resolve_make_latest<F>(
     config: &Option<MakeLatestConfig>,
-) -> Option<octocrab::repos::releases::MakeLatest> {
+    render: F,
+) -> Option<octocrab::repos::releases::MakeLatest>
+where
+    F: Fn(&str) -> anyhow::Result<String>,
+{
     use octocrab::repos::releases::MakeLatest;
     match config {
         Some(MakeLatestConfig::Bool(true)) => Some(MakeLatest::True),
         Some(MakeLatestConfig::Bool(false)) => Some(MakeLatest::False),
         Some(MakeLatestConfig::Auto) => Some(MakeLatest::Legacy),
+        Some(MakeLatestConfig::String(tmpl)) => {
+            let rendered = render(tmpl).unwrap_or_else(|_| tmpl.clone());
+            match rendered.trim() {
+                "true" | "1" => Some(MakeLatest::True),
+                "false" | "0" | "" => Some(MakeLatest::False),
+                "auto" => Some(MakeLatest::Legacy),
+                _ => Some(MakeLatest::True), // non-empty = truthy, matching GoReleaser
+            }
+        }
         None => None,
     }
 }
@@ -256,9 +280,18 @@ fn build_release_json(
     });
     if !body.is_empty() {
         let truncated_body = if body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
-            let mut truncated = body[..GITHUB_RELEASE_BODY_MAX_CHARS].to_string();
-            truncated.push_str("\n\n...(truncated)");
-            truncated
+            let suffix = "\n\n...(truncated)";
+            let max_content = GITHUB_RELEASE_BODY_MAX_CHARS - suffix.len();
+            // Find a safe UTF-8 char boundary: the last char whose end
+            // byte is at or before max_content, so body[..safe_end] + suffix
+            // never exceeds GITHUB_RELEASE_BODY_MAX_CHARS.
+            let safe_end = body
+                .char_indices()
+                .map(|(i, c)| i + c.len_utf8())
+                .take_while(|&end| end <= max_content)
+                .last()
+                .unwrap_or(0);
+            format!("{}{}", &body[..safe_end], suffix)
         } else {
             body.to_string()
         };
@@ -293,11 +326,12 @@ impl Stage for ReleaseStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("release");
 
-        // Resolve the GitHub token once (CLI flag > env var).
+        // Resolve the GitHub token once (CLI flag > ANODIZE_GITHUB_TOKEN > GITHUB_TOKEN).
         let token = ctx
             .options
             .token
             .clone()
+            .or_else(|| std::env::var("ANODIZE_GITHUB_TOKEN").ok())
             .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
         let selected = ctx.options.selected_crates.clone();
@@ -347,11 +381,27 @@ impl Stage for ReleaseStage {
 
             let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
 
+            // Populate the {{ Checksums }} template variable from checksum artifacts.
+            // GoReleaser's describeBody reads all checksum files and injects their
+            // contents so header/footer templates can reference {{ .Checksums }}.
+            let checksums_text = {
+                let checksum_artifacts = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+                let mut parts = Vec::new();
+                for artifact in &checksum_artifacts {
+                    if let Ok(content) = std::fs::read_to_string(&artifact.path) {
+                        let trimmed = content.trim();
+                        if !trimmed.is_empty() {
+                            parts.push(trimmed.to_string());
+                        }
+                    }
+                }
+                parts.join("\n")
+            };
+            ctx.template_vars_mut().set("Checksums", &checksums_text);
+
             // Resolve and validate release mode.
-            let release_mode =
-                resolve_release_mode(release_cfg.mode.as_deref()).with_context(|| {
-                    format!("release: invalid mode for crate '{}'", crate_name)
-                })?;
+            let release_mode = resolve_release_mode(release_cfg.mode.as_deref())
+                .with_context(|| format!("release: invalid mode for crate '{}'", crate_name))?;
             if release_mode != "keep-existing" {
                 log.status(&format!(
                     "release mode '{}' for crate '{}'",
@@ -364,20 +414,24 @@ impl Stage for ReleaseStage {
                 .header
                 .as_ref()
                 .map(|src| {
-                    let raw = resolve_content_source(src)
-                        .with_context(|| format!("release: resolve header for crate '{}'", crate_name))?;
-                    ctx.render_template(&raw)
-                        .with_context(|| format!("release: render header for crate '{}'", crate_name))
+                    let raw = resolve_content_source(src).with_context(|| {
+                        format!("release: resolve header for crate '{}'", crate_name)
+                    })?;
+                    ctx.render_template(&raw).with_context(|| {
+                        format!("release: render header for crate '{}'", crate_name)
+                    })
                 })
                 .transpose()?;
             let rendered_footer = release_cfg
                 .footer
                 .as_ref()
                 .map(|src| {
-                    let raw = resolve_content_source(src)
-                        .with_context(|| format!("release: resolve footer for crate '{}'", crate_name))?;
-                    ctx.render_template(&raw)
-                        .with_context(|| format!("release: render footer for crate '{}'", crate_name))
+                    let raw = resolve_content_source(src).with_context(|| {
+                        format!("release: resolve footer for crate '{}'", crate_name)
+                    })?;
+                    ctx.render_template(&raw).with_context(|| {
+                        format!("release: render footer for crate '{}'", crate_name)
+                    })
                 })
                 .transpose()?;
 
@@ -411,13 +465,40 @@ impl Stage for ReleaseStage {
 
             let draft = release_cfg.draft.unwrap_or(false);
             let prerelease = should_mark_prerelease(&release_cfg.prerelease, &tag);
-            let skip_upload = release_cfg.skip_upload.unwrap_or(false);
+            let skip_upload = release_cfg
+                .skip_upload
+                .as_ref()
+                .map(|s| {
+                    // Template-render the value first (supports {{ .IsSnapshot }}, etc.)
+                    let rendered = if s.is_template() {
+                        ctx.render_template(s.as_str())
+                            .unwrap_or_else(|_| s.as_str().to_string())
+                    } else {
+                        s.as_str().to_string()
+                    };
+                    match rendered.trim() {
+                        "auto" => ctx.is_snapshot(),
+                        other => other == "true" || other == "1",
+                    }
+                })
+                .unwrap_or(false);
             let replace_existing_draft = release_cfg.replace_existing_draft.unwrap_or(false);
             let replace_existing_artifacts =
                 release_cfg.replace_existing_artifacts.unwrap_or(false);
-            let make_latest = resolve_make_latest(&release_cfg.make_latest);
+            let make_latest =
+                resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s));
             let ids_filter = release_cfg.ids.as_ref();
-            let target_commitish = release_cfg.target_commitish.clone();
+            let target_commitish = release_cfg
+                .target_commitish
+                .as_ref()
+                .map(|tc| ctx.render_template(tc))
+                .transpose()
+                .with_context(|| {
+                    format!(
+                        "release: render target_commitish for crate '{}'",
+                        crate_name
+                    )
+                })?;
             let discussion_category_name = release_cfg.discussion_category_name.clone();
             let include_meta = release_cfg.include_meta.unwrap_or(false);
             let use_existing_draft = release_cfg.use_existing_draft.unwrap_or(false);
@@ -426,6 +507,7 @@ impl Stage for ReleaseStage {
             // Each entry is (path, optional_custom_name). The custom name is only
             // set for extra_files with a name_template; regular artifacts use None.
             let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> = [
+                ArtifactKind::Binary,
                 ArtifactKind::Archive,
                 ArtifactKind::Checksum,
                 ArtifactKind::LinuxPackage,
@@ -435,6 +517,8 @@ impl Stage for ReleaseStage {
                 ArtifactKind::MacOsPackage,
                 ArtifactKind::SourceArchive,
                 ArtifactKind::Sbom,
+                ArtifactKind::Signature,
+                ArtifactKind::Certificate,
             ]
             .iter()
             .flat_map(|&kind| {
@@ -445,12 +529,23 @@ impl Stage for ReleaseStage {
                 if let Some(ids) = ids_filter {
                     artifacts
                         .filter(|a| {
-                            matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
+                            // Checksums and source archives are ID-agnostic
+                            // (always included regardless of IDs filter, matching GoReleaser).
+                            // Note: extra files (UploadableFile in GoReleaser) are also exempt,
+                            // but those are handled separately via collect_extra_files.
+                            matches!(
+                                a.kind,
+                                ArtifactKind::Checksum
+                                    | ArtifactKind::SourceArchive
+                                    | ArtifactKind::Metadata
+                            ) || matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
                         })
                         .map(|a| (a.path.clone(), None))
                         .collect::<Vec<_>>()
                 } else {
-                    artifacts.map(|a| (a.path.clone(), None)).collect::<Vec<_>>()
+                    artifacts
+                        .map(|a| (a.path.clone(), None))
+                        .collect::<Vec<_>>()
                 }
             })
             .collect();
@@ -545,7 +640,7 @@ impl Stage for ReleaseStage {
                 Some(t) => t.clone(),
                 None => {
                     anyhow::bail!(
-                        "release: no GitHub token available (set GITHUB_TOKEN or pass --token)"
+                        "release: no GitHub token available (set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN, or pass --token)"
                     );
                 }
             };
@@ -558,66 +653,100 @@ impl Stage for ReleaseStage {
                     .build()
                     .context("release: build octocrab client")?;
 
-                // Handle replace_existing_draft: check if a draft release with
-                // the same tag exists and delete it.
-                if replace_existing_draft {
-                    match octo
-                        .repos(&github.owner, &github.name)
-                        .releases()
-                        .get_by_tag(&tag)
-                        .await
-                    {
-                        Ok(existing) if existing.draft => {
-                            log.status(&format!(
-                                "replacing existing draft release '{}' (id={})",
-                                tag, existing.id
-                            ));
-                            octo.repos(&github.owner, &github.name)
-                                .releases()
-                                .delete(existing.id.into_inner())
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "release: delete existing draft release '{}' on {}/{}",
-                                        tag, github.owner, github.name
-                                    )
-                                })?;
+                // Helper: list all releases (with pagination) and find a draft
+                // matching the release name. GoReleaser searches by name (not tag).
+                async fn find_draft_by_name(
+                    octo: &octocrab::Octocrab,
+                    owner: &str,
+                    repo: &str,
+                    name: &str,
+                ) -> Result<Option<octocrab::models::repos::Release>> {
+                    // Cap at 10 pages (1000 releases) to avoid runaway pagination
+                    // on repos with very long release histories.
+                    const MAX_PAGES: u32 = 10;
+                    let mut page: u32 = 1;
+                    loop {
+                        let route = format!(
+                            "/repos/{}/{}/releases?per_page=100&page={}",
+                            owner, repo, page
+                        );
+                        let releases: Vec<octocrab::models::repos::Release> =
+                            octo.get(route, None::<&()>).await
+                                .with_context(|| format!(
+                                    "release: list releases on {}/{} (page {})",
+                                    owner, repo, page
+                                ))?;
+                        if let Some(found) = releases
+                            .iter()
+                            .find(|r| r.draft && r.name.as_deref() == Some(name))
+                        {
+                            return Ok(Some(found.clone()));
                         }
-                        Ok(_) => {
-                            // Existing release is not a draft; do not replace it.
+                        // If we got fewer than 100 results, there are no more pages.
+                        if releases.len() < 100 {
+                            break;
                         }
-                        Err(_) => {
-                            // No existing release with this tag; proceed normally.
+                        page += 1;
+                        if page > MAX_PAGES {
+                            break;
                         }
                     }
+                    Ok(None)
+                }
+
+                // Handle replace_existing_draft: check if a draft release with
+                // the same NAME exists and delete it.
+                if replace_existing_draft && draft
+                    && let Some(existing) =
+                        find_draft_by_name(&octo, &github.owner, &github.name, &release_name)
+                            .await?
+                {
+                    log.status(&format!(
+                        "replacing existing draft release '{}' (id={})",
+                        release_name, existing.id
+                    ));
+                    octo.repos(&github.owner, &github.name)
+                        .releases()
+                        .delete(existing.id.into_inner())
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "release: delete existing draft release '{}' on {}/{}",
+                                release_name, github.owner, github.name
+                            )
+                        })?;
                 }
 
                 // Handle use_existing_draft: look for an existing draft release
-                // with the same tag and update it instead of creating a new one.
+                // with the same NAME and update it instead of creating a new one.
                 let existing_draft = if use_existing_draft {
-                    match octo
-                        .repos(&github.owner, &github.name)
-                        .releases()
-                        .get_by_tag(&tag)
-                        .await
+                    match find_draft_by_name(
+                        &octo,
+                        &github.owner,
+                        &github.name,
+                        &release_name,
+                    )
+                    .await?
                     {
-                        Ok(existing) if existing.draft => {
+                        Some(existing) => {
                             log.status(&format!(
                                 "reusing existing draft release '{}' (id={})",
-                                tag, existing.id
+                                release_name, existing.id
                             ));
                             Some(existing)
                         }
-                        _ => None,
+                        None => None,
                     }
                 } else {
                     None
                 };
 
                 // When updating an existing release, apply mode-based body composition.
-                let final_body = if let Some(ref existing) = existing_draft {
+                // Also track any existing release found by tag so we can PATCH it
+                // instead of POSTing a new one (which would 422 on duplicate tags).
+                let (final_body, existing_by_tag) = if let Some(ref existing) = existing_draft {
                     let existing_body = existing.body.as_deref();
-                    compose_body_for_mode(&release_mode, existing_body, &release_body)
+                    (compose_body_for_mode(&release_mode, existing_body, &release_body), None)
                 } else {
                     // For new releases, check if a release exists for mode != "replace".
                     if release_mode != "replace" {
@@ -629,12 +758,13 @@ impl Stage for ReleaseStage {
                         {
                             Ok(existing) => {
                                 let existing_body = existing.body.as_deref();
-                                compose_body_for_mode(&release_mode, existing_body, &release_body)
+                                let body = compose_body_for_mode(&release_mode, existing_body, &release_body);
+                                (body, Some(existing))
                             }
-                            Err(_) => release_body.clone(),
+                            Err(_) => (release_body.clone(), None),
                         }
                     } else {
-                        release_body.clone()
+                        (release_body.clone(), None)
                     }
                 };
 
@@ -646,15 +776,18 @@ impl Stage for ReleaseStage {
                 // see a release with missing artifacts. After all uploads succeed,
                 // we PATCH draft=false if the user wanted a non-draft release.
                 let user_wants_draft = draft;
+                // GitHub ignores discussion_category_name on draft releases and
+                // make_latest is meaningless until publish. Send them only in the
+                // un-draft PATCH (below) to match GoReleaser behaviour.
                 let json_body = build_release_json(
                     &tag,
                     &release_name,
                     &final_body,
                     true, // always create as draft first
                     prerelease,
-                    &make_latest,
+                    &None,  // make_latest deferred to publish PATCH
                     &target_commitish,
-                    &discussion_category_name,
+                    &None,  // discussion_category_name deferred to publish PATCH
                     github_native_changelog,
                 );
 
@@ -669,6 +802,26 @@ impl Stage for ReleaseStage {
                         .with_context(|| {
                             format!(
                                 "release: update existing draft release '{}' on {}/{}",
+                                tag, github.owner, github.name
+                            )
+                        })?
+                } else if let Some(ref existing) = existing_by_tag {
+                    // An existing release was found by tag (append/prepend/keep-existing
+                    // mode). PATCH it instead of POSTing a new one, which would cause
+                    // a 422 "tag already exists" error from GitHub.
+                    log.status(&format!(
+                        "updating existing release '{}' (id={}, mode={})",
+                        release_name, existing.id, release_mode
+                    ));
+                    let route = format!(
+                        "/repos/{}/{}/releases/{}",
+                        github.owner, github.name, existing.id
+                    );
+                    octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "release: update existing release '{}' on {}/{}",
                                 tag, github.owner, github.name
                             )
                         })?
@@ -694,165 +847,215 @@ impl Stage for ReleaseStage {
                 ));
 
                 let html_url = release.html_url.to_string();
+                let release_id_raw = release.id.into_inner();
 
-                // Upload each artifact (unless skip_upload is set).
+                // Wrap octo in Arc for shared use across parallel upload tasks
+                // and the subsequent publish PATCH.
+                let octo = std::sync::Arc::new(octo);
+
+                // Upload artifacts (unless skip_upload is set), with bounded
+                // parallelism using a semaphore (context's parallelism setting,
+                // minimum 1).
                 if skip_upload {
                     log.status("skip_upload is set, skipping artifact uploads");
                 } else {
-                    for (path, custom_name) in &artifact_entries {
-                        if !path.exists() {
-                            log.warn(&format!(
-                                "artifact not found, skipping upload: {}",
-                                path.display()
-                            ));
-                            continue;
-                        }
+                    let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
+                    let semaphore = std::sync::Arc::new(
+                        tokio::sync::Semaphore::new(upload_parallelism),
+                    );
+                    let gh_owner = github.owner.clone();
+                    let gh_name = github.name.clone();
+                    let release_assets = release.assets.clone();
+                    let tag_for_upload = tag.clone();
 
-                        let file_name = if let Some(name) = custom_name {
-                            name.clone()
-                        } else {
-                            path.file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| "artifact".to_string())
-                        };
-
-                        // Handle replace_existing_artifacts: if an asset with the
-                        // same name already exists, delete it before uploading.
-                        if replace_existing_artifacts {
-                            for existing_asset in &release.assets {
-                                if existing_asset.name == file_name {
-                                    log.verbose(&format!(
-                                        "replacing existing artifact '{}'",
-                                        file_name
-                                    ));
-                                    octo.repos(&github.owner, &github.name)
-                                        .release_assets()
-                                        .delete(existing_asset.id.into_inner())
-                                        .await
-                                        .with_context(|| {
-                                            format!(
-                                                "release: delete existing artifact '{}' from release '{}'",
-                                                file_name, tag
-                                            )
-                                        })?;
-                                    break;
-                                }
+                    // Prepare the list of uploadable entries (error on missing files).
+                    let mut missing_files = Vec::new();
+                    let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
+                        .iter()
+                        .filter_map(|(path, custom_name)| {
+                            if !path.exists() {
+                                missing_files.push(path.display().to_string());
+                                return None;
                             }
-                        }
+                            let file_name = if let Some(name) = custom_name {
+                                name.clone()
+                            } else {
+                                path.file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| "artifact".to_string())
+                            };
+                            Some((path.clone(), file_name))
+                        })
+                        .collect();
 
-                        // Retry loop: up to 3 attempts with a 2-second delay.
-                        // Retries on HTTP 5xx and network errors. On HTTP 422
-                        // with "already_exists", deletes the existing asset and
-                        // retries if replace_existing_artifacts is true.
-                        const MAX_UPLOAD_ATTEMPTS: u32 = 3;
-                        const UPLOAD_RETRY_DELAY: std::time::Duration =
-                            std::time::Duration::from_secs(2);
+                    if !missing_files.is_empty() {
+                        anyhow::bail!(
+                            "the following artifact files are missing:\n  {}",
+                            missing_files.join("\n  ")
+                        );
+                    }
 
-                        let mut last_err: Option<anyhow::Error> = None;
-                        for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
-                            let data = std::fs::read(path).with_context(|| {
-                                format!("release: read artifact {}", path.display())
-                            })?;
+                    let mut join_set = tokio::task::JoinSet::new();
 
-                            match octo
-                                .repos(&github.owner, &github.name)
-                                .releases()
-                                .upload_asset(release.id.into_inner(), &file_name, data.into())
-                                .send()
-                                .await
-                            {
-                                Ok(_) => {
-                                    last_err = None;
-                                    break;
-                                }
-                                Err(err) => {
-                                    let err_str = err.to_string();
-                                    let is_server_error = matches!(
-                                        &err,
-                                        octocrab::Error::GitHub { source, .. }
-                                            if source.status_code.is_server_error()
-                                    );
-                                    let is_already_exists = matches!(
-                                        &err,
-                                        octocrab::Error::GitHub { source, .. }
-                                            if source.status_code.as_u16() == 422
-                                    ) && err_str.contains("already_exists");
+                    for (path, file_name) in prepared_entries {
+                        let sem = semaphore.clone();
+                        let octo = octo.clone();
+                        let gh_owner = gh_owner.clone();
+                        let gh_name = gh_name.clone();
+                        let tag_c = tag_for_upload.clone();
+                        let release_assets = release_assets.clone();
 
-                                    if is_already_exists && replace_existing_artifacts {
-                                        // Delete the conflicting asset and retry.
-                                        log.verbose(&format!(
-                                            "artifact '{}' already exists, deleting before retry (attempt {}/{})",
-                                            file_name, attempt, MAX_UPLOAD_ATTEMPTS
-                                        ));
-                                        // List current assets to find the one to delete.
-                                        let current_release = octo
-                                            .repos(&github.owner, &github.name)
-                                            .releases()
-                                            .get(release.id.into_inner())
+                        join_set.spawn(async move {
+                            let _permit = sem.acquire().await
+                                .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+
+                            // Handle replace_existing_artifacts: if an asset with the
+                            // same name already exists, delete it before uploading.
+                            if replace_existing_artifacts {
+                                for existing_asset in &release_assets {
+                                    if existing_asset.name == file_name {
+                                        octo.repos(&gh_owner, &gh_name)
+                                            .release_assets()
+                                            .delete(existing_asset.id.into_inner())
                                             .await
                                             .with_context(|| {
                                                 format!(
-                                                    "release: fetch release to find duplicate asset '{}'",
-                                                    file_name
+                                                    "release: delete existing artifact '{}' from release '{}'",
+                                                    file_name, tag_c
                                                 )
                                             })?;
-                                        for asset in &current_release.assets {
-                                            if asset.name == file_name {
-                                                octo.repos(&github.owner, &github.name)
-                                                    .release_assets()
-                                                    .delete(asset.id.into_inner())
-                                                    .await
-                                                    .with_context(|| {
-                                                        format!(
-                                                            "release: delete duplicate artifact '{}' from release '{}'",
-                                                            file_name, tag
-                                                        )
-                                                    })?;
-                                                break;
-                                            }
-                                        }
-                                        last_err = Some(anyhow::anyhow!(err));
-                                        if attempt < MAX_UPLOAD_ATTEMPTS {
-                                            tokio::time::sleep(UPLOAD_RETRY_DELAY).await;
-                                        }
-                                        continue;
-                                    } else if is_server_error
-                                        || matches!(&err, octocrab::Error::Hyper { .. })
-                                        || matches!(&err, octocrab::Error::Http { .. })
-                                    {
-                                        // Retryable server/network error.
-                                        log.warn(&format!(
-                                            "upload of '{}' failed (attempt {}/{}): {}",
-                                            file_name, attempt, MAX_UPLOAD_ATTEMPTS, err_str
-                                        ));
-                                        last_err = Some(anyhow::anyhow!(err));
-                                        if attempt < MAX_UPLOAD_ATTEMPTS {
-                                            tokio::time::sleep(UPLOAD_RETRY_DELAY).await;
-                                        }
-                                        continue;
-                                    } else {
-                                        // Non-retryable error — fail immediately.
-                                        return Err(anyhow::anyhow!(err)).with_context(|| {
-                                            format!(
-                                                "release: upload artifact '{}' to release '{}'",
-                                                file_name, tag
-                                            )
-                                        });
+                                        break;
                                     }
                                 }
                             }
-                        }
-                        if let Some(err) = last_err {
-                            return Err(err).with_context(|| {
-                                format!(
-                                    "release: upload artifact '{}' to release '{}' failed after {} attempts",
-                                    file_name, tag, MAX_UPLOAD_ATTEMPTS
-                                )
-                            });
-                        }
 
-                        log.verbose(&format!("uploaded artifact: {}", file_name));
+                            // Retry loop: up to 10 attempts with exponential backoff.
+                            const MAX_UPLOAD_ATTEMPTS: u32 = 10;
+                            const INITIAL_RETRY_DELAY: std::time::Duration =
+                                std::time::Duration::from_millis(50);
+                            const MAX_RETRY_DELAY: std::time::Duration =
+                                std::time::Duration::from_secs(30);
+
+                            let mut last_err: Option<anyhow::Error> = None;
+                            for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
+                                let data = std::fs::read(&path).with_context(|| {
+                                    format!("release: read artifact {}", path.display())
+                                })?;
+
+                                match octo
+                                    .repos(&gh_owner, &gh_name)
+                                    .releases()
+                                    .upload_asset(release_id_raw, &file_name, data.into())
+                                    .send()
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        last_err = None;
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        let err_str = err.to_string();
+                                        let is_server_error = matches!(
+                                            &err,
+                                            octocrab::Error::GitHub { source, .. }
+                                                if source.status_code.is_server_error()
+                                        );
+                                        let is_already_exists = matches!(
+                                            &err,
+                                            octocrab::Error::GitHub { source, .. }
+                                                if source.status_code.as_u16() == 422
+                                        ) && err_str.contains("already_exists");
+
+                                        if is_already_exists && replace_existing_artifacts {
+                                            // Delete the conflicting asset and retry.
+                                            let current_release = octo
+                                                .repos(&gh_owner, &gh_name)
+                                                .releases()
+                                                .get(release_id_raw)
+                                                .await
+                                                .with_context(|| {
+                                                    format!(
+                                                        "release: fetch release to find duplicate asset '{}'",
+                                                        file_name
+                                                    )
+                                                })?;
+                                            for asset in &current_release.assets {
+                                                if asset.name == file_name {
+                                                    octo.repos(&gh_owner, &gh_name)
+                                                        .release_assets()
+                                                        .delete(asset.id.into_inner())
+                                                        .await
+                                                        .with_context(|| {
+                                                            format!(
+                                                                "release: delete duplicate artifact '{}' from release '{}'",
+                                                                file_name, tag_c
+                                                            )
+                                                        })?;
+                                                    break;
+                                                }
+                                            }
+                                            last_err = Some(anyhow::anyhow!(err));
+                                            if attempt < MAX_UPLOAD_ATTEMPTS {
+                                                let delay = std::cmp::min(
+                                                    INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
+                                                    MAX_RETRY_DELAY,
+                                                );
+                                                tokio::time::sleep(delay).await;
+                                            }
+                                            continue;
+                                        } else if is_server_error
+                                            || matches!(&err, octocrab::Error::Hyper { .. })
+                                            || matches!(&err, octocrab::Error::Http { .. })
+                                        {
+                                            last_err = Some(anyhow::anyhow!(err));
+                                            if attempt < MAX_UPLOAD_ATTEMPTS {
+                                                let delay = std::cmp::min(
+                                                    INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
+                                                    MAX_RETRY_DELAY,
+                                                );
+                                                tokio::time::sleep(delay).await;
+                                            }
+                                            continue;
+                                        } else {
+                                            // Non-retryable error — fail immediately.
+                                            return Err(anyhow::anyhow!(err)).with_context(|| {
+                                                format!(
+                                                    "release: upload artifact '{}' to release '{}'",
+                                                    file_name, tag_c
+                                                )
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(err) = last_err {
+                                return Err(err).with_context(|| {
+                                    format!(
+                                        "release: upload artifact '{}' to release '{}' failed after {} attempts",
+                                        file_name, tag_c, MAX_UPLOAD_ATTEMPTS
+                                    )
+                                });
+                            }
+
+                            Ok::<String, anyhow::Error>(file_name)
+                        });
                     }
+
+                    // Collect results from all upload tasks.
+                    while let Some(result) = join_set.join_next().await {
+                        match result {
+                            Ok(Ok(file_name)) => {
+                                log.verbose(&format!("uploaded artifact: {}", file_name));
+                            }
+                            Ok(Err(e)) => return Err(e),
+                            Err(join_err) => {
+                                return Err(anyhow::anyhow!(
+                                    "release: upload task panicked: {}", join_err
+                                ));
+                            }
+                        }
+                    }
+
                 }
 
                 // Draft-then-publish: if the user's config has draft=false,
@@ -860,9 +1063,17 @@ impl Stage for ReleaseStage {
                 if !user_wants_draft {
                     let publish_route = format!(
                         "/repos/{}/{}/releases/{}",
-                        github.owner, github.name, release.id
+                        github.owner, github.name, release_id_raw
                     );
-                    let publish_body = serde_json::json!({ "draft": false });
+                    let mut publish_body = serde_json::json!({ "draft": false });
+                    if let Some(ml) = &make_latest {
+                        publish_body["make_latest"] =
+                            serde_json::Value::String(ml.to_string());
+                    }
+                    if let Some(dc) = &discussion_category_name {
+                        publish_body["discussion_category_name"] =
+                            serde_json::json!(dc);
+                    }
                     octo.patch::<octocrab::models::repos::Release, _, _>(
                         publish_route,
                         Some(&publish_body),
@@ -1013,9 +1224,12 @@ mod tests {
     #[test]
     fn test_collect_extra_files_no_matches() {
         let ctx = TestContextBuilder::new().build();
-        let result = collect_extra_files(&[ExtraFileSpec::Glob(
-            "/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string(),
-        )], &ctx);
+        let result = collect_extra_files(
+            &[ExtraFileSpec::Glob(
+                "/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string(),
+            )],
+            &ctx,
+        );
         assert!(result.is_empty());
     }
 
@@ -1066,10 +1280,13 @@ mod tests {
         std::fs::write(&test_file, "signature").unwrap();
 
         let pattern = dir.join("*.sig").to_string_lossy().into_owned();
-        let result = collect_extra_files(&[ExtraFileSpec::Detailed {
-            glob: pattern,
-            name_template: Some("{{ .ArtifactName }}.sig".to_string()),
-        }], &ctx);
+        let result = collect_extra_files(
+            &[ExtraFileSpec::Detailed {
+                glob: pattern,
+                name_template: Some("{{ .ArtifactName }}.sig".to_string()),
+            }],
+            &ctx,
+        );
         assert_eq!(result.len(), 1);
         assert!(result[0].0.file_name().unwrap() == "artifact.sig");
         // name_template should have been rendered
@@ -1081,31 +1298,68 @@ mod tests {
 
     // ---- resolve_make_latest tests ----
 
+    /// Identity renderer for tests — returns the input unchanged.
+    fn noop_render(s: &str) -> anyhow::Result<String> {
+        Ok(s.to_string())
+    }
+
     #[test]
     fn test_resolve_make_latest_true() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(true)));
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render);
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "true");
     }
 
     #[test]
     fn test_resolve_make_latest_false() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(false)));
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render);
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "false");
     }
 
     #[test]
     fn test_resolve_make_latest_auto() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::Auto));
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::Auto), noop_render);
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "legacy");
     }
 
     #[test]
     fn test_resolve_make_latest_none() {
-        let ml = resolve_make_latest(&None);
+        let ml = resolve_make_latest(&None, noop_render);
         assert!(ml.is_none());
+    }
+
+    #[test]
+    fn test_resolve_make_latest_template_string_true() {
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::String("true".to_string())), noop_render);
+        assert!(ml.is_some());
+        assert_eq!(ml.unwrap().to_string(), "true");
+    }
+
+    #[test]
+    fn test_resolve_make_latest_template_string_false() {
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::String("false".to_string())), noop_render);
+        assert!(ml.is_some());
+        assert_eq!(ml.unwrap().to_string(), "false");
+    }
+
+    #[test]
+    fn test_resolve_make_latest_template_string_auto() {
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::String("auto".to_string())), noop_render);
+        assert!(ml.is_some());
+        assert_eq!(ml.unwrap().to_string(), "legacy");
+    }
+
+    #[test]
+    fn test_resolve_make_latest_template_rendered() {
+        // Simulate a template that renders to "false"
+        let ml = resolve_make_latest(
+            &Some(MakeLatestConfig::String("{{ .IsSnapshot }}".to_string())),
+            |_| Ok("false".to_string()),
+        );
+        assert!(ml.is_some());
+        assert_eq!(ml.unwrap().to_string(), "false");
     }
 
     // ---- skip_upload behavior test ----
@@ -1120,7 +1374,7 @@ mod tests {
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    skip_upload: Some(true),
+                    skip_upload: Some(StringOrBool::Bool(true)),
                     draft: Some(false),
                     ..Default::default()
                 }),
@@ -1240,14 +1494,14 @@ mod tests {
         let stage = ReleaseStage;
         let result = stage.run(&mut ctx);
 
-        // If GITHUB_TOKEN happens to be set in the environment (e.g., CI),
-        // the stage would proceed past token resolution and fail on the API
-        // call instead. Either way, it should error.
+        // If GITHUB_TOKEN / ANODIZE_GITHUB_TOKEN happens to be set in the
+        // environment (e.g., CI), the stage would proceed past token resolution
+        // and fail on the API call instead. Either way, it should error.
         assert!(result.is_err(), "release without token should fail");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("GITHUB_TOKEN") || err.contains("--token") || err.contains("release"),
-            "error should mention GITHUB_TOKEN, --token, or release failure, got: {err}"
+            err.contains("GITHUB_TOKEN") || err.contains("ANODIZE_GITHUB_TOKEN") || err.contains("--token") || err.contains("release"),
+            "error should mention GITHUB_TOKEN, ANODIZE_GITHUB_TOKEN, --token, or release failure, got: {err}"
         );
     }
 
@@ -1300,8 +1554,7 @@ mod tests {
     fn test_collect_extra_files_invalid_glob_pattern() {
         let ctx = TestContextBuilder::new().build();
         // An invalid glob pattern should be handled gracefully
-        let result =
-            collect_extra_files(&[ExtraFileSpec::Glob("[invalid-glob".to_string())], &ctx);
+        let result = collect_extra_files(&[ExtraFileSpec::Glob("[invalid-glob".to_string())], &ctx);
         // collect_extra_files logs a warning and returns empty, does not panic
         assert!(result.is_empty());
     }
@@ -1321,6 +1574,7 @@ mod tests {
             id: 42,
             html_url: "https://github.com/testowner/testrepo/releases/42".to_string(),
             tag_name: "v1.0.0".to_string(),
+            name: Some("Release v1.0.0".to_string()),
             draft: false,
         }));
         mock.set_upload_asset_response(Ok(AssetInfo {
@@ -1430,7 +1684,7 @@ mod tests {
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    skip_upload: Some(true),
+                    skip_upload: Some(StringOrBool::Bool(true)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1445,19 +1699,19 @@ mod tests {
     #[test]
     fn test_make_latest_values_resolve_correctly() {
         // Bool(true) -> MakeLatest::True
-        let ml_true = resolve_make_latest(&Some(MakeLatestConfig::Bool(true))).unwrap();
+        let ml_true = resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render).unwrap();
         assert_eq!(ml_true.to_string(), "true");
 
         // Bool(false) -> MakeLatest::False
-        let ml_false = resolve_make_latest(&Some(MakeLatestConfig::Bool(false))).unwrap();
+        let ml_false = resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render).unwrap();
         assert_eq!(ml_false.to_string(), "false");
 
         // Auto -> MakeLatest::Legacy
-        let ml_auto = resolve_make_latest(&Some(MakeLatestConfig::Auto)).unwrap();
+        let ml_auto = resolve_make_latest(&Some(MakeLatestConfig::Auto), noop_render).unwrap();
         assert_eq!(ml_auto.to_string(), "legacy");
 
         // None -> None
-        assert!(resolve_make_latest(&None).is_none());
+        assert!(resolve_make_latest(&None, noop_render).is_none());
     }
 
     #[test]
@@ -1491,6 +1745,7 @@ mod tests {
             id: 1,
             html_url: "https://github.com/test/test/releases/1".to_string(),
             tag_name: rendered_tag.clone(),
+            name: Some(rendered_name.clone()),
             draft: false,
         }));
 
@@ -1543,6 +1798,7 @@ mod tests {
             id: 99,
             html_url: "https://github.com/test/test/releases/99".to_string(),
             tag_name: "v1.0.0".to_string(),
+            name: Some("Release v1.0.0".to_string()),
             draft: true,
         }));
 
@@ -1620,9 +1876,9 @@ mod tests {
         let stage = ReleaseStage;
         let result = stage.run(&mut ctx);
 
-        // If GITHUB_TOKEN is in the environment, the stage proceeds past
-        // token resolution and fails on the API call instead. Either way
-        // the error should be informative.
+        // If GITHUB_TOKEN / ANODIZE_GITHUB_TOKEN is in the environment, the
+        // stage proceeds past token resolution and fails on the API call
+        // instead. Either way the error should be informative.
         assert!(
             result.is_err(),
             "release without explicit token should fail"
@@ -1630,10 +1886,11 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("GITHUB_TOKEN")
+                || err.contains("ANODIZE_GITHUB_TOKEN")
                 || err.contains("--token")
                 || err.contains("release")
                 || err.contains("GitHub"),
-            "error should mention GITHUB_TOKEN, --token, or release context, got: {err}"
+            "error should mention GITHUB_TOKEN, ANODIZE_GITHUB_TOKEN, --token, or release context, got: {err}"
         );
     }
 
@@ -2118,6 +2375,7 @@ draft: true
         // Archive with matching id
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-linux-amd64.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2127,6 +2385,7 @@ draft: true
         // Archive with non-matching id
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-darwin-arm64.tar.gz"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -2162,6 +2421,7 @@ draft: true
         // Add two archives with different ids
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-linux.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -2169,6 +2429,7 @@ draft: true
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-darwin.tar.gz"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -2192,6 +2453,7 @@ draft: true
         let artifacts = vec![
             Artifact {
                 kind: ArtifactKind::Archive,
+                name: String::new(),
                 path: PathBuf::from("/tmp/linux.tar.gz"),
                 target: None,
                 crate_name: "app".to_string(),
@@ -2199,6 +2461,7 @@ draft: true
             },
             Artifact {
                 kind: ArtifactKind::Archive,
+                name: String::new(),
                 path: PathBuf::from("/tmp/darwin.tar.gz"),
                 target: None,
                 crate_name: "app".to_string(),
@@ -2206,6 +2469,7 @@ draft: true
             },
             Artifact {
                 kind: ArtifactKind::Archive,
+                name: String::new(),
                 path: PathBuf::from("/tmp/windows.zip"),
                 target: None,
                 crate_name: "app".to_string(),
@@ -2213,6 +2477,7 @@ draft: true
             },
             Artifact {
                 kind: ArtifactKind::Checksum,
+                name: String::new(),
                 path: PathBuf::from("/tmp/checksums.txt"),
                 target: None,
                 crate_name: "app".to_string(),
@@ -2250,14 +2515,14 @@ draft: true
 
         let artifact_no_id = Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/tmp/mystery.tar.gz"),
             target: None,
             crate_name: "app".to_string(),
             metadata: HashMap::new(),
         };
 
-        let matches =
-            matches!(artifact_no_id.metadata.get("id"), Some(id) if ids.contains(id));
+        let matches = matches!(artifact_no_id.metadata.get("id"), Some(id) if ids.contains(id));
         assert!(
             !matches,
             "artifact without id metadata should not match ids filter"
@@ -2312,6 +2577,7 @@ draft: true
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-linux.tar.gz"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -2319,6 +2585,7 @@ draft: true
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-darwin.tar.gz"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -2366,6 +2633,7 @@ draft: true
         for (kind, name) in &uploadable_kinds {
             ctx.artifacts.add(Artifact {
                 kind: *kind,
+                name: String::new(),
                 path: PathBuf::from(format!("/tmp/{}", name)),
                 target: None,
                 crate_name: "myapp".to_string(),
@@ -2376,17 +2644,20 @@ draft: true
         // Also add a signature Metadata artifact (should be uploaded).
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Metadata,
+            name: String::new(),
             path: PathBuf::from("/tmp/checksums.txt.sig"),
             target: None,
             crate_name: "myapp".to_string(),
-            metadata: std::collections::HashMap::from([
-                ("type".to_string(), "Signature".to_string()),
-            ]),
+            metadata: std::collections::HashMap::from([(
+                "type".to_string(),
+                "Signature".to_string(),
+            )]),
         });
 
         // Add non-uploadable kinds (should NOT be uploaded).
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -2394,6 +2665,7 @@ draft: true
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
+            name: String::new(),
             path: PathBuf::from("ghcr.io/test/myapp:latest"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -2401,6 +2673,7 @@ draft: true
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Library,
+            name: String::new(),
             path: PathBuf::from("/tmp/libmyapp.so"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -2408,6 +2681,7 @@ draft: true
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Wasm,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp.wasm"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -2416,6 +2690,7 @@ draft: true
         // Plain Metadata (not Signature/Certificate) should NOT be uploaded.
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Metadata,
+            name: String::new(),
             path: PathBuf::from("/tmp/metadata.json"),
             target: None,
             crate_name: "myapp".to_string(),
@@ -2801,8 +3076,15 @@ draft: true
     fn test_build_release_json_body_within_limit() {
         let body = "a".repeat(1000);
         let json = build_release_json(
-            "v1.0.0", "Release v1.0.0", &body,
-            false, false, &None, &None, &None, false,
+            "v1.0.0",
+            "Release v1.0.0",
+            &body,
+            false,
+            false,
+            &None,
+            &None,
+            &None,
+            false,
         );
         assert_eq!(json["body"].as_str().unwrap(), &body);
     }
@@ -2811,8 +3093,15 @@ draft: true
     fn test_build_release_json_body_at_limit() {
         let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS);
         let json = build_release_json(
-            "v1.0.0", "Release v1.0.0", &body,
-            false, false, &None, &None, &None, false,
+            "v1.0.0",
+            "Release v1.0.0",
+            &body,
+            false,
+            false,
+            &None,
+            &None,
+            &None,
+            false,
         );
         assert_eq!(json["body"].as_str().unwrap(), &body);
     }
@@ -2821,21 +3110,43 @@ draft: true
     fn test_build_release_json_body_exceeds_limit_is_truncated() {
         let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS + 500);
         let json = build_release_json(
-            "v1.0.0", "Release v1.0.0", &body,
-            false, false, &None, &None, &None, false,
+            "v1.0.0",
+            "Release v1.0.0",
+            &body,
+            false,
+            false,
+            &None,
+            &None,
+            &None,
+            false,
         );
         let result = json["body"].as_str().unwrap();
-        // The truncated body should start with GITHUB_RELEASE_BODY_MAX_CHARS 'a's
-        // and end with the truncation marker.
-        assert!(result.starts_with(&"a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS)));
-        assert!(result.ends_with("\n\n...(truncated)"));
+        let suffix = "\n\n...(truncated)";
+        // Total length must not exceed the limit.
+        assert!(
+            result.len() <= GITHUB_RELEASE_BODY_MAX_CHARS,
+            "truncated body length {} exceeds limit {}",
+            result.len(),
+            GITHUB_RELEASE_BODY_MAX_CHARS,
+        );
+        // The content portion should be max_chars - suffix length of 'a's.
+        let expected_content_len = GITHUB_RELEASE_BODY_MAX_CHARS - suffix.len();
+        assert!(result.starts_with(&"a".repeat(expected_content_len)));
+        assert!(result.ends_with(suffix));
     }
 
     #[test]
     fn test_build_release_json_empty_body_not_set() {
         let json = build_release_json(
-            "v1.0.0", "Release v1.0.0", "",
-            false, false, &None, &None, &None, false,
+            "v1.0.0",
+            "Release v1.0.0",
+            "",
+            false,
+            false,
+            &None,
+            &None,
+            &None,
+            false,
         );
         assert!(json.get("body").is_none());
     }
@@ -2845,8 +3156,15 @@ draft: true
     #[test]
     fn test_build_release_json_draft_true() {
         let json = build_release_json(
-            "v1.0.0", "Release v1.0.0", "body",
-            true, false, &None, &None, &None, false,
+            "v1.0.0",
+            "Release v1.0.0",
+            "body",
+            true,
+            false,
+            &None,
+            &None,
+            &None,
+            false,
         );
         assert_eq!(json["draft"].as_bool().unwrap(), true);
     }
@@ -2854,8 +3172,15 @@ draft: true
     #[test]
     fn test_build_release_json_draft_false() {
         let json = build_release_json(
-            "v1.0.0", "Release v1.0.0", "body",
-            false, false, &None, &None, &None, false,
+            "v1.0.0",
+            "Release v1.0.0",
+            "body",
+            false,
+            false,
+            &None,
+            &None,
+            &None,
+            false,
         );
         assert_eq!(json["draft"].as_bool().unwrap(), false);
     }

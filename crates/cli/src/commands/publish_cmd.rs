@@ -41,7 +41,7 @@ pub fn run(opts: PublishOpts) -> Result<()> {
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
     helpers::setup_env(&mut ctx, &config, &log)?;
-    helpers::resolve_git_context(&mut ctx, &config, &log);
+    helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
     // Load artifacts from dist/
     let dist = opts.dist.as_deref().unwrap_or(&config.dist);

@@ -79,12 +79,13 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 // ---------------------------------------------------------------------------
 
 /// Resolve an auth token from the context, then a publisher-specific env var,
-/// then the generic `GITHUB_TOKEN` env var.
+/// then `ANODIZE_GITHUB_TOKEN`, then the generic `GITHUB_TOKEN` env var.
 pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
     ctx.options
         .token
         .clone()
         .or_else(|| env_var.and_then(|v| std::env::var(v).ok()))
+        .or_else(|| std::env::var("ANODIZE_GITHUB_TOKEN").ok())
         .or_else(|| std::env::var("GITHUB_TOKEN").ok())
 }
 
@@ -176,10 +177,7 @@ pub(crate) fn clone_repo_ssh(
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
                 .with_context(|| format!("{label}: set SSH key permissions"))?;
         }
-        let built_ssh_cmd = format!(
-            "ssh -i {} -o StrictHostKeyChecking=no",
-            key_path.display()
-        );
+        let built_ssh_cmd = format!("ssh -i {} -o StrictHostKeyChecking=no", key_path.display());
         cmd.env("GIT_SSH_COMMAND", &built_ssh_cmd);
         ssh_cmd_for_config = Some(built_ssh_cmd);
     }
@@ -220,28 +218,30 @@ pub(crate) fn clone_repo(
     // Warn when token_type is set to a non-GitHub value, since anodize
     // currently only supports GitHub-based repository publishing.
     if let Some(r) = repo
-        && let Some(ref tt) = r.token_type {
-            let tt_lower = tt.to_lowercase();
-            if tt_lower != "github" && !tt_lower.is_empty() {
-                log.warn(&format!(
+        && let Some(ref tt) = r.token_type
+    {
+        let tt_lower = tt.to_lowercase();
+        if tt_lower != "github" && !tt_lower.is_empty() {
+            log.warn(&format!(
                     "{label}: repository.token_type={tt:?} is not yet supported; only \"github\" is currently implemented"
                 ));
-            }
         }
+    }
 
     // Check if RepositoryConfig specifies a Git SSH URL.
     if let Some(r) = repo
         && let Some(ref git) = r.git
-        && let Some(ref url) = git.url {
-            return clone_repo_ssh(
-                url,
-                git.private_key.as_deref(),
-                git.ssh_command.as_deref(),
-                tmp_dir,
-                label,
-                log,
-            );
-        }
+        && let Some(ref url) = git.url
+    {
+        return clone_repo_ssh(
+            url,
+            git.private_key.as_deref(),
+            git.ssh_command.as_deref(),
+            tmp_dir,
+            label,
+            log,
+        );
+    }
 
     // Fall back to HTTPS clone.
     let repo_url = format!(
@@ -292,10 +292,7 @@ pub(crate) fn maybe_submit_pr(
     let is_draft = pr_cfg.draft == Some(true);
 
     // Determine the target base branch for the PR.
-    let base_branch = pr_cfg
-        .base
-        .as_ref()
-        .and_then(|b| b.branch.as_deref());
+    let base_branch = pr_cfg.base.as_ref().and_then(|b| b.branch.as_deref());
 
     let mut args = vec![
         "pr",
@@ -368,17 +365,26 @@ pub(crate) fn resolve_repo_owner_name(
     legacy_name: Option<&str>,
 ) -> Option<(String, String)> {
     if let Some(r) = repo
-        && let (Some(o), Some(n)) = (r.owner.as_deref(), r.name.as_deref()) {
-            return Some((o.to_string(), n.to_string()));
-        }
+        && let (Some(o), Some(n)) = (r.owner.as_deref(), r.name.as_deref())
+    {
+        return Some((o.to_string(), n.to_string()));
+    }
     if let (Some(o), Some(n)) = (legacy_owner, legacy_name) {
         return Some((o.to_string(), n.to_string()));
     }
     None
 }
 
+/// Default commit author name used when no author is configured.
+/// Mirrors GoReleaser's default of "goreleaser".
+const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodize";
+
+/// Default commit author email used when no author is configured.
+/// Mirrors GoReleaser's default of "goreleaser@carlosbecker.com".
+const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodize.dev";
+
 /// Resolve commit author name/email from a CommitAuthorConfig, falling back
-/// to legacy per-publisher fields.
+/// to legacy per-publisher fields, then to built-in defaults.
 pub(crate) fn resolve_commit_opts<'a>(
     commit_author: Option<&'a anodize_core::config::CommitAuthorConfig>,
     legacy_name: Option<&'a str>,
@@ -394,13 +400,13 @@ pub(crate) fn resolve_commit_opts<'a>(
         (legacy_name, legacy_email, None)
     };
     CommitOptions {
-        author_name: name,
-        author_email: email,
+        author_name: Some(name.unwrap_or(DEFAULT_COMMIT_AUTHOR_NAME)),
+        author_email: Some(email.unwrap_or(DEFAULT_COMMIT_AUTHOR_EMAIL)),
         signing,
     }
 }
 
-/// Resolve the repository token from: RepositoryConfig.token → env_var → GITHUB_TOKEN.
+/// Resolve the repository token from: RepositoryConfig.token → env_var → ANODIZE_GITHUB_TOKEN → GITHUB_TOKEN.
 pub(crate) fn resolve_repo_token(
     ctx: &Context,
     repo: Option<&anodize_core::config::RepositoryConfig>,
@@ -409,9 +415,10 @@ pub(crate) fn resolve_repo_token(
     // 1. Token from repository config
     if let Some(r) = repo
         && let Some(ref tok) = r.token
-        && !tok.is_empty() {
-            return Some(tok.clone());
-        }
+        && !tok.is_empty()
+    {
+        return Some(tok.clone());
+    }
     // 2. Fall back to context + env
     resolve_token(ctx, env_var)
 }
@@ -467,10 +474,7 @@ pub(crate) fn commit_and_push_with_opts(
         commit_args.extend_from_slice(&["-c", &email_cfg]);
     }
     // Handle commit signing config
-    let do_sign = opts
-        .signing
-        .and_then(|s| s.enabled)
-        .unwrap_or(false);
+    let do_sign = opts.signing.and_then(|s| s.enabled).unwrap_or(false);
     if do_sign {
         sign_cfg = "commit.gpgsign=true".to_string();
         commit_args.extend_from_slice(&["-c", &sign_cfg]);
@@ -750,9 +754,15 @@ pub(crate) fn find_artifacts_by_os_filtered(
     os_needle: &str,
     ids: Option<&[String]>,
 ) -> Vec<OsArtifact> {
-    let all = ctx
+    // Include both Archive and Binary artifacts — GoReleaser supports both
+    // UploadableArchive and UploadableBinary types for publisher packages.
+    let mut all = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+    all.extend(
+        ctx.artifacts
+            .by_kind_and_crate(ArtifactKind::Binary, crate_name),
+    );
     let filtered = filter_by_ids(all, ids);
     filtered
         .into_iter()
@@ -779,16 +789,20 @@ pub(crate) fn find_all_platform_artifacts(ctx: &Context, crate_name: &str) -> Ve
     find_all_platform_artifacts_filtered(ctx, crate_name, None)
 }
 
-/// Find all Archive artifacts for the given crate across all platforms,
+/// Find all Archive and Binary artifacts for the given crate across all platforms,
 /// with optional IDs filter.
 pub(crate) fn find_all_platform_artifacts_filtered(
     ctx: &Context,
     crate_name: &str,
     ids: Option<&[String]>,
 ) -> Vec<OsArtifact> {
-    let all = ctx
+    let mut all = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+    all.extend(
+        ctx.artifacts
+            .by_kind_and_crate(ArtifactKind::Binary, crate_name),
+    );
     let filtered = filter_by_ids(all, ids);
     filtered
         .into_iter()
@@ -837,6 +851,7 @@ mod tests {
             meta.insert("sha256".to_string(), sha256.to_string());
             ctx.artifacts.add(Artifact {
                 kind: ArtifactKind::Archive,
+                name: String::new(),
                 path: PathBuf::from(format!(
                     "dist/{}",
                     url.rsplit('/').next().unwrap_or("a.tar.gz")
@@ -1057,11 +1072,15 @@ mod tests {
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
         let mut meta = HashMap::new();
-        meta.insert("url".to_string(), "https://example.com/a.tar.gz".to_string());
+        meta.insert(
+            "url".to_string(),
+            "https://example.com/a.tar.gz".to_string(),
+        );
         meta.insert("sha256".to_string(), "abc".to_string());
         meta.insert("id".to_string(), "my-archive".to_string());
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/a.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "mytool".to_string(),
@@ -1170,22 +1189,34 @@ mod tests {
 
     #[test]
     fn test_resolve_artifact_kind_archive() {
-        assert!(matches!(resolve_artifact_kind(Some("archive")), ArtifactKind::Archive));
+        assert!(matches!(
+            resolve_artifact_kind(Some("archive")),
+            ArtifactKind::Archive
+        ));
     }
 
     #[test]
     fn test_resolve_artifact_kind_msi() {
-        assert!(matches!(resolve_artifact_kind(Some("msi")), ArtifactKind::Installer));
+        assert!(matches!(
+            resolve_artifact_kind(Some("msi")),
+            ArtifactKind::Installer
+        ));
     }
 
     #[test]
     fn test_resolve_artifact_kind_nsis() {
-        assert!(matches!(resolve_artifact_kind(Some("nsis")), ArtifactKind::Installer));
+        assert!(matches!(
+            resolve_artifact_kind(Some("nsis")),
+            ArtifactKind::Installer
+        ));
     }
 
     #[test]
     fn test_resolve_artifact_kind_unknown_defaults_to_archive() {
-        assert!(matches!(resolve_artifact_kind(Some("unknown")), ArtifactKind::Archive));
+        assert!(matches!(
+            resolve_artifact_kind(Some("unknown")),
+            ArtifactKind::Archive
+        ));
     }
 
     // -----------------------------------------------------------------------

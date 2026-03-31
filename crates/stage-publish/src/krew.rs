@@ -214,7 +214,10 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         krew_cfg.manifests_repo.as_ref().map(|r| r.name.as_str()),
     )
     .ok_or_else(|| {
-        anyhow::anyhow!("krew: no repository/manifests_repo config for '{}'", crate_name)
+        anyhow::anyhow!(
+            "krew: no repository/manifests_repo config for '{}'",
+            crate_name
+        )
     })?;
 
     if ctx.is_dry_run() {
@@ -227,18 +230,29 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
 
     let version = ctx.version();
 
-    let description = krew_cfg
-        .description
-        .clone()
-        .unwrap_or_else(|| crate_name.to_string());
-    let short_description = krew_cfg
-        .short_description
-        .clone()
-        .unwrap_or_else(|| crate_name.to_string());
-    let homepage = krew_cfg
-        .homepage
-        .clone()
-        .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, crate_name));
+    let description_raw = krew_cfg.description.as_deref().unwrap_or(crate_name);
+    let description = ctx
+        .render_template(description_raw)
+        .unwrap_or_else(|_| description_raw.to_string());
+    let short_description_raw = krew_cfg.short_description.as_deref().unwrap_or(crate_name);
+    let short_description = ctx
+        .render_template(short_description_raw)
+        .unwrap_or_else(|_| short_description_raw.to_string());
+    // Derive GitHub slug (owner/repo) for homepage fallback, consistent with homebrew.
+    let github_slug = _crate_cfg
+        .release
+        .as_ref()
+        .and_then(|r| r.github.as_ref())
+        .map(|gh| format!("{}/{}", gh.owner, gh.name));
+    let homepage_raw = krew_cfg.homepage.clone().unwrap_or_else(|| {
+        github_slug
+            .as_deref()
+            .map(|slug| format!("https://github.com/{}", slug))
+            .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, crate_name))
+    });
+    let homepage = ctx
+        .render_template(&homepage_raw)
+        .unwrap_or_else(|_| homepage_raw.clone());
     let caveats = krew_cfg.caveats.clone().unwrap_or_default();
 
     // Find artifacts across all platforms, applying IDs filter.
@@ -282,8 +296,12 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         platforms: &platforms,
     });
 
-    // Use name override if set.
-    let plugin_name = krew_cfg.name.as_deref().unwrap_or(crate_name);
+    // Use name override if set; render through template engine.
+    let plugin_name_raw = krew_cfg.name.as_deref().unwrap_or(crate_name);
+    let plugin_name_rendered = ctx
+        .render_template(plugin_name_raw)
+        .unwrap_or_else(|_| plugin_name_raw.to_string());
+    let plugin_name = plugin_name_rendered.as_str();
 
     // Clone the krew-index fork, write the plugin manifest, commit, push.
     let token = util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), None);
@@ -322,21 +340,10 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         "plugin",
     );
     let branch_name = format!("{}-v{}", plugin_name, version);
-    let commit_opts = util::resolve_commit_opts(
-        krew_cfg.commit_author.as_ref(),
-        None,
-        None,
-    );
+    let commit_opts = util::resolve_commit_opts(krew_cfg.commit_author.as_ref(), None, None);
     // Always create a versioned branch for Krew PRs.
     let branch = Some(branch_name.as_str());
-    util::commit_and_push_with_opts(
-        repo_path,
-        &["."],
-        &commit_msg,
-        branch,
-        "krew",
-        &commit_opts,
-    )?;
+    util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, branch, "krew", &commit_opts)?;
 
     log.status(&format!(
         "Krew manifest pushed to {}/{} branch '{}'",

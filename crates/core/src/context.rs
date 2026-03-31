@@ -24,6 +24,8 @@ pub struct ContextOptions {
     pub single_target: Option<String>,
     /// Path to a custom release notes file (overrides changelog).
     pub release_notes_path: Option<PathBuf>,
+    /// When true, abort immediately on first error during publishing.
+    pub fail_fast: bool,
     /// Partial build target for split/merge mode. When set, the build stage
     /// filters targets to only those matching this partial target.
     pub partial_target: Option<PartialTarget>,
@@ -41,9 +43,10 @@ impl Default for ContextOptions {
             skip_stages: Vec::new(),
             selected_crates: Vec::new(),
             token: None,
-            parallelism: 1,
+            parallelism: 4,
             single_target: None,
             release_notes_path: None,
+            fail_fast: false,
             partial_target: None,
         }
     }
@@ -137,6 +140,7 @@ impl Context {
     /// - `Tag`, `Version`, `RawVersion` — tag and version strings
     /// - `Major`, `Minor`, `Patch` — semver components
     /// - `Prerelease` — prerelease suffix (or empty)
+    /// - `BuildMetadata` — build metadata from semver tag (or empty)
     /// - `FullCommit`, `Commit` — full commit SHA (`Commit` is alias for `FullCommit`)
     /// - `ShortCommit` — abbreviated commit SHA
     /// - `Branch` — current git branch
@@ -164,17 +168,9 @@ impl Context {
     /// - `Arch` — target architecture, set by archive/nfpm stages per target
     pub fn populate_git_vars(&mut self) {
         if let Some(ref info) = self.git_info {
-            let version = format!(
-                "{}.{}.{}{}",
-                info.semver.major,
-                info.semver.minor,
-                info.semver.patch,
-                info.semver
-                    .prerelease
-                    .as_ref()
-                    .map(|p| format!("-{p}"))
-                    .unwrap_or_default()
-            );
+            // Version: strip the `v` prefix from the tag (like GoReleaser's
+            // strings.TrimPrefix), preserving prerelease AND build metadata.
+            let version = info.tag.strip_prefix('v').unwrap_or(&info.tag).to_string();
 
             let raw_version = format!(
                 "{}.{}.{}",
@@ -193,6 +189,10 @@ impl Context {
             self.template_vars.set(
                 "Prerelease",
                 info.semver.prerelease.as_deref().unwrap_or(""),
+            );
+            self.template_vars.set(
+                "BuildMetadata",
+                info.semver.build_metadata.as_deref().unwrap_or(""),
             );
             self.template_vars.set("FullCommit", &info.commit);
             self.template_vars.set("Commit", &info.commit);
@@ -214,6 +214,8 @@ impl Context {
             self.template_vars.set("TagBody", &info.tag_body);
             self.template_vars
                 .set("PreviousTag", info.previous_tag.as_deref().unwrap_or(""));
+            self.template_vars
+                .set("FirstCommit", info.first_commit.as_deref().unwrap_or(""));
         }
 
         self.template_vars.set(
@@ -232,7 +234,15 @@ impl Context {
                 "false"
             },
         );
-        self.template_vars.set("IsDraft", "false");
+        // Wire IsDraft from config (GoReleaser reads ctx.Config.Release.Draft).
+        let is_draft = self
+            .config
+            .release
+            .as_ref()
+            .and_then(|r| r.draft)
+            .unwrap_or(false);
+        self.template_vars
+            .set("IsDraft", if is_draft { "true" } else { "false" });
         self.template_vars.set(
             "IsSingleTarget",
             if self.options.single_target.is_some() {
@@ -248,31 +258,44 @@ impl Context {
     /// Sets:
     /// - `Date` — current UTC time as RFC 3339
     /// - `Timestamp` — current unix timestamp as string
-    /// - `Now` — current UTC time as ISO 8601
+    /// - `Now` — current UTC time as RFC 3339
+    /// - `Year` — four-digit year (e.g. "2026")
+    /// - `Month` — zero-padded month (e.g. "03")
+    /// - `Day` — zero-padded day (e.g. "30")
+    /// - `Hour` — zero-padded hour (e.g. "14")
+    /// - `Minute` — zero-padded minute (e.g. "05")
     pub fn populate_time_vars(&mut self) {
         let now = Utc::now();
         self.template_vars.set("Date", &now.to_rfc3339());
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());
         self.template_vars.set("Now", &now.to_rfc3339());
+        self.template_vars
+            .set("Year", &now.format("%Y").to_string());
+        self.template_vars
+            .set("Month", &now.format("%m").to_string());
+        self.template_vars.set("Day", &now.format("%d").to_string());
+        self.template_vars
+            .set("Hour", &now.format("%H").to_string());
+        self.template_vars
+            .set("Minute", &now.format("%M").to_string());
     }
 
     /// Populate runtime environment variables.
     ///
     /// Sets:
-    /// - `RuntimeGoos` — host OS (e.g. "linux", "macos", "windows")
-    /// - `RuntimeGoarch` — host architecture (e.g. "x86_64", "aarch64")
+    /// - `RuntimeGoos` — host OS in Go-compatible naming (e.g. "linux", "darwin", "windows")
+    /// - `RuntimeGoarch` — host architecture in Go-compatible naming (e.g. "amd64", "arm64")
     /// - `Runtime_Goos` / `Runtime_Goarch` — GoReleaser-compatible nested aliases
     pub fn populate_runtime_vars(&mut self) {
-        self.template_vars.set("RuntimeGoos", std::env::consts::OS);
-        self.template_vars
-            .set("RuntimeGoarch", std::env::consts::ARCH);
+        let goos = map_os_to_goos(std::env::consts::OS);
+        let goarch = map_arch_to_goarch(std::env::consts::ARCH);
+        self.template_vars.set("RuntimeGoos", goos);
+        self.template_vars.set("RuntimeGoarch", goarch);
         // GoReleaser uses Runtime.Goos / Runtime.Goarch — after preprocessing
         // the dot becomes an underscore-separated flat key. We expose both forms.
-        self.template_vars
-            .set("Runtime_Goos", std::env::consts::OS);
-        self.template_vars
-            .set("Runtime_Goarch", std::env::consts::ARCH);
+        self.template_vars.set("Runtime_Goos", goos);
+        self.template_vars.set("Runtime_Goarch", goarch);
     }
 
     /// Populate the `ReleaseNotes` template variable from stored changelogs.
@@ -294,6 +317,31 @@ impl Context {
     }
 }
 
+/// Map Rust's `std::env::consts::OS` to Go-compatible GOOS naming.
+/// GoReleaser templates expect Go runtime names (e.g. "darwin" not "macos").
+pub fn map_os_to_goos(os: &str) -> &str {
+    match os {
+        "macos" => "darwin",
+        other => other, // linux, windows, freebsd, etc. already match
+    }
+}
+
+/// Map Rust's `std::env::consts::ARCH` to Go-compatible GOARCH naming.
+/// GoReleaser templates expect Go runtime names (e.g. "amd64" not "x86_64").
+pub fn map_arch_to_goarch(arch: &str) -> &str {
+    match arch {
+        "x86_64" => "amd64",
+        "x86" => "386",
+        "aarch64" => "arm64",
+        "powerpc64" => "ppc64",
+        "s390x" => "s390x",
+        "mips" => "mips",
+        "mips64" => "mips64",
+        "riscv64" => "riscv64",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
@@ -302,8 +350,12 @@ mod tests {
     use crate::git::{GitInfo, SemVer};
 
     fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
+        let tag = match prerelease {
+            Some(pre) => format!("v1.2.3-{pre}"),
+            None => "v1.2.3".to_string(),
+        };
         GitInfo {
-            tag: "v1.2.3".to_string(),
+            tag,
             commit: "abc123def456abc123def456abc123def456abc1".to_string(),
             short_commit: "abc123d".to_string(),
             branch: "main".to_string(),
@@ -323,6 +375,7 @@ mod tests {
             tag_subject: "Release v1.2.3".to_string(),
             tag_contents: "Release v1.2.3\n\nFull release notes here.".to_string(),
             tag_body: "Full release notes here.".to_string(),
+            first_commit: None,
         }
     }
 
@@ -410,6 +463,35 @@ mod tests {
         assert_eq!(v.get("Version"), Some(&"1.2.3-rc.1".to_string()));
         assert_eq!(v.get("RawVersion"), Some(&"1.2.3".to_string()));
         assert_eq!(v.get("Prerelease"), Some(&"rc.1".to_string()));
+    }
+
+    #[test]
+    fn test_build_metadata_template_var() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut info = make_git_info(false, None);
+        info.tag = "v1.2.3+build.42".to_string();
+        info.semver.build_metadata = Some("build.42".to_string());
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("BuildMetadata"), Some(&"build.42".to_string()));
+        // Version should include build metadata (strip v prefix only)
+        assert_eq!(v.get("Version"), Some(&"1.2.3+build.42".to_string()));
+    }
+
+    #[test]
+    fn test_build_metadata_empty_when_none() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("BuildMetadata"),
+            Some(&"".to_string())
+        );
     }
 
     #[test]
@@ -766,14 +848,16 @@ mod tests {
             !goos.is_empty(),
             "RuntimeGoos should not be empty, got: {goos}"
         );
-        assert_eq!(goos, std::env::consts::OS);
+        // RuntimeGoos uses Go naming (e.g. "darwin" not "macos")
+        assert_eq!(goos, map_os_to_goos(std::env::consts::OS));
 
         let goarch = v.get("RuntimeGoarch").expect("RuntimeGoarch should be set");
         assert!(
             !goarch.is_empty(),
             "RuntimeGoarch should not be empty, got: {goarch}"
         );
-        assert_eq!(goarch, std::env::consts::ARCH);
+        // RuntimeGoarch uses Go naming (e.g. "amd64" not "x86_64")
+        assert_eq!(goarch, map_arch_to_goarch(std::env::consts::ARCH));
     }
 
     #[test]

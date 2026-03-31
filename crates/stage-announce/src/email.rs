@@ -55,10 +55,7 @@ pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> 
     let port = smtp.port;
 
     let mut transport = SmtpTransport::starttls_relay(smtp.host)
-        .context(format!(
-            "failed to create SMTP transport for {}",
-            smtp.host
-        ))?
+        .context(format!("failed to create SMTP transport for {}", smtp.host))?
         .port(port)
         .credentials(creds);
 

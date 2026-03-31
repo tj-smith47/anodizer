@@ -6,6 +6,25 @@ use tera::Tera;
 use crate::util;
 
 // ---------------------------------------------------------------------------
+// pkgdesc quoting helper
+// ---------------------------------------------------------------------------
+
+/// Quote a PKGBUILD `pkgdesc` value, choosing the appropriate quoting style
+/// to handle embedded single or double quotes.
+fn quote_pkgdesc(s: &str) -> String {
+    if s.contains('"') && !s.contains('\'') {
+        format!("'{}'", s)
+    } else if s.contains('\'') && !s.contains('"') {
+        format!("\"{}\"", s)
+    } else if s.contains('"') && s.contains('\'') {
+        // Escape single quotes for single-quoted string using shell idiom
+        format!("'{}'", s.replace('\'', "'\\''"))
+    } else {
+        format!("\"{}\"", s)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PkgbuildParams
 // ---------------------------------------------------------------------------
 
@@ -44,10 +63,10 @@ pub struct PkgbuildParams<'a> {
 const PKGBUILD_TEMPLATE: &str = r#"{% for m in maintainers %}# Maintainer: {{ m }}
 {% endfor %}{% for c in contributors %}# Contributor: {{ c }}
 {% endfor %}{% if maintainers | length > 0 or contributors | length > 0 %}
-{% endif %}pkgname={{ name }}
+{% endif %}pkgname='{{ name }}'
 pkgver={{ version }}
 pkgrel={{ pkgrel }}
-pkgdesc="{{ description }}"
+pkgdesc={{ quoted_description }}
 arch=({% for a in arches %}'{{ a }}'{% if not loop.last %} {% endif %}{% endfor %})
 url="{{ url }}"
 license=('{{ license }}')
@@ -80,6 +99,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("version", params.version);
     ctx.insert("pkgrel", &params.pkgrel);
     ctx.insert("description", params.description);
+    ctx.insert("quoted_description", &quote_pkgdesc(params.description));
     ctx.insert("url", params.url);
     ctx.insert("license", params.license);
     ctx.insert("maintainers", params.maintainers);
@@ -104,8 +124,17 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("arches", &arches);
 
     // Sources as objects for template iteration.
-    let sources: Vec<std::collections::HashMap<&str, &str>> = params
+    // Replace the version string in URLs with ${pkgver} so the PKGBUILD
+    // automatically uses the pkgver variable (GoReleaser convention).
+    let substituted_sources: Vec<(String, String, String)> = params
         .sources
+        .iter()
+        .map(|(arch, url, hash)| {
+            let substituted_url = url.replace(params.version, "${pkgver}");
+            (arch.clone(), substituted_url, hash.clone())
+        })
+        .collect();
+    let sources: Vec<std::collections::HashMap<&str, &str>> = substituted_sources
         .iter()
         .map(|(arch, url, hash)| {
             let mut m = std::collections::HashMap::new();
@@ -233,21 +262,22 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // AUR pkgver does not allow hyphens; replace with underscores.
     let version = ctx.version().replace('-', "_");
 
-    // Default name is crate_name + "-bin" (GoReleaser convention)
-    let package_name = aur_cfg
-        .name
-        .clone()
-        .unwrap_or_else(|| {
-            if crate_name.ends_with("-bin") {
-                crate_name.to_string()
-            } else {
-                format!("{}-bin", crate_name)
-            }
-        });
-    let description = aur_cfg
-        .description
-        .clone()
-        .unwrap_or_else(|| crate_name.to_string());
+    // Default name is crate_name + "-bin" (GoReleaser convention);
+    // render through template engine.
+    let package_name_raw = aur_cfg.name.clone().unwrap_or_else(|| {
+        if crate_name.ends_with("-bin") {
+            crate_name.to_string()
+        } else {
+            format!("{}-bin", crate_name)
+        }
+    });
+    let package_name = ctx
+        .render_template(&package_name_raw)
+        .unwrap_or_else(|_| package_name_raw.clone());
+    let description_raw = aur_cfg.description.as_deref().unwrap_or(crate_name);
+    let description = ctx
+        .render_template(description_raw)
+        .unwrap_or_else(|_| description_raw.to_string());
     let license = aur_cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
     let url = aur_cfg
         .url
@@ -270,8 +300,22 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let contributors = aur_cfg.contributors.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
-    let conflicts = aur_cfg.conflicts.clone().unwrap_or_default();
-    let provides = aur_cfg.provides.clone().unwrap_or_default();
+    // Default conflicts/provides use the raw project name (without -bin suffix),
+    // following AUR convention where the -bin package provides the base package.
+    let base_name = package_name
+        .strip_suffix("-bin")
+        .unwrap_or(&package_name)
+        .to_string();
+    let conflicts = if aur_cfg.conflicts.as_ref().is_none_or(|v| v.is_empty()) {
+        vec![base_name.clone()]
+    } else {
+        aur_cfg.conflicts.clone().unwrap_or_default()
+    };
+    let provides = if aur_cfg.provides.as_ref().is_none_or(|v| v.is_empty()) {
+        vec![base_name.clone()]
+    } else {
+        aur_cfg.provides.clone().unwrap_or_default()
+    };
     let replaces = aur_cfg.replaces.clone().unwrap_or_default();
     let backup = aur_cfg.backup.clone().unwrap_or_default();
 
@@ -310,7 +354,13 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                 };
                 if seen_arches.insert(pkgbuild_arch.clone()) {
                     let download_url = if let Some(tmpl) = url_template {
-                        util::render_url_template(tmpl, crate_name, &version, &pkgbuild_arch, "linux")
+                        util::render_url_template(
+                            tmpl,
+                            crate_name,
+                            &version,
+                            &pkgbuild_arch,
+                            "linux",
+                        )
                     } else {
                         a.url.clone()
                     };
@@ -398,9 +448,13 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // Write .install file if configured (post-install hooks).
     if let Some(ref install_content) = aur_cfg.install {
         let install_path = output_dir.join(&install_filename);
-        std::fs::write(&install_path, install_content)
-            .with_context(|| format!("aur: write {} {}", install_filename, install_path.display()))?;
-        log.status(&format!("wrote AUR install file: {}", install_path.display()));
+        std::fs::write(&install_path, install_content).with_context(|| {
+            format!("aur: write {} {}", install_filename, install_path.display())
+        })?;
+        log.status(&format!(
+            "wrote AUR install file: {}",
+            install_path.display()
+        ));
     }
 
     // Generate .SRCINFO from a Tera template (no makepkg dependency).
@@ -416,19 +470,8 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         &version,
         "package",
     );
-    let commit_opts = util::resolve_commit_opts(
-        aur_cfg.commit_author.as_ref(),
-        None,
-        None,
-    );
-    util::commit_and_push_with_opts(
-        repo_path,
-        &["."],
-        &commit_msg,
-        None,
-        "aur",
-        &commit_opts,
-    )?;
+    let commit_opts = util::resolve_commit_opts(aur_cfg.commit_author.as_ref(), None, None);
+    util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, "aur", &commit_opts)?;
 
     log.status(&format!(
         "AUR package '{}' pushed to {}",
@@ -479,7 +522,7 @@ mod tests {
         });
 
         assert!(pkgbuild.contains("# Maintainer: Jane Doe <jane@example.com>"));
-        assert!(pkgbuild.contains("pkgname=mytool"));
+        assert!(pkgbuild.contains("pkgname='mytool'"));
         assert!(pkgbuild.contains("pkgver=1.0.0"));
         assert!(pkgbuild.contains("pkgrel=1"));
         assert!(pkgbuild.contains("pkgdesc=\"A great tool\""));
@@ -487,11 +530,9 @@ mod tests {
         assert!(pkgbuild.contains("url=\"https://github.com/org/mytool\""));
         assert!(pkgbuild.contains("license=('MIT')"));
         assert!(pkgbuild.contains("depends=()"));
-        assert!(
-            pkgbuild.contains(
-                "source_x86_64=(\"https://example.com/mytool-1.0.0-linux-amd64.tar.gz\")"
-            )
-        );
+        assert!(pkgbuild.contains(
+            "source_x86_64=(\"https://example.com/mytool-${pkgver}-linux-amd64.tar.gz\")"
+        ));
         assert!(pkgbuild.contains("sha256sums_x86_64=('deadbeef1234')"));
         assert!(pkgbuild.contains("package()"));
         assert!(pkgbuild.contains("install -Dm755 \"$srcdir/mytool\" \"$pkgdir/usr/bin/mytool\""));
@@ -642,7 +683,7 @@ mod tests {
         assert!(pkgbuild.starts_with("# Maintainer: TJ Smith <tj@example.com>"));
 
         // Contains required fields
-        assert!(pkgbuild.contains("pkgname=anodize"));
+        assert!(pkgbuild.contains("pkgname='anodize'"));
         assert!(pkgbuild.contains("pkgver=3.2.1"));
         assert!(pkgbuild.contains("arch=('aarch64' 'x86_64')"));
 
@@ -777,10 +818,16 @@ mod tests {
             srcinfo.contains("\turl = https://github.com/org/mytool"),
             "missing url"
         );
-        assert!(srcinfo.contains("\tlicense = Apache-2.0"), "missing license");
+        assert!(
+            srcinfo.contains("\tlicense = Apache-2.0"),
+            "missing license"
+        );
 
         // depends
-        assert!(srcinfo.contains("\tdepends = glibc"), "missing depends glibc");
+        assert!(
+            srcinfo.contains("\tdepends = glibc"),
+            "missing depends glibc"
+        );
         assert!(
             srcinfo.contains("\tdepends = openssl"),
             "missing depends openssl"
@@ -803,10 +850,7 @@ mod tests {
         );
 
         // provides
-        assert!(
-            srcinfo.contains("\tprovides = mytool"),
-            "missing provides"
-        );
+        assert!(srcinfo.contains("\tprovides = mytool"), "missing provides");
 
         // arch + source + sha256sums (x86_64)
         assert!(srcinfo.contains("\tarch = x86_64"), "missing arch x86_64");

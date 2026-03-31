@@ -99,8 +99,8 @@ const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </package>
 "#;
 
-/// PowerShell install script template.
-const INSTALL_SCRIPT_TEMPLATE: &str = r#"$ErrorActionPreference = 'Stop'
+/// PowerShell install script template for 64-bit packages.
+const INSTALL_SCRIPT_TEMPLATE_64: &str = r#"$ErrorActionPreference = 'Stop'
 
 $packageArgs = @{
   packageName    = '{{ name }}'
@@ -108,6 +108,20 @@ $packageArgs = @{
   checksum64     = '{{ hash }}'
   checksumType64 = 'sha256'
   unzipLocation  = "$(Split-Path -Parent $MyInvocation.MyCommand.Definition)"
+}
+
+Install-ChocolateyZipPackage @packageArgs
+"#;
+
+/// PowerShell install script template for 32-bit packages.
+const INSTALL_SCRIPT_TEMPLATE_32: &str = r#"$ErrorActionPreference = 'Stop'
+
+$packageArgs = @{
+  packageName   = '{{ name }}'
+  url           = '{{ url }}'
+  checksum      = '{{ hash }}'
+  checksumType  = 'sha256'
+  unzipLocation = "$(Split-Path -Parent $MyInvocation.MyCommand.Definition)"
 }
 
 Install-ChocolateyZipPackage @packageArgs
@@ -156,15 +170,27 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     );
     ctx.insert("license_url", &license_url);
     ctx.insert("tags_str", &escape_xml(&tags_str));
-    ctx.insert("package_source_url", &params.package_source_url.unwrap_or(""));
+    ctx.insert(
+        "package_source_url",
+        &params.package_source_url.unwrap_or(""),
+    );
     ctx.insert("owners", &escape_xml(params.owners.unwrap_or("")));
     ctx.insert("copyright", &escape_xml(params.copyright.unwrap_or("")));
-    ctx.insert("require_license_acceptance", &params.require_license_acceptance);
-    ctx.insert("project_source_url", &params.project_source_url.unwrap_or(""));
+    ctx.insert(
+        "require_license_acceptance",
+        &params.require_license_acceptance,
+    );
+    ctx.insert(
+        "project_source_url",
+        &params.project_source_url.unwrap_or(""),
+    );
     ctx.insert("docs_url", &params.docs_url.unwrap_or(""));
     ctx.insert("bug_tracker_url", &params.bug_tracker_url.unwrap_or(""));
     ctx.insert("summary", &escape_xml(params.summary.unwrap_or("")));
-    ctx.insert("release_notes", &escape_xml(params.release_notes.unwrap_or("")));
+    ctx.insert(
+        "release_notes",
+        &escape_xml(params.release_notes.unwrap_or("")),
+    );
 
     // Dependencies
     #[derive(serde::Serialize)]
@@ -193,13 +219,19 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
 
 /// Generate a `chocolateyInstall.ps1` PowerShell script string.
 ///
-/// NOTE: This currently only generates a 64-bit download URL (`url64bit`).
-/// This is acceptable because Rust primarily targets x86_64 on Windows;
-/// 32-bit Windows support is uncommon for modern Rust CLI tools.
-pub fn generate_install_script(name: &str, url: &str, hash: &str) -> String {
+/// When `is_32bit` is `true`, uses `url`/`checksum`/`checksumType` (32-bit
+/// Chocolatey fields).  Otherwise uses the standard `url64bit`/`checksum64`/
+/// `checksumType64` fields.
+pub fn generate_install_script(name: &str, url: &str, hash: &str, is_32bit: bool) -> String {
+    let template = if is_32bit {
+        INSTALL_SCRIPT_TEMPLATE_32
+    } else {
+        INSTALL_SCRIPT_TEMPLATE_64
+    };
+
     let mut tera = tera::Tera::default();
-    // SAFETY: INSTALL_SCRIPT_TEMPLATE is a compile-time constant; parse cannot fail.
-    tera.add_raw_template("install", INSTALL_SCRIPT_TEMPLATE)
+    // SAFETY: Template is a compile-time constant; parse cannot fail.
+    tera.add_raw_template("install", template)
         .expect("chocolatey: parse install script template");
 
     // Disable autoescaping for PowerShell script
@@ -241,10 +273,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 
     let version = ctx.version();
 
-    let description = choco_cfg
-        .description
-        .clone()
-        .unwrap_or_else(|| crate_name.to_string());
+    let description_raw = choco_cfg.description.as_deref().unwrap_or(crate_name);
+    let description = ctx
+        .render_template(description_raw)
+        .unwrap_or_else(|_| description_raw.to_string());
     let license = choco_cfg
         .license
         .clone()
@@ -267,36 +299,40 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     let url_template = choco_cfg.url_template.as_deref();
 
     let artifact_kind = util::resolve_artifact_kind(choco_cfg.use_artifact.as_deref());
-    let all_artifacts = ctx
-        .artifacts
-        .by_kind_and_crate(artifact_kind, crate_name);
+    let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
 
-    let win_artifact = all_artifacts
-        .into_iter()
-        .find(|a| {
-            (a.target
-                .as_deref()
-                .map(|t| t.to_ascii_lowercase().contains("windows"))
-                .unwrap_or(false)
-                || a.path
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains("windows"))
-                && if let Some(ids) = ids_filter {
-                    a.metadata
-                        .get("id")
-                        .map(|id| ids.iter().any(|i| i == id))
-                        .unwrap_or(false)
-                } else {
-                    true
-                }
-        });
+    let win_artifact = all_artifacts.into_iter().find(|a| {
+        (a.target
+            .as_deref()
+            .map(|t| t.to_ascii_lowercase().contains("windows"))
+            .unwrap_or(false)
+            || a.path
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("windows"))
+            && if let Some(ids) = ids_filter {
+                a.metadata
+                    .get("id")
+                    .map(|id| ids.iter().any(|i| i == id))
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+    });
 
     let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
 
-    let (url, hash) = if let Some(a) = win_artifact {
+    let (url, hash, is_32bit) = if let Some(a) = win_artifact {
         let target = a.target.as_deref().unwrap_or("");
         let (_, raw_arch) = anodize_core::target::map_target(target);
+
+        // Detect 32-bit: i686, i386, x86 (but not x86_64/x86-64)
+        let target_lower = target.to_ascii_lowercase();
+        let is_32 = target_lower.contains("i686")
+            || target_lower.contains("i386")
+            || (target_lower.contains("x86")
+                && !target_lower.contains("x86_64")
+                && !target_lower.contains("x86-64"));
 
         let resolved_url = if let Some(tmpl) = url_template {
             util::render_url_template(tmpl, pkg_name, &version, &raw_arch, "windows")
@@ -308,7 +344,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         };
 
         let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
-        (resolved_url, sha256)
+        (resolved_url, sha256, is_32)
     } else {
         log.warn(&format!(
             "chocolatey: no windows artifact found for '{}', using placeholder URL",
@@ -320,8 +356,15 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
                 project_repo.owner, crate_name, version
             ),
             String::new(),
+            false,
         )
     };
+
+    // Render title through template engine.
+    let title_rendered = choco_cfg
+        .title
+        .as_deref()
+        .map(|t| ctx.render_template(t).unwrap_or_else(|_| t.to_string()));
 
     let nuspec = generate_nuspec(&NuspecParams {
         name: choco_cfg.name.as_deref().unwrap_or(crate_name),
@@ -335,7 +378,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         tags: &tags,
         package_source_url: choco_cfg.package_source_url.as_deref(),
         owners: choco_cfg.owners.as_deref(),
-        title: choco_cfg.title.as_deref(),
+        title: title_rendered.as_deref(),
         copyright: choco_cfg.copyright.as_deref(),
         require_license_acceptance: choco_cfg.require_license_acceptance.unwrap_or(false),
         project_source_url: choco_cfg.project_source_url.as_deref(),
@@ -345,7 +388,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         release_notes: choco_cfg.release_notes.as_deref(),
         dependencies: choco_cfg.dependencies.as_deref().unwrap_or(&[]),
     });
-    let install_script = generate_install_script(pkg_name, &url, &hash);
+    let install_script = generate_install_script(pkg_name, &url, &hash, is_32bit);
 
     // Create temp directory, write files, run choco pack + push.
     let tmp_dir = tempfile::tempdir().context("chocolatey: create temp dir")?;
@@ -576,7 +619,11 @@ mod tests {
 
     #[test]
     fn test_generate_nuspec_complete_xml_structure() {
-        let tags = vec!["release".to_string(), "automation".to_string(), "ci".to_string()];
+        let tags = vec![
+            "release".to_string(),
+            "automation".to_string(),
+            "ci".to_string(),
+        ];
         let nuspec = generate_nuspec(&NuspecParams {
             name: "release-tool",
             version: "3.2.1",
@@ -611,6 +658,7 @@ mod tests {
             "mytool",
             "https://example.com/mytool-1.0.0-windows-amd64.zip",
             "deadbeef",
+            false,
         );
 
         assert!(script.contains("$ErrorActionPreference = 'Stop'"));
@@ -625,8 +673,29 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_install_script_32bit() {
+        let script = generate_install_script(
+            "mytool",
+            "https://example.com/mytool-1.0.0-windows-x86.zip",
+            "deadbeef",
+            true,
+        );
+
+        assert!(script.contains("$ErrorActionPreference = 'Stop'"));
+        assert!(script.contains("packageName   = 'mytool'"));
+        assert!(
+            script.contains("url           = 'https://example.com/mytool-1.0.0-windows-x86.zip'")
+        );
+        assert!(script.contains("checksum      = 'deadbeef'"));
+        assert!(script.contains("checksumType  = 'sha256'"));
+        assert!(!script.contains("url64bit"));
+        assert!(!script.contains("checksum64"));
+        assert!(script.contains("Install-ChocolateyZipPackage @packageArgs"));
+    }
+
+    #[test]
     fn test_generate_install_script_has_unzip_location() {
-        let script = generate_install_script("tool", "https://example.com/tool.zip", "abc");
+        let script = generate_install_script("tool", "https://example.com/tool.zip", "abc", false);
 
         assert!(script.contains("unzipLocation"));
         assert!(script.contains("Split-Path"));
@@ -634,7 +703,8 @@ mod tests {
 
     #[test]
     fn test_generate_install_script_structure() {
-        let script = generate_install_script("my-app", "https://example.com/my-app.zip", "hash123");
+        let script =
+            generate_install_script("my-app", "https://example.com/my-app.zip", "hash123", false);
 
         // Verify the script has the expected structure
         let lines: Vec<&str> = script.lines().collect();
@@ -793,14 +863,20 @@ mod tests {
         });
 
         // Verify all optional fields are present
-        assert!(nuspec.contains("<packageSourceUrl>https://github.com/org/choco-packages</packageSourceUrl>"));
+        assert!(nuspec.contains(
+            "<packageSourceUrl>https://github.com/org/choco-packages</packageSourceUrl>"
+        ));
         assert!(nuspec.contains("<owners>jdoe</owners>"));
         assert!(nuspec.contains("<title>My Tool Pro</title>"));
         assert!(nuspec.contains("<copyright>Copyright 2026 Jane Doe</copyright>"));
         assert!(nuspec.contains("<requireLicenseAcceptance>true</requireLicenseAcceptance>"));
-        assert!(nuspec.contains("<projectSourceUrl>https://github.com/org/my-tool</projectSourceUrl>"));
+        assert!(
+            nuspec.contains("<projectSourceUrl>https://github.com/org/my-tool</projectSourceUrl>")
+        );
         assert!(nuspec.contains("<docsUrl>https://docs.example.com</docsUrl>"));
-        assert!(nuspec.contains("<bugTrackerUrl>https://github.com/org/my-tool/issues</bugTrackerUrl>"));
+        assert!(
+            nuspec.contains("<bugTrackerUrl>https://github.com/org/my-tool/issues</bugTrackerUrl>")
+        );
         assert!(nuspec.contains("<summary>CLI devops tool</summary>"));
         assert!(nuspec.contains("<releaseNotes>Added new features</releaseNotes>"));
         assert!(nuspec.contains("<licenseUrl>https://example.com/license</licenseUrl>"));

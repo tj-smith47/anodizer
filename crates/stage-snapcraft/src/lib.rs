@@ -70,8 +70,12 @@ struct SnapcraftYamlApp {
 struct SnapcraftYamlLayout {
     #[serde(skip_serializing_if = "Option::is_none")]
     bind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "bind-file")]
+    bind_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     symlink: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "type")]
+    type_: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -199,7 +203,9 @@ pub fn generate_snapcraft_yaml(
                 .map(|(path, layout_cfg)| {
                     let yaml_layout = SnapcraftYamlLayout {
                         bind: layout_cfg.bind.clone(),
+                        bind_file: layout_cfg.bind_file.clone(),
                         symlink: layout_cfg.symlink.clone(),
+                        type_: layout_cfg.type_.clone(),
                     };
                     (path.clone(), yaml_layout)
                 })
@@ -285,6 +291,7 @@ pub fn snapcraft_command(output_path: &str) -> Vec<String> {
     vec![
         "snapcraft".to_string(),
         "pack".to_string(),
+        "--destructive-mode".to_string(),
         "--output".to_string(),
         output_path.to_string(),
     ]
@@ -292,10 +299,7 @@ pub fn snapcraft_command(output_path: &str) -> Vec<String> {
 
 /// Construct the snapcraft upload CLI command arguments.
 /// When `channels` is non-empty, adds `--release=<comma-separated channels>`.
-pub fn snapcraft_upload_command(
-    snap_path: &str,
-    channels: Option<&[String]>,
-) -> Vec<String> {
+pub fn snapcraft_upload_command(snap_path: &str, channels: Option<&[String]>) -> Vec<String> {
     let mut args = vec![
         "snapcraft".to_string(),
         "upload".to_string(),
@@ -394,6 +398,19 @@ impl Stage for SnapcraftStage {
                     }
                 }
 
+                // Validate grade value
+                if let Some(grade) = &snap_cfg.grade {
+                    match grade.as_str() {
+                        "stable" | "devel" => {}
+                        other => anyhow::bail!(
+                            "snapcraft: invalid grade '{}' for crate '{}'. \
+                             Valid values are: stable, devel",
+                            other,
+                            krate.name
+                        ),
+                    }
+                }
+
                 // Filter binaries by ids if configured (C2)
                 let mut filtered_binaries = linux_binaries.clone();
                 if let Some(ref filter_ids) = snap_cfg.ids
@@ -435,7 +452,11 @@ impl Stage for SnapcraftStage {
                 }
 
                 for (target_key, target_binaries) in &by_target {
-                    let target = if target_key == "unknown" { None } else { Some(target_key.clone()) };
+                    let target = if target_key == "unknown" {
+                        None
+                    } else {
+                        Some(target_key.clone())
+                    };
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = target
                         .as_deref()
@@ -490,6 +511,7 @@ impl Stage for SnapcraftStage {
                         ));
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::Snap,
+                            name: String::new(),
                             path: snap_path,
                             target: target.clone(),
                             crate_name: krate.name.clone(),
@@ -577,9 +599,7 @@ impl Stage for SnapcraftStage {
                     }
 
                     // Run snapcraft pack
-                    let cmd_args = snapcraft_command(
-                        &snap_path.to_string_lossy(),
-                    );
+                    let cmd_args = snapcraft_command(&snap_path.to_string_lossy());
 
                     log.status(&format!("running: {}", cmd_args.join(" ")));
 
@@ -595,28 +615,9 @@ impl Stage for SnapcraftStage {
                         })?;
                     log.check_output(output, "snapcraft pack")?;
 
-                    // Publish: run `snapcraft upload` as a separate step
-                    let publish = snap_cfg.publish.unwrap_or(false);
-                    if publish {
-                        let upload_args = snapcraft_upload_command(
-                            &snap_path.to_string_lossy(),
-                            snap_cfg.channel_templates.as_deref(),
-                        );
-                        log.status(&format!("running: {}", upload_args.join(" ")));
-                        let upload_output = Command::new(&upload_args[0])
-                            .args(&upload_args[1..])
-                            .output()
-                            .with_context(|| {
-                                format!(
-                                    "execute snapcraft upload for crate {} target {:?}",
-                                    krate.name, target
-                                )
-                            })?;
-                        log.check_output(upload_output, "snapcraft upload")?;
-                    }
-
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::Snap,
+                        name: String::new(),
                         path: snap_path,
                         target: target.clone(),
                         crate_name: krate.name.clone(),
@@ -642,6 +643,128 @@ impl Stage for SnapcraftStage {
 
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
+        }
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SnapcraftPublishStage — uploads previously built .snap artifacts
+// ---------------------------------------------------------------------------
+
+pub struct SnapcraftPublishStage;
+
+impl Stage for SnapcraftPublishStage {
+    fn name(&self) -> &str {
+        "snapcraft-publish"
+    }
+
+    fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("snapcraft-publish");
+        let selected = ctx.options.selected_crates.clone();
+        let dry_run = ctx.options.dry_run;
+
+        // Collect crates that have snapcraft config with publish: true
+        let crates: Vec<_> = ctx
+            .config
+            .crates
+            .iter()
+            .filter(|c| selected.is_empty() || selected.contains(&c.name))
+            .filter(|c| c.snapcrafts.is_some())
+            .cloned()
+            .collect();
+
+        if crates.is_empty() {
+            return Ok(());
+        }
+
+        // Collect all snap artifacts that were built
+        let snap_artifacts: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Snap)
+            .into_iter()
+            .cloned()
+            .collect();
+
+        if snap_artifacts.is_empty() {
+            return Ok(());
+        }
+
+        for krate in &crates {
+            let snap_configs = krate.snapcrafts.as_ref().unwrap();
+
+            for snap_cfg in snap_configs {
+                // Only publish configs that opt in
+                if !snap_cfg.publish.unwrap_or(false) {
+                    continue;
+                }
+                // Skip disabled configs
+                if snap_cfg.disable.unwrap_or(false) {
+                    continue;
+                }
+
+                // Find snap artifacts for this crate (optionally filtered by id)
+                let matching: Vec<_> = snap_artifacts
+                    .iter()
+                    .filter(|a| a.crate_name == krate.name)
+                    .filter(|a| {
+                        if let Some(ref filter_id) = snap_cfg.id {
+                            a.metadata
+                                .get("id")
+                                .map(|id| id == filter_id)
+                                .unwrap_or(false)
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                for artifact in &matching {
+                    let snap_path = artifact.path.to_string_lossy();
+
+                    if dry_run {
+                        log.status(&format!(
+                            "(dry-run) would run: snapcraft upload {}",
+                            snap_path,
+                        ));
+                        continue;
+                    }
+
+                    let upload_args =
+                        snapcraft_upload_command(&snap_path, snap_cfg.channel_templates.as_deref());
+                    log.status(&format!("running: {}", upload_args.join(" ")));
+                    let upload_output = Command::new(&upload_args[0])
+                        .args(&upload_args[1..])
+                        .output()
+                        .with_context(|| {
+                            format!(
+                                "execute snapcraft upload for crate {} snap {}",
+                                krate.name, snap_path
+                            )
+                        })?;
+
+                    // Review-pending responses from the Snap Store should be
+                    // warnings, not fatal errors — the snap was uploaded
+                    // successfully but needs human review.
+                    if !upload_output.status.success() {
+                        const REVIEW_PENDING_STRINGS: &[&str] = &[
+                            "Waiting for previous upload",
+                            "A human will soon review your snap",
+                            "(NEEDS REVIEW)",
+                        ];
+
+                        let stderr = String::from_utf8_lossy(&upload_output.stderr);
+                        let stdout = String::from_utf8_lossy(&upload_output.stdout);
+                        let combined = format!("{}{}", stdout, stderr);
+                        if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
+                            log.warn(&format!("snap upload pending review: {}", combined.trim()));
+                        } else {
+                            log.check_output(upload_output, "snapcraft upload")?;
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -772,13 +895,17 @@ mod tests {
             SnapcraftLayout {
                 bind: Some("$SNAP/usr/share/myapp".to_string()),
                 symlink: None,
+                bind_file: None,
+                type_: None,
             },
         );
         layouts.insert(
             "/etc/myapp".to_string(),
             SnapcraftLayout {
                 bind: None,
+                bind_file: None,
                 symlink: Some("$SNAP_DATA/etc/myapp".to_string()),
+                type_: None,
             },
         );
 
@@ -868,9 +995,10 @@ mod tests {
         let cmd = snapcraft_command("/tmp/output/mysnap_1.0.0_amd64.snap");
         assert_eq!(cmd[0], "snapcraft");
         assert_eq!(cmd[1], "pack");
-        assert_eq!(cmd[2], "--output");
-        assert_eq!(cmd[3], "/tmp/output/mysnap_1.0.0_amd64.snap");
-        assert_eq!(cmd.len(), 4);
+        assert_eq!(cmd[2], "--destructive-mode");
+        assert_eq!(cmd[3], "--output");
+        assert_eq!(cmd[4], "/tmp/output/mysnap_1.0.0_amd64.snap");
+        assert_eq!(cmd.len(), 5);
     }
 
     #[test]
@@ -991,6 +1119,7 @@ mod tests {
         // Register a linux binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1047,6 +1176,7 @@ mod tests {
         // Register a linux binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1102,6 +1232,7 @@ mod tests {
         // Register two linux binaries: one matching the id filter, one not
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-amd64"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1109,6 +1240,7 @@ mod tests {
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-arm"),
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1162,6 +1294,7 @@ mod tests {
         // Register a binary with name metadata but no id metadata
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1170,6 +1303,7 @@ mod tests {
         // Register a binary that doesn't match
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/other"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1222,6 +1356,7 @@ mod tests {
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-amd64"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1229,6 +1364,7 @@ mod tests {
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-arm"),
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1298,6 +1434,7 @@ mod tests {
         // Register a linux binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1476,6 +1613,7 @@ crates:
         // Register a linux binary so we don't skip before reaching template rendering
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1533,6 +1671,7 @@ crates:
         // Register a linux binary so each config produces an artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1598,6 +1737,7 @@ crates:
         // Add a linux binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-linux"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1607,6 +1747,7 @@ crates:
         // Add a darwin binary — should be excluded
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp-darwin"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -1661,6 +1802,7 @@ crates:
         // Register a linux binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1670,6 +1812,7 @@ crates:
         // Register an archive artifact for the same crate+target
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/myapp_1.0.0_linux_amd64.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1679,6 +1822,7 @@ crates:
         // Also register a darwin archive that should NOT be removed
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/myapp_1.0.0_darwin_arm64.tar.gz"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -1736,6 +1880,7 @@ crates:
         // Register a linux binary so we reach the validation
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/tmp/myapp"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -1794,5 +1939,159 @@ crates:
         // Should produce no snap artifacts (warn+skip)
         let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
         assert!(snaps.is_empty(), "should skip when no linux binaries exist");
+    }
+
+    // -----------------------------------------------------------------------
+    // SnapcraftPublishStage tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_publish_stage_skips_when_no_snapcraft_config() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let stage = SnapcraftPublishStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_publish_stage_skips_when_publish_false() {
+        let tmp = TempDir::new().unwrap();
+
+        let snap_cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            publish: Some(false),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![snap_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Register a snap artifact
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/mysnap_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+        });
+
+        let stage = SnapcraftPublishStage;
+        // Should complete without attempting upload (publish: false)
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_publish_stage_dry_run_logs_upload() {
+        let tmp = TempDir::new().unwrap();
+
+        let snap_cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            publish: Some(true),
+            channel_templates: Some(vec!["edge".to_string()]),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![snap_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Register a snap artifact
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/mysnap_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+        });
+
+        let stage = SnapcraftPublishStage;
+        // Dry-run should log but not actually run snapcraft upload
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_publish_stage_skips_disabled_config() {
+        let tmp = TempDir::new().unwrap();
+
+        let snap_cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            publish: Some(true),
+            disable: Some(true),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![snap_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/mysnap_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+        });
+
+        let stage = SnapcraftPublishStage;
+        // Should complete without attempting upload (disabled)
+        assert!(stage.run(&mut ctx).is_ok());
     }
 }

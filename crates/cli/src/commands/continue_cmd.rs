@@ -42,7 +42,7 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
     helpers::setup_env(&mut ctx, &config, &log)?;
-    helpers::resolve_git_context(&mut ctx, &config, &log);
+    helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
     super::release::run_merge(&mut ctx, &config, &log, opts.dry_run, opts.dist.as_deref())
 }
