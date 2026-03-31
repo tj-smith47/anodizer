@@ -5,6 +5,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result, bail};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::config::{SbomConfig, SourceFileEntry};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -16,39 +17,57 @@ use anodize_core::stage::Stage;
 ///
 /// `git archive` automatically respects `.gitignore` and only includes
 /// tracked files, which is exactly what we want for source archives.
+///
+/// Extra files are placed under the prefix directory (matching GoReleaser)
+/// by creating a temporary staging directory and using `tar --append` to
+/// insert them into the archive after creation.
 fn create_source_archive(
     dist: &Path,
     format: &str,
+    name: &str,
     prefix: &str,
-    extra_files: &[String],
+    extra_files: &[SourceFileEntry],
     repo_root: &Path,
     commit: &str,
 ) -> Result<PathBuf> {
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
+        "tar" => ("tar", "tar"),
         "zip" => ("zip", "zip"),
         _ => bail!(
-            "source: unsupported archive format '{}' (use tar.gz or zip)",
+            "source: unsupported archive format '{}' (use tar.gz, tgz, tar, or zip)",
             format
         ),
     };
 
-    let filename = format!("{}.{}", prefix, extension);
+    let filename = format!("{}.{}", name, extension);
     let output_path = dist.join(&filename);
+
+    // For tar-based formats with extra files, create as uncompressed tar first,
+    // append extra files under the prefix, then compress if needed.
+    let needs_post_append = !extra_files.is_empty() && git_format != "zip";
+    let initial_format = if needs_post_append { "tar" } else { git_format };
+    let initial_path = if needs_post_append {
+        dist.join(format!("{}.tar.tmp", name))
+    } else {
+        output_path.clone()
+    };
 
     let mut cmd = Command::new("git");
     cmd.current_dir(repo_root);
     cmd.arg("archive")
         .arg("--format")
-        .arg(git_format)
+        .arg(initial_format)
         .arg(format!("--prefix={}/", prefix))
         .arg("--output")
-        .arg(&output_path);
+        .arg(&initial_path);
 
-    // Add extra files if specified (must come before the commit ref)
-    // Note: git archive --add-file is available in Git 2.25+
-    for file in extra_files {
-        cmd.arg("--add-file").arg(file);
+    // For zip format, use --add-file (files go at root — limitation accepted
+    // for zip since tar append doesn't apply; zip is rare for source archives).
+    if git_format == "zip" {
+        for entry in extra_files {
+            cmd.arg("--add-file").arg(&entry.src);
+        }
     }
 
     cmd.arg(commit);
@@ -60,6 +79,79 @@ fn create_source_archive(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("source: git archive failed: {}", stderr.trim());
+    }
+
+    // Append extra files under the prefix directory using tar
+    if needs_post_append {
+        // Create a temp staging dir with the prefix structure
+        let staging = dist.join(format!(".{}-extra-staging", prefix));
+        let prefixed_dir = staging.join(prefix);
+        std::fs::create_dir_all(&prefixed_dir).context("source: create extra files staging dir")?;
+
+        for entry in extra_files {
+            let src = Path::new(&entry.src);
+            let dest_name = if let Some(ref dst) = entry.dst {
+                std::ffi::OsString::from(dst)
+            } else {
+                src.file_name()
+                    .ok_or_else(|| anyhow::anyhow!("source: extra file has no filename: {}", entry.src))?
+                    .to_os_string()
+            };
+            std::fs::copy(src, prefixed_dir.join(&dest_name))
+                .with_context(|| format!("source: copy extra file '{}' to staging", entry.src))?;
+        }
+
+        // Append to the tar archive
+        let append_output = Command::new("tar")
+            .arg("--append")
+            .arg("-f")
+            .arg(&initial_path)
+            .arg("-C")
+            .arg(&staging)
+            .arg(prefix)
+            .output()
+            .context("source: failed to run 'tar --append' for extra files")?;
+
+        if !append_output.status.success() {
+            let stderr = String::from_utf8_lossy(&append_output.stderr);
+            bail!("source: tar append failed: {}", stderr.trim());
+        }
+
+        // Clean up staging dir
+        let _ = std::fs::remove_dir_all(&staging);
+
+        // Compress if the original format was tar.gz
+        if git_format == "tar.gz" {
+            let gz_output = Command::new("gzip")
+                .arg("-f")
+                .arg(&initial_path)
+                .output()
+                .context("source: failed to gzip archive")?;
+
+            if !gz_output.status.success() {
+                let stderr = String::from_utf8_lossy(&gz_output.stderr);
+                bail!("source: gzip failed: {}", stderr.trim());
+            }
+
+            // gzip creates .tar.tmp.gz — rename to final path
+            let gzipped = dist.join(format!("{}.tar.tmp.gz", name));
+            std::fs::rename(&gzipped, &output_path).with_context(|| {
+                format!(
+                    "source: rename {} -> {}",
+                    gzipped.display(),
+                    output_path.display()
+                )
+            })?;
+        } else {
+            // Plain tar — rename from .tar.tmp to final path
+            std::fs::rename(&initial_path, &output_path).with_context(|| {
+                format!(
+                    "source: rename {} -> {}",
+                    initial_path.display(),
+                    output_path.display()
+                )
+            })?;
+        }
     }
 
     Ok(output_path)
@@ -326,12 +418,7 @@ impl Stage for SourceStage {
             .map(|s| s.is_enabled())
             .unwrap_or(false);
 
-        let sbom_enabled = ctx
-            .config
-            .sbom
-            .as_ref()
-            .map(|s| s.is_enabled())
-            .unwrap_or(false);
+        let sbom_enabled = !ctx.config.sboms.is_empty();
 
         if !source_enabled && !sbom_enabled {
             log.status("nothing enabled, skipping");
@@ -352,7 +439,11 @@ impl Stage for SourceStage {
 
         // --- SBOM ---
         if sbom_enabled {
-            self.run_sbom(ctx, &dist)?;
+            // Clone the sbom configs to avoid borrowing ctx while iterating
+            let sbom_configs = ctx.config.sboms.clone();
+            for sbom_cfg in &sbom_configs {
+                self.run_sbom(ctx, &dist, sbom_cfg)?;
+            }
         }
 
         Ok(())
@@ -364,7 +455,7 @@ impl SourceStage {
         let source_cfg = ctx.config.source.as_ref().unwrap();
         let format = source_cfg.archive_format().to_string();
 
-        // Determine the archive name prefix
+        // Determine the archive name
         let project_name = &ctx.config.project_name;
         let version = ctx
             .template_vars()
@@ -372,25 +463,33 @@ impl SourceStage {
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
 
-        let prefix = if let Some(ref tpl) = source_cfg.name_template {
+        let name = if let Some(ref tpl) = source_cfg.name_template {
             ctx.render_template(tpl)
                 .with_context(|| format!("source: failed to render name_template '{}'", tpl))?
         } else {
             format!("{}-{}", project_name, version)
         };
 
-        let extra_files = source_cfg.files.clone().unwrap_or_default();
+        // Determine the archive prefix (directory name inside the archive)
+        let prefix = if let Some(ref tpl) = source_cfg.prefix_template {
+            ctx.render_template(tpl)
+                .with_context(|| format!("source: failed to render prefix_template '{}'", tpl))?
+        } else {
+            name.clone()
+        };
+
+        let extra_files = source_cfg.files.clone();
 
         let log = ctx.logger("source");
         if ctx.is_dry_run() {
             log.status(&format!(
                 "(dry-run) would create {}.{} archive",
-                prefix, format
+                name, format
             ));
             return Ok(());
         }
 
-        log.status(&format!("creating {}.{} archive...", prefix, format));
+        log.status(&format!("creating {}.{} archive...", name, format));
 
         let repo_root = get_repo_root()?;
         let commit = ctx
@@ -399,13 +498,14 @@ impl SourceStage {
             .map(|info| info.commit.as_str())
             .unwrap_or("HEAD");
         let output_path =
-            create_source_archive(dist, &format, &prefix, &extra_files, &repo_root, commit)?;
+            create_source_archive(dist, &format, &name, &prefix, &extra_files, &repo_root, commit)?;
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format);
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::SourceArchive,
+            name: String::new(),
             path: output_path,
             target: None,
             crate_name: project_name.clone(),
@@ -415,22 +515,259 @@ impl SourceStage {
         Ok(())
     }
 
-    fn run_sbom(&self, ctx: &mut Context, dist: &Path) -> Result<()> {
-        let sbom_cfg = ctx.config.sbom.as_ref().unwrap();
-        let format = sbom_cfg.sbom_format().to_string();
-
-        let project_name = &ctx.config.project_name;
+    fn run_sbom(&self, ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()> {
+        let log = ctx.logger("source");
+        let project_name = ctx.config.project_name.clone();
         let version = ctx
             .template_vars()
             .get("Version")
             .cloned()
             .unwrap_or_else(|| "unknown".to_string());
 
+        let id = sbom_cfg.id.as_deref().unwrap_or("default");
+
+        // Evaluate disable template — skip if "true"
+        if let Some(ref disable_tpl) = sbom_cfg.disable {
+            let rendered = ctx.render_template(disable_tpl).unwrap_or_default();
+            if rendered.trim() == "true" {
+                log.status(&format!("sbom[{}]: disabled by template, skipping", id));
+                return Ok(());
+            }
+        }
+
+        // Determine if this is a built-in (no external command) or subprocess model
+        let use_builtin = sbom_cfg.cmd.is_none() && sbom_cfg.args.is_none();
+
+        if use_builtin {
+            return self.run_sbom_builtin(ctx, dist, sbom_cfg, &project_name, &version);
+        }
+
+        // --- External command (subprocess) model ---
+        let cmd = sbom_cfg.cmd.as_deref().unwrap_or("syft");
+        let artifacts_type = sbom_cfg.artifacts.as_deref().unwrap_or("archive");
+
+        // Default documents based on artifacts type
+        let documents = sbom_cfg.documents.clone().unwrap_or_else(|| {
+            match artifacts_type {
+                "binary" => vec!["{{ .ArtifactName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()],
+                "any" => vec![],
+                _ => vec!["{{ .ArtifactName }}.sbom.json".to_string()],
+            }
+        });
+
+        // Default args for syft
+        let args = sbom_cfg.args.clone().unwrap_or_else(|| {
+            if cmd == "syft" {
+                vec!["$artifact".to_string(), "--output".to_string(), "spdx-json=$document".to_string()]
+            } else {
+                vec![]
+            }
+        });
+
+        // Default env for syft with source/archive
+        let env_vars = sbom_cfg.env.clone().unwrap_or_else(|| {
+            if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
+                vec!["SYFT_FILE_METADATA_CATALOGER_ENABLED=true".to_string()]
+            } else {
+                vec![]
+            }
+        });
+
+        // Filter artifacts from the registry based on artifacts type
+        let matching_artifacts: Vec<(PathBuf, HashMap<String, String>)> = match artifacts_type {
+            "any" => vec![], // "any" calls once with no specific artifact
+            _ => {
+                let kind = match artifacts_type {
+                    "source" => ArtifactKind::SourceArchive,
+                    "archive" => ArtifactKind::Archive,
+                    "binary" => ArtifactKind::Binary,
+                    "package" => ArtifactKind::LinuxPackage,
+                    "diskimage" => ArtifactKind::DiskImage,
+                    "installer" => ArtifactKind::Installer,
+                    _ => {
+                        log.warn(&format!(
+                            "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
+                            id, artifacts_type
+                        ));
+                        ArtifactKind::Archive
+                    }
+                };
+
+                let matched: Vec<(PathBuf, HashMap<String, String>)> = ctx
+                    .artifacts
+                    .all()
+                    .iter()
+                    .filter(|a| a.kind == kind)
+                    .filter(|a| {
+                        // Filter by ids if specified
+                        if let Some(ref ids) = sbom_cfg.ids {
+                            if let Some(art_id) = a.metadata.get("id") {
+                                ids.contains(art_id)
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|a| (a.path.clone(), a.metadata.clone()))
+                    .collect();
+
+                if matched.is_empty() {
+                    log.status(&format!(
+                        "sbom[{}]: no matching '{}' artifacts found, skipping",
+                        id, artifacts_type
+                    ));
+                    return Ok(());
+                }
+
+                matched
+            }
+        };
+
+        if ctx.is_dry_run() {
+            if artifacts_type == "any" {
+                log.status(&format!(
+                    "(dry-run) sbom[{}]: would run '{}' for all artifacts",
+                    id, cmd
+                ));
+            } else {
+                for (path, _) in &matching_artifacts {
+                    log.status(&format!(
+                        "(dry-run) sbom[{}]: would run '{}' on {}",
+                        id,
+                        cmd,
+                        path.display()
+                    ));
+                }
+            }
+            return Ok(());
+        }
+
+        // For "any" type, run the command once with no specific artifact
+        let artifact_list: Vec<(PathBuf, HashMap<String, String>)> = if artifacts_type == "any" {
+            vec![(PathBuf::new(), HashMap::new())]
+        } else {
+            matching_artifacts
+        };
+
+        for (artifact_path, _artifact_meta) in &artifact_list {
+            let artifact_rel = if artifact_path.as_os_str().is_empty() {
+                String::new()
+            } else {
+                artifact_path
+                    .strip_prefix(dist)
+                    .unwrap_or(artifact_path)
+                    .display()
+                    .to_string()
+            };
+
+            // Render document paths
+            let mut rendered_docs: Vec<String> = Vec::new();
+            for doc_tpl in &documents {
+                let rendered = ctx.render_template(doc_tpl)
+                    .with_context(|| format!("sbom[{}]: failed to render document template '{}'", id, doc_tpl))?;
+                rendered_docs.push(rendered);
+            }
+
+            let first_doc = rendered_docs.first().cloned().unwrap_or_default();
+
+            // Render args — replace $artifact, $document, $document0, $document1, etc.
+            let rendered_args: Vec<String> = args
+                .iter()
+                .map(|arg| {
+                    let mut s = arg.replace("$artifact", &artifact_rel);
+                    s = s.replace("$document", &first_doc);
+                    for (i, doc) in rendered_docs.iter().enumerate() {
+                        s = s.replace(&format!("$document{}", i), doc);
+                    }
+                    // Render template vars in args
+                    ctx.render_template(&s).unwrap_or(s)
+                })
+                .collect();
+
+            // Render env vars
+            let rendered_env: Vec<(String, String)> = env_vars
+                .iter()
+                .filter_map(|e| {
+                    let rendered = ctx.render_template(e).unwrap_or_else(|_| e.clone());
+                    rendered.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))
+                })
+                .collect();
+
+            log.status(&format!(
+                "sbom[{}]: running {} {}",
+                id,
+                cmd,
+                rendered_args.join(" ")
+            ));
+
+            let mut command = Command::new(cmd);
+            command.args(&rendered_args);
+            command.current_dir(dist);
+            for (k, v) in &rendered_env {
+                command.env(k, v);
+            }
+
+            let output = command
+                .output()
+                .with_context(|| format!("sbom[{}]: failed to run '{}'", id, cmd))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("sbom[{}]: '{}' failed: {}", id, cmd, stderr.trim());
+            }
+
+            // Register each output document as an SBOM artifact
+            for doc_path in &rendered_docs {
+                let full_path = dist.join(doc_path);
+                if full_path.exists() {
+                    let mut metadata = HashMap::new();
+                    metadata.insert("sbom_id".to_string(), id.to_string());
+
+                    ctx.artifacts.add(Artifact {
+                        kind: ArtifactKind::Sbom,
+                        name: String::new(),
+                        path: full_path,
+                        target: None,
+                        crate_name: project_name.clone(),
+                        metadata,
+                    });
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Built-in SBOM generation using Cargo.lock parsing (CycloneDX/SPDX).
+    /// Used when no external command is configured.
+    fn run_sbom_builtin(
+        &self,
+        ctx: &mut Context,
+        dist: &Path,
+        sbom_cfg: &SbomConfig,
+        project_name: &str,
+        version: &str,
+    ) -> Result<()> {
         let log = ctx.logger("source");
+        let id = sbom_cfg.id.as_deref().unwrap_or("default");
+
+        // Determine format from documents hint or default to cyclonedx
+        let format = if let Some(ref docs) = sbom_cfg.documents {
+            if docs.iter().any(|d| d.to_lowercase().contains("spdx")) {
+                "spdx"
+            } else {
+                "cyclonedx"
+            }
+        } else {
+            "cyclonedx"
+        };
+
         if ctx.is_dry_run() {
             log.status(&format!(
-                "(dry-run) sbom: would generate {} SBOM for {}",
-                format, project_name
+                "(dry-run) sbom[{}]: would generate {} SBOM for {}",
+                id, format, project_name
             ));
             return Ok(());
         }
@@ -448,22 +785,23 @@ impl SourceStage {
 
         let packages = parse_cargo_lock(&cargo_lock_content)?;
         log.status(&format!(
-            "sbom: parsed {} packages from Cargo.lock",
+            "sbom[{}]: parsed {} packages from Cargo.lock",
+            id,
             packages.len()
         ));
 
-        let (sbom_json, extension) = match format.as_str() {
+        let (sbom_json, extension) = match format {
             "cyclonedx" => {
-                let sbom = generate_cyclonedx(project_name, &version, &packages)?;
+                let sbom = generate_cyclonedx(project_name, version, &packages)?;
                 (sbom, "cdx.json")
             }
             "spdx" => {
-                let sbom = generate_spdx(project_name, &version, &packages)?;
+                let sbom = generate_spdx(project_name, version, &packages)?;
                 (sbom, "spdx.json")
             }
             _ => bail!(
-                "sbom: unsupported format '{}' (use cyclonedx or spdx)",
-                format
+                "sbom[{}]: unsupported format '{}' (use cyclonedx or spdx)",
+                id, format
             ),
         };
 
@@ -475,16 +813,18 @@ impl SourceStage {
         std::fs::write(&output_path, &json_string)
             .with_context(|| format!("sbom: failed to write {}", output_path.display()))?;
 
-        log.status(&format!("sbom: wrote {} ({})", filename, format));
+        log.status(&format!("sbom[{}]: wrote {} ({})", id, filename, format));
 
         let mut metadata = HashMap::new();
-        metadata.insert("format".to_string(), format);
+        metadata.insert("format".to_string(), format.to_string());
+        metadata.insert("sbom_id".to_string(), id.to_string());
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Sbom,
+            name: String::new(),
             path: output_path,
             target: None,
-            crate_name: project_name.clone(),
+            crate_name: project_name.to_string(),
             metadata,
         });
 
@@ -785,12 +1125,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     #[test]
     fn test_source_config_enabled() {
-        use anodize_core::config::SourceConfig;
+        use anodize_core::config::{SourceConfig, SourceFileEntry};
         let cfg = SourceConfig {
             enabled: Some(true),
             format: Some("zip".to_string()),
             name_template: Some("{{ .ProjectName }}-src-{{ .Version }}".to_string()),
-            files: Some(vec!["LICENSE".to_string()]),
+            prefix_template: None,
+            files: vec![SourceFileEntry {
+                src: "LICENSE".to_string(),
+                ..Default::default()
+            }],
         };
         assert!(cfg.is_enabled());
         assert_eq!(cfg.archive_format(), "zip");
@@ -800,19 +1144,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     fn test_sbom_config_defaults() {
         use anodize_core::config::SbomConfig;
         let cfg = SbomConfig::default();
-        assert!(!cfg.is_enabled());
-        assert_eq!(cfg.sbom_format(), "cyclonedx");
-    }
-
-    #[test]
-    fn test_sbom_config_spdx_format() {
-        use anodize_core::config::SbomConfig;
-        let cfg = SbomConfig {
-            enabled: Some(true),
-            format: Some("spdx".to_string()),
-        };
-        assert!(cfg.is_enabled());
-        assert_eq!(cfg.sbom_format(), "spdx");
+        // All fields are None by default
+        assert!(cfg.cmd.is_none());
+        assert!(cfg.artifacts.is_none());
+        assert!(cfg.disable.is_none());
     }
 
     #[test]
@@ -825,8 +1160,8 @@ source:
   format: tar.gz
   name_template: "{{ .ProjectName }}-source-{{ .Version }}"
 sbom:
-  enabled: true
-  format: cyclonedx
+  cmd: syft
+  artifacts: archive
 "#;
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.source.is_some());
@@ -835,10 +1170,10 @@ sbom:
         assert_eq!(source.archive_format(), "tar.gz");
         assert!(source.name_template.is_some());
 
-        assert!(config.sbom.is_some());
-        let sbom = config.sbom.as_ref().unwrap();
-        assert!(sbom.is_enabled());
-        assert_eq!(sbom.sbom_format(), "cyclonedx");
+        assert_eq!(config.sboms.len(), 1);
+        let sbom = &config.sboms[0];
+        assert_eq!(sbom.cmd.as_deref(), Some("syft"));
+        assert_eq!(sbom.artifacts.as_deref(), Some("archive"));
     }
 
     #[test]
@@ -849,7 +1184,7 @@ crates: []
 "#;
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.source.is_none());
-        assert!(config.sbom.is_none());
+        assert!(config.sboms.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -1038,12 +1373,12 @@ dependencies = [
             enabled: Some(true),
             format: Some("tar.gz".to_string()),
             name_template: None,
-            files: None,
+            prefix_template: None,
+            files: vec![],
         });
-        ctx.config.sbom = Some(SbomConfig {
-            enabled: Some(true),
-            format: Some("cyclonedx".to_string()),
-        });
+        ctx.config.sboms = vec![SbomConfig {
+            ..Default::default()
+        }];
 
         let stage = SourceStage;
         let result = stage.run(&mut ctx);
@@ -1063,7 +1398,7 @@ dependencies = [
         let mut ctx = TestContextBuilder::new().build();
         // No source or sbom config at all
         ctx.config.source = None;
-        ctx.config.sbom = None;
+        ctx.config.sboms = vec![];
 
         let stage = SourceStage;
         let result = stage.run(&mut ctx);
@@ -1073,17 +1408,15 @@ dependencies = [
 
     #[test]
     fn test_stage_skips_when_disabled() {
-        use anodize_core::config::{SbomConfig, SourceConfig};
+        use anodize_core::config::SourceConfig;
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.config.source = Some(SourceConfig {
             enabled: Some(false),
             ..Default::default()
         });
-        ctx.config.sbom = Some(SbomConfig {
-            enabled: Some(false),
-            ..Default::default()
-        });
+        // Empty sboms vec means no SBOM generation
+        ctx.config.sboms = vec![];
 
         let stage = SourceStage;
         let result = stage.run(&mut ctx);
@@ -1235,7 +1568,9 @@ dependencies = [
             .current_dir(tmp.path())
             .output()
             .expect("git rev-parse HEAD should succeed");
-        let real_commit = String::from_utf8_lossy(&real_commit.stdout).trim().to_string();
+        let real_commit = String::from_utf8_lossy(&real_commit.stdout)
+            .trim()
+            .to_string();
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test-project")
@@ -1244,7 +1579,8 @@ dependencies = [
                 enabled: Some(true),
                 format: Some("tar.gz".to_string()),
                 name_template: None,
-                files: None,
+                prefix_template: None,
+                files: vec![],
             })
             .dist(dist.clone())
             .build();

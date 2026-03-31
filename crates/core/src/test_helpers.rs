@@ -72,7 +72,7 @@ pub struct TestContextBuilder {
     upx: Vec<UpxConfig>,
     defaults: Option<Defaults>,
     source: Option<crate::config::SourceConfig>,
-    sbom: Option<crate::config::SbomConfig>,
+    sboms: Vec<crate::config::SbomConfig>,
 }
 
 impl Default for TestContextBuilder {
@@ -111,7 +111,7 @@ impl Default for TestContextBuilder {
             upx: Vec::new(),
             defaults: None,
             source: None,
-            sbom: None,
+            sboms: Vec::new(),
         }
     }
 }
@@ -132,7 +132,7 @@ impl TestContextBuilder {
     /// If parsing fails, only the tag string is updated.
     pub fn tag(mut self, tag: &str) -> Self {
         self.tag = tag.to_string();
-        if let Ok(sv) = crate::git::parse_semver(tag) {
+        if let Ok(sv) = crate::git::parse_semver_tag(tag) {
             self.semver = sv;
         }
         self
@@ -272,9 +272,9 @@ impl TestContextBuilder {
         self
     }
 
-    /// Set SBOM configuration.
-    pub fn sbom(mut self, sbom: crate::config::SbomConfig) -> Self {
-        self.sbom = Some(sbom);
+    /// Add an SBOM configuration to the list.
+    pub fn add_sbom(mut self, sbom: crate::config::SbomConfig) -> Self {
+        self.sboms.push(sbom);
         self
     }
 
@@ -289,7 +289,7 @@ impl TestContextBuilder {
         config.upx = self.upx;
         config.defaults = self.defaults;
         config.source = self.source;
-        config.sbom = self.sbom;
+        config.sboms = self.sboms;
         if let Some(dist) = self.dist {
             config.dist = dist;
         }
@@ -307,6 +307,7 @@ impl TestContextBuilder {
             parallelism: self.parallelism,
             single_target: self.single_target,
             release_notes_path: None,
+            fail_fast: false,
             partial_target: None,
         };
 
@@ -327,6 +328,7 @@ impl TestContextBuilder {
             tag_subject: String::new(),
             tag_contents: String::new(),
             tag_body: String::new(),
+            first_commit: None,
         });
 
         if self.populate_git_vars {
@@ -478,6 +480,7 @@ pub fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
         tag_subject: String::new(),
         tag_contents: String::new(),
         tag_body: String::new(),
+        first_commit: None,
     }
 }
 

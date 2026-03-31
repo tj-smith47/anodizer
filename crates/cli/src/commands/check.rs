@@ -333,17 +333,20 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
     }
 
-    // 13. Validate sbom.format
-    if let Some(ref sbom) = config.sbom
-        && let Some(ref fmt) = sbom.format
-    {
-        let valid_sbom_formats = ["cyclonedx", "spdx"];
-        if !valid_sbom_formats.contains(&fmt.as_str()) {
-            errors.push(format!(
-                "sbom: unrecognized format '{}' (valid: {})",
-                fmt,
-                valid_sbom_formats.join(", ")
-            ));
+    // 13. Validate sbom configs
+    for (i, sbom) in config.sboms.iter().enumerate() {
+        let idx_str = i.to_string();
+        let label = sbom.id.as_deref().unwrap_or_else(|| if i == 0 { "default" } else { &idx_str });
+        if let Some(ref artifacts) = sbom.artifacts {
+            let valid = ["source", "archive", "binary", "package", "diskimage", "installer", "any"];
+            if !valid.contains(&artifacts.as_str()) {
+                errors.push(format!(
+                    "sboms[{}]: invalid artifacts type '{}' (valid: {})",
+                    label,
+                    artifacts,
+                    valid.join(", ")
+                ));
+            }
         }
     }
 
@@ -431,9 +434,14 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
 
         let needs_release = config.crates.iter().any(|c| c.release.is_some());
-        if needs_release && std::env::var("GITHUB_TOKEN").is_err() {
-            warnings
-                .push("GITHUB_TOKEN is not set but release sections are configured".to_string());
+        if needs_release
+            && std::env::var("ANODIZE_GITHUB_TOKEN").is_err()
+            && std::env::var("GITHUB_TOKEN").is_err()
+        {
+            warnings.push(
+                "no GitHub token found but release sections are configured; set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN"
+                    .to_string(),
+            );
         }
 
         let needs_nfpm = config.crates.iter().any(|c| c.nfpm.is_some());
@@ -1039,7 +1047,8 @@ mod tests {
             enabled: Some(true),
             format: Some("tar.bz2".to_string()),
             name_template: None,
-            files: None,
+            prefix_template: None,
+            files: vec![],
         });
         let result = run_checks(&config, false, &test_logger());
         assert!(result.is_err(), "invalid source format should fail");
@@ -1056,7 +1065,8 @@ mod tests {
                 enabled: Some(true),
                 format: Some(fmt.to_string()),
                 name_template: None,
-                files: None,
+                prefix_template: None,
+                files: vec![],
             });
             assert!(
                 run_checks(&config, false, &test_logger()).is_ok(),
@@ -1067,32 +1077,32 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_sbom_format_fails() {
+    fn test_invalid_sbom_artifacts_fails() {
         use anodize_core::config::SbomConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
-        config.sbom = Some(SbomConfig {
-            enabled: Some(true),
-            format: Some("invalid".to_string()),
-        });
+        config.sboms = vec![SbomConfig {
+            artifacts: Some("invalid".to_string()),
+            ..Default::default()
+        }];
         let result = run_checks(&config, false, &test_logger());
-        assert!(result.is_err(), "invalid sbom format should fail");
+        assert!(result.is_err(), "invalid sbom artifacts should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
     }
 
     #[test]
-    fn test_valid_sbom_formats_pass() {
+    fn test_valid_sbom_artifacts_pass() {
         use anodize_core::config::SbomConfig;
-        for fmt in &["cyclonedx", "spdx"] {
+        for art in &["source", "archive", "binary", "package", "diskimage", "installer", "any"] {
             let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
-            config.sbom = Some(SbomConfig {
-                enabled: Some(true),
-                format: Some(fmt.to_string()),
-            });
+            config.sboms = vec![SbomConfig {
+                artifacts: Some(art.to_string()),
+                ..Default::default()
+            }];
             assert!(
                 run_checks(&config, false, &test_logger()).is_ok(),
-                "sbom format '{}' should pass",
-                fmt
+                "sbom artifacts '{}' should pass",
+                art
             );
         }
     }
