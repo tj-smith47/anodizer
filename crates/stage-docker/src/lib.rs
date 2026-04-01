@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{DockerRetryConfig, SkipPushConfig};
+use anodize_core::config::{DockerRetryConfig, SkipPushConfig, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
@@ -360,6 +360,159 @@ pub fn build_docker_command(
     Ok(cmd)
 }
 
+// ---------------------------------------------------------------------------
+// build_docker_v2_command
+// ---------------------------------------------------------------------------
+
+/// Construct the docker build command arguments for a Docker V2 config.
+///
+/// V2 uses `images` + `tags` to generate image references, `build_args` map,
+/// `annotations` map, `sbom` flag, and arbitrary `flags`.
+///
+/// * `staging_dir` – path to the directory that acts as the Docker build context.
+/// * `platforms` – Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
+/// * `image_tags` – fully-qualified image:tag references (pre-computed from images x tags).
+/// * `build_args` – `--build-arg KEY=VALUE` pairs.
+/// * `annotations` – `--annotation KEY=VALUE` pairs.
+/// * `labels` – `--label KEY=VALUE` pairs.
+/// * `flags` – arbitrary extra flags passed directly.
+/// * `sbom` – when true, adds `--sbom=true`.
+/// * `push` – when `true`, adds `--push` to the command.
+#[allow(clippy::too_many_arguments)]
+pub fn build_docker_v2_command(
+    staging_dir: &str,
+    platforms: &[&str],
+    image_tags: &[String],
+    build_args: &[(String, String)],
+    annotations: &[(String, String)],
+    labels: &[(String, String)],
+    flags: &[String],
+    sbom: bool,
+    push: bool,
+) -> Result<Vec<String>> {
+    // V2 always uses buildx when platforms are specified
+    let multi_platform = platforms.len() > 1;
+    let (binary, subcommands) = resolve_backend(Some("buildx"), multi_platform)?;
+
+    let mut cmd: Vec<String> = Vec::new();
+    cmd.push(binary.to_string());
+    for sub in subcommands {
+        cmd.push(sub.to_string());
+    }
+
+    // --platform=linux/amd64,linux/arm64
+    if !platforms.is_empty() {
+        let platform_str = platforms.join(",");
+        cmd.push(format!("--platform={platform_str}"));
+    }
+
+    // --tag <tag> for each image:tag combination
+    for tag in image_tags {
+        cmd.push("--tag".to_string());
+        cmd.push(tag.clone());
+    }
+
+    // --build-arg KEY=VALUE
+    for (key, value) in build_args {
+        cmd.push("--build-arg".to_string());
+        cmd.push(format!("{}={}", key, value));
+    }
+
+    // --annotation KEY=VALUE
+    for (key, value) in annotations {
+        cmd.push("--annotation".to_string());
+        cmd.push(format!("{}={}", key, value));
+    }
+
+    // --label KEY=VALUE
+    for (key, value) in labels {
+        cmd.push("--label".to_string());
+        cmd.push(format!("{}={}", key, value));
+    }
+
+    // Arbitrary extra flags
+    for flag in flags {
+        cmd.push(flag.clone());
+    }
+
+    // --sbom=true when explicitly requested
+    if sbom {
+        cmd.push("--sbom=true".to_string());
+    }
+
+    // --push / --load logic
+    if push {
+        cmd.push("--push".to_string());
+    } else if !multi_platform {
+        cmd.push("--load".to_string());
+    }
+
+    // Auto-add --provenance=false for buildx builds when Docker supports it,
+    // but only if not already specified in flags and sbom is not explicitly set.
+    if docker_supports_provenance() {
+        let flags_str = flags.join(" ");
+        if !flags_str.contains("--provenance") {
+            cmd.push("--provenance=false".to_string());
+        }
+        // Only auto-add --sbom=false if sbom was not explicitly requested and
+        // not already in flags.
+        if !sbom && !flags_str.contains("--sbom") {
+            cmd.push("--sbom=false".to_string());
+        }
+    }
+
+    // Build context directory (positional, last argument)
+    cmd.push(staging_dir.to_string());
+
+    Ok(cmd)
+}
+
+/// Evaluate whether a Docker V2 config is disabled.
+///
+/// Checks the `disable` field: if it's a template, renders it and checks for "true".
+/// Returns `true` when the config should be skipped.
+pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> bool {
+    match disable {
+        None => false,
+        Some(d) => d.is_disabled(|s| ctx.render_template(s)),
+    }
+}
+
+/// Evaluate whether the sbom flag should be added for a Docker V2 config.
+///
+/// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
+/// `--sbom=true` flag should be added to the buildx command.
+pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> bool {
+    match sbom {
+        None => false,
+        Some(s) => {
+            if s.is_template() {
+                s.is_disabled(|tmpl| ctx.render_template(tmpl))
+            } else {
+                s.as_bool()
+            }
+        }
+    }
+}
+
+/// Generate fully-qualified image references by combining each image with each tag.
+///
+/// For example, images=["ghcr.io/owner/app", "docker.io/owner/app"] and
+/// tags=["latest", "v1.0.0"] produces:
+/// - ghcr.io/owner/app:latest
+/// - ghcr.io/owner/app:v1.0.0
+/// - docker.io/owner/app:latest
+/// - docker.io/owner/app:v1.0.0
+pub fn generate_v2_image_tags(images: &[String], tags: &[String]) -> Vec<String> {
+    let mut result = Vec::with_capacity(images.len() * tags.len());
+    for image in images {
+        for tag in tags {
+            result.push(format!("{}:{}", image, tag));
+        }
+    }
+    result
+}
+
 /// Resolve whether to skip push based on `SkipPushConfig` and prerelease status.
 pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> bool {
     match skip_push {
@@ -562,13 +715,15 @@ impl Stage for DockerStage {
         let dist = ctx.config.dist.clone();
         let parallelism = ctx.options.parallelism.max(1);
 
-        // Collect crates that have docker or docker_manifests config
+        // Collect crates that have docker, docker_v2, or docker_manifests config
         let crates: Vec<_> = ctx
             .config
             .crates
             .iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| c.docker.is_some() || c.docker_manifests.is_some())
+            .filter(|c| {
+                c.docker.is_some() || c.docker_v2.is_some() || c.docker_manifests.is_some()
+            })
             .cloned()
             .collect();
 
@@ -927,6 +1082,362 @@ impl Stage for DockerStage {
                         staging_dir: staging_dir.clone(),
                         id: docker_cfg.id.clone(),
                         use_backend: docker_cfg.use_backend.clone(),
+                        dist: dist.clone(),
+                    });
+                }
+            }
+
+            // ------------------------------------------------------------------
+            // Docker V2 configs
+            // ------------------------------------------------------------------
+            let docker_v2_configs = match krate.docker_v2.as_ref() {
+                Some(cfgs) => cfgs.clone(),
+                None => Vec::new(),
+            };
+
+            for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
+                // Check disable — skip when template evaluates to true
+                if is_docker_v2_disabled(&v2_cfg.disable, ctx) {
+                    log.status(&format!(
+                        "docker_v2[{}]: skipping disabled config for crate {}",
+                        idx, krate.name
+                    ));
+                    continue;
+                }
+
+                let platforms: Vec<String> = v2_cfg.platforms.clone().unwrap_or_default();
+
+                // V2 always uses buildx
+                resolve_backend(Some("buildx"), platforms.len() > 1)?;
+
+                // Build staging directory — use "docker_v2" subdirectory to avoid
+                // collisions with legacy docker configs.
+                let staging_dir: PathBuf = dist
+                    .join("docker_v2")
+                    .join(&krate.name)
+                    .join(idx.to_string());
+
+                if !dry_run {
+                    fs::create_dir_all(&staging_dir).with_context(|| {
+                        format!("docker_v2: create staging dir {}", staging_dir.display())
+                    })?;
+                }
+
+                // Stage binaries per platform/arch
+                for platform in &platforms {
+                    let arch = platform_to_arch(platform);
+                    let binaries_dir = staging_dir.join("binaries").join(arch);
+                    if !dry_run {
+                        fs::create_dir_all(&binaries_dir).with_context(|| {
+                            format!(
+                                "docker_v2: create binaries dir {}",
+                                binaries_dir.display()
+                            )
+                        })?;
+                    }
+
+                    let ids_filter = v2_cfg.ids.as_ref();
+
+                    let matching_binaries: Vec<_> = ctx
+                        .artifacts
+                        .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                        .into_iter()
+                        .filter(|b| {
+                            let artifact_arch = b
+                                .target
+                                .as_deref()
+                                .map(|t| map_target(t).1)
+                                .unwrap_or_default();
+                            if artifact_arch != arch {
+                                return false;
+                            }
+                            if let Some(ids) = ids_filter {
+                                let artifact_id =
+                                    b.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+                                if !ids.iter().any(|id| id == artifact_id) {
+                                    return false;
+                                }
+                            }
+                            true
+                        })
+                        .collect();
+
+                    for bin_artifact in matching_binaries {
+                        let bin_name = bin_artifact
+                            .metadata
+                            .get("binary")
+                            .map(|s| s.as_str())
+                            .unwrap_or_else(|| {
+                                bin_artifact
+                                    .path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("binary")
+                            });
+
+                        let dest = binaries_dir.join(bin_name);
+
+                        if dry_run {
+                            log.status(&format!(
+                                "(dry-run) would copy {} -> {}",
+                                bin_artifact.path.display(),
+                                dest.display()
+                            ));
+                        } else {
+                            log.status(&format!(
+                                "staging binary {} -> {}",
+                                bin_artifact.path.display(),
+                                dest.display()
+                            ));
+                            fs::copy(&bin_artifact.path, &dest).with_context(|| {
+                                format!(
+                                    "docker_v2: copy binary {} to {}",
+                                    bin_artifact.path.display(),
+                                    dest.display()
+                                )
+                            })?;
+                        }
+                    }
+                }
+
+                // Copy Dockerfile
+                let dockerfile_src = PathBuf::from(&v2_cfg.dockerfile);
+                let dockerfile_dest = staging_dir.join("Dockerfile");
+
+                if dry_run {
+                    log.status(&format!(
+                        "(dry-run) would copy Dockerfile {} -> {}",
+                        dockerfile_src.display(),
+                        dockerfile_dest.display()
+                    ));
+                } else {
+                    log.status(&format!(
+                        "copying Dockerfile {} -> {}",
+                        dockerfile_src.display(),
+                        dockerfile_dest.display()
+                    ));
+                    fs::copy(&dockerfile_src, &dockerfile_dest).with_context(|| {
+                        format!(
+                            "docker_v2: copy Dockerfile from {} to {}",
+                            dockerfile_src.display(),
+                            dockerfile_dest.display()
+                        )
+                    })?;
+                }
+
+                // Copy extra_files into staging directory
+                if let Some(ref extra_files) = v2_cfg.extra_files {
+                    for file_path in extra_files {
+                        let src = PathBuf::from(file_path);
+                        if src.is_dir() {
+                            anyhow::bail!(
+                                "docker_v2: extra_files entry '{}' is a directory; only files are supported",
+                                file_path
+                            );
+                        }
+                        let dest = if src.is_absolute() {
+                            let file_name = src
+                                .file_name()
+                                .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
+                            staging_dir.join(file_name)
+                        } else {
+                            staging_dir.join(file_path)
+                        };
+
+                        if dry_run {
+                            log.status(&format!(
+                                "(dry-run) would copy extra file {} -> {}",
+                                src.display(),
+                                dest.display()
+                            ));
+                        } else {
+                            if let Some(parent) = dest.parent() {
+                                fs::create_dir_all(parent).with_context(|| {
+                                    format!(
+                                        "docker_v2: create parent dirs for extra file {}",
+                                        dest.display()
+                                    )
+                                })?;
+                            }
+                            log.status(&format!(
+                                "copying extra file {} -> {}",
+                                src.display(),
+                                dest.display()
+                            ));
+                            fs::copy(&src, &dest).with_context(|| {
+                                format!(
+                                    "docker_v2: copy extra file {} to {}",
+                                    src.display(),
+                                    dest.display()
+                                )
+                            })?;
+                        }
+                    }
+                }
+
+                // Render tags through template engine
+                let mut rendered_tags: Vec<String> = Vec::new();
+                for tag_tmpl in &v2_cfg.tags {
+                    let rendered = ctx.render_template(tag_tmpl).with_context(|| {
+                        format!(
+                            "docker_v2: render tag template '{}' for crate {}",
+                            tag_tmpl, krate.name
+                        )
+                    })?;
+                    if rendered.is_empty() {
+                        continue;
+                    }
+                    rendered_tags.push(rendered);
+                }
+
+                // Render images through template engine
+                let mut rendered_images: Vec<String> = Vec::new();
+                for img_tmpl in &v2_cfg.images {
+                    let rendered = ctx.render_template(img_tmpl).with_context(|| {
+                        format!(
+                            "docker_v2: render image template '{}' for crate {}",
+                            img_tmpl, krate.name
+                        )
+                    })?;
+                    if rendered.is_empty() {
+                        continue;
+                    }
+                    rendered_images.push(rendered);
+                }
+
+                // Generate image:tag combinations
+                let image_tags = generate_v2_image_tags(&rendered_images, &rendered_tags);
+
+                // Render build_args (template-aware values)
+                let mut rendered_build_args: Vec<(String, String)> = Vec::new();
+                if let Some(ref args_map) = v2_cfg.build_args {
+                    for (key, value_tmpl) in args_map {
+                        let rendered_value = ctx
+                            .render_template(value_tmpl)
+                            .with_context(|| {
+                                format!("docker_v2: render build_arg value for '{}'", key)
+                            })?;
+                        rendered_build_args.push((key.clone(), rendered_value));
+                    }
+                    rendered_build_args.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+
+                // Render annotations (template-aware values)
+                let mut rendered_annotations: Vec<(String, String)> = Vec::new();
+                if let Some(ref ann_map) = v2_cfg.annotations {
+                    for (key, value_tmpl) in ann_map {
+                        let rendered_value = ctx
+                            .render_template(value_tmpl)
+                            .with_context(|| {
+                                format!("docker_v2: render annotation value for '{}'", key)
+                            })?;
+                        rendered_annotations.push((key.clone(), rendered_value));
+                    }
+                    rendered_annotations.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+
+                // Render labels (template-aware values)
+                let mut rendered_labels: Vec<(String, String)> = Vec::new();
+                if let Some(ref label_map) = v2_cfg.labels {
+                    for (key, value_tmpl) in label_map {
+                        let rendered_value = ctx
+                            .render_template(value_tmpl)
+                            .with_context(|| {
+                                format!("docker_v2: render label value for '{}'", key)
+                            })?;
+                        rendered_labels.push((key.clone(), rendered_value));
+                    }
+                    rendered_labels.sort_by(|a, b| a.0.cmp(&b.0));
+                }
+
+                // Render flags (template-aware)
+                let mut rendered_flags: Vec<String> = Vec::new();
+                if let Some(ref flag_list) = v2_cfg.flags {
+                    for flag_tmpl in flag_list {
+                        let rendered = ctx.render_template(flag_tmpl).with_context(|| {
+                            format!("docker_v2: render flag '{}'", flag_tmpl)
+                        })?;
+                        rendered_flags.push(rendered);
+                    }
+                }
+
+                // Evaluate sbom
+                let sbom_enabled = is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx);
+
+                let platform_refs: Vec<&str> = platforms.iter().map(|s| s.as_str()).collect();
+                let staging_str = staging_dir.to_string_lossy().into_owned();
+
+                // V2 doesn't have skip_push — always push in live mode
+                let should_push = !dry_run;
+
+                let cmd_args = build_docker_v2_command(
+                    &staging_str,
+                    &platform_refs,
+                    &image_tags,
+                    &rendered_build_args,
+                    &rendered_annotations,
+                    &rendered_labels,
+                    &rendered_flags,
+                    sbom_enabled,
+                    should_push,
+                )?;
+
+                // Resolve retry configuration
+                let (max_attempts, base_delay, max_delay) =
+                    resolve_retry_params(&v2_cfg.retry).with_context(|| {
+                        format!(
+                            "docker_v2: invalid retry config for crate {} index {}",
+                            krate.name, idx
+                        )
+                    })?;
+
+                if dry_run {
+                    log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
+                    if max_attempts > 1 {
+                        log.status(&format!(
+                            "(dry-run) retry: up to {} attempts, base delay {:?}{}",
+                            max_attempts,
+                            base_delay,
+                            match max_delay {
+                                Some(d) => format!(", max delay {:?}", d),
+                                None => String::new(),
+                            }
+                        ));
+                    }
+                    // Register artifacts in dry-run
+                    for tag in &image_tags {
+                        let mut meta = HashMap::new();
+                        meta.insert("tag".to_string(), tag.clone());
+                        meta.insert("platforms".to_string(), platforms.join(","));
+                        meta.insert("api".to_string(), "v2".to_string());
+                        if let Some(ref id) = v2_cfg.id {
+                            meta.insert("id".to_string(), id.clone());
+                        }
+                        new_artifacts.push(Artifact {
+                            kind: ArtifactKind::DockerImage,
+                            name: String::new(),
+                            path: staging_dir.clone(),
+                            target: None,
+                            crate_name: krate.name.clone(),
+                            metadata: meta,
+                            size: None,
+                        });
+                    }
+                } else {
+                    build_jobs.push(DockerBuildJob {
+                        cmd_args,
+                        backend_label: "buildx".to_string(),
+                        crate_name: krate.name.clone(),
+                        idx,
+                        max_attempts,
+                        base_delay,
+                        max_delay,
+                        should_push,
+                        rendered_tags: image_tags,
+                        platforms_str: platforms.join(","),
+                        staging_dir: staging_dir.clone(),
+                        id: v2_cfg.id.clone(),
+                        use_backend: Some("buildx".to_string()),
                         dist: dist.clone(),
                     });
                 }
@@ -3122,5 +3633,977 @@ use: podman
         let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].metadata.get("use").unwrap(), "podman");
+    }
+
+    // ====================================================================
+    // Docker V2 tests
+    // ====================================================================
+
+    #[test]
+    fn test_generate_v2_image_tags() {
+        let images = vec![
+            "ghcr.io/owner/app".to_string(),
+            "docker.io/owner/app".to_string(),
+        ];
+        let tags = vec!["latest".to_string(), "v1.0.0".to_string()];
+        let result = generate_v2_image_tags(&images, &tags);
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], "ghcr.io/owner/app:latest");
+        assert_eq!(result[1], "ghcr.io/owner/app:v1.0.0");
+        assert_eq!(result[2], "docker.io/owner/app:latest");
+        assert_eq!(result[3], "docker.io/owner/app:v1.0.0");
+    }
+
+    #[test]
+    fn test_generate_v2_image_tags_empty() {
+        assert!(generate_v2_image_tags(&[], &["latest".to_string()]).is_empty());
+        assert!(generate_v2_image_tags(&["img".to_string()], &[]).is_empty());
+    }
+
+    #[test]
+    fn test_generate_v2_image_tags_single() {
+        let result = generate_v2_image_tags(
+            &["ghcr.io/owner/app".to_string()],
+            &["latest".to_string()],
+        );
+        assert_eq!(result, vec!["ghcr.io/owner/app:latest"]);
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_basic() {
+        let image_tags = vec![
+            "ghcr.io/owner/app:latest".to_string(),
+            "ghcr.io/owner/app:v1.0.0".to_string(),
+        ];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &image_tags,
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+
+        // V2 always uses buildx
+        assert_eq!(cmd[0], "docker");
+        assert_eq!(cmd[1], "buildx");
+        assert_eq!(cmd[2], "build");
+
+        // Platform
+        assert!(cmd.contains(&"--platform=linux/amd64".to_string()));
+
+        // Tags
+        let tag_positions: Vec<usize> = cmd
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| if t == "--tag" { Some(i) } else { None })
+            .collect();
+        assert_eq!(tag_positions.len(), 2);
+        assert_eq!(cmd[tag_positions[0] + 1], "ghcr.io/owner/app:latest");
+        assert_eq!(cmd[tag_positions[1] + 1], "ghcr.io/owner/app:v1.0.0");
+
+        // Context dir is last
+        assert_eq!(cmd.last().unwrap(), "/tmp/ctx");
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_build_args() {
+        let build_args = vec![
+            ("APP_VERSION".to_string(), "1.0.0".to_string()),
+            ("BUILD_DATE".to_string(), "2024-01-01".to_string()),
+        ];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &build_args,
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+
+        // Check --build-arg flags
+        let ba_positions: Vec<usize> = cmd
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                if t == "--build-arg" {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(ba_positions.len(), 2);
+        assert_eq!(cmd[ba_positions[0] + 1], "APP_VERSION=1.0.0");
+        assert_eq!(cmd[ba_positions[1] + 1], "BUILD_DATE=2024-01-01");
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_annotations() {
+        let annotations = vec![
+            (
+                "org.opencontainers.image.source".to_string(),
+                "https://github.com/owner/app".to_string(),
+            ),
+            (
+                "org.opencontainers.image.version".to_string(),
+                "1.0.0".to_string(),
+            ),
+        ];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &annotations,
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+
+        let ann_positions: Vec<usize> = cmd
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                if t == "--annotation" {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(ann_positions.len(), 2);
+        assert_eq!(
+            cmd[ann_positions[0] + 1],
+            "org.opencontainers.image.source=https://github.com/owner/app"
+        );
+        assert_eq!(
+            cmd[ann_positions[1] + 1],
+            "org.opencontainers.image.version=1.0.0"
+        );
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_labels() {
+        let labels = vec![("maintainer".to_string(), "dev@example.com".to_string())];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &labels,
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(cmd.contains(&"--label".to_string()));
+        assert!(cmd.contains(&"maintainer=dev@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_sbom_true() {
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            true, // sbom enabled
+            false,
+        )
+        .unwrap();
+
+        assert!(cmd.contains(&"--sbom=true".to_string()));
+        // When sbom is true, auto --sbom=false should NOT be added
+        assert!(!cmd.contains(&"--sbom=false".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_sbom_false() {
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            false, // sbom not enabled
+            false,
+        )
+        .unwrap();
+
+        assert!(!cmd.contains(&"--sbom=true".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_flags() {
+        let flags = vec![
+            "--cache-from=type=gha".to_string(),
+            "--cache-to=type=gha".to_string(),
+        ];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &flags,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(cmd.contains(&"--cache-from=type=gha".to_string()));
+        assert!(cmd.contains(&"--cache-to=type=gha".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_push() {
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            true, // push
+        )
+        .unwrap();
+
+        assert!(cmd.contains(&"--push".to_string()));
+        assert!(!cmd.contains(&"--load".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_no_push_single_platform_loads() {
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false, // no push
+        )
+        .unwrap();
+
+        assert!(!cmd.contains(&"--push".to_string()));
+        assert!(cmd.contains(&"--load".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_no_push_multi_platform_no_load() {
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64", "linux/arm64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false, // no push
+        )
+        .unwrap();
+
+        assert!(!cmd.contains(&"--push".to_string()));
+        // --load is incompatible with multi-platform
+        assert!(!cmd.contains(&"--load".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_combined() {
+        let build_args = vec![("VERSION".to_string(), "1.0.0".to_string())];
+        let annotations = vec![(
+            "org.opencontainers.image.version".to_string(),
+            "1.0.0".to_string(),
+        )];
+        let labels = vec![("maintainer".to_string(), "dev@example.com".to_string())];
+        let flags = vec!["--no-cache".to_string()];
+
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64", "linux/arm64"],
+            &[
+                "ghcr.io/owner/app:latest".to_string(),
+                "ghcr.io/owner/app:v1.0.0".to_string(),
+            ],
+            &build_args,
+            &annotations,
+            &labels,
+            &flags,
+            true, // sbom
+            true, // push
+        )
+        .unwrap();
+
+        // Verify all parts are present
+        assert!(cmd.contains(&"--platform=linux/amd64,linux/arm64".to_string()));
+        assert!(cmd.contains(&"--build-arg".to_string()));
+        assert!(cmd.contains(&"VERSION=1.0.0".to_string()));
+        assert!(cmd.contains(&"--annotation".to_string()));
+        assert!(cmd.contains(&"org.opencontainers.image.version=1.0.0".to_string()));
+        assert!(cmd.contains(&"--label".to_string()));
+        assert!(cmd.contains(&"maintainer=dev@example.com".to_string()));
+        assert!(cmd.contains(&"--no-cache".to_string()));
+        assert!(cmd.contains(&"--sbom=true".to_string()));
+        assert!(cmd.contains(&"--push".to_string()));
+        assert_eq!(cmd.last().unwrap(), "/tmp/ctx");
+    }
+
+    #[test]
+    fn test_docker_v2_config_parse_yaml() {
+        let yaml = r#"
+id: myapp-docker
+ids:
+  - myapp-build
+dockerfile: Dockerfile.prod
+images:
+  - ghcr.io/owner/app
+  - docker.io/owner/app
+tags:
+  - latest
+  - "{{ .Version }}"
+labels:
+  maintainer: "dev@example.com"
+annotations:
+  org.opencontainers.image.source: "https://github.com/owner/app"
+extra_files:
+  - config.yaml
+platforms:
+  - linux/amd64
+  - linux/arm64
+build_args:
+  APP_VERSION: "{{ .Version }}"
+  BUILD_DATE: "2024-01-01"
+flags:
+  - "--no-cache"
+disable: false
+sbom: true
+retry:
+  attempts: 5
+  delay: "2s"
+"#;
+        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+
+        assert_eq!(cfg.id, Some("myapp-docker".to_string()));
+        assert_eq!(cfg.ids, Some(vec!["myapp-build".to_string()]));
+        assert_eq!(cfg.dockerfile, "Dockerfile.prod");
+        assert_eq!(cfg.images.len(), 2);
+        assert_eq!(cfg.images[0], "ghcr.io/owner/app");
+        assert_eq!(cfg.images[1], "docker.io/owner/app");
+        assert_eq!(cfg.tags.len(), 2);
+        assert_eq!(cfg.tags[0], "latest");
+        assert_eq!(cfg.tags[1], "{{ .Version }}");
+
+        let labels = cfg.labels.unwrap();
+        assert_eq!(labels.get("maintainer").unwrap(), "dev@example.com");
+
+        let annotations = cfg.annotations.unwrap();
+        assert_eq!(
+            annotations
+                .get("org.opencontainers.image.source")
+                .unwrap(),
+            "https://github.com/owner/app"
+        );
+
+        assert_eq!(cfg.extra_files.unwrap(), vec!["config.yaml"]);
+
+        let platforms = cfg.platforms.unwrap();
+        assert_eq!(platforms.len(), 2);
+
+        let build_args = cfg.build_args.unwrap();
+        assert_eq!(build_args.get("APP_VERSION").unwrap(), "{{ .Version }}");
+        assert_eq!(build_args.get("BUILD_DATE").unwrap(), "2024-01-01");
+
+        assert_eq!(cfg.flags.unwrap(), vec!["--no-cache"]);
+
+        assert_eq!(cfg.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
+
+        let retry = cfg.retry.unwrap();
+        assert_eq!(retry.attempts, Some(5));
+        assert_eq!(retry.delay, Some("2s".to_string()));
+    }
+
+    #[test]
+    fn test_docker_v2_config_parse_minimal() {
+        let yaml = r#"
+dockerfile: Dockerfile
+images:
+  - ghcr.io/owner/app
+tags:
+  - latest
+"#;
+        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+
+        assert_eq!(cfg.id, None);
+        assert_eq!(cfg.ids, None);
+        assert_eq!(cfg.dockerfile, "Dockerfile");
+        assert_eq!(cfg.images, vec!["ghcr.io/owner/app"]);
+        assert_eq!(cfg.tags, vec!["latest"]);
+        assert_eq!(cfg.labels, None);
+        assert_eq!(cfg.annotations, None);
+        assert_eq!(cfg.extra_files, None);
+        assert_eq!(cfg.platforms, None);
+        assert_eq!(cfg.build_args, None);
+        assert_eq!(cfg.flags, None);
+        assert_eq!(cfg.disable, None);
+        assert_eq!(cfg.sbom, None);
+        assert!(cfg.retry.is_none());
+    }
+
+    #[test]
+    fn test_docker_v2_config_disable_as_bool() {
+        let yaml = r#"
+dockerfile: Dockerfile
+images: ["img"]
+tags: ["latest"]
+disable: true
+"#;
+        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.disable, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_docker_v2_config_disable_as_template() {
+        let yaml = r#"
+dockerfile: Dockerfile
+images: ["img"]
+tags: ["latest"]
+disable: "{{ if .IsSnapshot }}true{{ end }}"
+"#;
+        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        match cfg.disable {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_docker_v2_config_sbom_as_bool() {
+        let yaml = r#"
+dockerfile: Dockerfile
+images: ["img"]
+tags: ["latest"]
+sbom: true
+"#;
+        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_docker_v2_config_sbom_as_string() {
+        let yaml = r#"
+dockerfile: Dockerfile
+images: ["img"]
+tags: ["latest"]
+sbom: "true"
+"#;
+        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.sbom, Some(StringOrBool::String("true".to_string())));
+    }
+
+    #[test]
+    fn test_docker_v2_dry_run_registers_artifacts() {
+        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+        let v2_cfg = DockerV2Config {
+            id: Some("myapp-v2".to_string()),
+            images: vec!["ghcr.io/owner/myapp".to_string()],
+            tags: vec!["{{ .Tag }}".to_string(), "latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker_v2: Some(vec![v2_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let stage = DockerStage;
+        stage.run(&mut ctx).unwrap();
+
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        // images x tags = 1 x 2 = 2
+        assert_eq!(images.len(), 2);
+
+        let tags: Vec<&str> = images
+            .iter()
+            .map(|a| a.metadata.get("tag").unwrap().as_str())
+            .collect();
+        assert!(tags.contains(&"ghcr.io/owner/myapp:v1.0.0"));
+        assert!(tags.contains(&"ghcr.io/owner/myapp:latest"));
+
+        // Verify V2 metadata
+        for img in &images {
+            assert_eq!(img.metadata.get("api").unwrap(), "v2");
+            assert_eq!(img.metadata.get("id").unwrap(), "myapp-v2");
+        }
+    }
+
+    #[test]
+    fn test_docker_v2_dry_run_multiple_images_and_tags() {
+        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+        let v2_cfg = DockerV2Config {
+            images: vec![
+                "ghcr.io/owner/app".to_string(),
+                "docker.io/owner/app".to_string(),
+            ],
+            tags: vec![
+                "latest".to_string(),
+                "{{ .Version }}".to_string(),
+                "{{ .Tag }}".to_string(),
+            ],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker_v2: Some(vec![v2_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
+
+        let stage = DockerStage;
+        stage.run(&mut ctx).unwrap();
+
+        // 2 images x 3 tags = 6 artifacts
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        assert_eq!(images.len(), 6);
+
+        let tags: Vec<&str> = images
+            .iter()
+            .map(|a| a.metadata.get("tag").unwrap().as_str())
+            .collect();
+        assert!(tags.contains(&"ghcr.io/owner/app:latest"));
+        assert!(tags.contains(&"ghcr.io/owner/app:2.0.0"));
+        assert!(tags.contains(&"ghcr.io/owner/app:v2.0.0"));
+        assert!(tags.contains(&"docker.io/owner/app:latest"));
+        assert!(tags.contains(&"docker.io/owner/app:2.0.0"));
+        assert!(tags.contains(&"docker.io/owner/app:v2.0.0"));
+    }
+
+    #[test]
+    fn test_docker_v2_disable_skips_build() {
+        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+        let v2_cfg = DockerV2Config {
+            images: vec!["ghcr.io/owner/app".to_string()],
+            tags: vec!["latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            disable: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker_v2: Some(vec![v2_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let stage = DockerStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Disabled config should produce no artifacts
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        assert_eq!(images.len(), 0);
+    }
+
+    #[test]
+    fn test_docker_v2_extra_files_staging_live() {
+        use anodize_core::config::{Config, CrateConfig, DockerRetryConfig, DockerV2Config};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create Dockerfile
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\nCOPY . /\n").unwrap();
+
+        // Create extra files
+        let extra1 = tmp.path().join("config.yaml");
+        fs::write(&extra1, b"key: value").unwrap();
+
+        let v2_cfg = DockerV2Config {
+            images: vec!["ghcr.io/owner/app".to_string()],
+            tags: vec!["latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            extra_files: Some(vec![extra1.to_string_lossy().into_owned()]),
+            retry: Some(DockerRetryConfig {
+                attempts: Some(1),
+                delay: None,
+                max_delay: None,
+            }),
+            ..Default::default()
+        };
+
+        let dist = tmp.path().join("dist");
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker_v2: Some(vec![v2_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        // Run the stage (will fail at docker command, but staging is complete)
+        let _result = DockerStage.run(&mut ctx);
+
+        // Verify staging directory structure
+        let staging_dir = dist.join("docker_v2").join("myapp").join("0");
+        assert!(staging_dir.join("Dockerfile").exists());
+        // Extra file (absolute path) should be in staging root
+        assert!(staging_dir.join("config.yaml").exists());
+        assert_eq!(
+            fs::read_to_string(staging_dir.join("config.yaml")).unwrap(),
+            "key: value"
+        );
+    }
+
+    #[test]
+    fn test_docker_v2_crate_config_field() {
+        let yaml = r#"
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    docker_v2:
+      - dockerfile: Dockerfile
+        images:
+          - ghcr.io/owner/app
+        tags:
+          - latest
+        build_args:
+          VERSION: "1.0.0"
+        annotations:
+          org.opencontainers.image.source: "https://github.com/owner/app"
+        sbom: true
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.crates.len(), 1);
+        let v2_configs = config.crates[0].docker_v2.as_ref().unwrap();
+        assert_eq!(v2_configs.len(), 1);
+        assert_eq!(v2_configs[0].dockerfile, "Dockerfile");
+        assert_eq!(v2_configs[0].images, vec!["ghcr.io/owner/app"]);
+        assert_eq!(v2_configs[0].tags, vec!["latest"]);
+
+        let build_args = v2_configs[0].build_args.as_ref().unwrap();
+        assert_eq!(build_args.get("VERSION").unwrap(), "1.0.0");
+
+        let annotations = v2_configs[0].annotations.as_ref().unwrap();
+        assert_eq!(
+            annotations
+                .get("org.opencontainers.image.source")
+                .unwrap(),
+            "https://github.com/owner/app"
+        );
+
+        assert_eq!(v2_configs[0].sbom, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_is_docker_v2_disabled_none() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!is_docker_v2_disabled(&None, &ctx));
+    }
+
+    #[test]
+    fn test_is_docker_v2_disabled_bool_true() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(is_docker_v2_disabled(
+            &Some(StringOrBool::Bool(true)),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_disabled_bool_false() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!is_docker_v2_disabled(
+            &Some(StringOrBool::Bool(false)),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_sbom_enabled_none() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!is_docker_v2_sbom_enabled(&None, &ctx));
+    }
+
+    #[test]
+    fn test_is_docker_v2_sbom_enabled_bool_true() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(is_docker_v2_sbom_enabled(
+            &Some(StringOrBool::Bool(true)),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_sbom_enabled_bool_false() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!is_docker_v2_sbom_enabled(
+            &Some(StringOrBool::Bool(false)),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_docker_v2_build_args_render_in_command() {
+        // Verify that build_args end up in the V2 command correctly
+        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+        let mut build_args = HashMap::new();
+        build_args.insert("VERSION".to_string(), "{{ .Version }}".to_string());
+        build_args.insert("STATIC".to_string(), "hello".to_string());
+
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "org.opencontainers.image.version".to_string(),
+            "{{ .Version }}".to_string(),
+        );
+
+        let v2_cfg = DockerV2Config {
+            images: vec!["img".to_string()],
+            tags: vec!["latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            build_args: Some(build_args),
+            annotations: Some(annotations),
+            sbom: Some(StringOrBool::Bool(true)),
+            flags: Some(vec!["--no-cache".to_string()]),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker_v2: Some(vec![v2_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "3.0.0");
+        ctx.template_vars_mut().set("Tag", "v3.0.0");
+
+        let stage = DockerStage;
+        stage.run(&mut ctx).unwrap();
+
+        // The stage ran in dry-run mode, so it registered artifacts
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        assert_eq!(images.len(), 1);
+        assert_eq!(
+            images[0].metadata.get("tag").unwrap(),
+            "img:latest"
+        );
+    }
+
+    #[test]
+    fn test_docker_v2_coexists_with_legacy() {
+        use anodize_core::config::{Config, CrateConfig, DockerConfig, DockerV2Config};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+        let legacy_cfg = DockerConfig {
+            image_templates: vec!["ghcr.io/owner/app:legacy".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            ..Default::default()
+        };
+
+        let v2_cfg = DockerV2Config {
+            images: vec!["ghcr.io/owner/app".to_string()],
+            tags: vec!["v2".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![legacy_cfg]),
+            docker_v2: Some(vec![v2_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let stage = DockerStage;
+        stage.run(&mut ctx).unwrap();
+
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        // 1 from legacy + 1 from v2
+        assert_eq!(images.len(), 2);
+
+        let tags: Vec<&str> = images
+            .iter()
+            .map(|a| a.metadata.get("tag").unwrap().as_str())
+            .collect();
+        assert!(tags.contains(&"ghcr.io/owner/app:legacy"));
+        assert!(tags.contains(&"ghcr.io/owner/app:v2"));
     }
 }
