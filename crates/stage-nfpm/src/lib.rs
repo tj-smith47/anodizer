@@ -815,8 +815,8 @@ impl Stage for NfpmStage {
                         let ext = format_extension(format);
 
                         // Set nfpm-specific template vars (Os, Arch, Format,
-                        // PackageName, ConventionalExtension, ConventionalFileName)
-                        // before rendering file_name_template.
+                        // PackageName, ConventionalExtension, ConventionalFileName,
+                        // Release, Epoch) before rendering file_name_template.
                         ctx.template_vars_mut().set("Os", &os);
                         ctx.template_vars_mut().set("Arch", &arch);
                         ctx.template_vars_mut().set("Format", format);
@@ -826,6 +826,10 @@ impl Stage for NfpmStage {
                             "ConventionalFileName",
                             &format!("{pkg_name}_{version}_{os}_{arch}{ext}"),
                         );
+                        ctx.template_vars_mut()
+                            .set("Release", nfpm_cfg.release.as_deref().unwrap_or(""));
+                        ctx.template_vars_mut()
+                            .set("Epoch", nfpm_cfg.epoch.as_deref().unwrap_or(""));
 
                         let pkg_filename = if let Some(tmpl) = &nfpm_cfg.file_name_template {
                             let rendered = ctx.render_template(tmpl).with_context(|| {
@@ -924,6 +928,8 @@ impl Stage for NfpmStage {
         ctx.template_vars_mut().set("PackageName", "");
         ctx.template_vars_mut().set("ConventionalExtension", "");
         ctx.template_vars_mut().set("ConventionalFileName", "");
+        ctx.template_vars_mut().set("Release", "");
+        ctx.template_vars_mut().set("Epoch", "");
 
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
@@ -3825,5 +3831,155 @@ crates:
         let content = &nfpm.contents.as_ref().unwrap()[0];
         assert_eq!(content.packager.as_deref(), Some("deb"));
         assert_eq!(content.expand, Some(true));
+    }
+
+    #[test]
+    fn test_release_template_var_in_file_name_template() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            release: Some("2".to_string()),
+            file_name_template: Some(
+                "{{ .PackageName }}_{{ .Version }}-{{ .Release }}_{{ .Arch }}".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            filename.contains("-2_"),
+            "expected Release '2' in filename, got: {filename}"
+        );
+        assert!(filename.ends_with(".rpm"));
+    }
+
+    #[test]
+    fn test_epoch_template_var_in_file_name_template() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            epoch: Some("3".to_string()),
+            file_name_template: Some(
+                "{{ .PackageName }}_{{ .Epoch }}_{{ .Version }}_{{ .Arch }}".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "2.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            filename.starts_with("myapp_3_2.0.0_"),
+            "expected Epoch '3' in filename, got: {filename}"
+        );
+        assert!(filename.ends_with(".deb"));
+    }
+
+    #[test]
+    fn test_release_and_epoch_default_to_empty_string() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Neither release nor epoch is set — they should default to empty strings
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            file_name_template: Some(
+                "{{ .PackageName }}{{ .Release }}{{ .Epoch }}_{{ .Version }}".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        // With empty Release and Epoch, should be "myapp_1.0.0..."
+        assert!(
+            filename.starts_with("myapp_1.0.0"),
+            "expected empty Release/Epoch (no extra text), got: {filename}"
+        );
     }
 }
