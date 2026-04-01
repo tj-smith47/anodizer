@@ -22,8 +22,8 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `defaults` | Defaults | — | Default values applied to all crates unless overridden. |
 | `dist` | string | `./dist` | Output directory for build artifacts (default: ./dist). |
 | `docker_signs` | list of DockerSignConfig | — | Docker image signing configurations. |
-| `env` | map | — | Environment variables available to all template expressions. |
-| `env_files` | list of string | — | List of .env files to load before template expansion. |
+| `env` | map or list | — | Environment variables available to all template expressions. Accepts a YAML mapping (`KEY: value`) or a list of `KEY=VALUE` strings (GoReleaser parity). Values are template-rendered. |
+| `env_files` | list or map | — | Either a list of `.env` file paths to load, or a mapping of token file paths (`github_token`, `gitlab_token`, `gitea_token`). |
 | `includes` | list of string | — | Additional config files to merge into this config (glob patterns supported). |
 | `nightly` | NightlyConfig | — | Nightly release configuration. |
 | `partial` | PartialConfig | — | Partial/split build configuration for fan-out CI pipelines. |

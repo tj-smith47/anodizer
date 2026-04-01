@@ -20,8 +20,10 @@ pub struct Config {
     pub dist: PathBuf,
     /// Additional config files to merge into this config (glob patterns supported).
     pub includes: Option<Vec<String>>,
-    /// List of .env files to load before template expansion.
-    pub env_files: Option<Vec<String>>,
+    /// Environment file configuration. Accepts either:
+    /// - A list of `.env` file paths: `[".env", ".release.env"]`
+    /// - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }`
+    pub env_files: Option<EnvFilesConfig>,
     /// Default values applied to all crates unless overridden.
     pub defaults: Option<Defaults>,
     /// Hooks run before the release pipeline starts.
@@ -57,6 +59,14 @@ pub struct Config {
     /// When true, log artifact file sizes after building.
     pub report_sizes: Option<bool>,
     /// Environment variables available to all template expressions.
+    ///
+    /// Accepts two YAML forms:
+    /// - **Map form**: `env: { MY_VAR: hello, DEPLOY_ENV: staging }`
+    /// - **List form** (GoReleaser parity): `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`
+    ///
+    /// Values are rendered through the template engine before being set, so
+    /// expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
     /// Custom template variables accessible as {{ .Var.key }} in templates.
     /// Provides a way to define reusable values, especially useful with config includes.
@@ -192,6 +202,184 @@ pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// EnvFilesConfig — accepts list of .env paths OR structured token file paths
+// ---------------------------------------------------------------------------
+
+/// Environment file configuration.
+///
+/// Accepts two forms:
+/// - **List form** (anodize extension): array of `.env` file paths loaded as KEY=VALUE.
+///   ```yaml
+///   env_files:
+///     - .env
+///     - .release.env
+///   ```
+/// - **Struct form** (GoReleaser parity): paths to files containing provider tokens.
+///   ```yaml
+///   env_files:
+///     github_token: ~/.config/goreleaser/github_token
+///     gitlab_token: ~/.config/goreleaser/gitlab_token
+///     gitea_token: ~/.config/goreleaser/gitea_token
+///   ```
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum EnvFilesConfig {
+    /// List of `.env` file paths to load (KEY=VALUE format).
+    List(Vec<String>),
+    /// Structured token file paths (GoReleaser parity).
+    TokenFiles(EnvFilesTokenConfig),
+}
+
+impl<'de> Deserialize<'de> for EnvFilesConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
+        match &value {
+            serde_yaml_ng::Value::Sequence(_) => {
+                let list: Vec<String> = serde_yaml_ng::from_value(value)
+                    .map_err(serde::de::Error::custom)?;
+                Ok(EnvFilesConfig::List(list))
+            }
+            serde_yaml_ng::Value::Mapping(_) => {
+                let tokens: EnvFilesTokenConfig = serde_yaml_ng::from_value(value)
+                    .map_err(serde::de::Error::custom)?;
+                Ok(EnvFilesConfig::TokenFiles(tokens))
+            }
+            _ => Err(serde::de::Error::custom(
+                "env_files must be an array of file paths or a mapping with token file paths",
+            )),
+        }
+    }
+}
+
+impl EnvFilesConfig {
+    /// Returns the list of .env file paths if this is the List variant.
+    pub fn as_list(&self) -> Option<&[String]> {
+        match self {
+            EnvFilesConfig::List(files) => Some(files),
+            EnvFilesConfig::TokenFiles(_) => None,
+        }
+    }
+
+    /// Returns the token files config if this is the TokenFiles variant.
+    pub fn as_token_files(&self) -> Option<&EnvFilesTokenConfig> {
+        match self {
+            EnvFilesConfig::List(_) => None,
+            EnvFilesConfig::TokenFiles(tokens) => Some(tokens),
+        }
+    }
+}
+
+/// Structured token file paths for provider authentication.
+///
+/// Each field points to a file containing a single-line token. When present,
+/// the file is read and the corresponding environment variable is set
+/// (e.g., `github_token` file -> `GITHUB_TOKEN` env var).
+///
+/// Matches GoReleaser's `EnvFiles` struct.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct EnvFilesTokenConfig {
+    /// Path to file containing the GitHub token. Default: `~/.config/goreleaser/github_token`.
+    pub github_token: Option<String>,
+    /// Path to file containing the GitLab token. Default: `~/.config/goreleaser/gitlab_token`.
+    pub gitlab_token: Option<String>,
+    /// Path to file containing the Gitea token. Default: `~/.config/goreleaser/gitea_token`.
+    pub gitea_token: Option<String>,
+}
+
+/// Read a single token from a file, returning the first line trimmed.
+///
+/// Returns `Ok(None)` if the file does not exist.
+/// Returns `Err` if the file exists but cannot be read.
+pub fn read_token_file(path: &str) -> Result<Option<String>, String> {
+    // Expand ~ to home directory
+    let expanded = if path.starts_with("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            format!("{}/{}", home, &path[2..])
+        } else {
+            path.to_string()
+        }
+    } else {
+        path.to_string()
+    };
+
+    match std::fs::read_to_string(&expanded) {
+        Ok(content) => {
+            let token = content.lines().next().unwrap_or("").trim().to_string();
+            if token.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(token))
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("failed to read token file '{}': {}", path, e)),
+    }
+}
+
+/// Load tokens from structured `env_files` config.
+///
+/// For each configured token file path, reads the file and returns the
+/// corresponding environment variable name and token value.
+/// Falls back to GoReleaser defaults (`~/.config/goreleaser/...`) when
+/// a field is not specified.
+///
+/// Only returns entries where the corresponding process env var is NOT already
+/// set, matching GoReleaser's `loadEnv` behavior (env var takes precedence).
+pub fn load_token_files(
+    config: &EnvFilesTokenConfig,
+    log: &crate::log::StageLogger,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut vars = std::collections::HashMap::new();
+
+    let mappings = [
+        (
+            "GITHUB_TOKEN",
+            config
+                .github_token
+                .as_deref()
+                .unwrap_or("~/.config/goreleaser/github_token"),
+        ),
+        (
+            "GITLAB_TOKEN",
+            config
+                .gitlab_token
+                .as_deref()
+                .unwrap_or("~/.config/goreleaser/gitlab_token"),
+        ),
+        (
+            "GITEA_TOKEN",
+            config
+                .gitea_token
+                .as_deref()
+                .unwrap_or("~/.config/goreleaser/gitea_token"),
+        ),
+    ];
+
+    for (env_name, file_path) in &mappings {
+        // Skip if the env var is already set in the process environment
+        if std::env::var(env_name).ok().filter(|v| !v.is_empty()).is_some() {
+            log.verbose(&format!("using {} from process environment", env_name));
+            continue;
+        }
+        match read_token_file(file_path) {
+            Ok(Some(token)) => {
+                log.verbose(&format!("loaded {} from {}", env_name, file_path));
+                vars.insert(env_name.to_string(), token);
+            }
+            Ok(None) => {
+                // File doesn't exist or is empty — not an error, just skip
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        }
+    }
+
+    Ok(vars)
+}
+
 /// Load environment variables from .env-style files.
 /// Each file is read as KEY=VALUE lines. Lines starting with # and empty lines are skipped.
 /// Returns a HashMap of parsed key-value pairs. Does NOT mutate the process
@@ -242,6 +430,92 @@ pub fn load_env_files(
         }
     }
     Ok(vars)
+}
+
+// ---------------------------------------------------------------------------
+// deserialize_env_map — accepts YAML mapping OR list-of-KEY=VALUE strings
+// ---------------------------------------------------------------------------
+
+/// Custom deserializer for `env` fields that accepts both forms:
+///
+/// - **Map form** (YAML mapping):
+///   ```yaml
+///   env:
+///     MY_VAR: hello
+///     DEPLOY_ENV: staging
+///   ```
+///
+/// - **List form** (GoReleaser parity — list of `KEY=VALUE` strings):
+///   ```yaml
+///   env:
+///     - MY_VAR=hello
+///     - DEPLOY_ENV=staging
+///   ```
+///
+/// Both forms are normalized to `Option<HashMap<String, String>>`.
+/// Lines without `=` in the list form are rejected with a deserialization error.
+fn deserialize_env_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct EnvMapVisitor;
+
+    impl<'de> Visitor<'de> for EnvMapVisitor {
+        type Value = Option<HashMap<String, String>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(
+                "a mapping of env vars (KEY: VALUE) or a list of KEY=VALUE strings",
+            )
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+            let mut result = HashMap::new();
+            while let Some((key, value)) = map.next_entry::<String, String>()? {
+                result.insert(key, value);
+            }
+            Ok(Some(result))
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut result = HashMap::new();
+            while let Some(entry) = seq.next_element::<String>()? {
+                match entry.split_once('=') {
+                    Some((key, value)) => {
+                        let key = key.trim();
+                        if key.is_empty() {
+                            return Err(de::Error::custom(format!(
+                                "env list entry has empty key: {:?}",
+                                entry
+                            )));
+                        }
+                        result.insert(key.to_string(), value.to_string());
+                    }
+                    None => {
+                        return Err(de::Error::custom(format!(
+                            "env list entry must be KEY=VALUE, got: {:?}",
+                            entry
+                        )));
+                    }
+                }
+            }
+            Ok(Some(result))
+        }
+    }
+
+    deserializer.deserialize_any(EnvMapVisitor)
 }
 
 // ---------------------------------------------------------------------------
@@ -3908,6 +4182,10 @@ pub struct WorkspaceConfig {
     /// Hooks run after this workspace's pipeline completes.
     pub after: Option<HooksConfig>,
     /// Environment variables scoped to this workspace.
+    ///
+    /// Accepts both map form (`MY_VAR: hello`) and GoReleaser list form
+    /// (`- MY_VAR=hello`). Values are template-rendered at pipeline startup.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
 }
 
@@ -5178,6 +5456,156 @@ tag_template = "v{{ .Version }}"
         assert_eq!(env.get("STAGE").unwrap(), "prod");
     }
 
+    #[test]
+    fn test_env_list_form_toml() {
+        let toml_str = r#"
+project_name = "test"
+env = ["MY_VAR=hello", "STAGE=prod"]
+crates = []
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(env.get("MY_VAR").unwrap(), "hello");
+        assert_eq!(env.get("STAGE").unwrap(), "prod");
+    }
+
+    // ---- env list form tests (GoReleaser parity) ----
+
+    #[test]
+    fn test_env_list_form_parsed() {
+        let yaml = r#"
+project_name: test
+env:
+  - MY_VAR=hello
+  - DEPLOY_ENV=staging
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(env.get("MY_VAR").unwrap(), "hello");
+        assert_eq!(env.get("DEPLOY_ENV").unwrap(), "staging");
+    }
+
+    #[test]
+    fn test_env_list_form_with_template_expressions() {
+        let yaml = r#"
+project_name: test
+env:
+  - "MY_VERSION={{ .Tag }}"
+  - "BUILD_DATE={{ .Date }}"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        // Values are stored raw; template rendering happens at setup_env time.
+        assert_eq!(env.get("MY_VERSION").unwrap(), "{{ .Tag }}");
+        assert_eq!(env.get("BUILD_DATE").unwrap(), "{{ .Date }}");
+    }
+
+    #[test]
+    fn test_env_list_form_value_with_equals() {
+        // Values can contain = signs (only the first = splits key from value).
+        let yaml = r#"
+project_name: test
+env:
+  - "LDFLAGS=-X main.version=1.0.0"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(
+            env.get("LDFLAGS").unwrap(),
+            "-X main.version=1.0.0",
+            "only first = should split key from value"
+        );
+    }
+
+    #[test]
+    fn test_env_list_form_empty_value() {
+        let yaml = r#"
+project_name: test
+env:
+  - "EMPTY_VAR="
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(env.get("EMPTY_VAR").unwrap(), "");
+    }
+
+    #[test]
+    fn test_env_list_form_no_equals_is_error() {
+        let yaml = r#"
+project_name: test
+env:
+  - "NO_EQUALS"
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "list entries without = should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("KEY=VALUE"),
+            "error should mention KEY=VALUE format, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_env_list_form_empty_key_is_error() {
+        let yaml = r#"
+project_name: test
+env:
+  - "=orphan_value"
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "list entries with empty key should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("empty key"),
+            "error should mention empty key, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_env_list_form_last_wins_on_duplicates() {
+        let yaml = r#"
+project_name: test
+env:
+  - "DUPED=first"
+  - "DUPED=second"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(
+            env.get("DUPED").unwrap(),
+            "second",
+            "later entries should override earlier ones"
+        );
+    }
+
+    #[test]
+    fn test_workspace_env_list_form() {
+        let yaml = r#"
+project_name: test
+crates: []
+workspaces:
+  - name: ws1
+    crates: []
+    env:
+      - "WS_VAR=from-workspace"
+      - "WS_BUILD={{ .Tag }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let ws = &config.workspaces.as_ref().unwrap()[0];
+        let env = ws.env.as_ref().unwrap();
+        assert_eq!(env.get("WS_VAR").unwrap(), "from-workspace");
+        assert_eq!(env.get("WS_BUILD").unwrap(), "{{ .Tag }}");
+    }
+
     // ---- Error path tests (Task 3B) ----
 
     #[test]
@@ -6388,7 +6816,7 @@ crates: []
     // ---- env_files tests ----
 
     #[test]
-    fn test_env_files_field_parses() {
+    fn test_env_files_list_form_parses() {
         let yaml = r#"
 project_name: test
 env_files:
@@ -6397,10 +6825,50 @@ env_files:
 crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let files = config.env_files.unwrap();
+        let env_files = config.env_files.unwrap();
+        let files = env_files.as_list().expect("expected List variant");
         assert_eq!(files.len(), 2);
         assert_eq!(files[0], ".env");
         assert_eq!(files[1], ".release.env");
+    }
+
+    #[test]
+    fn test_env_files_struct_form_parses() {
+        let yaml = r#"
+project_name: test
+env_files:
+  github_token: "~/.config/goreleaser/github_token"
+  gitlab_token: "/etc/tokens/gitlab"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env_files = config.env_files.unwrap();
+        let tokens = env_files.as_token_files().expect("expected TokenFiles variant");
+        assert_eq!(
+            tokens.github_token.as_deref(),
+            Some("~/.config/goreleaser/github_token")
+        );
+        assert_eq!(
+            tokens.gitlab_token.as_deref(),
+            Some("/etc/tokens/gitlab")
+        );
+        assert!(tokens.gitea_token.is_none());
+    }
+
+    #[test]
+    fn test_env_files_struct_form_empty_mapping() {
+        let yaml = r#"
+project_name: test
+env_files:
+  gitea_token: "/tmp/gitea"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env_files = config.env_files.unwrap();
+        let tokens = env_files.as_token_files().expect("expected TokenFiles variant");
+        assert!(tokens.github_token.is_none());
+        assert!(tokens.gitlab_token.is_none());
+        assert_eq!(tokens.gitea_token.as_deref(), Some("/tmp/gitea"));
     }
 
     #[test]
@@ -6411,6 +6879,160 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.env_files.is_none());
+    }
+
+    #[test]
+    fn test_read_token_file_reads_first_line() {
+        use std::io::Write;
+        let dir = tempfile::TempDir::new().unwrap();
+        let token_path = dir.path().join("github_token");
+        let mut f = std::fs::File::create(&token_path).unwrap();
+        writeln!(f, "ghp_abc123xyz").unwrap();
+        writeln!(f, "this line should be ignored").unwrap();
+        drop(f);
+
+        let result = read_token_file(&token_path.to_string_lossy()).unwrap();
+        assert_eq!(result, Some("ghp_abc123xyz".to_string()));
+    }
+
+    #[test]
+    fn test_read_token_file_trims_whitespace() {
+        use std::io::Write;
+        let dir = tempfile::TempDir::new().unwrap();
+        let token_path = dir.path().join("token");
+        let mut f = std::fs::File::create(&token_path).unwrap();
+        writeln!(f, "  spaced_token  ").unwrap();
+        drop(f);
+
+        let result = read_token_file(&token_path.to_string_lossy()).unwrap();
+        assert_eq!(result, Some("spaced_token".to_string()));
+    }
+
+    #[test]
+    fn test_read_token_file_nonexistent_returns_none() {
+        let result = read_token_file("/tmp/nonexistent_token_file_99999").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_read_token_file_empty_returns_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let token_path = dir.path().join("empty_token");
+        std::fs::write(&token_path, "").unwrap();
+
+        let result = read_token_file(&token_path.to_string_lossy()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_load_token_files_reads_tokens() {
+        use std::io::Write;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let gh_path = dir.path().join("github_token");
+        let mut f = std::fs::File::create(&gh_path).unwrap();
+        writeln!(f, "ghp_test123").unwrap();
+        drop(f);
+
+        let gl_path = dir.path().join("gitlab_token");
+        let mut f = std::fs::File::create(&gl_path).unwrap();
+        writeln!(f, "glpat-test456").unwrap();
+        drop(f);
+
+        let config = EnvFilesTokenConfig {
+            github_token: Some(gh_path.to_string_lossy().to_string()),
+            gitlab_token: Some(gl_path.to_string_lossy().to_string()),
+            gitea_token: None, // uses default path which won't exist
+        };
+
+        // Temporarily unset any existing tokens to avoid interference
+        let orig_gh = std::env::var("GITHUB_TOKEN").ok();
+        let orig_gl = std::env::var("GITLAB_TOKEN").ok();
+        let orig_gt = std::env::var("GITEA_TOKEN").ok();
+        // SAFETY: test runs serially
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GITLAB_TOKEN");
+            std::env::remove_var("GITEA_TOKEN");
+        }
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
+        let vars = load_token_files(&config, &log).unwrap();
+
+        // Restore original env
+        unsafe {
+            if let Some(v) = orig_gh { std::env::set_var("GITHUB_TOKEN", v); }
+            if let Some(v) = orig_gl { std::env::set_var("GITLAB_TOKEN", v); }
+            if let Some(v) = orig_gt { std::env::set_var("GITEA_TOKEN", v); }
+        }
+
+        assert_eq!(vars.get("GITHUB_TOKEN").unwrap(), "ghp_test123");
+        assert_eq!(vars.get("GITLAB_TOKEN").unwrap(), "glpat-test456");
+        // GITEA_TOKEN not present — default file doesn't exist
+        assert!(vars.get("GITEA_TOKEN").is_none());
+    }
+
+    #[test]
+    fn test_load_token_files_env_var_takes_precedence() {
+        use std::io::Write;
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let gh_path = dir.path().join("github_token");
+        let mut f = std::fs::File::create(&gh_path).unwrap();
+        writeln!(f, "file_token").unwrap();
+        drop(f);
+
+        let config = EnvFilesTokenConfig {
+            github_token: Some(gh_path.to_string_lossy().to_string()),
+            gitlab_token: None,
+            gitea_token: None,
+        };
+
+        // Set GITHUB_TOKEN env var — should take precedence over file
+        let orig = std::env::var("GITHUB_TOKEN").ok();
+        // SAFETY: test runs serially
+        unsafe { std::env::set_var("GITHUB_TOKEN", "env_token"); }
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
+        let vars = load_token_files(&config, &log).unwrap();
+
+        // Restore
+        unsafe {
+            match orig {
+                Some(v) => std::env::set_var("GITHUB_TOKEN", v),
+                None => std::env::remove_var("GITHUB_TOKEN"),
+            }
+        }
+
+        // File token should NOT be loaded because env var was set
+        assert!(
+            vars.get("GITHUB_TOKEN").is_none(),
+            "env var should take precedence; file should not be loaded"
+        );
+    }
+
+    #[test]
+    fn test_read_token_file_tilde_expansion() {
+        // Test that tilde expansion uses HOME env var
+        let dir = tempfile::TempDir::new().unwrap();
+        let token_path = dir.path().join(".config/goreleaser/github_token");
+        std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
+        std::fs::write(&token_path, "tilde_token\n").unwrap();
+
+        let orig_home = std::env::var("HOME").ok();
+        // SAFETY: test runs serially
+        unsafe { std::env::set_var("HOME", dir.path()); }
+
+        let result = read_token_file("~/.config/goreleaser/github_token").unwrap();
+
+        unsafe {
+            match orig_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+
+        assert_eq!(result, Some("tilde_token".to_string()));
     }
 
     #[test]

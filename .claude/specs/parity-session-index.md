@@ -173,24 +173,25 @@ GoReleaser source: `internal/pipe/git/`, `internal/pipe/metadata/`, `internal/pi
 ### Session E2: Template Additions + Stage-Specific Extras
 
 **Template additions** (from fresh-gap B31-B32)
-- [ ] OSS template functions: incpatch, incminor, incmajor (version increment)
-- [ ] OSS template functions: readFile, mustReadFile (file I/O)
-- [ ] OSS template functions: filter, reverseFilter (regex filtering)
-- [ ] OSS template functions: urlPathEscape, time (formatted UTC)
-- [ ] OSS template functions: contains, list, englishJoin
-- [ ] OSS template functions: dir, base, abs (path functions)
-- [ ] OSS template functions: map, indexOrDefault (map functions)
-- [ ] OSS template functions: mdv2escape (MarkdownV2 escaping)
-- [ ] Go-style positional syntax compatibility for replace, split, contains
-- [ ] Pro template functions: `in` (list membership), `reReplaceAll` (regex replace)
-- [ ] Template variables: .Outputs, .PrefixedTag, .PrefixedPreviousTag, .PrefixedSummary, .IsRelease, .IsMerging, .Artifacts, .Metadata, .Var.*, .Checksums, .ArtifactExt, .ArtifactID, .Target
-- [ ] nFPM-specific vars: .Release, .Epoch, .PackageName, .ConventionalFileName, .ConventionalExtension, .Format
+- [x] OSS template functions: incpatch, incminor, incmajor (version increment)
+- [x] OSS template functions: readFile, mustReadFile (file I/O)
+- [x] OSS template functions: filter, reverseFilter (regex filtering)
+- [x] OSS template functions: urlPathEscape, time (formatted UTC)
+- [x] OSS template functions: contains, list, englishJoin
+- [x] OSS template functions: dir, base, abs (path functions)
+- [x] OSS template functions: map, indexOrDefault (map functions)
+- [x] OSS template functions: mdv2escape (MarkdownV2 escaping)
+- [x] Go-style positional syntax compatibility for replace, split, contains
+- [x] Pro template functions: `in` (list membership), `reReplaceAll` (regex replace)
+- [x] Template variables (OSS): .Outputs, .Checksums, .ArtifactExt, .Target (wired to all stages with cleanup)
+- [x] Template variables (Pro): .PrefixedTag, .PrefixedPreviousTag, .PrefixedSummary, .IsRelease, .IsMerging, .Artifacts, .Metadata, .ArtifactID
+- [x] nFPM-specific vars: .Release, .Epoch, .PackageName, .ConventionalFileName, .ConventionalExtension, .Format
 
 **Stage-specific extras** (from fresh-gap B19-B20, B24, B33-B34)
 - [ ] Docker extras: v2 API, annotations, SBOM, disable template, templated_dockerfile, templated_extra_files, skip_build, build_args (map form), manifest create_flags, manifest retry
-- [ ] Snapcraft: hooks (top-level), missing app sub-fields (~25 fields: adapter, after, aliases, autostart, before, bus_name, command_chain, common_id, completer, desktop, extensions, install_mode, passthrough, post_stop_command, refresh_mode, reload_command, sockets, start_timeout, stop_command, stop_timeout, timer, watchdog_timeout), templated_extra_files
+- [x] Snapcraft: hooks (top-level), missing app sub-fields (24 fields), structured extra_files with source/destination/mode, kebab-case aliases
 - [ ] nFPM extras: libdirs, changelog (YAML path), templated_contents (Pro), templated_scripts (Pro), contents file_info.owner/group template rendering
-- [ ] Environment config: template expansion in env values, env_files.github_token/gitlab_token/gitea_token
+- [x] Environment config: template expansion in env values, env_files.github_token/gitlab_token/gitea_token, env list form (GoReleaser parity)
 - [ ] Artifacts JSON format parity (14 ArtifactKind variants vs GoReleaser's 30+ type classifications)
 - [ ] Changelog Pro features: paths, title, divider, AI (use/model/prompt)
 

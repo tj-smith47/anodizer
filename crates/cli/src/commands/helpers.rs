@@ -227,12 +227,25 @@ pub fn setup_env(
         ctx.template_vars_mut().set_env(&key, &value);
     }
 
-    // Load .env files into template context (overrides process env)
-    if let Some(ref env_files) = config.env_files {
-        let env_vars = anodize_core::config::load_env_files(env_files, log)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
-        for (key, value) in &env_vars {
-            ctx.template_vars_mut().set_env(key, value);
+    // Load env files into template context (overrides process env).
+    // Supports both list form (array of .env files) and struct form (token file paths).
+    if let Some(ref env_files_config) = config.env_files {
+        match env_files_config {
+            anodize_core::config::EnvFilesConfig::List(files) => {
+                let env_vars = anodize_core::config::load_env_files(files, log)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                for (key, value) in &env_vars {
+                    ctx.template_vars_mut().set_env(key, value);
+                }
+            }
+            anodize_core::config::EnvFilesConfig::TokenFiles(token_config) => {
+                let token_vars = anodize_core::config::load_token_files(token_config, log)
+                    .map_err(|e| anyhow::anyhow!("{}", e))?;
+                for (key, value) in &token_vars {
+                    ctx.template_vars_mut().set_env(key, value);
+                    set_env_var_single_threaded(key, value);
+                }
+            }
         }
     }
 

@@ -715,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_config_env_files_field_preserved() {
+    fn test_load_config_env_files_list_form() {
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("anodize.yaml");
         fs::write(
@@ -724,8 +724,26 @@ mod tests {
         )
         .unwrap();
         let config = load_config(&cfg_path).unwrap();
-        let files = config.env_files.unwrap();
-        assert_eq!(files, vec![".env", ".release.env"]);
+        let env_files = config.env_files.unwrap();
+        let files = env_files.as_list().expect("expected List variant");
+        assert_eq!(files, &[".env", ".release.env"]);
+    }
+
+    #[test]
+    fn test_load_config_env_files_struct_form() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nenv_files:\n  github_token: /tmp/gh_token\n  gitlab_token: /tmp/gl_token\ncrates: []\n",
+        )
+        .unwrap();
+        let config = load_config(&cfg_path).unwrap();
+        let env_files = config.env_files.unwrap();
+        let tokens = env_files.as_token_files().expect("expected TokenFiles variant");
+        assert_eq!(tokens.github_token.as_deref(), Some("/tmp/gh_token"));
+        assert_eq!(tokens.gitlab_token.as_deref(), Some("/tmp/gl_token"));
+        assert!(tokens.gitea_token.is_none());
     }
 
     #[test]
