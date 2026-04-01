@@ -89,9 +89,15 @@ fn preprocess_strip_dots(template: &str) -> String {
 
 /// Regex matching `(list "a" "b" ...)` subexpressions inside template blocks.
 /// Captures the inner quoted strings (variadic args to `list`).
-// SAFETY: This is a compile-time regex literal; it is known to be valid.
-static LIST_SUBEXPR_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"\(list\s+((?:"[^"]*"(?:\s+"[^"]*")*)|(?:'[^']*'(?:\s+'[^']*')*))\)"#).unwrap());
+/// Each item independently matches either double- or single-quoted strings,
+/// supporting mixed quote styles and escaped quotes within strings.
+// SAFETY: Built from deterministic string literals; the resulting pattern is known to be valid.
+static LIST_SUBEXPR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // A single quoted item: double-quoted with escaped-quote support, OR single-quoted with same.
+    let item = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#;
+    let pattern = format!(r"\(list\s+({item}(?:\s+{item})*)\)");
+    Regex::new(&pattern).unwrap()
+});
 
 /// Pass 2: Rewrite Go-style `(list "a" "b" "c")` subexpressions to Tera array literals.
 ///
@@ -111,8 +117,9 @@ fn preprocess_list_subexpr(template: &str) -> String {
                 .replace_all(block, |lcaps: &regex::Captures| {
                     let inner = &lcaps[1];
                     // Split quoted strings and rejoin as a Tera array literal.
+                    // Handles escaped quotes inside strings (e.g., "hello \"world\"").
                     static QUOTED_RE: LazyLock<Regex> =
-                        LazyLock::new(|| Regex::new(r#""[^"]*"|'[^']*'"#).unwrap());
+                        LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"#).unwrap());
                     let items: Vec<&str> = QUOTED_RE.find_iter(inner).map(|m| m.as_str()).collect();
                     format!("[{}]", items.join(", "))
                 })
@@ -888,6 +895,51 @@ mod tests {
         assert_eq!(
             result,
             "{% if reReplaceAll(pattern=\"v\", input=Tag, replacement=\"\") %}yes{% endif %}"
+        );
+    }
+
+    // --- `in` piped form preprocessing tests ---
+
+    #[test]
+    fn test_preprocess_in_piped() {
+        // {{ myList | in "val" }} → {{ myList | in(value="val") }}
+        let input = "{{ myList | in \"val\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ myList | in(value=\"val\") }}");
+    }
+
+    // --- list subexpr: escaped quotes and mixed quote styles ---
+
+    #[test]
+    fn test_preprocess_list_subexpr_escaped_double_quotes() {
+        // (list "hello \"world\"" "plain") should parse correctly
+        let input = r#"{{ in (list "hello \"world\"" "plain") "plain" }}"#;
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            r#"{{ in(items=["hello \"world\"", "plain"], value="plain") }}"#
+        );
+    }
+
+    #[test]
+    fn test_preprocess_list_subexpr_escaped_single_quotes() {
+        // (list 'it\'s' 'fine') should parse correctly
+        let input = "{{ in (list 'it\\'s' 'fine') \"fine\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ in(items=['it\\'s', 'fine'], value=\"fine\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_list_subexpr_mixed_quote_styles() {
+        // (list "double" 'single' "another") — each item uses its own quote style
+        let input = "{{ in (list \"double\" 'single' \"another\") \"double\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ in(items=[\"double\", 'single', \"another\"], value=\"double\") }}"
         );
     }
 }

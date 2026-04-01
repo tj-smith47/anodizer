@@ -923,6 +923,23 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         Ok(Value::String(increment_version(&v, VersionPart::Major)))
     });
 
+    // in — filter form: {{ myList | in(value="x") }}
+    // Checks whether the piped array contains the given value (string comparison).
+    tera.register_filter(
+        "in",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let items = value
+                .as_array()
+                .ok_or_else(|| tera::Error::msg("in filter requires an array as input"))?;
+            let needle = args
+                .get("value")
+                .ok_or_else(|| tera::Error::msg("in filter requires `value` argument"))?;
+            let needle_str = value_to_string(needle);
+            let found = items.iter().any(|item| value_to_string(item) == needle_str);
+            Ok(Value::Bool(found))
+        },
+    );
+
     tera
 });
 
@@ -2433,6 +2450,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, "false");
+    }
+
+    #[test]
+    fn test_in_filter_form_piped_via_set() {
+        // Test the `in` filter registration by piping an array variable.
+        // Use `{% set %}` to create an array variable, then pipe it to `in`.
+        let vars = test_vars();
+        let result = render(
+            "{% set items = [\"a\", \"b\", \"c\"] %}{% if items | in(value=\"b\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_in_filter_form_piped_not_found() {
+        let vars = test_vars();
+        let result = render(
+            "{% set items = [\"a\", \"b\", \"c\"] %}{% if items | in(value=\"z\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "no");
     }
 
     #[test]
