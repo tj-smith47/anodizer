@@ -2271,8 +2271,8 @@ pub struct SnapcraftConfig {
     pub apps: Option<HashMap<String, SnapcraftApp>>,
     /// Directory mappings for sandbox accessibility.
     pub layouts: Option<HashMap<String, SnapcraftLayout>>,
-    /// Additional static files to bundle.
-    pub extra_files: Option<Vec<String>>,
+    /// Additional static files to bundle (string shorthand or structured form).
+    pub extra_files: Option<Vec<SnapcraftExtraFileSpec>>,
     /// Template for the output snap filename.
     pub name_template: Option<String>,
     /// Disable this snapcraft config. Accepts bool or template string
@@ -2283,6 +2283,8 @@ pub struct SnapcraftConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
+    /// Snap hooks — maps hook name to arbitrary hook config.
+    pub hooks: Option<HashMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2290,7 +2292,7 @@ pub struct SnapcraftConfig {
 pub struct SnapcraftApp {
     /// Command to run (relative to snap root).
     pub command: Option<String>,
-    /// Daemon type: simple, forking, oneshot, notify.
+    /// Daemon type: simple, forking, oneshot, notify, dbus.
     pub daemon: Option<String>,
     /// How to stop the daemon: sigterm, sigkill, etc.
     pub stop_mode: Option<String>,
@@ -2302,6 +2304,54 @@ pub struct SnapcraftApp {
     pub args: Option<String>,
     /// Restart condition: on-failure, always, on-success, on-abnormal, on-abort, on-watchdog, never.
     pub restart_condition: Option<String>,
+    /// Snap adapter type: "none" or "full" (default: "full").
+    pub adapter: Option<String>,
+    /// Services that must start before this app.
+    pub after: Option<Vec<String>>,
+    /// Alternative names for the command.
+    pub aliases: Option<Vec<String>>,
+    /// Desktop file for autostart.
+    pub autostart: Option<String>,
+    /// Services that must start after this app.
+    pub before: Option<Vec<String>>,
+    /// D-Bus well-known bus name.
+    pub bus_name: Option<String>,
+    /// Wrapper commands run before the main command.
+    pub command_chain: Option<Vec<String>>,
+    /// AppStream metadata common ID.
+    pub common_id: Option<String>,
+    /// Path to bash completion script relative to snap.
+    pub completer: Option<String>,
+    /// Path to .desktop file relative to snap.
+    pub desktop: Option<String>,
+    /// Snap extensions to apply.
+    pub extensions: Option<Vec<String>>,
+    /// Installation mode: "enable" or "disable".
+    pub install_mode: Option<String>,
+    /// Arbitrary YAML passed through to snap.yaml.
+    pub passthrough: Option<HashMap<String, serde_json::Value>>,
+    /// Command to run after daemon stops.
+    pub post_stop_command: Option<String>,
+    /// Refresh behavior: "endure" or "restart".
+    pub refresh_mode: Option<String>,
+    /// Command to reload daemon config.
+    pub reload_command: Option<String>,
+    /// Delay between restarts (duration string).
+    pub restart_delay: Option<String>,
+    /// Interface slots this app provides.
+    pub slots: Option<Vec<String>>,
+    /// Socket definitions map.
+    pub sockets: Option<HashMap<String, serde_json::Value>>,
+    /// Start timeout duration string.
+    pub start_timeout: Option<String>,
+    /// Command to gracefully stop the daemon.
+    pub stop_command: Option<String>,
+    /// Stop timeout duration string.
+    pub stop_timeout: Option<String>,
+    /// Timer definition (systemd timer syntax).
+    pub timer: Option<String>,
+    /// Watchdog timeout duration string.
+    pub watchdog_timeout: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2316,6 +2366,50 @@ pub struct SnapcraftLayout {
     /// Layout entry type.
     #[serde(rename = "type")]
     pub type_: Option<String>,
+}
+
+/// Specifies an extra file for snapcraft. Can be a simple source path string or
+/// a structured object with source, destination, and mode fields (matching
+/// GoReleaser's SnapcraftExtraFiles).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum SnapcraftExtraFileSpec {
+    /// Simple source path string.
+    Source(String),
+    /// Structured form with source, destination, and mode.
+    Detailed {
+        source: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        destination: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
+    },
+}
+
+impl SnapcraftExtraFileSpec {
+    /// Return the source path for this spec.
+    pub fn source(&self) -> &str {
+        match self {
+            SnapcraftExtraFileSpec::Source(s) => s,
+            SnapcraftExtraFileSpec::Detailed { source, .. } => source,
+        }
+    }
+
+    /// Return the optional destination path.
+    pub fn destination(&self) -> Option<&str> {
+        match self {
+            SnapcraftExtraFileSpec::Source(_) => None,
+            SnapcraftExtraFileSpec::Detailed { destination, .. } => destination.as_deref(),
+        }
+    }
+
+    /// Return the optional file mode.
+    pub fn mode(&self) -> Option<u32> {
+        match self {
+            SnapcraftExtraFileSpec::Source(_) => None,
+            SnapcraftExtraFileSpec::Detailed { mode, .. } => *mode,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

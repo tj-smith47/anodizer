@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use serde::Serialize;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::SnapcraftConfig;
+use anodize_core::config::{SnapcraftConfig, SnapcraftExtraFileSpec};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -47,6 +47,8 @@ struct SnapcraftYaml {
     slots: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     layouts: HashMap<String, SnapcraftYamlLayout>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    hooks: HashMap<String, serde_json::Value>,
     parts: HashMap<String, SnapcraftYamlPart>,
 }
 
@@ -56,14 +58,62 @@ struct SnapcraftYamlApp {
     command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     daemon: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "stop-mode")]
     stop_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "restart-condition")]
     restart_condition: Option<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     plugs: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     environment: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adapter: Option<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    after: Vec<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    aliases: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    autostart: Option<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    before: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "bus-name")]
+    bus_name: Option<String>,
+    #[serde(skip_serializing_if = "is_empty_vec", rename = "command-chain")]
+    command_chain: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "common-id")]
+    common_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desktop: Option<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    extensions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "install-mode")]
+    install_mode: Option<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    passthrough: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "post-stop-command")]
+    post_stop_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "refresh-mode")]
+    refresh_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "reload-command")]
+    reload_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "restart-delay")]
+    restart_delay: Option<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    slots: Vec<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    sockets: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "start-timeout")]
+    start_timeout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "stop-command")]
+    stop_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "stop-timeout")]
+    stop_timeout: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", rename = "watchdog-timeout")]
+    watchdog_timeout: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -130,7 +180,7 @@ pub fn generate_snapcraft_yaml(
     config: &SnapcraftConfig,
     version: &str,
     binary_names: &[&str],
-    extra_files: Option<&[String]>,
+    extra_files: Option<&[SnapcraftExtraFileSpec]>,
     target: Option<&str>,
 ) -> Result<String> {
     let primary_binary = binary_names.first().copied().unwrap_or("binary");
@@ -172,6 +222,30 @@ pub fn generate_snapcraft_yaml(
                     restart_condition: app_cfg.restart_condition.clone(),
                     plugs: app_cfg.plugs.clone().unwrap_or_default(),
                     environment: app_cfg.environment.clone().unwrap_or_default(),
+                    adapter: app_cfg.adapter.clone(),
+                    after: app_cfg.after.clone().unwrap_or_default(),
+                    aliases: app_cfg.aliases.clone().unwrap_or_default(),
+                    autostart: app_cfg.autostart.clone(),
+                    before: app_cfg.before.clone().unwrap_or_default(),
+                    bus_name: app_cfg.bus_name.clone(),
+                    command_chain: app_cfg.command_chain.clone().unwrap_or_default(),
+                    common_id: app_cfg.common_id.clone(),
+                    completer: app_cfg.completer.clone(),
+                    desktop: app_cfg.desktop.clone(),
+                    extensions: app_cfg.extensions.clone().unwrap_or_default(),
+                    install_mode: app_cfg.install_mode.clone(),
+                    passthrough: app_cfg.passthrough.clone().unwrap_or_default(),
+                    post_stop_command: app_cfg.post_stop_command.clone(),
+                    refresh_mode: app_cfg.refresh_mode.clone(),
+                    reload_command: app_cfg.reload_command.clone(),
+                    restart_delay: app_cfg.restart_delay.clone(),
+                    slots: app_cfg.slots.clone().unwrap_or_default(),
+                    sockets: app_cfg.sockets.clone().unwrap_or_default(),
+                    start_timeout: app_cfg.start_timeout.clone(),
+                    stop_command: app_cfg.stop_command.clone(),
+                    stop_timeout: app_cfg.stop_timeout.clone(),
+                    timer: app_cfg.timer.clone(),
+                    watchdog_timeout: app_cfg.watchdog_timeout.clone(),
                 };
                 (app_name.clone(), yaml_app)
             })
@@ -188,6 +262,30 @@ pub fn generate_snapcraft_yaml(
                 restart_condition: None,
                 plugs: Vec::new(),
                 environment: HashMap::new(),
+                adapter: None,
+                after: Vec::new(),
+                aliases: Vec::new(),
+                autostart: None,
+                before: Vec::new(),
+                bus_name: None,
+                command_chain: Vec::new(),
+                common_id: None,
+                completer: None,
+                desktop: None,
+                extensions: Vec::new(),
+                install_mode: None,
+                passthrough: HashMap::new(),
+                post_stop_command: None,
+                refresh_mode: None,
+                reload_command: None,
+                restart_delay: None,
+                slots: Vec::new(),
+                sockets: HashMap::new(),
+                start_timeout: None,
+                stop_command: None,
+                stop_timeout: None,
+                timer: None,
+                watchdog_timeout: None,
             },
         );
         default_apps
@@ -226,13 +324,18 @@ pub fn generate_snapcraft_yaml(
     // Include extra files in organize/stage/prime
     if let Some(files) = extra_files {
         for file in files {
-            let filename = std::path::Path::new(file)
+            let source = file.source();
+            let source_filename = std::path::Path::new(source)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or(file);
-            organize.insert(filename.to_string(), filename.to_string());
-            stage_files.push(filename.to_string());
-            prime_files.push(filename.to_string());
+                .unwrap_or(source);
+            // If destination is set, use it; otherwise use the source filename
+            let dest = file
+                .destination()
+                .unwrap_or(source_filename);
+            organize.insert(source_filename.to_string(), dest.to_string());
+            stage_files.push(dest.to_string());
+            prime_files.push(dest.to_string());
         }
     }
 
@@ -273,6 +376,7 @@ pub fn generate_snapcraft_yaml(
         plugs: config.plugs.clone().unwrap_or_default(),
         slots: config.slots.clone().unwrap_or_default(),
         layouts,
+        hooks: config.hooks.clone().unwrap_or_default(),
         parts,
     };
 
@@ -588,13 +692,22 @@ impl Stage for SnapcraftStage {
                     // Copy extra files into temp directory
                     if let Some(extra_files) = &snap_cfg.extra_files {
                         for extra in extra_files {
-                            let src = PathBuf::from(extra);
+                            let src = PathBuf::from(extra.source());
                             let file_name =
                                 src.file_name().and_then(|n| n.to_str()).unwrap_or("extra");
                             let dest = tmp_dir.path().join(file_name);
                             fs::copy(&src, &dest).with_context(|| {
                                 format!("copy extra file {} to {}", src.display(), dest.display())
                             })?;
+                            // Apply file mode if specified
+                            #[cfg(unix)]
+                            if let Some(mode) = extra.mode() {
+                                use std::os::unix::fs::PermissionsExt;
+                                let perms = std::fs::Permissions::from_mode(mode);
+                                std::fs::set_permissions(&dest, perms).with_context(|| {
+                                    format!("set mode {:o} on {}", mode, dest.display())
+                                })?;
+                            }
                         }
                     }
 
@@ -793,7 +906,8 @@ impl Stage for SnapcraftPublishStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        Config, CrateConfig, SnapcraftApp, SnapcraftConfig, SnapcraftLayout, StringOrBool,
+        Config, CrateConfig, SnapcraftApp, SnapcraftConfig, SnapcraftExtraFileSpec,
+        SnapcraftLayout, StringOrBool,
     };
     use anodize_core::context::{Context, ContextOptions};
     use tempfile::TempDir;
@@ -845,6 +959,7 @@ mod tests {
                 plugs: Some(vec!["network".to_string(), "home".to_string()]),
                 environment: Some(HashMap::from([("LANG".to_string(), "C.UTF-8".to_string())])),
                 args: Some("--verbose".to_string()),
+                ..Default::default()
             },
         );
 
@@ -866,10 +981,10 @@ mod tests {
             "args should not be a separate field in snapcraft.yaml"
         );
         assert!(yaml.contains("daemon: simple"), "missing daemon");
-        assert!(yaml.contains("stop_mode: sigterm"), "missing stop_mode");
+        assert!(yaml.contains("stop-mode: sigterm"), "missing stop-mode");
         assert!(
-            yaml.contains("restart_condition: on-failure"),
-            "missing restart_condition"
+            yaml.contains("restart-condition: on-failure"),
+            "missing restart-condition"
         );
         assert!(yaml.contains("- network"), "missing network plug");
         assert!(yaml.contains("- home"), "missing home plug");
@@ -1405,7 +1520,10 @@ mod tests {
             name: Some("mysnap".to_string()),
             ..Default::default()
         };
-        let extra = vec!["README.md".to_string(), "config/defaults.yaml".to_string()];
+        let extra = vec![
+            SnapcraftExtraFileSpec::Source("README.md".to_string()),
+            SnapcraftExtraFileSpec::Source("config/defaults.yaml".to_string()),
+        ];
         let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], Some(&extra), None).unwrap();
         // Extra files should appear in the organize mapping
         assert!(
@@ -1589,7 +1707,10 @@ crates:
         let layout = layouts.get("/usr/share/myapp").unwrap();
         assert_eq!(layout.bind.as_deref(), Some("$SNAP/usr/share/myapp"));
 
-        assert_eq!(snap.extra_files.as_ref().unwrap(), &["README.md"]);
+        assert_eq!(
+            snap.extra_files.as_ref().unwrap(),
+            &[SnapcraftExtraFileSpec::Source("README.md".to_string())]
+        );
         assert_eq!(
             snap.name_template.as_deref(),
             Some("mysnap_{{ Version }}_{{ Arch }}")
@@ -2126,5 +2247,389 @@ crates:
         let stage = SnapcraftPublishStage;
         // Should complete without attempting upload (disabled)
         assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // New fields: all 24 missing SnapcraftApp fields + hooks + extra_files
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_yaml_all_new_app_fields() {
+        let mut apps = HashMap::new();
+        apps.insert(
+            "mydaemon".to_string(),
+            SnapcraftApp {
+                command: Some("bin/mydaemon".to_string()),
+                daemon: Some("dbus".to_string()),
+                adapter: Some("none".to_string()),
+                after: Some(vec!["network-manager".to_string()]),
+                aliases: Some(vec!["md".to_string(), "myd".to_string()]),
+                autostart: Some("mydaemon.desktop".to_string()),
+                before: Some(vec!["other-svc".to_string()]),
+                bus_name: Some("com.example.mydaemon".to_string()),
+                command_chain: Some(vec!["bin/wrapper".to_string(), "bin/setup".to_string()]),
+                common_id: Some("com.example.mydaemon".to_string()),
+                completer: Some("completions/mydaemon.bash".to_string()),
+                desktop: Some("gui/mydaemon.desktop".to_string()),
+                extensions: Some(vec!["gnome".to_string()]),
+                install_mode: Some("disable".to_string()),
+                passthrough: Some(HashMap::from([
+                    ("custom-key".to_string(), serde_json::json!("custom-value")),
+                ])),
+                post_stop_command: Some("bin/cleanup".to_string()),
+                refresh_mode: Some("endure".to_string()),
+                reload_command: Some("bin/reload".to_string()),
+                restart_condition: Some("on-failure".to_string()),
+                restart_delay: Some("10s".to_string()),
+                slots: Some(vec!["dbus-slot".to_string()]),
+                sockets: Some(HashMap::from([
+                    (
+                        "mysock".to_string(),
+                        serde_json::json!({"listen-stream": "$SNAP_DATA/mysock.sock"}),
+                    ),
+                ])),
+                start_timeout: Some("30s".to_string()),
+                stop_command: Some("bin/stop".to_string()),
+                stop_mode: Some("sigterm-all".to_string()),
+                stop_timeout: Some("15s".to_string()),
+                timer: Some("mon,10:00-12:00,,fri,13:00-14:00".to_string()),
+                watchdog_timeout: Some("60s".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            apps: Some(apps),
+            ..Default::default()
+        };
+        let yaml = generate_snapcraft_yaml(&cfg, "2.0.0", &["mydaemon"], None, None).unwrap();
+
+        // Verify all kebab-case fields are present
+        assert!(yaml.contains("adapter: none"), "missing adapter\n{yaml}");
+        assert!(yaml.contains("- network-manager"), "missing after entry\n{yaml}");
+        assert!(yaml.contains("aliases:"), "missing aliases section\n{yaml}");
+        assert!(yaml.contains("- md"), "missing alias md\n{yaml}");
+        assert!(yaml.contains("- myd"), "missing alias myd\n{yaml}");
+        assert!(
+            yaml.contains("autostart: mydaemon.desktop"),
+            "missing autostart\n{yaml}"
+        );
+        assert!(yaml.contains("- other-svc"), "missing before entry\n{yaml}");
+        assert!(
+            yaml.contains("bus-name: com.example.mydaemon"),
+            "missing bus-name\n{yaml}"
+        );
+        assert!(yaml.contains("command-chain:"), "missing command-chain\n{yaml}");
+        assert!(
+            yaml.contains("- bin/wrapper"),
+            "missing command-chain entry\n{yaml}"
+        );
+        assert!(
+            yaml.contains("common-id: com.example.mydaemon"),
+            "missing common-id\n{yaml}"
+        );
+        assert!(
+            yaml.contains("completer: completions/mydaemon.bash"),
+            "missing completer\n{yaml}"
+        );
+        assert!(
+            yaml.contains("desktop: gui/mydaemon.desktop"),
+            "missing desktop\n{yaml}"
+        );
+        assert!(yaml.contains("- gnome"), "missing extensions entry\n{yaml}");
+        assert!(
+            yaml.contains("install-mode: disable"),
+            "missing install-mode\n{yaml}"
+        );
+        assert!(
+            yaml.contains("custom-key: custom-value"),
+            "missing passthrough key\n{yaml}"
+        );
+        assert!(
+            yaml.contains("post-stop-command: bin/cleanup"),
+            "missing post-stop-command\n{yaml}"
+        );
+        assert!(
+            yaml.contains("refresh-mode: endure"),
+            "missing refresh-mode\n{yaml}"
+        );
+        assert!(
+            yaml.contains("reload-command: bin/reload"),
+            "missing reload-command\n{yaml}"
+        );
+        assert!(
+            yaml.contains("restart-delay: 10s"),
+            "missing restart-delay\n{yaml}"
+        );
+        assert!(yaml.contains("- dbus-slot"), "missing slots entry\n{yaml}");
+        assert!(yaml.contains("mysock:"), "missing sockets entry\n{yaml}");
+        assert!(
+            yaml.contains("start-timeout: 30s"),
+            "missing start-timeout\n{yaml}"
+        );
+        assert!(
+            yaml.contains("stop-command: bin/stop"),
+            "missing stop-command\n{yaml}"
+        );
+        assert!(
+            yaml.contains("stop-mode: sigterm-all"),
+            "missing stop-mode\n{yaml}"
+        );
+        assert!(
+            yaml.contains("stop-timeout: 15s"),
+            "missing stop-timeout\n{yaml}"
+        );
+        assert!(
+            yaml.contains("timer: mon,10:00-12:00,,fri,13:00-14:00"),
+            "missing timer\n{yaml}"
+        );
+        assert!(
+            yaml.contains("watchdog-timeout: 60s"),
+            "missing watchdog-timeout\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_yaml_with_hooks() {
+        let mut hooks = HashMap::new();
+        hooks.insert(
+            "configure".to_string(),
+            serde_json::json!({"plugs": ["network"]}),
+        );
+        hooks.insert(
+            "install".to_string(),
+            serde_json::json!({"plugs": ["home", "network"]}),
+        );
+
+        let cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            hooks: Some(hooks),
+            ..Default::default()
+        };
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        assert!(yaml.contains("hooks:"), "missing hooks section\n{yaml}");
+        assert!(yaml.contains("configure:"), "missing configure hook\n{yaml}");
+        assert!(yaml.contains("install:"), "missing install hook\n{yaml}");
+    }
+
+    #[test]
+    fn test_generate_yaml_extra_files_structured() {
+        let cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            ..Default::default()
+        };
+        let extra = vec![
+            SnapcraftExtraFileSpec::Source("README.md".to_string()),
+            SnapcraftExtraFileSpec::Detailed {
+                source: "config/app.conf".to_string(),
+                destination: Some("etc/app.conf".to_string()),
+                mode: Some(0o644),
+            },
+        ];
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], Some(&extra), None).unwrap();
+        // Simple file: source filename used as-is
+        assert!(
+            yaml.contains("README.md"),
+            "missing simple extra file\n{yaml}"
+        );
+        // Structured file: destination should be used
+        assert!(
+            yaml.contains("etc/app.conf"),
+            "missing structured extra file destination\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_new_app_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - name: mysnap
+        hooks:
+          configure:
+            plugs:
+              - network
+        apps:
+          myapp:
+            command: bin/myapp
+            adapter: none
+            after:
+              - network-manager
+            aliases:
+              - ma
+            autostart: myapp.desktop
+            before:
+              - other-svc
+            bus_name: com.example.myapp
+            command_chain:
+              - bin/wrapper
+            common_id: com.example.myapp
+            completer: completions/myapp.bash
+            desktop: gui/myapp.desktop
+            extensions:
+              - gnome
+            install_mode: disable
+            passthrough:
+              custom: value
+            post_stop_command: bin/cleanup
+            refresh_mode: endure
+            reload_command: bin/reload
+            restart_delay: 10s
+            slots:
+              - dbus-slot
+            sockets:
+              mysock:
+                listen-stream: "$SNAP_DATA/mysock.sock"
+            start_timeout: 30s
+            stop_command: bin/stop
+            stop_timeout: 15s
+            timer: "mon,10:00-12:00"
+            watchdog_timeout: 60s
+        extra_files:
+          - README.md
+          - source: config/app.conf
+            destination: etc/app.conf
+            mode: 420
+"#;
+        let config: Config =
+            serde_yaml_ng::from_str(yaml).expect("failed to parse config with new fields");
+        let snaps = config.crates[0].snapcrafts.as_ref().unwrap();
+        let snap = &snaps[0];
+
+        // Verify hooks
+        let hooks = snap.hooks.as_ref().unwrap();
+        assert!(hooks.contains_key("configure"), "missing configure hook");
+
+        // Verify app fields
+        let apps = snap.apps.as_ref().unwrap();
+        let app = apps.get("myapp").unwrap();
+        assert_eq!(app.adapter.as_deref(), Some("none"));
+        assert_eq!(app.after.as_ref().unwrap(), &["network-manager"]);
+        assert_eq!(app.aliases.as_ref().unwrap(), &["ma"]);
+        assert_eq!(app.autostart.as_deref(), Some("myapp.desktop"));
+        assert_eq!(app.before.as_ref().unwrap(), &["other-svc"]);
+        assert_eq!(app.bus_name.as_deref(), Some("com.example.myapp"));
+        assert_eq!(app.command_chain.as_ref().unwrap(), &["bin/wrapper"]);
+        assert_eq!(app.common_id.as_deref(), Some("com.example.myapp"));
+        assert_eq!(
+            app.completer.as_deref(),
+            Some("completions/myapp.bash")
+        );
+        assert_eq!(app.desktop.as_deref(), Some("gui/myapp.desktop"));
+        assert_eq!(app.extensions.as_ref().unwrap(), &["gnome"]);
+        assert_eq!(app.install_mode.as_deref(), Some("disable"));
+        assert!(app.passthrough.as_ref().unwrap().contains_key("custom"));
+        assert_eq!(app.post_stop_command.as_deref(), Some("bin/cleanup"));
+        assert_eq!(app.refresh_mode.as_deref(), Some("endure"));
+        assert_eq!(app.reload_command.as_deref(), Some("bin/reload"));
+        assert_eq!(app.restart_delay.as_deref(), Some("10s"));
+        assert_eq!(app.slots.as_ref().unwrap(), &["dbus-slot"]);
+        assert!(app.sockets.as_ref().unwrap().contains_key("mysock"));
+        assert_eq!(app.start_timeout.as_deref(), Some("30s"));
+        assert_eq!(app.stop_command.as_deref(), Some("bin/stop"));
+        assert_eq!(app.stop_timeout.as_deref(), Some("15s"));
+        assert_eq!(app.timer.as_deref(), Some("mon,10:00-12:00"));
+        assert_eq!(app.watchdog_timeout.as_deref(), Some("60s"));
+
+        // Verify extra_files mixed form
+        let extra = snap.extra_files.as_ref().unwrap();
+        assert_eq!(extra.len(), 2);
+        assert_eq!(extra[0], SnapcraftExtraFileSpec::Source("README.md".to_string()));
+        match &extra[1] {
+            SnapcraftExtraFileSpec::Detailed {
+                source,
+                destination,
+                mode,
+            } => {
+                assert_eq!(source, "config/app.conf");
+                assert_eq!(destination.as_deref(), Some("etc/app.conf"));
+                assert_eq!(*mode, Some(420)); // 0o644 = 420 decimal
+            }
+            other => panic!("expected Detailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_app_fields_omitted_when_empty() {
+        // When new fields are not set, they should NOT appear in generated YAML
+        let mut apps = HashMap::new();
+        apps.insert(
+            "myapp".to_string(),
+            SnapcraftApp {
+                command: Some("bin/myapp".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            apps: Some(apps),
+            ..Default::default()
+        };
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+
+        // None of the new fields should appear
+        assert!(!yaml.contains("adapter:"), "adapter should be omitted\n{yaml}");
+        assert!(!yaml.contains("after:"), "after should be omitted\n{yaml}");
+        assert!(!yaml.contains("aliases:"), "aliases should be omitted\n{yaml}");
+        assert!(!yaml.contains("autostart:"), "autostart should be omitted\n{yaml}");
+        assert!(!yaml.contains("before:"), "before should be omitted\n{yaml}");
+        assert!(!yaml.contains("bus-name:"), "bus-name should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("command-chain:"),
+            "command-chain should be omitted\n{yaml}"
+        );
+        assert!(!yaml.contains("common-id:"), "common-id should be omitted\n{yaml}");
+        assert!(!yaml.contains("completer:"), "completer should be omitted\n{yaml}");
+        assert!(!yaml.contains("desktop:"), "desktop should be omitted\n{yaml}");
+        assert!(!yaml.contains("extensions:"), "extensions should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("install-mode:"),
+            "install-mode should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("passthrough:"),
+            "passthrough should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("post-stop-command:"),
+            "post-stop-command should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("refresh-mode:"),
+            "refresh-mode should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("reload-command:"),
+            "reload-command should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("restart-delay:"),
+            "restart-delay should be omitted\n{yaml}"
+        );
+        assert!(!yaml.contains("sockets:"), "sockets should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("start-timeout:"),
+            "start-timeout should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("stop-command:"),
+            "stop-command should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("stop-timeout:"),
+            "stop-timeout should be omitted\n{yaml}"
+        );
+        assert!(!yaml.contains("timer:"), "timer should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("watchdog-timeout:"),
+            "watchdog-timeout should be omitted\n{yaml}"
+        );
+        assert!(!yaml.contains("hooks:"), "hooks should be omitted\n{yaml}");
     }
 }
