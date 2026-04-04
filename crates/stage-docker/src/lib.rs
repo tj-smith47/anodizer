@@ -485,13 +485,7 @@ pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> b
 pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> bool {
     match sbom {
         None => false,
-        Some(s) => {
-            if s.is_template() {
-                s.is_disabled(|tmpl| ctx.render_template(tmpl))
-            } else {
-                s.as_bool()
-            }
-        }
+        Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
     }
 }
 
@@ -698,6 +692,204 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
 }
 
 // ---------------------------------------------------------------------------
+// Shared staging helpers (used by both legacy and V2 paths)
+// ---------------------------------------------------------------------------
+
+/// Stage binary artifacts into the docker build context.
+///
+/// For each platform, creates a `binaries/<arch>` directory under `staging_dir`
+/// and copies matching binary artifacts into it. Filtering is done by:
+/// - `ids_filter`: optional list of artifact metadata IDs to include
+/// - `binary_filter`: optional list of binary names to include (legacy only)
+fn stage_binaries(
+    platforms: &[String],
+    staging_dir: &std::path::Path,
+    dry_run: bool,
+    ids_filter: Option<&Vec<String>>,
+    binary_filter: Option<&Vec<String>>,
+    crate_name: &str,
+    ctx: &Context,
+    log: &StageLogger,
+    prefix: &str,
+) -> Result<()> {
+    for platform in platforms {
+        let arch = platform_to_arch(platform);
+        let binaries_dir = staging_dir.join("binaries").join(arch);
+        if !dry_run {
+            fs::create_dir_all(&binaries_dir).with_context(|| {
+                format!("{}: create binaries dir {}", prefix, binaries_dir.display())
+            })?;
+        }
+
+        let matching_binaries: Vec<_> = ctx
+            .artifacts
+            .by_kind_and_crate(ArtifactKind::Binary, crate_name)
+            .into_iter()
+            .filter(|b| {
+                let artifact_arch = b
+                    .target
+                    .as_deref()
+                    .map(|t| map_target(t).1)
+                    .unwrap_or_default();
+                if artifact_arch != arch {
+                    return false;
+                }
+                if let Some(ids) = ids_filter {
+                    let artifact_id = b.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+                    if !ids.iter().any(|id| id == artifact_id) {
+                        return false;
+                    }
+                }
+                match binary_filter {
+                    None => true,
+                    Some(names) => {
+                        let bin_name = b.metadata.get("binary").map(|s| s.as_str()).unwrap_or("");
+                        names.iter().any(|n| n == bin_name)
+                    }
+                }
+            })
+            .collect();
+
+        for bin_artifact in matching_binaries {
+            let bin_name = bin_artifact
+                .metadata
+                .get("binary")
+                .map(|s| s.as_str())
+                .unwrap_or_else(|| {
+                    bin_artifact
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("binary")
+                });
+
+            let dest = binaries_dir.join(bin_name);
+
+            if dry_run {
+                log.status(&format!(
+                    "(dry-run) would copy {} -> {}",
+                    bin_artifact.path.display(),
+                    dest.display()
+                ));
+            } else {
+                log.status(&format!(
+                    "staging binary {} -> {}",
+                    bin_artifact.path.display(),
+                    dest.display()
+                ));
+                fs::copy(&bin_artifact.path, &dest).with_context(|| {
+                    format!(
+                        "{}: copy binary {} to {}",
+                        prefix,
+                        bin_artifact.path.display(),
+                        dest.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Copy a Dockerfile into the staging directory.
+fn copy_dockerfile(
+    dockerfile: &str,
+    staging_dir: &std::path::Path,
+    dry_run: bool,
+    log: &StageLogger,
+    prefix: &str,
+) -> Result<()> {
+    let dockerfile_src = PathBuf::from(dockerfile);
+    let dockerfile_dest = staging_dir.join("Dockerfile");
+
+    if dry_run {
+        log.status(&format!(
+            "(dry-run) would copy Dockerfile {} -> {}",
+            dockerfile_src.display(),
+            dockerfile_dest.display()
+        ));
+    } else {
+        log.status(&format!(
+            "copying Dockerfile {} -> {}",
+            dockerfile_src.display(),
+            dockerfile_dest.display()
+        ));
+        fs::copy(&dockerfile_src, &dockerfile_dest).with_context(|| {
+            format!(
+                "{}: copy Dockerfile from {} to {}",
+                prefix,
+                dockerfile_src.display(),
+                dockerfile_dest.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Copy extra files into the staging directory.
+///
+/// Preserves relative directory structure for relative paths. For absolute
+/// paths, only the filename is used.
+fn stage_extra_files(
+    extra_files: &[String],
+    staging_dir: &std::path::Path,
+    dry_run: bool,
+    log: &StageLogger,
+    prefix: &str,
+) -> Result<()> {
+    for file_path in extra_files {
+        let src = PathBuf::from(file_path);
+        if src.is_dir() {
+            anyhow::bail!(
+                "{}: extra_files entry '{}' is a directory; only files are supported",
+                prefix,
+                file_path
+            );
+        }
+        let dest = if src.is_absolute() {
+            let file_name = src
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
+            staging_dir.join(file_name)
+        } else {
+            staging_dir.join(file_path)
+        };
+
+        if dry_run {
+            log.status(&format!(
+                "(dry-run) would copy extra file {} -> {}",
+                src.display(),
+                dest.display()
+            ));
+        } else {
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "{}: create parent dirs for extra file {}",
+                        prefix,
+                        dest.display()
+                    )
+                })?;
+            }
+            log.status(&format!(
+                "copying extra file {} -> {}",
+                src.display(),
+                dest.display()
+            ));
+            fs::copy(&src, &dest).with_context(|| {
+                format!(
+                    "{}: copy extra file {} to {}",
+                    prefix,
+                    src.display(),
+                    dest.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // DockerStage
 // ---------------------------------------------------------------------------
 
@@ -768,177 +960,24 @@ impl Stage for DockerStage {
                 }
 
                 // ------------------------------------------------------------------
-                // Stage binaries per platform/arch
+                // Stage binaries, Dockerfile, and extra files
                 // ------------------------------------------------------------------
-                for platform in &platforms {
-                    let arch = platform_to_arch(platform);
+                stage_binaries(
+                    &platforms,
+                    &staging_dir,
+                    dry_run,
+                    docker_cfg.ids.as_ref(),
+                    docker_cfg.binaries.as_ref(),
+                    &krate.name,
+                    ctx,
+                    &log,
+                    "docker",
+                )?;
 
-                    let binaries_dir = staging_dir.join("binaries").join(arch);
-                    if !dry_run {
-                        fs::create_dir_all(&binaries_dir).with_context(|| {
-                            format!("docker: create binaries dir {}", binaries_dir.display())
-                        })?;
-                    }
+                copy_dockerfile(&docker_cfg.dockerfile, &staging_dir, dry_run, &log, "docker")?;
 
-                    // Determine which binary names this docker config cares about
-                    let binary_filter = docker_cfg.binaries.as_ref();
-                    let ids_filter = docker_cfg.ids.as_ref();
-
-                    // Find Binary artifacts whose target maps to this arch
-                    let matching_binaries: Vec<_> = ctx
-                        .artifacts
-                        .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                        .into_iter()
-                        .filter(|b| {
-                            // Check the arch of the artifact's target triple matches
-                            let artifact_arch = b
-                                .target
-                                .as_deref()
-                                .map(|t| map_target(t).1)
-                                .unwrap_or_default();
-                            if artifact_arch != arch {
-                                return false;
-                            }
-                            // Apply optional IDs filter
-                            if let Some(ids) = ids_filter {
-                                let artifact_id =
-                                    b.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-                                if !ids.iter().any(|id| id == artifact_id) {
-                                    return false;
-                                }
-                            }
-                            // Apply optional binary name filter
-                            match binary_filter {
-                                None => true,
-                                Some(names) => {
-                                    let bin_name =
-                                        b.metadata.get("binary").map(|s| s.as_str()).unwrap_or("");
-                                    names.iter().any(|n| n == bin_name)
-                                }
-                            }
-                        })
-                        .collect();
-
-                    for bin_artifact in matching_binaries {
-                        let bin_name = bin_artifact
-                            .metadata
-                            .get("binary")
-                            .map(|s| s.as_str())
-                            .unwrap_or_else(|| {
-                                bin_artifact
-                                    .path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("binary")
-                            });
-
-                        let dest = binaries_dir.join(bin_name);
-
-                        if dry_run {
-                            log.status(&format!(
-                                "(dry-run) would copy {} → {}",
-                                bin_artifact.path.display(),
-                                dest.display()
-                            ));
-                        } else {
-                            log.status(&format!(
-                                "staging binary {} → {}",
-                                bin_artifact.path.display(),
-                                dest.display()
-                            ));
-                            fs::copy(&bin_artifact.path, &dest).with_context(|| {
-                                format!(
-                                    "docker: copy binary {} to {}",
-                                    bin_artifact.path.display(),
-                                    dest.display()
-                                )
-                            })?;
-                        }
-                    }
-                }
-
-                // ------------------------------------------------------------------
-                // Copy Dockerfile
-                // ------------------------------------------------------------------
-                let dockerfile_src = PathBuf::from(&docker_cfg.dockerfile);
-                let dockerfile_dest = staging_dir.join("Dockerfile");
-
-                if dry_run {
-                    log.status(&format!(
-                        "(dry-run) would copy Dockerfile {} → {}",
-                        dockerfile_src.display(),
-                        dockerfile_dest.display()
-                    ));
-                } else {
-                    log.status(&format!(
-                        "copying Dockerfile {} → {}",
-                        dockerfile_src.display(),
-                        dockerfile_dest.display()
-                    ));
-                    fs::copy(&dockerfile_src, &dockerfile_dest).with_context(|| {
-                        format!(
-                            "docker: copy Dockerfile from {} to {}",
-                            dockerfile_src.display(),
-                            dockerfile_dest.display()
-                        )
-                    })?;
-                }
-
-                // ------------------------------------------------------------------
-                // Copy extra_files into staging directory
-                // ------------------------------------------------------------------
                 if let Some(ref extra_files) = docker_cfg.extra_files {
-                    for file_path in extra_files {
-                        let src = PathBuf::from(file_path);
-                        if src.is_dir() {
-                            anyhow::bail!(
-                                "docker: extra_files entry '{}' is a directory; only files are supported",
-                                file_path
-                            );
-                        }
-                        // Preserve relative directory structure instead of
-                        // flattening to just the filename.  For absolute paths,
-                        // fall back to just the filename (no relative structure
-                        // to preserve).
-                        let dest = if src.is_absolute() {
-                            let file_name = src
-                                .file_name()
-                                .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
-                            staging_dir.join(file_name)
-                        } else {
-                            staging_dir.join(file_path)
-                        };
-
-                        if dry_run {
-                            log.status(&format!(
-                                "(dry-run) would copy extra file {} → {}",
-                                src.display(),
-                                dest.display()
-                            ));
-                        } else {
-                            // Ensure parent directories exist
-                            if let Some(parent) = dest.parent() {
-                                fs::create_dir_all(parent).with_context(|| {
-                                    format!(
-                                        "docker: create parent dirs for extra file {}",
-                                        dest.display()
-                                    )
-                                })?;
-                            }
-                            log.status(&format!(
-                                "copying extra file {} → {}",
-                                src.display(),
-                                dest.display()
-                            ));
-                            fs::copy(&src, &dest).with_context(|| {
-                                format!(
-                                    "docker: copy extra file {} to {}",
-                                    src.display(),
-                                    dest.display()
-                                )
-                            })?;
-                        }
-                    }
+                    stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker")?;
                 }
 
                 // ------------------------------------------------------------------
@@ -1123,156 +1162,23 @@ impl Stage for DockerStage {
                     })?;
                 }
 
-                // Stage binaries per platform/arch
-                for platform in &platforms {
-                    let arch = platform_to_arch(platform);
-                    let binaries_dir = staging_dir.join("binaries").join(arch);
-                    if !dry_run {
-                        fs::create_dir_all(&binaries_dir).with_context(|| {
-                            format!(
-                                "docker_v2: create binaries dir {}",
-                                binaries_dir.display()
-                            )
-                        })?;
-                    }
+                // Stage binaries, Dockerfile, and extra files
+                stage_binaries(
+                    &platforms,
+                    &staging_dir,
+                    dry_run,
+                    v2_cfg.ids.as_ref(),
+                    None, // V2 has no binary name filter
+                    &krate.name,
+                    ctx,
+                    &log,
+                    "docker_v2",
+                )?;
 
-                    let ids_filter = v2_cfg.ids.as_ref();
+                copy_dockerfile(&v2_cfg.dockerfile, &staging_dir, dry_run, &log, "docker_v2")?;
 
-                    let matching_binaries: Vec<_> = ctx
-                        .artifacts
-                        .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                        .into_iter()
-                        .filter(|b| {
-                            let artifact_arch = b
-                                .target
-                                .as_deref()
-                                .map(|t| map_target(t).1)
-                                .unwrap_or_default();
-                            if artifact_arch != arch {
-                                return false;
-                            }
-                            if let Some(ids) = ids_filter {
-                                let artifact_id =
-                                    b.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-                                if !ids.iter().any(|id| id == artifact_id) {
-                                    return false;
-                                }
-                            }
-                            true
-                        })
-                        .collect();
-
-                    for bin_artifact in matching_binaries {
-                        let bin_name = bin_artifact
-                            .metadata
-                            .get("binary")
-                            .map(|s| s.as_str())
-                            .unwrap_or_else(|| {
-                                bin_artifact
-                                    .path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("binary")
-                            });
-
-                        let dest = binaries_dir.join(bin_name);
-
-                        if dry_run {
-                            log.status(&format!(
-                                "(dry-run) would copy {} -> {}",
-                                bin_artifact.path.display(),
-                                dest.display()
-                            ));
-                        } else {
-                            log.status(&format!(
-                                "staging binary {} -> {}",
-                                bin_artifact.path.display(),
-                                dest.display()
-                            ));
-                            fs::copy(&bin_artifact.path, &dest).with_context(|| {
-                                format!(
-                                    "docker_v2: copy binary {} to {}",
-                                    bin_artifact.path.display(),
-                                    dest.display()
-                                )
-                            })?;
-                        }
-                    }
-                }
-
-                // Copy Dockerfile
-                let dockerfile_src = PathBuf::from(&v2_cfg.dockerfile);
-                let dockerfile_dest = staging_dir.join("Dockerfile");
-
-                if dry_run {
-                    log.status(&format!(
-                        "(dry-run) would copy Dockerfile {} -> {}",
-                        dockerfile_src.display(),
-                        dockerfile_dest.display()
-                    ));
-                } else {
-                    log.status(&format!(
-                        "copying Dockerfile {} -> {}",
-                        dockerfile_src.display(),
-                        dockerfile_dest.display()
-                    ));
-                    fs::copy(&dockerfile_src, &dockerfile_dest).with_context(|| {
-                        format!(
-                            "docker_v2: copy Dockerfile from {} to {}",
-                            dockerfile_src.display(),
-                            dockerfile_dest.display()
-                        )
-                    })?;
-                }
-
-                // Copy extra_files into staging directory
                 if let Some(ref extra_files) = v2_cfg.extra_files {
-                    for file_path in extra_files {
-                        let src = PathBuf::from(file_path);
-                        if src.is_dir() {
-                            anyhow::bail!(
-                                "docker_v2: extra_files entry '{}' is a directory; only files are supported",
-                                file_path
-                            );
-                        }
-                        let dest = if src.is_absolute() {
-                            let file_name = src
-                                .file_name()
-                                .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
-                            staging_dir.join(file_name)
-                        } else {
-                            staging_dir.join(file_path)
-                        };
-
-                        if dry_run {
-                            log.status(&format!(
-                                "(dry-run) would copy extra file {} -> {}",
-                                src.display(),
-                                dest.display()
-                            ));
-                        } else {
-                            if let Some(parent) = dest.parent() {
-                                fs::create_dir_all(parent).with_context(|| {
-                                    format!(
-                                        "docker_v2: create parent dirs for extra file {}",
-                                        dest.display()
-                                    )
-                                })?;
-                            }
-                            log.status(&format!(
-                                "copying extra file {} -> {}",
-                                src.display(),
-                                dest.display()
-                            ));
-                            fs::copy(&src, &dest).with_context(|| {
-                                format!(
-                                    "docker_v2: copy extra file {} to {}",
-                                    src.display(),
-                                    dest.display()
-                                )
-                            })?;
-                        }
-                    }
+                    stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker_v2")?;
                 }
 
                 // Render tags through template engine
@@ -1307,6 +1213,14 @@ impl Stage for DockerStage {
 
                 // Generate image:tag combinations
                 let image_tags = generate_v2_image_tags(&rendered_images, &rendered_tags);
+
+                if image_tags.is_empty() {
+                    log.warn(&format!(
+                        "docker_v2[{}]: no image tags produced for crate {} (images or tags resolved to empty); skipping",
+                        idx, krate.name
+                    ));
+                    continue;
+                }
 
                 // Render build_args (template-aware values)
                 let mut rendered_build_args: Vec<(String, String)> = Vec::new();
@@ -1367,8 +1281,12 @@ impl Stage for DockerStage {
                 let platform_refs: Vec<&str> = platforms.iter().map(|s| s.as_str()).collect();
                 let staging_str = staging_dir.to_string_lossy().into_owned();
 
-                // V2 doesn't have skip_push — always push in live mode
-                let should_push = !dry_run;
+                // Check skip_push — template-aware, same pattern as disable
+                let v2_skip_push = match &v2_cfg.skip_push {
+                    None => false,
+                    Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+                };
+                let should_push = !dry_run && !v2_skip_push;
 
                 let cmd_args = build_docker_v2_command(
                     &staging_str,
@@ -1410,6 +1328,7 @@ impl Stage for DockerStage {
                         meta.insert("tag".to_string(), tag.clone());
                         meta.insert("platforms".to_string(), platforms.join(","));
                         meta.insert("api".to_string(), "v2".to_string());
+                        meta.insert("use".to_string(), "buildx".to_string());
                         if let Some(ref id) = v2_cfg.id {
                             meta.insert("id".to_string(), id.clone());
                         }
@@ -4473,6 +4392,106 @@ crates:
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(!is_docker_v2_sbom_enabled(
             &Some(StringOrBool::Bool(false)),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_disabled_string_true() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(is_docker_v2_disabled(
+            &Some(StringOrBool::String("true".to_string())),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_disabled_string_false() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!is_docker_v2_disabled(
+            &Some(StringOrBool::String("false".to_string())),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_disabled_template_snapshot_true() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+        assert!(is_docker_v2_disabled(
+            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_disabled_template_snapshot_false() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        assert!(!is_docker_v2_disabled(
+            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_sbom_enabled_string_true() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(is_docker_v2_sbom_enabled(
+            &Some(StringOrBool::String("true".to_string())),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_sbom_enabled_string_false() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!is_docker_v2_sbom_enabled(
+            &Some(StringOrBool::String("false".to_string())),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_sbom_enabled_template_snapshot_true() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+        assert!(is_docker_v2_sbom_enabled(
+            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+            &ctx
+        ));
+    }
+
+    #[test]
+    fn test_is_docker_v2_sbom_enabled_template_snapshot_false() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        assert!(!is_docker_v2_sbom_enabled(
+            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
             &ctx
         ));
     }

@@ -278,7 +278,7 @@ impl EnvFilesConfig {
 ///
 /// Matches GoReleaser's `EnvFiles` struct.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EnvFilesTokenConfig {
     /// Path to file containing the GitHub token. Default: `~/.config/goreleaser/github_token`.
     pub github_token: Option<String>,
@@ -294,9 +294,9 @@ pub struct EnvFilesTokenConfig {
 /// Returns `Err` if the file exists but cannot be read.
 pub fn read_token_file(path: &str) -> Result<Option<String>, String> {
     // Expand ~ to home directory
-    let expanded = if path.starts_with("~/") {
+    let expanded = if let Some(suffix) = path.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME") {
-            format!("{}/{}", home, &path[2..])
+            format!("{}/{}", home, suffix)
         } else {
             path.to_string()
         }
@@ -2225,6 +2225,9 @@ pub struct DockerV2Config {
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
+    /// When truthy, skip pushing images after build. Supports templates.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_push: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2346,13 +2349,6 @@ pub struct NfpmLibdirs {
     pub carchive: Option<String>,
     /// Installation directory for cshared (.so / .dylib) shared libraries.
     pub cshared: Option<String>,
-}
-
-impl NfpmLibdirs {
-    /// Returns true when all sub-fields are None (nothing to emit).
-    pub fn is_empty(&self) -> bool {
-        self.header.is_none() && self.carchive.is_none() && self.cshared.is_none()
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -4326,7 +4322,12 @@ impl StringOrBool {
     /// If the value is a template string (contains `{`), it is rendered via
     /// the provided closure and the result is compared to `"true"`.
     /// Otherwise, the plain bool / string value is evaluated directly.
-    pub fn is_disabled(&self, render: impl Fn(&str) -> anyhow::Result<String>) -> bool {
+    /// Evaluate whether this value resolves to `true`.
+    ///
+    /// If the value is a template string (contains `{`), it is rendered via
+    /// the provided closure and the result is compared to `"true"`.
+    /// Otherwise, the plain bool / string value is evaluated directly.
+    pub fn evaluates_to_true(&self, render: impl Fn(&str) -> anyhow::Result<String>) -> bool {
         if self.is_template() {
             render(self.as_str())
                 .map(|r| r.trim() == "true")
@@ -4334,6 +4335,14 @@ impl StringOrBool {
         } else {
             self.as_bool()
         }
+    }
+
+    /// Evaluate whether this value means "disabled".
+    ///
+    /// Delegates to [`evaluates_to_true`](Self::evaluates_to_true) — a
+    /// convenience alias with domain-specific semantics.
+    pub fn is_disabled(&self, render: impl Fn(&str) -> anyhow::Result<String>) -> bool {
+        self.evaluates_to_true(render)
     }
 }
 
@@ -7192,6 +7201,70 @@ crates: []
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to read env file"));
+    }
+
+    // ---- env_files TOML tests ----
+
+    // NOTE: EnvFilesConfig uses a custom Deserialize impl that reads into
+    // serde_yaml_ng::Value as an intermediate. Since serde_yaml_ng::Value
+    // implements generic Deserialize, this works across formats (YAML, TOML,
+    // JSON) -- the intermediate is populated via serde's data model, not
+    // from literal YAML text.
+
+    #[test]
+    fn test_env_files_list_form_toml() {
+        // TOML array should deserialize to EnvFilesConfig::List via the
+        // serde_yaml_ng::Value intermediate.
+        #[derive(Deserialize)]
+        struct Wrapper {
+            env_files: EnvFilesConfig,
+        }
+        let toml_str = r#"env_files = [".env", ".env.local"]"#;
+        let wrapper: Wrapper = toml::from_str(toml_str).unwrap();
+        let files = wrapper.env_files.as_list().expect("expected List variant");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], ".env");
+        assert_eq!(files[1], ".env.local");
+    }
+
+    #[test]
+    fn test_env_files_struct_form_toml() {
+        // TOML table should deserialize to EnvFilesConfig::TokenFiles via
+        // the serde_yaml_ng::Value intermediate.
+        #[derive(Deserialize)]
+        struct Wrapper {
+            env_files: EnvFilesConfig,
+        }
+        let toml_str = r#"
+[env_files]
+github_token = "~/.config/goreleaser/github_token"
+gitlab_token = "/etc/tokens/gitlab"
+"#;
+        let wrapper: Wrapper = toml::from_str(toml_str).unwrap();
+        let tokens = wrapper
+            .env_files
+            .as_token_files()
+            .expect("expected TokenFiles variant");
+        assert_eq!(
+            tokens.github_token.as_deref(),
+            Some("~/.config/goreleaser/github_token")
+        );
+        assert_eq!(
+            tokens.gitlab_token.as_deref(),
+            Some("/etc/tokens/gitlab")
+        );
+        assert!(tokens.gitea_token.is_none());
+    }
+
+    #[test]
+    fn test_env_files_token_config_toml_rejects_unknown_fields() {
+        // Verify deny_unknown_fields works: a typo like `github_tokne` must fail.
+        let toml_str = r#"github_tokne = "~/.config/goreleaser/github_token""#;
+        let result = toml::from_str::<EnvFilesTokenConfig>(toml_str);
+        assert!(
+            result.is_err(),
+            "EnvFilesTokenConfig should reject unknown fields like 'github_tokne'"
+        );
     }
 
     // ---- BuildIgnore tests ----

@@ -551,11 +551,30 @@ impl Stage for ChangelogStage {
         let changelog_title: Option<String> = cfg.and_then(|c| c.title.clone());
         let changelog_divider: Option<String> = cfg.and_then(|c| c.divider.clone());
 
+        // Render path templates if configured (paths support template variables).
+        let changelog_paths: Vec<String> = changelog_paths
+            .into_iter()
+            .map(|p| {
+                ctx.render_template(&p).unwrap_or_else(|e| {
+                    log.warn(&format!("changelog: failed to render path template: {e}"));
+                    p
+                })
+            })
+            .collect();
+
         // Render title template if configured.
         let changelog_title = changelog_title.map(|t| {
             ctx.render_template(&t).unwrap_or_else(|e| {
                 log.warn(&format!("changelog: failed to render title template: {e}"));
                 t
+            })
+        });
+
+        // Render divider template if configured.
+        let changelog_divider = changelog_divider.map(|d| {
+            ctx.render_template(&d).unwrap_or_else(|e| {
+                log.warn(&format!("changelog: failed to render divider template: {e}"));
+                d
             })
         });
 
@@ -595,6 +614,18 @@ impl Stage for ChangelogStage {
             } else {
                 vec![crate_cfg.path.clone()]
             };
+
+            // Warn when multiple paths are used with the GitHub backend, since
+            // the GitHub API only supports filtering by a single path parameter.
+            if use_github && paths.len() > 1 {
+                log.warn(&format!(
+                    "changelog: GitHub API only supports a single path filter; \
+                     only the first of {} paths ('{}') will be used for API queries. \
+                     Use `use: git` for accurate multi-path filtering.",
+                    paths.len(),
+                    paths[0]
+                ));
+            }
 
             let (all_commit_infos, logins_str) = if use_github {
                 // Fetch commits via the GitHub API for enriched author login info.
@@ -792,13 +823,32 @@ fn fetch_github_commits(
         // GitHub API only supports a single path parameter, so use the first one.
         let mut endpoint = format!("/repos/{owner}/{repo}/commits?per_page=100");
         if let Some(first_path) = paths.first() {
-            endpoint.push_str(&format!("&path={}", first_path));
+            // URL-encode the path to handle spaces, #, ?, & etc.
+            let encoded: String = first_path
+                .bytes()
+                .flat_map(|b| match b {
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
+                    | b'-' | b'_' | b'.' | b'~' | b'/' => vec![b as char],
+                    _ => format!("%{:02X}", b).chars().collect(),
+                })
+                .collect();
+            endpoint.push_str(&format!("&path={}", encoded));
         }
         (gh_api_get_paginated(&endpoint, token)?, None)
     };
 
     // When using the Compare API with a path filter, filter commits to only
     // those that touched files under the specified paths.
+    //
+    // LIMITATION: The Compare API returns a flat "files" list for the entire
+    // diff, not per-commit file lists. We can only check whether *any* changed
+    // file matches *any* path prefix. If a match is found, ALL commits pass
+    // through (we cannot determine which specific commits touched which files).
+    // If no files match any path prefix, all commits are excluded.
+    //
+    // This is a coarser filter than the `git log -- path1 path2` approach used
+    // by the git backend, which filters at the per-commit level. For precise
+    // multi-path filtering, users should prefer `use: git` over `use: github`.
     let filtered_shas: Option<std::collections::HashSet<String>> =
         if !paths.is_empty() {
             if let Some(ref files) = compare_files {
@@ -2961,6 +3011,32 @@ prompt:
         match cfg.prompt.unwrap() {
             ChangelogAiPrompt::Source(src) => {
                 assert_eq!(src.from_file.unwrap().path.as_deref(), Some("./prompt.md"));
+            }
+            other => panic!("expected Source prompt, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_changelog_ai_prompt_from_url() {
+        use anodize_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
+        let yaml = r#"
+use: anthropic
+prompt:
+  from_url:
+    url: https://example.com/prompt.txt
+    headers:
+      Authorization: "Bearer token123"
+      Accept: text/plain
+"#;
+        let cfg: ChangelogAiConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match cfg.prompt.unwrap() {
+            ChangelogAiPrompt::Source(src) => {
+                let from_url = src.from_url.unwrap();
+                assert_eq!(from_url.url.as_deref(), Some("https://example.com/prompt.txt"));
+                let headers = from_url.headers.unwrap();
+                assert_eq!(headers.get("Authorization").map(|s| s.as_str()), Some("Bearer token123"));
+                assert_eq!(headers.get("Accept").map(|s| s.as_str()), Some("text/plain"));
+                assert!(src.from_file.is_none());
             }
             other => panic!("expected Source prompt, got: {:?}", other),
         }

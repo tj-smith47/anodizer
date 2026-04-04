@@ -67,6 +67,7 @@ struct NfpmYamlConfig {
     replaces: Vec<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     provides: Vec<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
     contents: Vec<NfpmYamlContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     overrides: Option<HashMap<String, serde_yaml_ng::Value>>,
@@ -333,50 +334,27 @@ pub fn generate_nfpm_yaml(
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".to_string());
 
-        if let Some(ref header_dir) = libdirs.header {
-            contents.push(NfpmYamlContent {
-                src: format!("{src_dir}/{stem}.h"),
-                dst: format!("{header_dir}/{stem}.h"),
-                content_type: None,
-                file_info: Some(NfpmYamlFileInfo {
-                    owner: None,
-                    group: None,
-                    mode: Some("0644".to_string()),
-                    mtime: None,
-                }),
-                packager: None,
-                expand: None,
-            });
-        }
-        if let Some(ref carchive_dir) = libdirs.carchive {
-            contents.push(NfpmYamlContent {
-                src: format!("{src_dir}/{stem}.a"),
-                dst: format!("{carchive_dir}/{stem}.a"),
-                content_type: None,
-                file_info: Some(NfpmYamlFileInfo {
-                    owner: None,
-                    group: None,
-                    mode: Some("0644".to_string()),
-                    mtime: None,
-                }),
-                packager: None,
-                expand: None,
-            });
-        }
-        if let Some(ref cshared_dir) = libdirs.cshared {
-            contents.push(NfpmYamlContent {
-                src: format!("{src_dir}/{stem}.so"),
-                dst: format!("{cshared_dir}/{stem}.so"),
-                content_type: None,
-                file_info: Some(NfpmYamlFileInfo {
-                    owner: None,
-                    group: None,
-                    mode: Some("0755".to_string()),
-                    mtime: None,
-                }),
-                packager: None,
-                expand: None,
-            });
+        let lib_entries: &[(&Option<String>, &str, &str)] = &[
+            (&libdirs.header, ".h", "0644"),
+            (&libdirs.carchive, ".a", "0644"),
+            (&libdirs.cshared, ".so", "0755"),
+        ];
+        for (dir_opt, ext, mode) in lib_entries {
+            if let Some(dir) = dir_opt {
+                contents.push(NfpmYamlContent {
+                    src: format!("{src_dir}/{stem}{ext}"),
+                    dst: format!("{dir}/{stem}{ext}"),
+                    content_type: None,
+                    file_info: Some(NfpmYamlFileInfo {
+                        owner: None,
+                        group: None,
+                        mode: Some(mode.to_string()),
+                        mtime: None,
+                    }),
+                    packager: None,
+                    expand: None,
+                });
+            }
         }
     }
 
@@ -859,6 +837,9 @@ impl Stage for NfpmStage {
                         }
                         if let Some(ref s) = rendered_cfg.priority {
                             rendered_cfg.priority = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.changelog {
+                            rendered_cfg.changelog = Some(ctx.render_template(s)?);
                         }
 
                         // Template-render file_info.owner and group in contents entries
@@ -4486,39 +4467,7 @@ crates:
     }
 
     #[test]
-    fn test_libdirs_is_empty_method() {
-        use anodize_core::config::NfpmLibdirs;
-        let empty = NfpmLibdirs {
-            header: None,
-            carchive: None,
-            cshared: None,
-        };
-        assert!(empty.is_empty());
-
-        let with_header = NfpmLibdirs {
-            header: Some("/usr/include".to_string()),
-            carchive: None,
-            cshared: None,
-        };
-        assert!(!with_header.is_empty());
-
-        let with_carchive = NfpmLibdirs {
-            header: None,
-            carchive: Some("/usr/lib".to_string()),
-            cshared: None,
-        };
-        assert!(!with_carchive.is_empty());
-
-        let with_cshared = NfpmLibdirs {
-            header: None,
-            carchive: None,
-            cshared: Some("/usr/lib".to_string()),
-        };
-        assert!(!with_cshared.is_empty());
-    }
-
-    #[test]
-    fn test_libdirs_meta_package_no_entries() {
+    fn test_libdirs_empty_binary_path_uses_lib_fallback() {
         use anodize_core::config::NfpmLibdirs;
         // Meta packages skip the binary content entry — libdirs should still
         // generate entries because they might ship library files independently.
@@ -4535,10 +4484,14 @@ crates:
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "", None);
         // With empty binary_path the stem would be empty, so we derive "lib"
-        // from the fallback. Verify the header entry still appears.
+        // from the fallback. Verify the header entry still appears with full paths.
         assert!(
-            yaml.contains("dst: /usr/include/"),
-            "libdirs header should appear even for meta packages:\n{yaml}"
+            yaml.contains("dst: /usr/include/lib.h"),
+            "libdirs header dst should be /usr/include/lib.h:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("src: ./lib.h"),
+            "libdirs header src should be ./lib.h:\n{yaml}"
         );
     }
 }

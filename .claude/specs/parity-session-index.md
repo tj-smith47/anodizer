@@ -188,12 +188,12 @@ GoReleaser source: `internal/pipe/git/`, `internal/pipe/metadata/`, `internal/pi
 - [x] nFPM-specific vars: .Release, .Epoch, .PackageName, .ConventionalFileName, .ConventionalExtension, .Format
 
 **Stage-specific extras** (from fresh-gap B19-B20, B24, B33-B34)
-- [ ] Docker extras: v2 API, annotations, SBOM, disable template, templated_dockerfile, templated_extra_files, skip_build, build_args (map form), manifest create_flags, manifest retry
+- [x] Docker extras: v2 API, annotations, SBOM, disable template, build_args (map form) — implemented; templated_dockerfile, templated_extra_files, skip_build, manifest create_flags, manifest retry deferred (Pro/niche)
 - [x] Snapcraft: hooks (top-level), missing app sub-fields (24 fields), structured extra_files with source/destination/mode, kebab-case aliases
-- [ ] nFPM extras: libdirs, changelog (YAML path), templated_contents (Pro), templated_scripts (Pro), contents file_info.owner/group template rendering
+- [x] nFPM extras: libdirs, changelog (YAML path), contents file_info.owner/group template rendering — implemented; templated_contents (Pro), templated_scripts (Pro) deferred
 - [x] Environment config: template expansion in env values, env_files.github_token/gitlab_token/gitea_token, env list form (GoReleaser parity)
-- [ ] Artifacts JSON format parity (14 ArtifactKind variants vs GoReleaser's 30+ type classifications)
-- [ ] Changelog Pro features: paths, title, divider, AI (use/model/prompt)
+- [x] Artifacts JSON format parity (expanded ArtifactKind from 18 to 38 variants matching GoReleaser's type system)
+- [x] Changelog Pro features: paths, title, divider, AI (use/model/prompt with inline/from_url/from_file)
 
 ### Session F: Platform Support
 GoReleaser source: `internal/pipe/release/`, `internal/pipe/publish/`
