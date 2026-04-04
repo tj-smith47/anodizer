@@ -755,17 +755,13 @@ mod tests {
             disable: Some(anodize_core::config::StringOrBool::Bool(true)),
             sort: Some("desc".to_string()),
             header: Some("header".to_string()),
-            footer: None,
-            filters: None,
             groups: Some(vec![ChangelogGroup {
                 title: "Features".to_string(),
                 regexp: Some("^feat".to_string()),
                 order: Some(0),
                 groups: None,
             }]),
-            use_source: None,
-            abbrev: None,
-            format: None,
+            ..Default::default()
         });
         // Should pass (warnings only, not errors)
         assert!(run_checks(&config, false, &test_logger()).is_ok());

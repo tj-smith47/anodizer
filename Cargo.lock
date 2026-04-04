@@ -40,8 +40,10 @@ dependencies = [
  "anodize-stage-checksum",
  "anodize-stage-dmg",
  "anodize-stage-docker",
+ "anodize-stage-flatpak",
  "anodize-stage-msi",
  "anodize-stage-nfpm",
+ "anodize-stage-notarize",
  "anodize-stage-nsis",
  "anodize-stage-pkg",
  "anodize-stage-publish",
@@ -77,6 +79,7 @@ dependencies = [
  "chrono",
  "colored",
  "crc32fast",
+ "glob",
  "md-5",
  "regex",
  "schemars",
@@ -220,6 +223,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "anodize-stage-flatpak"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "glob",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
 name = "anodize-stage-msi"
 version = "0.1.0"
 dependencies = [
@@ -239,6 +255,15 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "tempfile",
+]
+
+[[package]]
+name = "anodize-stage-notarize"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "serde_yaml_ng",
 ]
 
 [[package]]
@@ -311,6 +336,7 @@ dependencies = [
  "anodize-core",
  "anyhow",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "tempfile",
 ]
