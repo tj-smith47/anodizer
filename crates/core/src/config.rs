@@ -1194,6 +1194,12 @@ pub struct ReleaseConfig {
     pub include_meta: Option<bool>,
     /// Reuse an existing draft release instead of creating a new one.
     pub use_existing_draft: Option<bool>,
+    /// Override the release tag (template string). When set, this tag is used
+    /// as the `tag_name` in the GitHub release API instead of the crate's
+    /// `tag_template`. Useful in monorepo setups to strip a tag prefix
+    /// (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`).
+    /// This is a GoReleaser Pro feature provided for free by anodize.
+    pub tag: Option<String>,
 }
 
 /// Schema for prerelease: "auto" or boolean.
@@ -5217,6 +5223,40 @@ crates:
         assert_eq!(release.replace_existing_artifacts, Some(true));
     }
 
+    // ---- ReleaseConfig tag override tests ----
+
+    #[test]
+    fn test_release_tag_override_parsed() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "myapp/v{{ .Version }}"
+    release:
+      tag: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.tag, Some("v{{ .Version }}".to_string()));
+    }
+
+    #[test]
+    fn test_release_tag_override_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      draft: false
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.tag, None);
+    }
+
     #[test]
     fn test_release_all_new_fields() {
         let yaml = r##"
@@ -5242,6 +5282,7 @@ crates:
       discussion_category_name: Announcements
       include_meta: true
       use_existing_draft: false
+      tag: "v{{ .Version }}"
 "##;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
@@ -5268,6 +5309,7 @@ crates:
         );
         assert_eq!(release.include_meta, Some(true));
         assert_eq!(release.use_existing_draft, Some(false));
+        assert_eq!(release.tag, Some("v{{ .Version }}".to_string()));
     }
 
     // ---- SignConfig / signs migration tests ----

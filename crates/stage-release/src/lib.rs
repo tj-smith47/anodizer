@@ -458,6 +458,21 @@ impl Stage for ReleaseStage {
                     )
                 })?;
 
+            // If release.tag is set, render it as a template and use the result
+            // as the GitHub release tag instead of the crate's tag_template.
+            // This is a GoReleaser Pro feature (release.tag) that allows
+            // overriding tag_name independently of the git tag.
+            let tag = if let Some(ref tag_override_tmpl) = release_cfg.tag {
+                ctx.render_template(tag_override_tmpl).with_context(|| {
+                    format!(
+                        "release: render release.tag override for crate '{}'",
+                        crate_cfg.name
+                    )
+                })?
+            } else {
+                tag
+            };
+
             // Resolve release name.
             let release_name = if let Some(tmpl) = &release_cfg.name_template {
                 ctx.render_template(tmpl).with_context(|| {
@@ -1465,6 +1480,74 @@ mod tests {
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
                     make_latest: Some(MakeLatestConfig::Bool(true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // ---- release.tag override tests ----
+
+    #[test]
+    fn test_dry_run_with_release_tag_override() {
+        // When release.tag is set, the override template should be rendered
+        // and used as the release tag instead of crate_cfg.tag_template.
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "myapp/v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    tag: Some("v1.0.0".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        // Dry-run should succeed and use the overridden tag
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_with_release_tag_template() {
+        // The release.tag field supports template rendering.
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .tag("v2.5.0")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "prefix/{{ .Tag }}".to_string(),
+                release: Some(ReleaseConfig {
+                    tag: Some("{{ .Tag }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_without_release_tag_uses_tag_template() {
+        // When release.tag is None, the crate's tag_template is used as before.
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    tag: None,
                     ..Default::default()
                 }),
                 ..Default::default()
