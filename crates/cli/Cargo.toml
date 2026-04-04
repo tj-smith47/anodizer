@@ -50,6 +50,7 @@ clap.workspace = true
 clap_complete.workspace = true
 colored.workspace = true
 regex.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 schemars.workspace = true
 serde_yaml_ng.workspace = true
@@ -57,5 +58,6 @@ toml.workspace = true
 
 [dev-dependencies]
 anodize-core = { workspace = true, features = ["test-helpers"] }
+serial_test.workspace = true
 tempfile.workspace = true
 serde_yaml_ng.workspace = true

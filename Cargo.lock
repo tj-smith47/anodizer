@@ -61,10 +61,12 @@ dependencies = [
  "colored",
  "glob",
  "regex",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "serial_test",
  "tempfile",
  "toml",
 ]

@@ -5,6 +5,51 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 // ---------------------------------------------------------------------------
+// Include specification types
+// ---------------------------------------------------------------------------
+
+/// An include specification: either a plain path string or a structured from_file/from_url.
+///
+/// YAML examples:
+/// ```yaml
+/// includes:
+///   - ./defaults.yaml                           # plain string (backward compat)
+///   - from_file:
+///       path: ./config/goreleaser.yaml           # structured file path
+///   - from_url:
+///       url: https://example.com/config.yaml     # URL fetch
+///       headers:
+///         x-api-token: "${MYCOMPANY_TOKEN}"       # env var expansion in headers
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(untagged)]
+pub enum IncludeSpec {
+    /// Plain string path (backward compatible): "path/to/file.yaml"
+    Path(String),
+    /// Structured file include with `from_file.path`.
+    FromFile { from_file: IncludeFilePath },
+    /// Structured URL include with `from_url.url` and optional headers.
+    FromUrl { from_url: IncludeUrlConfig },
+}
+
+/// File path for a structured include.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct IncludeFilePath {
+    /// Path to the include file (relative to the config file).
+    pub path: String,
+}
+
+/// URL configuration for a structured include.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct IncludeUrlConfig {
+    /// URL to fetch. If it does not start with `http://` or `https://`,
+    /// `https://raw.githubusercontent.com/` is prepended (GitHub shorthand).
+    pub url: String,
+    /// Optional HTTP headers. Values support `${VAR_NAME}` environment variable expansion.
+    pub headers: Option<HashMap<String, String>>,
+}
+
+// ---------------------------------------------------------------------------
 // Top-level config
 // ---------------------------------------------------------------------------
 
@@ -18,8 +63,10 @@ pub struct Config {
     /// Output directory for build artifacts (default: ./dist).
     #[serde(default = "default_dist")]
     pub dist: PathBuf,
-    /// Additional config files to merge into this config (glob patterns supported).
-    pub includes: Option<Vec<String>>,
+    /// Additional config files to merge into this config.
+    /// Supports plain string paths, `from_file:` for structured file paths,
+    /// and `from_url:` for fetching configs from URLs with optional headers.
+    pub includes: Option<Vec<IncludeSpec>>,
     /// Environment file configuration. Accepts either:
     /// - A list of `.env` file paths: `[".env", ".release.env"]`
     /// - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }`
@@ -8327,5 +8374,171 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.template_files.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // IncludeSpec parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_include_spec_plain_string() {
+        let yaml = r#"
+project_name: test
+includes:
+  - ./defaults.yaml
+  - extra.yaml
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let includes = config.includes.unwrap();
+        assert_eq!(includes.len(), 2);
+        assert_eq!(
+            includes[0],
+            IncludeSpec::Path("./defaults.yaml".to_string())
+        );
+        assert_eq!(includes[1], IncludeSpec::Path("extra.yaml".to_string()));
+    }
+
+    #[test]
+    fn test_include_spec_from_file() {
+        let yaml = r#"
+project_name: test
+includes:
+  - from_file:
+      path: ./config/goreleaser.yaml
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let includes = config.includes.unwrap();
+        assert_eq!(includes.len(), 1);
+        assert_eq!(
+            includes[0],
+            IncludeSpec::FromFile {
+                from_file: IncludeFilePath {
+                    path: "./config/goreleaser.yaml".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn test_include_spec_from_url_without_headers() {
+        let yaml = r#"
+project_name: test
+includes:
+  - from_url:
+      url: https://example.com/config.yaml
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let includes = config.includes.unwrap();
+        assert_eq!(includes.len(), 1);
+        assert_eq!(
+            includes[0],
+            IncludeSpec::FromUrl {
+                from_url: IncludeUrlConfig {
+                    url: "https://example.com/config.yaml".to_string(),
+                    headers: None,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn test_include_spec_from_url_with_headers() {
+        let yaml = r#"
+project_name: test
+includes:
+  - from_url:
+      url: https://api.mycompany.com/configs/release.yaml
+      headers:
+        x-api-token: "${MYCOMPANY_TOKEN}"
+        Authorization: "Bearer ${GITHUB_TOKEN}"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let includes = config.includes.unwrap();
+        assert_eq!(includes.len(), 1);
+        match &includes[0] {
+            IncludeSpec::FromUrl { from_url } => {
+                assert_eq!(
+                    from_url.url,
+                    "https://api.mycompany.com/configs/release.yaml"
+                );
+                let headers = from_url.headers.as_ref().unwrap();
+                assert_eq!(headers.len(), 2);
+                assert_eq!(headers["x-api-token"], "${MYCOMPANY_TOKEN}");
+                assert_eq!(headers["Authorization"], "Bearer ${GITHUB_TOKEN}");
+            }
+            other => panic!("expected FromUrl, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_include_spec_mixed_forms() {
+        let yaml = r#"
+project_name: test
+includes:
+  - ./defaults.yaml
+  - from_file:
+      path: ./config/shared.yaml
+  - from_url:
+      url: https://example.com/config.yaml
+      headers:
+        x-token: secret
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let includes = config.includes.unwrap();
+        assert_eq!(includes.len(), 3);
+        assert!(matches!(&includes[0], IncludeSpec::Path(s) if s == "./defaults.yaml"));
+        assert!(matches!(&includes[1], IncludeSpec::FromFile { from_file } if from_file.path == "./config/shared.yaml"));
+        assert!(matches!(&includes[2], IncludeSpec::FromUrl { from_url } if from_url.url == "https://example.com/config.yaml"));
+    }
+
+    #[test]
+    fn test_include_spec_no_includes_field() {
+        let yaml = r#"
+project_name: test
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.includes.is_none());
+    }
+
+    #[test]
+    fn test_include_spec_empty_includes() {
+        let yaml = r#"
+project_name: test
+includes: []
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.includes, Some(vec![]));
+    }
+
+    #[test]
+    fn test_include_spec_github_shorthand_url() {
+        // The GitHub shorthand (no https:// prefix) should parse fine as a URL
+        // string — normalization happens at resolve time, not parse time.
+        let yaml = r#"
+project_name: test
+includes:
+  - from_url:
+      url: caarlos0/goreleaserfiles/main/packages.yml
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let includes = config.includes.unwrap();
+        assert_eq!(includes.len(), 1);
+        match &includes[0] {
+            IncludeSpec::FromUrl { from_url } => {
+                assert_eq!(
+                    from_url.url,
+                    "caarlos0/goreleaserfiles/main/packages.yml"
+                );
+            }
+            other => panic!("expected FromUrl, got: {:?}", other),
+        }
     }
 }

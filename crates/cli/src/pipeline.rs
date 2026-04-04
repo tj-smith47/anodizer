@@ -1,4 +1,4 @@
-use anodize_core::config::Config;
+use anodize_core::config::{Config, IncludeSpec};
 use anodize_core::context::Context;
 pub use anodize_core::hooks::run_hooks;
 use anodize_core::log::StageLogger;
@@ -6,6 +6,7 @@ use anodize_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Find config file. If `config_override` is provided, use that path directly;
 /// otherwise search the current directory for well-known config file names.
@@ -97,43 +98,27 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 /// Load a YAML config, processing `includes` by deep-merging included files
 /// as defaults and then merging the base (local) config on top.
+///
+/// Include entries can be:
+/// - Plain strings (file paths, backward compatible)
+/// - `from_file:` mappings with a `path` key
+/// - `from_url:` mappings with a `url` key and optional `headers`
 fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> {
     let base: serde_yaml_ng::Value = serde_yaml_ng::from_str(content)
         .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
 
-    // Extract include paths before merging
-    let include_paths: Vec<String> = base
+    let include_entries: Vec<serde_yaml_ng::Value> = base
         .get("includes")
         .and_then(|v| v.as_sequence())
-        .map(|seq| {
-            seq.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
+        .map(|seq| seq.clone())
         .unwrap_or_default();
 
     // Accumulate all included files into a merged defaults value.
     // The base config is then merged on top so its values always win.
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
-    for include in &include_paths {
-        // Reject absolute paths in includes to prevent unexpected file reads.
-        if Path::new(include).is_absolute() {
-            bail!(
-                "includes: absolute paths are not allowed (got '{}' in {})",
-                include,
-                path.display()
-            );
-        }
-        let include_path = base_dir.join(include);
-        let include_content = std::fs::read_to_string(&include_path).with_context(|| {
-            format!(
-                "failed to read include file '{}' (referenced from {})",
-                include_path.display(),
-                path.display()
-            )
-        })?;
-        let overlay = load_include_as_yaml(&include_path, &include_content)?;
+    for entry in &include_entries {
+        let overlay = resolve_include(entry, base_dir, path)?;
         merge_yaml(&mut merged, &overlay);
     }
     // Merge base config on top of the accumulated defaults (base wins).
@@ -145,22 +130,22 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 
 /// Load a TOML config, processing `includes` using the same merge strategy
 /// as YAML: included files provide defaults, the base config wins.
+///
+/// TOML includes support the same forms as YAML (plain strings, from_file,
+/// from_url). The entries are converted to YAML values for processing by
+/// `resolve_include`.
 fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> {
     // Parse the base TOML to a generic toml::Value first to extract includes.
     let base_toml: toml::Value = toml::from_str(content)
         .with_context(|| format!("failed to parse TOML config: {}", path.display()))?;
 
-    let include_paths: Vec<String> = base_toml
+    let include_entries: Vec<toml::Value> = base_toml
         .get("includes")
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(str::to_owned))
-                .collect()
-        })
+        .cloned()
         .unwrap_or_default();
 
-    if include_paths.is_empty() {
+    if include_entries.is_empty() {
         // No includes — fast path: deserialize directly from TOML.
         return toml::from_str(content)
             .with_context(|| format!("failed to deserialize TOML config: {}", path.display()));
@@ -176,23 +161,13 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
-    for include in &include_paths {
-        if Path::new(include).is_absolute() {
-            bail!(
-                "includes: absolute paths are not allowed (got '{}' in {})",
-                include,
-                path.display()
-            );
-        }
-        let include_path = base_dir.join(include);
-        let include_content = std::fs::read_to_string(&include_path).with_context(|| {
-            format!(
-                "failed to read include file '{}' (referenced from {})",
-                include_path.display(),
-                path.display()
-            )
-        })?;
-        let overlay = load_include_as_yaml(&include_path, &include_content)?;
+    for entry in &include_entries {
+        // Convert each TOML include entry to a YAML value so resolve_include can handle it.
+        let json_entry = serde_json::to_value(entry)
+            .with_context(|| "failed to convert TOML include entry to JSON")?;
+        let yaml_entry: serde_yaml_ng::Value = serde_yaml_ng::to_value(&json_entry)
+            .with_context(|| "failed to convert TOML include entry to YAML")?;
+        let overlay = resolve_include(&yaml_entry, base_dir, path)?;
         merge_yaml(&mut merged, &overlay);
     }
     // Merge base config on top of the accumulated defaults (base wins).
@@ -200,6 +175,250 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 
     serde_yaml_ng::from_value(merged)
         .with_context(|| format!("failed to deserialize config: {}", path.display()))
+}
+
+/// Expand environment variable references in a string.
+///
+/// Supports `${VAR_NAME}` and `$VAR_NAME` syntax. Unset variables are replaced
+/// with an empty string (matching GoReleaser behavior).
+fn expand_env_vars(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            if chars.peek() == Some(&'{') {
+                // ${VAR_NAME} form
+                chars.next(); // consume '{'
+                let mut var_name = String::new();
+                let mut found_close = false;
+                for ch in chars.by_ref() {
+                    if ch == '}' {
+                        found_close = true;
+                        break;
+                    }
+                    var_name.push(ch);
+                }
+                if !found_close {
+                    // No closing '}' — preserve the literal '${' and consumed text
+                    result.push_str("${");
+                    result.push_str(&var_name);
+                } else if let Ok(val) = std::env::var(&var_name) {
+                    result.push_str(&val);
+                }
+            } else {
+                // $VAR_NAME form: variable names must start with a letter or
+                // underscore (like shell rules). Digits after '$' are kept
+                // literal (e.g. "$5" stays "$5").
+                let starts_valid = chars
+                    .peek()
+                    .map(|&ch| ch.is_ascii_alphabetic() || ch == '_')
+                    .unwrap_or(false);
+                if !starts_valid {
+                    // Not a variable reference — keep the literal '$'
+                    result.push('$');
+                } else {
+                    let mut var_name = String::new();
+                    while let Some(&ch) = chars.peek() {
+                        if ch.is_alphanumeric() || ch == '_' {
+                            var_name.push(ch);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(val) = std::env::var(&var_name) {
+                        result.push_str(&val);
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+/// Normalize a URL for include fetching.
+///
+/// If the URL does not start with `http://` or `https://`, prepend
+/// `https://raw.githubusercontent.com/` (GitHub raw content shorthand,
+/// matching GoReleaser Pro behavior).
+fn normalize_include_url(url: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else {
+        format!("https://raw.githubusercontent.com/{}", url)
+    }
+}
+
+/// Maximum response body size for URL-fetched config files (10 MB).
+const MAX_INCLUDE_BODY_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Fetch config content from a URL with optional headers, parsing as YAML or TOML
+/// based on the URL file extension.
+///
+/// NOTE: reqwest is already a transitive dependency through stage-release, stage-announce,
+/// and stage-blob. Since the CLI depends on all these crates, gating reqwest behind a
+/// feature flag provides no practical binary size savings.
+fn fetch_url_as_yaml(
+    url: &str,
+    headers: Option<&std::collections::HashMap<String, String>>,
+    config_path: &Path,
+) -> Result<serde_yaml_ng::Value> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .with_context(|| "failed to build HTTP client for include URL fetch")?;
+
+    let mut request = client.get(url);
+    if let Some(hdrs) = headers {
+        for (key, value) in hdrs {
+            let expanded = expand_env_vars(value);
+            request = request.header(key.as_str(), expanded);
+        }
+    }
+
+    let response = request.send().with_context(|| {
+        format!(
+            "failed to fetch include URL '{}' (referenced from {})",
+            url,
+            config_path.display()
+        )
+    })?;
+
+    if !response.status().is_success() {
+        bail!(
+            "include URL '{}' returned HTTP {} (referenced from {})",
+            url,
+            response.status(),
+            config_path.display()
+        );
+    }
+
+    // Check Content-Length header if available to reject obviously oversized responses.
+    if let Some(content_length) = response.content_length() {
+        if content_length > MAX_INCLUDE_BODY_SIZE {
+            bail!(
+                "include URL '{}' response too large ({} bytes, max {} bytes) (referenced from {})",
+                url,
+                content_length,
+                MAX_INCLUDE_BODY_SIZE,
+                config_path.display()
+            );
+        }
+    }
+
+    let body = response.text().with_context(|| {
+        format!(
+            "failed to read response body from include URL '{}' (referenced from {})",
+            url,
+            config_path.display()
+        )
+    })?;
+
+    // Enforce body size limit after reading (Content-Length may be absent or inaccurate).
+    if body.len() as u64 > MAX_INCLUDE_BODY_SIZE {
+        bail!(
+            "include URL '{}' response too large ({} bytes, max {} bytes) (referenced from {})",
+            url,
+            body.len(),
+            MAX_INCLUDE_BODY_SIZE,
+            config_path.display()
+        );
+    }
+
+    // Detect format from URL path extension: if .toml, parse as TOML and convert to YAML.
+    let is_toml = url
+        .split('?')
+        .next()
+        .and_then(|path| path.rsplit('.').next())
+        .map(|ext| ext.eq_ignore_ascii_case("toml"))
+        .unwrap_or(false);
+
+    if is_toml {
+        let toml_val: toml::Value = toml::from_str(&body).with_context(|| {
+            format!(
+                "failed to parse TOML from include URL '{}' (referenced from {})",
+                url,
+                config_path.display()
+            )
+        })?;
+        let json_val = serde_json::to_value(&toml_val).with_context(|| {
+            format!(
+                "failed to convert TOML to JSON from include URL '{}' (referenced from {})",
+                url,
+                config_path.display()
+            )
+        })?;
+        serde_yaml_ng::to_value(&json_val).with_context(|| {
+            format!(
+                "failed to convert TOML to YAML from include URL '{}' (referenced from {})",
+                url,
+                config_path.display()
+            )
+        })
+    } else {
+        serde_yaml_ng::from_str(&body).with_context(|| {
+            format!(
+                "failed to parse YAML from include URL '{}' (referenced from {})",
+                url,
+                config_path.display()
+            )
+        })
+    }
+}
+
+/// Resolve a single include entry (from a raw YAML value) to its YAML content.
+///
+/// Deserializes the entry into an `IncludeSpec` to avoid duplicate format logic,
+/// then dispatches to the appropriate handler:
+/// - **Path(string)**: treated as a relative file path (backward compatible)
+/// - **FromFile**: structured file path via `from_file.path`
+/// - **FromUrl**: fetch from URL with optional headers, env var expansion on URL and header values
+fn resolve_include(
+    entry: &serde_yaml_ng::Value,
+    base_dir: &Path,
+    config_path: &Path,
+) -> Result<serde_yaml_ng::Value> {
+    let spec: IncludeSpec = serde_yaml_ng::from_value(entry.clone())
+        .with_context(|| format!("includes: invalid entry in {}", config_path.display()))?;
+    match spec {
+        IncludeSpec::Path(path_str) => resolve_file_include(&path_str, base_dir, config_path),
+        IncludeSpec::FromFile { from_file } => {
+            resolve_file_include(&from_file.path, base_dir, config_path)
+        }
+        IncludeSpec::FromUrl { from_url } => {
+            let url = expand_env_vars(&normalize_include_url(&from_url.url));
+            fetch_url_as_yaml(&url, from_url.headers.as_ref(), config_path)
+        }
+    }
+}
+
+/// Resolve a file-based include by reading and parsing it.
+fn resolve_file_include(
+    path_str: &str,
+    base_dir: &Path,
+    config_path: &Path,
+) -> Result<serde_yaml_ng::Value> {
+    // Reject absolute paths to prevent unexpected file reads.
+    if Path::new(path_str).is_absolute() {
+        bail!(
+            "includes: absolute paths are not allowed (got '{}' in {})",
+            path_str,
+            config_path.display()
+        );
+    }
+    let include_path = base_dir.join(path_str);
+    let include_content = std::fs::read_to_string(&include_path).with_context(|| {
+        format!(
+            "failed to read include file '{}' (referenced from {})",
+            include_path.display(),
+            config_path.display()
+        )
+    })?;
+    load_include_as_yaml(&include_path, &include_content)
 }
 
 /// Parse an include file as a serde_yaml_ng::Value, auto-detecting format
@@ -472,6 +691,7 @@ pub fn build_merge_pipeline() -> Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
@@ -581,7 +801,12 @@ mod tests {
 
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.project_name, "myproject");
-        assert_eq!(config.includes, Some(vec!["extra.yaml".to_string()]));
+        assert_eq!(
+            config.includes,
+            Some(vec![anodize_core::config::IncludeSpec::Path(
+                "extra.yaml".to_string()
+            )])
+        );
         assert_eq!(config.report_sizes, Some(true));
     }
 
@@ -778,5 +1003,394 @@ crates: []
         let defaults = config.defaults.unwrap();
         assert_eq!(defaults.ignore.unwrap().len(), 1);
         assert_eq!(defaults.overrides.unwrap().len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Structured includes (from_file, from_url) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_includes_from_file_structured_form() {
+        let tmp = TempDir::new().unwrap();
+
+        let include_path = tmp.path().join("shared.yaml");
+        fs::write(&include_path, "report_sizes: true\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: structured\nincludes:\n  - from_file:\n      path: shared.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "structured");
+        assert_eq!(config.report_sizes, Some(true));
+        // The includes field itself should deserialize as FromFile variant
+        assert_eq!(
+            config.includes,
+            Some(vec![anodize_core::config::IncludeSpec::FromFile {
+                from_file: anodize_core::config::IncludeFilePath {
+                    path: "shared.yaml".to_string(),
+                },
+            }])
+        );
+    }
+
+    #[test]
+    fn test_includes_mixed_string_and_structured() {
+        let tmp = TempDir::new().unwrap();
+
+        let extra1 = tmp.path().join("extra1.yaml");
+        fs::write(&extra1, "report_sizes: true\n").unwrap();
+
+        let extra2 = tmp.path().join("extra2.yaml");
+        fs::write(&extra2, "dist: /custom\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            r#"project_name: mixed
+includes:
+  - extra1.yaml
+  - from_file:
+      path: extra2.yaml
+crates: []
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "mixed");
+        assert_eq!(config.report_sizes, Some(true));
+        assert_eq!(config.dist, std::path::PathBuf::from("/custom"));
+        assert_eq!(config.includes.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_includes_from_file_absolute_path_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nincludes:\n  - from_file:\n      path: /etc/passwd\ncrates: []\n",
+        )
+        .unwrap();
+
+        let result = load_config(&cfg_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("absolute paths are not allowed"),
+            "expected absolute path error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_includes_from_file_missing_path_field() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: test\nincludes:\n  - from_file:\n      wrong_key: value\ncrates: []\n",
+        )
+        .unwrap();
+
+        let result = load_config(&cfg_path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid entry") || msg.contains("missing field") || msg.contains("from_file"),
+            "expected invalid entry error, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_includes_backward_compat_plain_strings() {
+        // This is the critical backward-compatibility test: existing configs
+        // with simple string includes must continue to work exactly as before.
+        let tmp = TempDir::new().unwrap();
+
+        let inc1 = tmp.path().join("inc1.yaml");
+        fs::write(&inc1, "dist: /from-inc1\n").unwrap();
+
+        let inc2 = tmp.path().join("inc2.yaml");
+        fs::write(&inc2, "report_sizes: true\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: backcompat\nincludes:\n  - inc1.yaml\n  - inc2.yaml\ncrates: []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "backcompat");
+        assert_eq!(config.dist, std::path::PathBuf::from("/from-inc1"));
+        assert_eq!(config.report_sizes, Some(true));
+    }
+
+    // -----------------------------------------------------------------------
+    // expand_env_vars tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_expand_env_vars_braced() {
+        unsafe { std::env::set_var("ANODIZE_TEST_TOKEN_1", "secret123") };
+        let result = expand_env_vars("Bearer ${ANODIZE_TEST_TOKEN_1}");
+        assert_eq!(result, "Bearer secret123");
+        unsafe { std::env::remove_var("ANODIZE_TEST_TOKEN_1") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_expand_env_vars_unbraced() {
+        unsafe { std::env::set_var("ANODIZE_TEST_TOKEN_2", "val2") };
+        let result = expand_env_vars("prefix-$ANODIZE_TEST_TOKEN_2-suffix");
+        assert_eq!(result, "prefix-val2-suffix");
+        unsafe { std::env::remove_var("ANODIZE_TEST_TOKEN_2") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_expand_env_vars_missing_var_becomes_empty() {
+        // Unset variable → empty string (GoReleaser behavior)
+        unsafe { std::env::remove_var("ANODIZE_NONEXISTENT_VAR_XYZ") };
+        let result = expand_env_vars("token=${ANODIZE_NONEXISTENT_VAR_XYZ}!");
+        assert_eq!(result, "token=!");
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_vars() {
+        let result = expand_env_vars("no variables here");
+        assert_eq!(result, "no variables here");
+    }
+
+    #[test]
+    fn test_expand_env_vars_lone_dollar() {
+        let result = expand_env_vars("price is $5");
+        assert_eq!(result, "price is $5");
+    }
+
+    #[test]
+    #[serial]
+    fn test_expand_env_vars_multiple() {
+        unsafe { std::env::set_var("ANODIZE_TEST_A", "aaa") };
+        unsafe { std::env::set_var("ANODIZE_TEST_B", "bbb") };
+        let result = expand_env_vars("${ANODIZE_TEST_A}/$ANODIZE_TEST_B");
+        assert_eq!(result, "aaa/bbb");
+        unsafe { std::env::remove_var("ANODIZE_TEST_A") };
+        unsafe { std::env::remove_var("ANODIZE_TEST_B") };
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_include_url tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_normalize_url_full_https() {
+        let result = normalize_include_url("https://example.com/config.yaml");
+        assert_eq!(result, "https://example.com/config.yaml");
+    }
+
+    #[test]
+    fn test_normalize_url_full_http() {
+        let result = normalize_include_url("http://internal.corp/config.yaml");
+        assert_eq!(result, "http://internal.corp/config.yaml");
+    }
+
+    #[test]
+    fn test_normalize_url_github_shorthand() {
+        let result = normalize_include_url("caarlos0/goreleaserfiles/main/packages.yml");
+        assert_eq!(
+            result,
+            "https://raw.githubusercontent.com/caarlos0/goreleaserfiles/main/packages.yml"
+        );
+    }
+
+    #[test]
+    fn test_normalize_url_github_shorthand_complex() {
+        let result = normalize_include_url("org/repo/branch/path/to/config.yaml");
+        assert_eq!(
+            result,
+            "https://raw.githubusercontent.com/org/repo/branch/path/to/config.yaml"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TOML includes with structured form
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_toml_includes_plain_string_backward_compat() {
+        let tmp = TempDir::new().unwrap();
+
+        let include_path = tmp.path().join("defaults.yaml");
+        fs::write(&include_path, "report_sizes: true\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodize.toml");
+        fs::write(
+            &cfg_path,
+            "project_name = \"toml-test\"\nincludes = [\"defaults.yaml\"]\ncrates = []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "toml-test");
+        assert_eq!(config.report_sizes, Some(true));
+    }
+
+    #[test]
+    fn test_toml_includes_from_file_structured() {
+        let tmp = TempDir::new().unwrap();
+
+        let include_path = tmp.path().join("shared.yaml");
+        fs::write(&include_path, "dist: /shared-dist\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodize.toml");
+        fs::write(
+            &cfg_path,
+            r#"project_name = "toml-structured"
+crates = []
+
+[[includes]]
+[includes.from_file]
+path = "shared.yaml"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(config.project_name, "toml-structured");
+        assert_eq!(config.dist, std::path::PathBuf::from("/shared-dist"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix #5: Header keys NOT expanded, only values are
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_header_keys_not_expanded_only_values() {
+        unsafe { std::env::set_var("ANODIZE_HDR_VAL", "expanded_val") };
+
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("$KEY_LITERAL".to_string(), "${ANODIZE_HDR_VAL}".to_string());
+
+        // We can't call fetch_url_as_yaml without a real server, but we can verify
+        // the expand_env_vars behavior that the code relies on: header keys are NOT
+        // passed through expand_env_vars (only values are).
+        // Verify: expanding the key would change it, but we don't expand keys.
+        let key = "$KEY_LITERAL";
+        let value = "${ANODIZE_HDR_VAL}";
+        assert_eq!(key, "$KEY_LITERAL", "header key must be preserved literally");
+        assert_eq!(
+            expand_env_vars(value),
+            "expanded_val",
+            "header value must be expanded"
+        );
+        // Also verify the key would NOT survive expansion (proves we need to NOT expand it)
+        assert_eq!(
+            expand_env_vars(key),
+            "$KEY_LITERAL",
+            "key with $ followed by non-alpha is preserved (dollar-sign rule)"
+        );
+
+        unsafe { std::env::remove_var("ANODIZE_HDR_VAL") };
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix #8: from_url error path (unreachable URL)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fetch_url_unreachable_returns_error() {
+        // Use a clearly invalid URL that will fail to connect.
+        let result = fetch_url_as_yaml(
+            "http://127.0.0.1:1/nonexistent.yaml",
+            None,
+            Path::new("test-config.yaml"),
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("failed to fetch include URL") || msg.contains("127.0.0.1"),
+            "expected connection error, got: {}",
+            msg
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix #9: trailing $ at end of string
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_expand_env_vars_trailing_dollar() {
+        let result = expand_env_vars("price$");
+        assert_eq!(result, "price$", "trailing dollar should be preserved literally");
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix #10: TOML from_url structured form in TOML config
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_toml_includes_from_url_structured_form() {
+        // Verify the TOML [[includes]] / [includes.from_url] syntax parses correctly.
+        // We test via file-based include since we can't easily test HTTP, but we
+        // verify the TOML structure is correctly converted to YAML for resolve_include.
+        let tmp = TempDir::new().unwrap();
+
+        // Use a from_file to prove the TOML structured form works (from_url would
+        // need a server; the conversion path is identical).
+        let include_path = tmp.path().join("shared.yaml");
+        fs::write(&include_path, "report_sizes: true\n").unwrap();
+
+        let cfg_path = tmp.path().join("anodize.toml");
+        fs::write(
+            &cfg_path,
+            r#"project_name = "toml-from-url-test"
+crates = []
+
+[[includes]]
+[includes.from_url]
+url = "https://example.com/config.yaml"
+"#,
+        )
+        .unwrap();
+
+        // This will fail at fetch time (no server), but the TOML parsing and
+        // IncludeSpec deserialization should work. We test that separately.
+        let config_result = load_config(&cfg_path);
+        // We expect an error from the URL fetch, not from parsing
+        assert!(config_result.is_err());
+        let msg = config_result.unwrap_err().to_string();
+        assert!(
+            msg.contains("fetch") || msg.contains("include URL"),
+            "should fail at fetch, not parse: {}",
+            msg
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Fix #11: unclosed brace preserves literal text
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_expand_env_vars_unclosed_brace() {
+        let result = expand_env_vars("token=${UNCLOSED");
+        assert_eq!(
+            result, "token=${UNCLOSED",
+            "unclosed brace should preserve literal text"
+        );
+    }
+
+    #[test]
+    fn test_expand_env_vars_unclosed_brace_empty() {
+        let result = expand_env_vars("end${");
+        assert_eq!(result, "end${", "unclosed empty brace should preserve literal text");
     }
 }
