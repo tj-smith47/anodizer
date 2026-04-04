@@ -17,9 +17,14 @@ pub enum ArtifactKind {
     CShared,
     Wasm,
 
+    // --- Python packages ---
+    PyWheel,
+    PySdist,
+
     // --- Packaged archives ---
     Archive,
     SourceArchive,
+    Makeself,
 
     // --- Linux packages ---
     LinuxPackage,
@@ -50,6 +55,8 @@ pub enum ArtifactKind {
     WingetVersion,
     PkgBuild,
     SrcInfo,
+    SourcePkgBuild,
+    SourceSrcInfo,
     KrewPluginManifest,
 
     // --- Integrity/metadata ---
@@ -78,8 +85,11 @@ impl ArtifactKind {
             ArtifactKind::CArchive => "c_archive",
             ArtifactKind::CShared => "c_shared",
             ArtifactKind::Wasm => "wasm",
+            ArtifactKind::PyWheel => "py_wheel",
+            ArtifactKind::PySdist => "py_sdist",
             ArtifactKind::Archive => "archive",
             ArtifactKind::SourceArchive => "source_archive",
+            ArtifactKind::Makeself => "makeself",
             ArtifactKind::LinuxPackage => "linux_package",
             ArtifactKind::Snap => "snap",
             ArtifactKind::PublishableSnapcraft => "publishable_snapcraft",
@@ -102,6 +112,8 @@ impl ArtifactKind {
             ArtifactKind::WingetVersion => "winget_version",
             ArtifactKind::PkgBuild => "pkg_build",
             ArtifactKind::SrcInfo => "src_info",
+            ArtifactKind::SourcePkgBuild => "source_pkg_build",
+            ArtifactKind::SourceSrcInfo => "source_src_info",
             ArtifactKind::KrewPluginManifest => "krew_plugin_manifest",
             ArtifactKind::Checksum => "checksum",
             ArtifactKind::Signature => "signature",
@@ -122,8 +134,11 @@ impl ArtifactKind {
             "c_archive" => Some(ArtifactKind::CArchive),
             "c_shared" => Some(ArtifactKind::CShared),
             "wasm" => Some(ArtifactKind::Wasm),
+            "py_wheel" => Some(ArtifactKind::PyWheel),
+            "py_sdist" => Some(ArtifactKind::PySdist),
             "archive" => Some(ArtifactKind::Archive),
             "source_archive" => Some(ArtifactKind::SourceArchive),
+            "makeself" => Some(ArtifactKind::Makeself),
             "linux_package" => Some(ArtifactKind::LinuxPackage),
             "snap" => Some(ArtifactKind::Snap),
             "publishable_snapcraft" => Some(ArtifactKind::PublishableSnapcraft),
@@ -146,6 +161,8 @@ impl ArtifactKind {
             "winget_version" => Some(ArtifactKind::WingetVersion),
             "pkg_build" => Some(ArtifactKind::PkgBuild),
             "src_info" => Some(ArtifactKind::SrcInfo),
+            "source_pkg_build" => Some(ArtifactKind::SourcePkgBuild),
+            "source_src_info" => Some(ArtifactKind::SourceSrcInfo),
             "krew_plugin_manifest" => Some(ArtifactKind::KrewPluginManifest),
             "checksum" => Some(ArtifactKind::Checksum),
             "signature" => Some(ArtifactKind::Signature),
@@ -276,10 +293,13 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::Archive,
         ArtifactKind::SourceArchive,
         ArtifactKind::UploadableFile,
+        ArtifactKind::Makeself,
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
         ArtifactKind::Sbom,
+        ArtifactKind::PyWheel,
+        ArtifactKind::PySdist,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
         ArtifactKind::Certificate,
@@ -306,10 +326,13 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::Archive,
         ArtifactKind::SourceArchive,
         ArtifactKind::UploadableFile,
+        ArtifactKind::Makeself,
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
         ArtifactKind::Sbom,
+        ArtifactKind::PyWheel,
+        ArtifactKind::PySdist,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
         ArtifactKind::Certificate,
@@ -546,6 +569,9 @@ mod tests {
         assert_eq!(serde_json::to_value(ArtifactKind::Header).unwrap(), "header");
         assert_eq!(serde_json::to_value(ArtifactKind::CArchive).unwrap(), "c_archive");
         assert_eq!(serde_json::to_value(ArtifactKind::CShared).unwrap(), "c_shared");
+        assert_eq!(serde_json::to_value(ArtifactKind::PyWheel).unwrap(), "py_wheel");
+        assert_eq!(serde_json::to_value(ArtifactKind::PySdist).unwrap(), "py_sdist");
+        assert_eq!(serde_json::to_value(ArtifactKind::Makeself).unwrap(), "makeself");
         assert_eq!(serde_json::to_value(ArtifactKind::DockerImageV2).unwrap(), "docker_image_v2");
         assert_eq!(serde_json::to_value(ArtifactKind::PublishableDockerImage).unwrap(), "publishable_docker_image");
         assert_eq!(serde_json::to_value(ArtifactKind::PublishableSnapcraft).unwrap(), "publishable_snapcraft");
@@ -560,6 +586,8 @@ mod tests {
         assert_eq!(serde_json::to_value(ArtifactKind::WingetVersion).unwrap(), "winget_version");
         assert_eq!(serde_json::to_value(ArtifactKind::PkgBuild).unwrap(), "pkg_build");
         assert_eq!(serde_json::to_value(ArtifactKind::SrcInfo).unwrap(), "src_info");
+        assert_eq!(serde_json::to_value(ArtifactKind::SourcePkgBuild).unwrap(), "source_pkg_build");
+        assert_eq!(serde_json::to_value(ArtifactKind::SourceSrcInfo).unwrap(), "source_src_info");
         assert_eq!(serde_json::to_value(ArtifactKind::KrewPluginManifest).unwrap(), "krew_plugin_manifest");
         assert_eq!(serde_json::to_value(ArtifactKind::UploadableFile).unwrap(), "uploadable_file");
     }
@@ -584,22 +612,25 @@ mod tests {
             ArtifactKind::Binary, ArtifactKind::UniversalBinary,
             ArtifactKind::Library, ArtifactKind::Header,
             ArtifactKind::CArchive, ArtifactKind::CShared,
-            ArtifactKind::Wasm, ArtifactKind::Archive,
-            ArtifactKind::SourceArchive, ArtifactKind::LinuxPackage,
-            ArtifactKind::Snap, ArtifactKind::PublishableSnapcraft,
-            ArtifactKind::Flatpak, ArtifactKind::SourceRpm,
-            ArtifactKind::DiskImage, ArtifactKind::Installer,
-            ArtifactKind::MacOsPackage, ArtifactKind::DockerImage,
-            ArtifactKind::DockerImageV2, ArtifactKind::PublishableDockerImage,
-            ArtifactKind::DockerManifest, ArtifactKind::BrewFormula,
-            ArtifactKind::BrewCask, ArtifactKind::Nixpkg,
-            ArtifactKind::ScoopManifest, ArtifactKind::PublishableChocolatey,
-            ArtifactKind::WingetInstaller, ArtifactKind::WingetDefaultLocale,
-            ArtifactKind::WingetVersion, ArtifactKind::PkgBuild,
-            ArtifactKind::SrcInfo, ArtifactKind::KrewPluginManifest,
-            ArtifactKind::Checksum, ArtifactKind::Signature,
-            ArtifactKind::Certificate, ArtifactKind::Sbom,
-            ArtifactKind::Metadata, ArtifactKind::UploadableFile,
+            ArtifactKind::Wasm, ArtifactKind::PyWheel,
+            ArtifactKind::PySdist, ArtifactKind::Archive,
+            ArtifactKind::SourceArchive, ArtifactKind::Makeself,
+            ArtifactKind::LinuxPackage, ArtifactKind::Snap,
+            ArtifactKind::PublishableSnapcraft, ArtifactKind::Flatpak,
+            ArtifactKind::SourceRpm, ArtifactKind::DiskImage,
+            ArtifactKind::Installer, ArtifactKind::MacOsPackage,
+            ArtifactKind::DockerImage, ArtifactKind::DockerImageV2,
+            ArtifactKind::PublishableDockerImage, ArtifactKind::DockerManifest,
+            ArtifactKind::BrewFormula, ArtifactKind::BrewCask,
+            ArtifactKind::Nixpkg, ArtifactKind::ScoopManifest,
+            ArtifactKind::PublishableChocolatey, ArtifactKind::WingetInstaller,
+            ArtifactKind::WingetDefaultLocale, ArtifactKind::WingetVersion,
+            ArtifactKind::PkgBuild, ArtifactKind::SrcInfo,
+            ArtifactKind::SourcePkgBuild, ArtifactKind::SourceSrcInfo,
+            ArtifactKind::KrewPluginManifest, ArtifactKind::Checksum,
+            ArtifactKind::Signature, ArtifactKind::Certificate,
+            ArtifactKind::Sbom, ArtifactKind::Metadata,
+            ArtifactKind::UploadableFile,
         ];
         for variant in &all_variants {
             let s = variant.as_str();
@@ -607,7 +638,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("parse({:?}) returned None", s));
             assert_eq!(*variant, parsed, "roundtrip failed for {:?}", s);
         }
-        assert_eq!(all_variants.len(), 38, "update test when adding variants");
+        assert_eq!(all_variants.len(), 43, "update test when adding variants");
     }
 
     #[test]
@@ -649,9 +680,12 @@ mod tests {
         assert!(kinds.contains(&ArtifactKind::Archive));
         assert!(kinds.contains(&ArtifactKind::SourceArchive));
         assert!(kinds.contains(&ArtifactKind::UploadableFile));
+        assert!(kinds.contains(&ArtifactKind::Makeself));
         assert!(kinds.contains(&ArtifactKind::LinuxPackage));
         assert!(kinds.contains(&ArtifactKind::Flatpak));
         assert!(kinds.contains(&ArtifactKind::SourceRpm));
+        assert!(kinds.contains(&ArtifactKind::PyWheel));
+        assert!(kinds.contains(&ArtifactKind::PySdist));
         assert!(kinds.contains(&ArtifactKind::Sbom));
         assert!(kinds.contains(&ArtifactKind::Checksum));
         assert!(kinds.contains(&ArtifactKind::Signature));
