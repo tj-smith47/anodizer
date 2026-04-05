@@ -1,6 +1,6 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -17,10 +17,10 @@ pub fn fury_push_url(account: &str) -> String {
 }
 
 /// Check if a filename matches any of the given format extensions.
-pub fn fury_format_matches(filename: &str, formats: &[String]) -> bool {
+pub fn fury_format_matches(filename: &str, formats: &[impl AsRef<str>]) -> bool {
     formats
         .iter()
-        .any(|fmt| filename.ends_with(&format!(".{}", fmt)))
+        .any(|fmt| filename.ends_with(&format!(".{}", fmt.as_ref())))
 }
 
 // ---------------------------------------------------------------------------
@@ -49,10 +49,15 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // Account is required — bail before dry-run so config errors surface
         // even in dry-run mode.
-        let account = match entry.account.as_deref() {
+        let account_raw = match entry.account.as_deref() {
             Some(a) if !a.is_empty() => a,
             _ => bail!("fury: 'account' is required but not set"),
         };
+
+        // Render account through template engine in case it contains
+        // template expressions (e.g. `{{ .Env.FURY_ACCOUNT }}`).
+        let account = ctx.render_template(account_raw)
+            .with_context(|| format!("fury: failed to render account '{}'", account_raw))?;
 
         // Resolve the secret env-var name (default: FURY_TOKEN).
         let secret_name = entry
@@ -75,7 +80,7 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .collect(),
         };
 
-        let push_url = fury_push_url(account);
+        let push_url = fury_push_url(&account);
 
         // --- Dry-run logging ---
         if ctx.is_dry_run() {
@@ -99,8 +104,8 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // --- Live mode ---
         // Resolve push token from environment.
-        let token = std::env::var(&secret_name_rendered).map_err(|_| {
-            anyhow::anyhow!(
+        let token = std::env::var(&secret_name_rendered).with_context(|| {
+            format!(
                 "fury: environment variable '{}' not set (needed for account '{}')",
                 secret_name_rendered,
                 account
@@ -307,5 +312,37 @@ mod tests {
         let log = ctx.logger("fury");
         // First entry proceeds, second is skipped — both are ok
         assert!(publish_to_fury(&ctx, &log).is_ok());
+    }
+
+    #[test]
+    fn test_fury_live_mode_errors_without_token() {
+        let mut config = Config::default();
+        // Use a unique secret name to avoid collision with real env vars.
+        let unique_secret = "FURY_TEST_TOKEN_SHOULD_NOT_EXIST_8f3a2c";
+        config.fury = Some(vec![FuryConfig {
+            account: Some("liveaccount".to_string()),
+            secret_name: Some(unique_secret.to_string()),
+            ..Default::default()
+        }]);
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        let log = ctx.logger("fury");
+        let err = publish_to_fury(&ctx, &log).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(unique_secret),
+            "error should mention the secret env var name, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("liveaccount"),
+            "error should mention the account, got: {}",
+            msg
+        );
     }
 }
