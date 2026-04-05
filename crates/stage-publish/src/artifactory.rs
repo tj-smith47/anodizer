@@ -27,6 +27,9 @@ pub fn validate_upload_mode(mode: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Compute the hex-encoded SHA-256 digest of a file.
+/// Currently used only in tests; will be called during real artifact uploads
+/// once the artifact registry is wired.
+#[allow(dead_code)]
 fn sha256_file(path: &std::path::Path) -> Result<String> {
     let mut file = fs::File::open(path)
         .with_context(|| format!("artifactory: failed to open '{}'", path.display()))?;
@@ -68,8 +71,11 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             }
         }
 
-        // Determine the display name for log messages.
-        let name = entry.name.as_deref().unwrap_or("default");
+        // Name is required.
+        let name = match entry.name {
+            Some(ref n) if !n.is_empty() => n.as_str(),
+            _ => bail!("artifactory: entry is missing required 'name' field"),
+        };
 
         // Validate mode (default: "archive").
         let mode = entry.mode.as_deref().unwrap_or("archive");
@@ -89,16 +95,29 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             .render_template(target_template)
             .with_context(|| format!("artifactory: failed to render target URL for '{}'", name))?;
 
-        // Resolve credentials.
-        let username = entry.username.as_deref().unwrap_or("");
-        let env_var_name = format!(
+        // Resolve credentials — render through template engine.
+        let username = match entry.username {
+            Some(ref u) => ctx
+                .render_template(u)
+                .with_context(|| format!("artifactory: failed to render username for '{}'", name))?,
+            None => String::new(),
+        };
+        let named_env_var = format!(
             "ARTIFACTORY_{}_SECRET",
             name.to_uppercase().replace('-', "_")
         );
-        // TODO: use `password` once artifact iteration is wired up.
-        let _password = std::env::var(&env_var_name)
+        let generic_env_var = "ARTIFACTORY_SECRET";
+        // Try named env var, then generic env var, then config password
+        // (rendered through templates), then empty string.
+        // TODO: use `_password` once artifact iteration is wired up.
+        let _password = std::env::var(&named_env_var)
             .ok()
-            .or_else(|| entry.password.clone())
+            .or_else(|| std::env::var(generic_env_var).ok())
+            .or_else(|| {
+                entry.password.as_ref().and_then(|p| {
+                    ctx.render_template(p).ok()
+                })
+            })
             .unwrap_or_default();
 
         // Determine checksum header name.
@@ -108,10 +127,8 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             .unwrap_or("X-Checksum-SHA256");
 
         // Collect custom headers.
-        let custom_headers: &HashMap<String, String> = match entry.custom_headers {
-            Some(ref h) => h,
-            None => &HashMap::new(),
-        };
+        let empty = HashMap::new();
+        let custom_headers = entry.custom_headers.as_ref().unwrap_or(&empty);
 
         // --- Artifact iteration placeholder ---
         // There is no artifact registry in Context yet, so we cannot iterate
@@ -122,10 +139,10 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
                 name, target_url, mode, username
             ));
             if !custom_headers.is_empty() {
-                log.status(&format!(
-                    "(dry-run) custom headers: {:?}",
-                    custom_headers.keys().collect::<Vec<_>>()
-                ));
+                for (k, v) in custom_headers {
+                    let rendered_v = ctx.render_template(v).unwrap_or_else(|_| v.clone());
+                    log.status(&format!("(dry-run) custom header: {}={}", k, rendered_v));
+                }
             }
             if let Some(ref cert) = entry.client_x509_cert {
                 log.status(&format!("(dry-run) using client cert: {}", cert));
@@ -133,6 +150,31 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             log.status(&format!(
                 "(dry-run) checksum header: {}",
                 checksum_header
+            ));
+            if let Some(ref ids) = entry.ids {
+                log.status(&format!("(dry-run) build ID filter: {:?}", ids));
+            }
+            if let Some(ref exts) = entry.exts {
+                log.status(&format!("(dry-run) extension filter: {:?}", exts));
+            }
+            if let Some(checksum) = entry.checksum {
+                log.status(&format!("(dry-run) include checksums: {}", checksum));
+            }
+            if let Some(signature) = entry.signature {
+                log.status(&format!("(dry-run) include signatures: {}", signature));
+            }
+            if let Some(meta) = entry.meta {
+                log.status(&format!("(dry-run) include metadata: {}", meta));
+            }
+            if let Some(custom_name) = entry.custom_artifact_name {
+                log.status(&format!(
+                    "(dry-run) custom artifact naming: {}",
+                    custom_name
+                ));
+            }
+            log.status(&format!(
+                "(dry-run) credential env var: {} (fallback: {})",
+                named_env_var, generic_env_var
             ));
             continue;
         }
@@ -198,10 +240,20 @@ mod tests {
     }
 
     #[test]
-    fn test_artifactory_default_checksum_header() {
-        let cfg = ArtifactoryConfig::default();
-        let header = cfg.checksum_header.as_deref().unwrap_or("X-Checksum-SHA256");
-        assert_eq!(header, "X-Checksum-SHA256");
+    fn test_artifactory_default_checksum_header_in_dry_run() {
+        // Verify the dry-run output uses the default checksum header name
+        // when no custom header is configured.
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("chk".to_string()),
+            target: Some("https://art.example.com/repo/".to_string()),
+            checksum_header: None, // no custom header configured
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("artifactory");
+        // Should succeed and internally use "X-Checksum-SHA256" as the header.
+        assert!(publish_to_artifactory(&ctx, &log).is_ok());
     }
 
     #[test]
@@ -370,6 +422,55 @@ mod tests {
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("artifactory");
         // First entry proceeds, second is skipped — both are ok
+        assert!(publish_to_artifactory(&ctx, &log).is_ok());
+    }
+
+    #[test]
+    fn test_artifactory_requires_name() {
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: None,
+            target: Some("https://art.example.com/repo/".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("artifactory");
+        let err = publish_to_artifactory(&ctx, &log).unwrap_err();
+        assert!(
+            err.to_string().contains("missing required 'name'"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_artifactory_requires_name_nonempty() {
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some(String::new()),
+            target: Some("https://art.example.com/repo/".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("artifactory");
+        let err = publish_to_artifactory(&ctx, &log).unwrap_err();
+        assert!(
+            err.to_string().contains("missing required 'name'"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_artifactory_skips_when_skip_string_true() {
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            skip: Some(StringOrBool::String("true".to_string())),
+            // No name or target — skip should fire before validation.
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("artifactory");
         assert!(publish_to_artifactory(&ctx, &log).is_ok());
     }
 }
