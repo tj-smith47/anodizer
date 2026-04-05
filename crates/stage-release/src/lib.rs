@@ -972,6 +972,14 @@ impl Stage for ReleaseStage {
                     })
                     .unwrap_or_else(|| "0.0.0".to_string());
 
+                // GitLab does not support draft releases — warn if draft options are set.
+                if replace_existing_draft {
+                    log.warn("replace_existing_draft has no effect on GitLab (draft releases are not supported)");
+                }
+                if use_existing_draft {
+                    log.warn("use_existing_draft has no effect on GitLab (draft releases are not supported)");
+                }
+
                 let url = rt.block_on(async {
                     let client = gitlab::build_gitlab_client(&token_str, skip_tls, use_job_token)?;
 
@@ -993,45 +1001,88 @@ impl Stage for ReleaseStage {
                         release_name, tag, project_id
                     ));
 
-                    // Upload artifacts (unless skip_upload is set).
+                    // Upload artifacts with bounded parallelism (matching GitHub path).
                     if skip_upload {
                         log.status("skip_upload is set, skipping artifact uploads");
                     } else {
-                        for (path, custom_name) in &artifact_entries {
-                            if !path.exists() {
-                                bail!(
-                                    "release: artifact file missing: {}",
-                                    path.display()
-                                );
-                            }
-                            let file_name = if let Some(name) = custom_name {
-                                name.clone()
-                            } else {
-                                path.file_name()
-                                    .map(|n| n.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| "artifact".to_string())
-                            };
+                        let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
+                        let semaphore = Arc::new(
+                            tokio::sync::Semaphore::new(upload_parallelism),
+                        );
 
-                            gitlab::gitlab_upload_asset(
-                                &client,
-                                &api_url,
-                                &project_id,
-                                &tag,
-                                path,
-                                &file_name,
-                                &project_name_for_pkg,
-                                &version_for_pkg,
-                                use_pkg_registry,
-                                &download_url,
-                            )
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "release: upload artifact '{}' to GitLab release '{}'",
-                                    file_name, tag
+                        // Prepare the list of uploadable entries (error on missing files).
+                        let mut missing_files = Vec::new();
+                        let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
+                            .iter()
+                            .filter_map(|(path, custom_name)| {
+                                if !path.exists() {
+                                    missing_files.push(path.display().to_string());
+                                    return None;
+                                }
+                                let file_name = if let Some(name) = custom_name {
+                                    name.clone()
+                                } else {
+                                    path.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| "artifact".to_string())
+                                };
+                                Some((path.clone(), file_name))
+                            })
+                            .collect();
+
+                        if !missing_files.is_empty() {
+                            anyhow::bail!(
+                                "the following artifact files are missing:\n  {}",
+                                missing_files.join("\n  ")
+                            );
+                        }
+
+                        let client = Arc::new(client);
+                        let mut join_set = tokio::task::JoinSet::new();
+
+                        for (path, file_name) in prepared_entries {
+                            let sem = semaphore.clone();
+                            let client = client.clone();
+                            let api_url = api_url.clone();
+                            let project_id = project_id.clone();
+                            let tag = tag.clone();
+                            let project_name_for_pkg = project_name_for_pkg.clone();
+                            let version_for_pkg = version_for_pkg.clone();
+                            let download_url = download_url.clone();
+
+                            join_set.spawn(async move {
+                                let _permit = sem.acquire().await
+                                    .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+
+                                gitlab::gitlab_upload_asset(
+                                    &client,
+                                    &api_url,
+                                    &project_id,
+                                    &tag,
+                                    &path,
+                                    &file_name,
+                                    &project_name_for_pkg,
+                                    &version_for_pkg,
+                                    use_pkg_registry,
+                                    &download_url,
+                                    replace_existing_artifacts,
                                 )
-                            })?;
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "release: upload artifact '{}' to GitLab release '{}'",
+                                        file_name, tag
+                                    )
+                                })?;
 
+                                Ok::<String, anyhow::Error>(file_name)
+                            });
+                        }
+
+                        while let Some(result) = join_set.join_next().await {
+                            let file_name = result
+                                .context("gitlab: upload task panicked")?
+                                .context("gitlab: upload task failed")?;
                             log.verbose(&format!("uploaded artifact: {}", file_name));
                         }
                     }

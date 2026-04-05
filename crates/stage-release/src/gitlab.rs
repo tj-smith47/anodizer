@@ -28,11 +28,31 @@ const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'.');
 
+/// Characters safe in a single URL path segment (no `/`).
+/// Used for tag names, package names, versions, and file names in URLs.
+const SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.');
+
 /// Percent-encode a GitLab project ID path segment.
 ///
 /// `owner/name` becomes `owner%2Fname`.
 fn encode_project_id(project_id: &str) -> String {
     utf8_percent_encode(project_id, PATH_ENCODE_SET).to_string()
+}
+
+/// Percent-encode a tag for use in URL path segments.
+///
+/// Tags may contain `+`, `#`, `?`, spaces, or other characters that break URLs.
+/// e.g. `v1.0.0+build.1` becomes `v1.0.0%2Bbuild.1`.
+fn encode_tag(tag: &str) -> String {
+    utf8_percent_encode(tag, SEGMENT_ENCODE_SET).to_string()
+}
+
+/// Percent-encode a single URL path component (package name, version, filename).
+fn encode_path_segment(segment: &str) -> String {
+    utf8_percent_encode(segment, SEGMENT_ENCODE_SET).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -128,9 +148,10 @@ pub(crate) async fn gitlab_create_release(
 ) -> Result<String> {
     let api = api_url.trim_end_matches('/');
     let encoded = encode_project_id(project_id);
+    let encoded_tag = encode_tag(tag);
 
     // Try to get the existing release for this tag.
-    let get_url = format!("{}/projects/{}/releases/{}", api, encoded, tag);
+    let get_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
     let get_resp = client.get(&get_url).send().await.context(
         "gitlab: GET release by tag",
     )?;
@@ -172,7 +193,7 @@ pub(crate) async fn gitlab_create_release(
         let existing_body = existing["description"].as_str();
         let final_body = compose_body_for_mode(release_mode, existing_body, body);
 
-        let update_url = format!("{}/projects/{}/releases/{}", api, encoded, tag);
+        let update_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
         let payload = serde_json::json!({
             "name": name,
             "description": final_body,
@@ -218,6 +239,10 @@ pub(crate) async fn gitlab_create_release(
 /// uploaded via the Project Markdown Uploads endpoint (POST multipart).
 ///
 /// After the upload, a release link is created pointing to the uploaded file.
+///
+/// When `replace_existing` is true and the link creation returns HTTP 400/422
+/// (duplicate), the existing link with the same name is deleted and the POST
+/// is retried — matching GoReleaser's `replace_existing_artifacts` behavior.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn gitlab_upload_asset(
     client: &Client,
@@ -230,49 +255,160 @@ pub(crate) async fn gitlab_upload_asset(
     version: &str,
     use_package_registry: bool,
     download_url: &str,
+    replace_existing: bool,
 ) -> Result<()> {
     let api = api_url.trim_end_matches('/');
     let encoded = encode_project_id(project_id);
+    let encoded_tag = encode_tag(tag);
 
     let link_url = if use_package_registry {
         upload_via_package_registry(client, api, &encoded, project_name, version, file_name, file_path)
             .await?
     } else {
-        upload_via_project_uploads(client, api, &encoded, project_id, file_path, file_name, download_url)
+        upload_via_project_uploads(client, api, &encoded, file_path, file_name, download_url)
             .await?
     };
 
     // Create a release link for the uploaded asset.
-    let link_api = format!(
+    let links_api = format!(
         "{}/projects/{}/releases/{}/assets/links",
-        api, encoded, tag
+        api, encoded, encoded_tag
     );
     let direct_asset_path = format!("/{}", file_name);
+
+    // Detect GitLab server version for the asset path field name.
+    // GitLab v17+ uses `direct_asset_path`; older versions use `file_path`.
+    let use_legacy_file_path = detect_pre_v17_gitlab();
+    let path_field = if use_legacy_file_path {
+        "filepath"
+    } else {
+        "direct_asset_path"
+    };
+
     let payload = serde_json::json!({
         "name": file_name,
         "url": link_url,
-        "direct_asset_path": direct_asset_path,
+        path_field: direct_asset_path,
     });
 
     let resp = client
-        .post(&link_api)
+        .post(&links_api)
         .json(&payload)
         .send()
         .await
         .context("gitlab: POST create release link")?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
+    let status_code = resp.status().as_u16();
+    if resp.status().is_success() {
+        return Ok(());
+    }
+
+    // If the link already exists (400/422) and replace_existing is enabled,
+    // find and delete the conflicting link, then retry the POST.
+    if (status_code == 400 || status_code == 422) && replace_existing {
+        let text = resp.text().await.unwrap_or_default();
+        // List existing links to find the conflicting one.
+        let list_resp = client
+            .get(&links_api)
+            .send()
+            .await
+            .context("gitlab: GET existing release links for replace")?;
+
+        if list_resp.status().is_success() {
+            let links: Vec<serde_json::Value> = list_resp
+                .json()
+                .await
+                .context("gitlab: parse release links JSON")?;
+
+            for link in &links {
+                if link["name"].as_str() == Some(file_name) {
+                    if let Some(link_id) = link["id"].as_u64() {
+                        let delete_url =
+                            format!("{}/{}", links_api, link_id);
+                        let del_resp = client
+                            .delete(&delete_url)
+                            .send()
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "gitlab: DELETE existing release link '{}' (id={})",
+                                    file_name, link_id
+                                )
+                            })?;
+                        if !del_resp.status().is_success() {
+                            bail!(
+                                "gitlab: delete existing link '{}' failed (HTTP {}): {}",
+                                file_name,
+                                del_resp.status(),
+                                del_resp.text().await.unwrap_or_default()
+                            );
+                        }
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Could not list links — report the original error.
+            bail!(
+                "gitlab: create release link for '{}' failed (HTTP {}): {}",
+                file_name,
+                status_code,
+                text
+            );
+        }
+
+        // Retry the POST after deleting the conflicting link.
+        let retry_resp = client
+            .post(&links_api)
+            .json(&payload)
+            .send()
+            .await
+            .context("gitlab: POST create release link (retry after delete)")?;
+
+        if !retry_resp.status().is_success() {
+            let retry_status = retry_resp.status();
+            let retry_text = retry_resp.text().await.unwrap_or_default();
+            bail!(
+                "gitlab: create release link for '{}' failed on retry (HTTP {}): {}",
+                file_name,
+                retry_status,
+                retry_text
+            );
+        }
+    } else {
         let text = resp.text().await.unwrap_or_default();
         bail!(
             "gitlab: create release link for '{}' failed (HTTP {}): {}",
             file_name,
-            status,
+            status_code,
             text
         );
     }
 
     Ok(())
+}
+
+/// Detect whether the GitLab server is pre-v17 by checking the
+/// `CI_SERVER_VERSION` environment variable (set in GitLab CI runners).
+///
+/// If the env var is absent or unparseable, defaults to v17+ behavior
+/// (using `direct_asset_path`).
+fn detect_pre_v17_gitlab() -> bool {
+    if let Ok(version_str) = std::env::var("CI_SERVER_VERSION") {
+        return is_pre_v17(&version_str);
+    }
+    false
+}
+
+/// Parse a GitLab version string and return true if the major version is < 17.
+fn is_pre_v17(version_str: &str) -> bool {
+    // CI_SERVER_VERSION is like "16.11.0" or "17.0.0"
+    if let Some(major_str) = version_str.split('.').next() {
+        if let Ok(major) = major_str.parse::<u32>() {
+            return major < 17;
+        }
+    }
+    false
 }
 
 /// Upload a file via the GitLab Generic Package Registry.
@@ -295,7 +431,11 @@ async fn upload_via_package_registry(
 
     let upload_url = format!(
         "{}/projects/{}/packages/generic/{}/{}/{}",
-        api, encoded_project_id, project_name, version, file_name
+        api,
+        encoded_project_id,
+        encode_path_segment(project_name),
+        encode_path_segment(version),
+        encode_path_segment(file_name),
     );
 
     let resp = client
@@ -334,7 +474,6 @@ async fn upload_via_project_uploads(
     client: &Client,
     api: &str,
     encoded_project_id: &str,
-    project_id: &str,
     file_path: &Path,
     file_name: &str,
     download_url: &str,
@@ -376,29 +515,14 @@ async fn upload_via_project_uploads(
         .context("gitlab: parse upload response JSON")?;
 
     // GitLab returns `{ "full_path": "/uploads/...", "url": "/uploads/...", ... }`.
-    // GoReleaser uses `projectFile.FullPath` and prepends `download_url + "/" + full_path`.
+    // GoReleaser constructs: `gitlabBaseURL + "/" + projectFile.FullPath`.
+    // We follow the same simple approach.
     let full_path = body["full_path"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("gitlab: upload response missing 'full_path' field"))?;
 
     let base = download_url.trim_end_matches('/');
-
-    // GitLab's upload response returns a `full_path` field:
-    // - Modern API: `/{owner}/{name}/uploads/<hash>/<filename>` (project path included)
-    // - Older API: `/uploads/<hash>/<filename>` (just the upload path, no project prefix)
-    //
-    // GoReleaser constructs the link as: `gitlabBaseURL + "/" + projectFile.FullPath`.
-    // We detect the older format and insert the project path ourselves.
-    let link = if full_path.starts_with("/uploads/") {
-        // Older API — full_path is just `/uploads/<hash>/<filename>`.
-        // Prefix with project_id to get the correct download path.
-        format!("{}/{}{}", base, project_id, full_path)
-    } else if full_path.starts_with('/') {
-        // Modern API — full_path already includes the project path.
-        format!("{}{}", base, full_path)
-    } else {
-        format!("{}/{}", base, full_path)
-    };
+    let link = format!("{}/{}", base, full_path.trim_start_matches('/'));
 
     Ok(link)
 }
@@ -450,6 +574,74 @@ mod tests {
     fn encode_project_id_no_slash() {
         // A project without an owner should pass through mostly unchanged.
         assert_eq!(encode_project_id("myproject"), "myproject");
+    }
+
+    // -- encode_tag ---------------------------------------------------------
+
+    #[test]
+    fn encode_tag_simple() {
+        assert_eq!(encode_tag("v1.0.0"), "v1.0.0");
+    }
+
+    #[test]
+    fn encode_tag_with_plus() {
+        // `+` must be encoded to avoid breaking URL path segments.
+        assert_eq!(encode_tag("v1.0.0+build.1"), "v1.0.0%2Bbuild.1");
+    }
+
+    #[test]
+    fn encode_tag_with_special_chars() {
+        // `#`, `?`, and spaces must all be encoded.
+        assert_eq!(encode_tag("v1 beta#2?rc"), "v1%20beta%232%3Frc");
+    }
+
+    // -- encode_path_segment -------------------------------------------------
+
+    #[test]
+    fn encode_path_segment_simple() {
+        assert_eq!(encode_path_segment("myproject"), "myproject");
+    }
+
+    #[test]
+    fn encode_path_segment_with_slash() {
+        assert_eq!(encode_path_segment("my/project"), "my%2Fproject");
+    }
+
+    #[test]
+    fn encode_path_segment_preserves_dots_and_dashes() {
+        assert_eq!(encode_path_segment("my-project.v2"), "my-project.v2");
+    }
+
+    // -- is_pre_v17 (version parsing) ------------------------------------------
+
+    #[test]
+    fn is_pre_v17_with_v16() {
+        assert!(is_pre_v17("16.11.0"));
+    }
+
+    #[test]
+    fn is_pre_v17_with_v15() {
+        assert!(is_pre_v17("15.0.0"));
+    }
+
+    #[test]
+    fn is_pre_v17_with_v17() {
+        assert!(!is_pre_v17("17.0.0"));
+    }
+
+    #[test]
+    fn is_pre_v17_with_v18() {
+        assert!(!is_pre_v17("18.1.2"));
+    }
+
+    #[test]
+    fn is_pre_v17_with_empty() {
+        assert!(!is_pre_v17(""));
+    }
+
+    #[test]
+    fn is_pre_v17_with_garbage() {
+        assert!(!is_pre_v17("not-a-version"));
     }
 
     // -- gitlab_release_url --------------------------------------------------
