@@ -199,7 +199,9 @@ pub(crate) async fn gitea_create_release(
 /// Find an existing release by tag name.
 ///
 /// Iterates through paginated release listings (capped at 10 pages to avoid
-/// runaway pagination on repos with very long release histories).
+/// runaway pagination on repos with very long release histories). This is
+/// an intentional improvement over GoReleaser, which does not paginate
+/// and only checks the first page of results.
 ///
 /// Returns `Some((release_id, body))` if found, `None` otherwise.
 async fn find_release_by_tag(
