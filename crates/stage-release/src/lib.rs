@@ -362,13 +362,9 @@ impl Stage for ReleaseStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("release");
 
-        // Resolve the GitHub token once (CLI flag > ANODIZE_GITHUB_TOKEN > GITHUB_TOKEN).
-        let token = ctx
-            .options
-            .token
-            .clone()
-            .or_else(|| std::env::var("ANODIZE_GITHUB_TOKEN").ok())
-            .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+        // The SCM token is already resolved into ctx.options.token by the CLI
+        // pipeline init (resolve_scm_token_type). Trust it directly.
+        let token = ctx.options.token.clone();
 
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.is_dry_run();

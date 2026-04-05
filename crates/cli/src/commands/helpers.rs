@@ -281,19 +281,29 @@ pub fn setup_env(
     }
 
     // Early token presence check (like GoReleaser's ErrMissingToken in env.go).
-    // Warn if no GitHub token is available and the pipeline will need one.
+    // Warn if no SCM token is available and the pipeline will need one.
     // Don't hard-error — snapshot mode and dry-run can proceed without a token.
-    let has_token = ctx.options.token.is_some()
-        || std::env::var("ANODIZE_GITHUB_TOKEN").is_ok()
-        || std::env::var("GITHUB_TOKEN").is_ok();
-    if !has_token && !ctx.is_snapshot() {
+    // Note: resolve_scm_token_type() has already populated ctx.options.token
+    // from the correct env var for the detected SCM type.
+    if ctx.options.token.is_none() && !ctx.is_snapshot() {
         let needs_token = config.crates.iter().any(|c| c.release.is_some())
             && !ctx.should_skip("release");
         if needs_token {
-            log.warn(
-                "no GitHub token found; release/publish stages may fail. \
-                 Set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN.",
-            );
+            let hint = match ctx.token_type {
+                anodize_core::scm::ScmTokenType::GitLab => {
+                    "no GitLab token found; release/publish stages may fail. \
+                     Set GITLAB_TOKEN."
+                }
+                anodize_core::scm::ScmTokenType::Gitea => {
+                    "no Gitea token found; release/publish stages may fail. \
+                     Set GITEA_TOKEN."
+                }
+                anodize_core::scm::ScmTokenType::GitHub => {
+                    "no GitHub token found; release/publish stages may fail. \
+                     Set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN."
+                }
+            };
+            log.warn(hint);
         }
     }
 
