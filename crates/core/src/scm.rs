@@ -2,6 +2,7 @@
 //! URL templates for GitHub, GitLab, and Gitea.
 
 use crate::config::ForceTokenKind;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -9,7 +10,7 @@ use std::fmt;
 // ---------------------------------------------------------------------------
 
 /// Which SCM backend is in use for the current release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScmTokenType {
     GitHub,
     GitLab,
@@ -52,7 +53,6 @@ pub fn resolve_token_type(
         return match env.to_lowercase().as_str() {
             "gitlab" => ScmTokenType::GitLab,
             "gitea" => ScmTokenType::Gitea,
-            "github" => ScmTokenType::GitHub,
             _ => ScmTokenType::GitHub,
         };
     }
@@ -134,7 +134,6 @@ pub fn release_url_template(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ForceTokenKind;
 
     // -- Display -----------------------------------------------------------
 
@@ -321,7 +320,9 @@ mod tests {
             "r",
             "https://github.com/",
         );
-        assert!(tpl.starts_with("https://github.com/o/r/"));
-        assert!(!tpl.contains("//o"));
+        assert_eq!(
+            tpl,
+            "https://github.com/o/r/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"
+        );
     }
 }
