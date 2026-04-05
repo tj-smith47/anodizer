@@ -6,6 +6,7 @@ pub mod github_client;
 pub mod hooks;
 pub mod log;
 pub mod partial;
+pub mod scm;
 pub mod stage;
 pub mod target;
 pub mod template;

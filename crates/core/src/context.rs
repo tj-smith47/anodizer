@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::git::GitInfo;
 use crate::log::{StageLogger, Verbosity};
 use crate::partial::PartialTarget;
+use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
 use chrono::Utc;
 use std::collections::HashMap;
@@ -65,6 +66,8 @@ pub struct Context {
     template_vars: TemplateVars,
     pub git_info: Option<GitInfo>,
     pub changelogs: HashMap<String, String>,
+    /// The resolved SCM token type (GitHub, GitLab, or Gitea).
+    pub token_type: ScmTokenType,
 }
 
 impl Context {
@@ -79,6 +82,7 @@ impl Context {
             template_vars: vars,
             git_info: None,
             changelogs: HashMap::new(),
+            token_type: ScmTokenType::GitHub,
         }
     }
 
