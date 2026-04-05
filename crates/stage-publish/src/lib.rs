@@ -3,6 +3,7 @@ pub mod aur;
 pub mod chocolatey;
 pub mod crates_io;
 pub mod dockerhub;
+pub mod fury;
 pub mod homebrew;
 pub mod krew;
 pub mod nix;
@@ -20,6 +21,7 @@ use aur::publish_to_aur;
 use chocolatey::publish_to_chocolatey;
 use crates_io::publish_to_crates_io;
 use dockerhub::publish_to_dockerhub;
+use fury::publish_to_fury;
 use homebrew::publish_to_homebrew;
 use krew::publish_to_krew;
 use nix::publish_to_nix;
@@ -95,6 +97,9 @@ impl Stage for PublishStage {
 
         // 10. Artifactory — top-level publisher (not per-crate).
         publish_to_artifactory(ctx, &log)?;
+
+        // 11. GemFury — top-level publisher (not per-crate).
+        publish_to_fury(ctx, &log)?;
 
         Ok(())
     }
