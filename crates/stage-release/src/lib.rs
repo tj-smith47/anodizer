@@ -14,6 +14,7 @@ use octocrab::service::middleware::auth_header::AuthHeaderLayer;
 use octocrab::service::middleware::base_uri::BaseUriLayer;
 use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
 
+mod gitea;
 mod gitlab;
 
 // ---------------------------------------------------------------------------
@@ -886,7 +887,19 @@ impl Stage for ReleaseStage {
                             }
                         }
                     }
-                    ScmTokenType::Gitea => {}
+                    ScmTokenType::Gitea => {
+                        if let Some(urls) = &ctx.config.gitea_urls {
+                            if let Some(api) = &urls.api {
+                                log.status(&format!("(dry-run)   gitea_urls.api = {}", api));
+                            }
+                            if let Some(download) = &urls.download {
+                                log.status(&format!("(dry-run)   gitea_urls.download = {}", download));
+                            }
+                            if urls.skip_tls_verify.unwrap_or(false) {
+                                log.status("(dry-run)   gitea_urls.skip_tls_verify = true");
+                            }
+                        }
+                    }
                 }
 
                 log.status(&format!(
@@ -1102,10 +1115,189 @@ impl Stage for ReleaseStage {
             }
 
             // ===============================================================
-            // Gitea backend (not yet implemented)
+            // Gitea backend
             // ===============================================================
             ScmTokenType::Gitea => {
-                bail!("release: Gitea release backend not yet implemented");
+                // Resolve the repo config: prefer release.gitea, fall back to release.github.
+                let repo_cfg = match release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()) {
+                    Some(r) => r.clone(),
+                    None => {
+                        log.warn(&format!(
+                            "no gitea config for crate '{}', skipping",
+                            crate_cfg.name
+                        ));
+                        continue;
+                    }
+                };
+
+                let token_str = match &token {
+                    Some(t) => t.clone(),
+                    None => {
+                        bail!(
+                            "release: no Gitea token available (set GITEA_TOKEN, or pass --token)"
+                        );
+                    }
+                };
+
+                let gitea_urls = ctx.config.gitea_urls.clone().unwrap_or_default();
+                let api_url = gitea_urls
+                    .api
+                    .unwrap_or_else(|| "https://gitea.com/api/v1".to_string());
+                let download_url = gitea_urls
+                    .download
+                    .unwrap_or_else(|| "https://gitea.com".to_string());
+                let skip_tls = gitea_urls.skip_tls_verify.unwrap_or(false);
+
+                let commit_sha = ctx
+                    .git_info
+                    .as_ref()
+                    .map(|g| g.commit.clone())
+                    .unwrap_or_default();
+
+                // Gitea does not support draft releases robustly — warn if draft options are set.
+                if replace_existing_draft {
+                    log.warn("replace_existing_draft has no effect on Gitea (draft support is limited)");
+                }
+                if use_existing_draft {
+                    log.warn("use_existing_draft has no effect on Gitea (draft support is limited)");
+                }
+
+                let url = rt.block_on(async {
+                    let client = gitea::build_gitea_client(&token_str, skip_tls)?;
+
+                    // Create or update the release.
+                    let release_id = gitea::gitea_create_release(
+                        &client,
+                        &api_url,
+                        &repo_cfg.owner,
+                        &repo_cfg.name,
+                        &tag,
+                        &commit_sha,
+                        &release_name,
+                        &release_body,
+                        draft,
+                        prerelease,
+                        &release_mode,
+                    )
+                    .await?;
+
+                    log.status(&format!(
+                        "created Gitea Release '{}' (id={}, tag={}) on {}/{}",
+                        release_name, release_id, tag, repo_cfg.owner, repo_cfg.name
+                    ));
+
+                    // Upload artifacts with bounded parallelism (matching GitLab pattern).
+                    if skip_upload {
+                        log.status("skip_upload is set, skipping artifact uploads");
+                    } else {
+                        let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
+                        let semaphore = Arc::new(
+                            tokio::sync::Semaphore::new(upload_parallelism),
+                        );
+
+                        // Prepare the list of uploadable entries (error on missing files).
+                        let mut missing_files = Vec::new();
+                        let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
+                            .iter()
+                            .filter_map(|(path, custom_name)| {
+                                if !path.exists() {
+                                    missing_files.push(path.display().to_string());
+                                    return None;
+                                }
+                                let file_name = if let Some(name) = custom_name {
+                                    name.clone()
+                                } else {
+                                    path.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| "artifact".to_string())
+                                };
+                                Some((path.clone(), file_name))
+                            })
+                            .collect();
+
+                        if !missing_files.is_empty() {
+                            anyhow::bail!(
+                                "the following artifact files are missing:\n  {}",
+                                missing_files.join("\n  ")
+                            );
+                        }
+
+                        let client = Arc::new(client);
+                        let mut join_set = tokio::task::JoinSet::new();
+
+                        for (path, file_name) in prepared_entries {
+                            let sem = semaphore.clone();
+                            let client = client.clone();
+                            let api_url = api_url.clone();
+                            let owner = repo_cfg.owner.clone();
+                            let repo = repo_cfg.name.clone();
+                            let tag = tag.clone();
+
+                            join_set.spawn(async move {
+                                let _permit = sem.acquire().await
+                                    .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+
+                                // Handle replace_existing_artifacts: if an asset with the
+                                // same name exists, delete it before uploading.
+                                if replace_existing_artifacts {
+                                    gitea::gitea_delete_asset_by_name(
+                                        &client,
+                                        &api_url,
+                                        &owner,
+                                        &repo,
+                                        release_id,
+                                        &file_name,
+                                    )
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "gitea: delete existing asset '{}' from release {}",
+                                            file_name, release_id
+                                        )
+                                    })?;
+                                }
+
+                                gitea::gitea_upload_asset(
+                                    &client,
+                                    &api_url,
+                                    &owner,
+                                    &repo,
+                                    release_id,
+                                    &path,
+                                    &file_name,
+                                )
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "release: upload artifact '{}' to Gitea release '{}'",
+                                        file_name, tag
+                                    )
+                                })?;
+
+                                Ok::<String, anyhow::Error>(file_name)
+                            });
+                        }
+
+                        while let Some(result) = join_set.join_next().await {
+                            let file_name = result
+                                .context("gitea: upload task panicked")?
+                                .context("gitea: upload task failed")?;
+                            log.verbose(&format!("uploaded artifact: {}", file_name));
+                        }
+                    }
+
+                    // Gitea PublishRelease is a no-op (matching GoReleaser).
+
+                    let html_url = gitea::gitea_release_url(
+                        &download_url,
+                        &repo_cfg.owner,
+                        &repo_cfg.name,
+                        &tag,
+                    );
+                    Ok::<String, anyhow::Error>(html_url)
+                })?;
+
+                url
             }
 
             // ===============================================================
@@ -4064,14 +4256,100 @@ draft: true
         assert!(stage.run(&mut ctx).is_ok());
     }
 
+    // ---- Gitea backend tests ----
+
     #[test]
-    fn test_gitea_backend_not_yet_implemented() {
+    fn test_gitea_dry_run_with_gitea_config() {
         use anodize_core::config::ScmRepoConfig;
         use anodize_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    gitea: Some(ScmRepoConfig {
+                        owner: "owner".to_string(),
+                        name: "repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::Gitea;
+
+        let stage = ReleaseStage;
+        // Should succeed in dry-run.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_gitea_backend_skips_when_no_gitea_config() {
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
             .token(Some("gitea-test-token".to_string()))
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    // No gitea config, no github config either.
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::Gitea;
+
+        let stage = ReleaseStage;
+        // Should succeed by skipping (warn + continue) since no gitea config.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_gitea_backend_falls_back_to_github_config() {
+        use anodize_core::config::ScmRepoConfig;
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    // Only github config set, no gitea-specific config.
+                    github: Some(ScmRepoConfig {
+                        owner: "fallback-owner".to_string(),
+                        name: "fallback-repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::Gitea;
+
+        let stage = ReleaseStage;
+        // Should succeed in dry-run because Gitea falls back to github config.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_gitea_missing_token_errors() {
+        use anodize_core::config::ScmRepoConfig;
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .token(None)
             .crates(vec![CrateConfig {
                 name: "testcrate".to_string(),
                 path: ".".to_string(),
@@ -4091,8 +4369,10 @@ draft: true
         let stage = ReleaseStage;
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
         assert!(
-            result.unwrap_err().to_string().contains("Gitea release backend not yet implemented")
+            err.contains("GITEA_TOKEN") || err.contains("--token"),
+            "error should mention GITEA_TOKEN or --token, got: {err}"
         );
     }
 }
