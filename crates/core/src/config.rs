@@ -120,6 +120,17 @@ pub struct Config {
     pub variables: Option<HashMap<String, String>>,
     /// Generic artifact publisher configurations.
     pub publishers: Option<Vec<PublisherConfig>>,
+    /// DockerHub description sync configurations.
+    pub dockerhub: Option<Vec<DockerHubConfig>>,
+    /// Artifactory upload configurations.
+    pub artifactories: Option<Vec<ArtifactoryConfig>>,
+    /// GemFury publisher configurations.
+    #[serde(alias = "gemfury")]
+    pub fury: Option<Vec<FuryConfig>>,
+    /// CloudSmith publisher configurations.
+    pub cloudsmiths: Option<Vec<CloudSmithConfig>>,
+    /// NPM publisher configurations.
+    pub npms: Option<Vec<NpmConfig>>,
     /// Automatic semantic version tagging configuration.
     pub tag: Option<TagConfig>,
     /// Git-level tag discovery and sorting settings.
@@ -217,6 +228,11 @@ impl Default for Config {
             env: None,
             variables: None,
             publishers: None,
+            dockerhub: None,
+            artifactories: None,
+            fury: None,
+            cloudsmiths: None,
+            npms: None,
             tag: None,
             git: None,
             partial: None,
@@ -4296,6 +4312,207 @@ pub struct SlackAttachment {
     /// Additional attachment-specific fields.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+// ---------------------------------------------------------------------------
+// DockerHub description sync
+// ---------------------------------------------------------------------------
+
+/// DockerHub description sync configuration.
+/// Pushes image descriptions and README content to DockerHub repositories.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerHubConfig {
+    /// DockerHub username for authentication.
+    pub username: Option<String>,
+    /// Environment variable name containing the DockerHub token.
+    pub secret_name: Option<String>,
+    /// DockerHub image names to update (e.g. `myorg/myapp`).
+    pub images: Option<Vec<String>>,
+    /// Short description for the DockerHub repository (max 100 chars).
+    pub description: Option<String>,
+    /// Full description (README) source for the DockerHub repository.
+    pub full_description: Option<DockerHubFullDescription>,
+    /// Disable this publisher. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+}
+
+/// Full description source for DockerHub: either from a URL or a local file.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerHubFullDescription {
+    /// Fetch full description content from a URL.
+    pub from_url: Option<DockerHubFromUrl>,
+    /// Read full description content from a local file.
+    pub from_file: Option<DockerHubFromFile>,
+}
+
+/// Fetch DockerHub full description content from a URL.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerHubFromUrl {
+    /// URL to fetch the full description from.
+    pub url: String,
+    /// Optional HTTP headers for the request.
+    pub headers: Option<HashMap<String, String>>,
+}
+
+/// Read DockerHub full description content from a local file.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerHubFromFile {
+    /// Path to the file containing the full description.
+    pub path: String,
+}
+
+// ---------------------------------------------------------------------------
+// Artifactory publisher
+// ---------------------------------------------------------------------------
+
+/// Artifactory upload configuration.
+/// Uploads artifacts to JFrog Artifactory repositories.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ArtifactoryConfig {
+    /// Human-readable name for this publisher (used in logs).
+    pub name: Option<String>,
+    /// Target URL template for uploads (supports template variables).
+    pub target: Option<String>,
+    /// Upload mode: "archive" (upload archives) or "binary" (upload binaries).
+    pub mode: Option<String>,
+    /// Artifactory username for authentication.
+    pub username: Option<String>,
+    /// Artifactory password or API key (or env var reference).
+    pub password: Option<String>,
+    /// Build IDs filter: only upload artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// File extension filter: only upload artifacts matching these extensions.
+    pub exts: Option<Vec<String>>,
+    /// Path to client X.509 certificate for mTLS authentication.
+    pub client_x509_cert: Option<String>,
+    /// Path to client X.509 private key for mTLS authentication.
+    pub client_x509_key: Option<String>,
+    /// Custom HTTP headers sent with each upload request.
+    pub custom_headers: Option<HashMap<String, String>>,
+    /// Header name used for checksum verification (e.g. `X-Checksum-Sha256`).
+    pub checksum_header: Option<String>,
+    /// Extra files to upload alongside build artifacts.
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Include checksums in uploaded artifacts.
+    pub checksum: Option<bool>,
+    /// Include signatures in uploaded artifacts.
+    pub signature: Option<bool>,
+    /// Include metadata artifacts in uploaded artifacts.
+    pub meta: Option<bool>,
+    /// Use custom artifact naming instead of default.
+    pub custom_artifact_name: Option<bool>,
+    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip: Option<StringOrBool>,
+}
+
+// ---------------------------------------------------------------------------
+// GemFury publisher
+// ---------------------------------------------------------------------------
+
+/// GemFury publisher configuration.
+/// Pushes packages to GemFury (fury.io) package hosting.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct FuryConfig {
+    /// GemFury account name.
+    pub account: Option<String>,
+    /// Disable this publisher. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Environment variable name containing the GemFury push token.
+    pub secret_name: Option<String>,
+    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Package format filter: only publish artifacts matching these formats (e.g. "deb", "rpm").
+    pub formats: Option<Vec<String>>,
+}
+
+// ---------------------------------------------------------------------------
+// CloudSmith publisher
+// ---------------------------------------------------------------------------
+
+/// CloudSmith publisher configuration.
+/// Pushes packages to CloudSmith repositories.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct CloudSmithConfig {
+    /// CloudSmith organization slug.
+    pub organization: Option<String>,
+    /// CloudSmith repository slug.
+    pub repository: Option<String>,
+    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Package format filter: only publish artifacts matching these formats.
+    pub formats: Option<Vec<String>>,
+    /// Distribution mapping per format (e.g. `deb: "ubuntu/focal"`).
+    pub distributions: Option<HashMap<String, serde_json::Value>>,
+    /// Debian component name (e.g. "main").
+    pub component: Option<String>,
+    /// Environment variable name containing the CloudSmith API key.
+    pub secret_name: Option<String>,
+    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip: Option<StringOrBool>,
+    /// When true, allow republishing over existing package versions.
+    pub republish: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// NPM publisher
+// ---------------------------------------------------------------------------
+
+/// NPM publisher configuration.
+/// Publishes packages to NPM registries.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NpmConfig {
+    /// Unique identifier for this NPM publisher (when multiple are configured).
+    pub id: Option<String>,
+    /// NPM package name (e.g. `@myorg/mypackage`).
+    pub name: Option<String>,
+    /// Package description.
+    pub description: Option<String>,
+    /// Package homepage URL.
+    pub homepage: Option<String>,
+    /// Package keywords for NPM search.
+    pub keywords: Option<Vec<String>>,
+    /// SPDX license identifier (e.g. "MIT", "Apache-2.0").
+    pub license: Option<String>,
+    /// Package author (e.g. `"Jane Doe <jane@example.com>"`).
+    pub author: Option<String>,
+    /// Repository URL for package.json.
+    pub repository: Option<String>,
+    /// Bug tracker URL for package.json.
+    pub bugs: Option<String>,
+    /// NPM access level: "public" or "restricted".
+    pub access: Option<String>,
+    /// NPM dist-tag (e.g. "latest", "next", "beta").
+    pub tag: Option<String>,
+    /// Package format: "tgz" (default) or other supported NPM formats.
+    pub format: Option<String>,
+    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Extra files to include in the NPM package.
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before inclusion.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
+    /// Disable this publisher. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Custom URL template for package downloads.
+    pub url_template: Option<String>,
+    /// Template-conditional: only run this publisher if the condition evaluates to true.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
+    /// Additional package.json fields as key-value pairs.
+    pub extra: Option<HashMap<String, serde_json::Value>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -9024,5 +9241,97 @@ crates:
             Some("https://gitea.corp.com/api/v1/")
         );
         assert_eq!(config.force_token, Some(ForceTokenKind::GitHub));
+    }
+
+    #[test]
+    fn test_dockerhub_config_parse() {
+        let yaml = r#"
+project_name: test
+dockerhub:
+  - username: myuser
+    secret_name: DOCKER_TOKEN
+    images:
+      - myorg/myapp
+    description: "My app"
+    full_description:
+      from_file:
+        path: ./README.md
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let dh = &cfg.dockerhub.unwrap()[0];
+        assert_eq!(dh.username.as_deref(), Some("myuser"));
+        assert_eq!(dh.images.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_artifactory_config_parse() {
+        let yaml = r#"
+project_name: test
+artifactories:
+  - name: production
+    target: "https://artifactory.example.com/repo/{{ .ProjectName }}/{{ .Version }}/"
+    username: deployer
+    mode: archive
+    ids:
+      - default
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let art = &cfg.artifactories.unwrap()[0];
+        assert_eq!(art.name.as_deref(), Some("production"));
+        assert_eq!(art.mode.as_deref(), Some("archive"));
+    }
+
+    #[test]
+    fn test_fury_config_parse() {
+        let yaml = r#"
+project_name: test
+fury:
+  - account: myaccount
+    secret_name: FURY_TOKEN
+    ids:
+      - packages
+    formats:
+      - deb
+      - rpm
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let fury = &cfg.fury.unwrap()[0];
+        assert_eq!(fury.account.as_deref(), Some("myaccount"));
+        assert_eq!(fury.formats.as_ref().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_cloudsmith_config_parse() {
+        let yaml = r#"
+project_name: test
+cloudsmiths:
+  - organization: myorg
+    repository: myrepo
+    formats:
+      - deb
+    distributions:
+      deb: "ubuntu/focal"
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cs = &cfg.cloudsmiths.unwrap()[0];
+        assert_eq!(cs.organization.as_deref(), Some("myorg"));
+    }
+
+    #[test]
+    fn test_npm_config_parse() {
+        let yaml = r#"
+project_name: test
+npms:
+  - name: "@myorg/mypackage"
+    description: "My CLI tool"
+    license: MIT
+    author: "Jane Doe <jane@example.com>"
+    access: public
+    tag: latest
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let npm = &cfg.npms.unwrap()[0];
+        assert_eq!(npm.name.as_deref(), Some("@myorg/mypackage"));
+        assert_eq!(npm.access.as_deref(), Some("public"));
     }
 }
