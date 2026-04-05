@@ -9253,6 +9253,7 @@ dockerhub:
     images:
       - myorg/myapp
     description: "My app"
+    disable: true
     full_description:
       from_file:
         path: ./README.md
@@ -9260,7 +9261,46 @@ dockerhub:
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let dh = &cfg.dockerhub.unwrap()[0];
         assert_eq!(dh.username.as_deref(), Some("myuser"));
-        assert_eq!(dh.images.as_ref().unwrap().len(), 1);
+        assert_eq!(dh.secret_name.as_deref(), Some("DOCKER_TOKEN"));
+        assert_eq!(dh.images.as_ref().unwrap(), &["myorg/myapp"]);
+        assert_eq!(dh.description.as_deref(), Some("My app"));
+        assert_eq!(dh.disable, Some(StringOrBool::Bool(true)));
+        let fd = dh.full_description.as_ref().unwrap();
+        assert!(fd.from_url.is_none());
+        let ff = fd.from_file.as_ref().unwrap();
+        assert_eq!(ff.path, "./README.md");
+    }
+
+    #[test]
+    fn test_dockerhub_from_url_parse() {
+        let yaml = r#"
+project_name: test
+dockerhub:
+  - username: myuser
+    full_description:
+      from_url:
+        url: "https://raw.githubusercontent.com/org/repo/main/README.md"
+        headers:
+          Authorization: "Bearer {{ .Env.GH_TOKEN }}"
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let dh = &cfg.dockerhub.unwrap()[0];
+        let fu = dh
+            .full_description
+            .as_ref()
+            .unwrap()
+            .from_url
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            fu.url,
+            "https://raw.githubusercontent.com/org/repo/main/README.md"
+        );
+        let headers = fu.headers.as_ref().unwrap();
+        assert_eq!(
+            headers.get("Authorization").unwrap(),
+            "Bearer {{ .Env.GH_TOKEN }}"
+        );
     }
 
     #[test]
@@ -9272,13 +9312,24 @@ artifactories:
     target: "https://artifactory.example.com/repo/{{ .ProjectName }}/{{ .Version }}/"
     username: deployer
     mode: archive
+    skip: "{{ .Env.SKIP }}"
     ids:
       - default
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let art = &cfg.artifactories.unwrap()[0];
         assert_eq!(art.name.as_deref(), Some("production"));
+        assert_eq!(
+            art.target.as_deref(),
+            Some("https://artifactory.example.com/repo/{{ .ProjectName }}/{{ .Version }}/")
+        );
+        assert_eq!(art.username.as_deref(), Some("deployer"));
         assert_eq!(art.mode.as_deref(), Some("archive"));
+        assert_eq!(
+            art.skip,
+            Some(StringOrBool::String("{{ .Env.SKIP }}".to_string()))
+        );
+        assert_eq!(art.ids.as_ref().unwrap(), &["default"]);
     }
 
     #[test]
@@ -9297,7 +9348,23 @@ fury:
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let fury = &cfg.fury.unwrap()[0];
         assert_eq!(fury.account.as_deref(), Some("myaccount"));
-        assert_eq!(fury.formats.as_ref().unwrap().len(), 2);
+        assert_eq!(fury.secret_name.as_deref(), Some("FURY_TOKEN"));
+        assert_eq!(fury.ids.as_ref().unwrap(), &["packages"]);
+        assert_eq!(fury.formats.as_ref().unwrap(), &["deb", "rpm"]);
+    }
+
+    #[test]
+    fn test_fury_gemfury_alias_parse() {
+        let yaml = r#"
+project_name: test
+gemfury:
+  - account: aliasaccount
+    secret_name: GF_TOKEN
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let fury = &cfg.fury.unwrap()[0];
+        assert_eq!(fury.account.as_deref(), Some("aliasaccount"));
+        assert_eq!(fury.secret_name.as_deref(), Some("GF_TOKEN"));
     }
 
     #[test]
@@ -9315,6 +9382,10 @@ cloudsmiths:
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let cs = &cfg.cloudsmiths.unwrap()[0];
         assert_eq!(cs.organization.as_deref(), Some("myorg"));
+        assert_eq!(cs.repository.as_deref(), Some("myrepo"));
+        assert_eq!(cs.formats.as_ref().unwrap(), &["deb"]);
+        let dists = cs.distributions.as_ref().unwrap();
+        assert_eq!(dists.get("deb").unwrap(), "ubuntu/focal");
     }
 
     #[test]
@@ -9328,10 +9399,22 @@ npms:
     author: "Jane Doe <jane@example.com>"
     access: public
     tag: latest
+    if: "{{ .IsSnapshot }}"
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let npm = &cfg.npms.unwrap()[0];
         assert_eq!(npm.name.as_deref(), Some("@myorg/mypackage"));
+        assert_eq!(npm.description.as_deref(), Some("My CLI tool"));
+        assert_eq!(npm.license.as_deref(), Some("MIT"));
+        assert_eq!(
+            npm.author.as_deref(),
+            Some("Jane Doe <jane@example.com>")
+        );
         assert_eq!(npm.access.as_deref(), Some("public"));
+        assert_eq!(npm.tag.as_deref(), Some("latest"));
+        assert_eq!(
+            npm.if_condition.as_deref(),
+            Some("{{ .IsSnapshot }}")
+        );
     }
 }
