@@ -201,12 +201,12 @@ GoReleaser source: `internal/pipe/release/`, `internal/pipe/publish/`
 - [ ] GitLab release support
 - [ ] Gitea release support
 - [ ] GitHub Enterprise URLs (api/upload/download/skip_tls_verify)
-- [ ] DockerHub description sync: username, secret_name, images, description, full_description (from_url/from_file)
-- [ ] Artifactory publisher: name, target (template), mode (archive/binary), username/password, client_x509_cert/key, custom_headers, ids/exts
-- [ ] Fury.io publisher: account, disable, secret_name, ids, formats
-- [ ] CloudSmith publisher: organization, repository, ids/formats, distributions, component
-- [ ] NPM publisher: name, description, license, author, access, tag
-- [ ] Snapcraft publish (upload to Snap Store)
+- [x] DockerHub description sync: username, secret_name, images, description, full_description (from_url/from_file)
+- [x] Artifactory publisher: name, target (template), mode (archive/binary), username/password, client_x509_cert/key, custom_headers, ids/exts
+- [x] Fury.io publisher: account, disable, secret_name, ids, formats
+- [x] CloudSmith publisher: organization, repository, ids/formats, distributions, component
+- [x] NPM publisher: name, description, license, author, access, tag
+- [x] Snapcraft publish (upload to Snap Store)
 - [ ] changelog.use: gitlab backend
 - [ ] changelog.use: gitea backend
 

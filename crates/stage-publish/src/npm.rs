@@ -440,7 +440,7 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
         let postinstall_js = format!(
             "const {{ execSync }} = require('child_process');\n\
              execSync(`{}`, {{ stdio: 'inherit' }});\n",
-            postinstall.replace('\\', "\\\\").replace('`', "\\`")
+            postinstall.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$")
         );
         std::fs::write(&postinstall_path, &postinstall_js)
             .context("npm: failed to write postinstall.js")?;
@@ -761,6 +761,43 @@ mod tests {
         );
         // Empty extension should not add a dot.
         assert!(!script_none.contains("${ARCH}."));
+    }
+
+    #[test]
+    fn test_npm_postinstall_js_escaping() {
+        // The postinstall script contains shell variables like ${OS} and
+        // ${ARCH}.  When wrapped in a JS template literal (backticks), the
+        // `${}` syntax would be interpreted as JavaScript template
+        // expressions.  Verify that `$` is escaped to `\$` in the JS output.
+        let script = generate_postinstall_script(
+            "https://example.com/download/",
+            "mytool",
+            "tar.gz",
+        );
+        let js = format!(
+            "const {{ execSync }} = require('child_process');\n\
+             execSync(`{}`, {{ stdio: 'inherit' }});\n",
+            script.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$")
+        );
+        // Every `$` in the JS output should be preceded by `\` to prevent
+        // JavaScript template literal interpolation.  Check that no bare
+        // (un-escaped) `$` exists.
+        for (i, ch) in js.char_indices() {
+            if ch == '$' {
+                // Must be preceded by a backslash.
+                assert!(
+                    i > 0 && js.as_bytes()[i - 1] == b'\\',
+                    "Found un-escaped '$' at byte offset {} in JS output:\n{}",
+                    i,
+                    js
+                );
+            }
+        }
+        // The escaped forms should be present.
+        assert!(
+            js.contains("\\$"),
+            "JS output should contain escaped dollar signs"
+        );
     }
 
     #[test]

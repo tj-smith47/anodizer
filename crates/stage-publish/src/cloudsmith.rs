@@ -1,6 +1,7 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{bail, Context as _, Result};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -110,7 +111,7 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                 log.status(&format!("(dry-run) build ID filter: {:?}", ids));
             }
             if let Some(ref distributions) = entry.distributions {
-                let rendered: std::collections::HashMap<&str, String> = distributions
+                let rendered: HashMap<&str, String> = distributions
                     .iter()
                     .map(|(k, v)| {
                         let rendered_val = match v.as_str() {
@@ -360,8 +361,6 @@ mod tests {
 
     #[test]
     fn test_cloudsmith_dry_run_with_distributions() {
-        use std::collections::HashMap;
-
         let mut distributions = HashMap::new();
         distributions.insert(
             "deb".to_string(),

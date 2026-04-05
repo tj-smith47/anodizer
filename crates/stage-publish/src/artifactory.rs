@@ -147,6 +147,9 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             if let Some(ref cert) = entry.client_x509_cert {
                 log.status(&format!("(dry-run) using client cert: {}", cert));
             }
+            if let Some(ref key) = entry.client_x509_key {
+                log.status(&format!("(dry-run) using client key: {}", key));
+            }
             log.status(&format!(
                 "(dry-run) checksum header: {}",
                 checksum_header
@@ -171,6 +174,9 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
                     "(dry-run) custom artifact naming: {}",
                     custom_name
                 ));
+            }
+            if let Some(ref files) = entry.extra_files {
+                log.status(&format!("(dry-run) extra files: {} entries", files.len()));
             }
             log.status(&format!(
                 "(dry-run) credential env var: {} (fallback: {})",

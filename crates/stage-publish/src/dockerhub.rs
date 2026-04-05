@@ -1,7 +1,7 @@
 use anodize_core::config::DockerHubFullDescription;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{Context as _, Result};
+use anyhow::{anyhow, bail, Context as _, Result};
 
 // ---------------------------------------------------------------------------
 // resolve_full_description
@@ -31,7 +31,7 @@ pub fn resolve_full_description(
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().unwrap_or_default();
-            anyhow::bail!(
+            bail!(
                 "dockerhub: GET {} returned HTTP {}: {}",
                 from_url.url,
                 status,
@@ -43,7 +43,7 @@ pub fn resolve_full_description(
             .with_context(|| format!("dockerhub: failed to read body from '{}'", from_url.url));
     }
 
-    anyhow::bail!("dockerhub: full_description has neither from_file nor from_url set")
+    bail!("dockerhub: full_description has neither from_file nor from_url set")
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         let username = match entry.username.as_deref() {
             Some(u) if !u.is_empty() => u,
             _ => {
-                anyhow::bail!("dockerhub: 'username' is required but not set");
+                bail!("dockerhub: 'username' is required but not set");
             }
         };
 
@@ -164,7 +164,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         if !login_resp.status().is_success() {
             let status = login_resp.status();
             let body = login_resp.text().unwrap_or_default();
-            anyhow::bail!(
+            bail!(
                 "dockerhub: authentication failed (HTTP {}): {}",
                 status,
                 body
@@ -177,7 +177,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         let token = login_json["token"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("dockerhub: no token in login response"))?;
+            .ok_or_else(|| anyhow!("dockerhub: no token in login response"))?;
 
         // PATCH each image repository.
         for image in images {
@@ -218,7 +218,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             if !patch_resp.status().is_success() {
                 let status = patch_resp.status();
                 let body = patch_resp.text().unwrap_or_default();
-                anyhow::bail!(
+                bail!(
                     "dockerhub: PATCH {}/{} failed (HTTP {}): {}",
                     namespace,
                     name,
