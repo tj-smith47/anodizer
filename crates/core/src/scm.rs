@@ -96,8 +96,8 @@ pub fn default_download_url(token_type: ScmTokenType, custom_url: Option<&str>) 
 /// The returned string contains Tera-style `{{ }}` placeholders that are
 /// rendered later by the template engine (they are NOT Rust format strings).
 ///
-/// - **GitHub / Gitea**: `{download}/{owner}/{name}/releases/download/{{ urlPathEscape(tag) }}/{{ artifactName }}`
-/// - **GitLab**: `{download}/{owner}/{name}/-/releases/{{ urlPathEscape(tag) }}/downloads/{{ artifactName }}`
+/// - **GitHub / Gitea**: `{download}/{owner}/{name}/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}`
+/// - **GitLab**: `{download}/{owner}/{name}/-/releases/{{ urlPathEscape .Tag }}/downloads/{{ .ArtifactName }}`
 ///   When `owner` is empty the `/{owner}` segment is omitted.
 pub fn release_url_template(
     token_type: ScmTokenType,
@@ -110,17 +110,17 @@ pub fn release_url_template(
     match token_type {
         ScmTokenType::GitHub | ScmTokenType::Gitea => {
             format!(
-                "{base}/{owner}/{name}/releases/download/{{{{ urlPathEscape(tag) }}}}/{{{{ artifactName }}}}"
+                "{base}/{owner}/{name}/releases/download/{{{{ urlPathEscape .Tag }}}}/{{{{ .ArtifactName }}}}"
             )
         }
         ScmTokenType::GitLab => {
             if owner.is_empty() {
                 format!(
-                    "{base}/{name}/-/releases/{{{{ urlPathEscape(tag) }}}}/downloads/{{{{ artifactName }}}}"
+                    "{base}/{name}/-/releases/{{{{ urlPathEscape .Tag }}}}/downloads/{{{{ .ArtifactName }}}}"
                 )
             } else {
                 format!(
-                    "{base}/{owner}/{name}/-/releases/{{{{ urlPathEscape(tag) }}}}/downloads/{{{{ artifactName }}}}"
+                    "{base}/{owner}/{name}/-/releases/{{{{ urlPathEscape .Tag }}}}/downloads/{{{{ .ArtifactName }}}}"
                 )
             }
         }
@@ -272,7 +272,7 @@ mod tests {
         );
         assert_eq!(
             tpl,
-            "https://github.com/owner/repo/releases/download/{{ urlPathEscape(tag) }}/{{ artifactName }}"
+            "https://github.com/owner/repo/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"
         );
     }
 
@@ -286,7 +286,7 @@ mod tests {
         );
         assert_eq!(
             tpl,
-            "https://gitea.example.com/myorg/myapp/releases/download/{{ urlPathEscape(tag) }}/{{ artifactName }}"
+            "https://gitea.example.com/myorg/myapp/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"
         );
     }
 
@@ -300,7 +300,7 @@ mod tests {
         );
         assert_eq!(
             tpl,
-            "https://gitlab.com/group/project/-/releases/{{ urlPathEscape(tag) }}/downloads/{{ artifactName }}"
+            "https://gitlab.com/group/project/-/releases/{{ urlPathEscape .Tag }}/downloads/{{ .ArtifactName }}"
         );
     }
 
@@ -309,7 +309,7 @@ mod tests {
         let tpl = release_url_template(ScmTokenType::GitLab, "", "project", "https://gitlab.com");
         assert_eq!(
             tpl,
-            "https://gitlab.com/project/-/releases/{{ urlPathEscape(tag) }}/downloads/{{ artifactName }}"
+            "https://gitlab.com/project/-/releases/{{ urlPathEscape .Tag }}/downloads/{{ .ArtifactName }}"
         );
     }
 
