@@ -659,6 +659,9 @@ struct DockerBuildJob {
     digest_disabled: bool,
     /// Digest file name template (rendered). None = use default tag-based naming.
     digest_name_template: Option<String>,
+    /// Context environment variables to inject into docker commands.
+    /// These come from .env files and config `env:` sections.
+    env_vars: HashMap<String, String>,
 }
 
 /// Result of executing a single docker build job.
@@ -696,11 +699,15 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             std::thread::sleep(delay);
         }
 
-        let output = Command::new(&job.cmd_args[0])
-            .args(&job.cmd_args[1..])
+        let mut cmd = Command::new(&job.cmd_args[0]);
+        cmd.args(&job.cmd_args[1..])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
+            .stderr(std::process::Stdio::piped());
+        // Inject context env vars (from .env files, config env: sections)
+        for (key, value) in &job.env_vars {
+            cmd.env(key, value);
+        }
+        let output = cmd.output()
             .with_context(|| {
                 format!(
                     "docker: execute {} for crate {} index {} (attempt {}/{})",
@@ -823,9 +830,14 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             } else {
                 "docker"
             };
-            let digest_output = Command::new(inspect_bin)
-                .args(["inspect", "--format", "{{index .RepoDigests 0}}", tag])
-                .output();
+            let digest_output = {
+                let mut inspect_cmd = Command::new(inspect_bin);
+                inspect_cmd.args(["inspect", "--format", "{{index .RepoDigests 0}}", tag]);
+                for (key, value) in &job.env_vars {
+                    inspect_cmd.env(key, value);
+                }
+                inspect_cmd.output()
+            };
 
             if let Ok(output) = digest_output
                 && output.status.success()
@@ -1473,6 +1485,7 @@ impl Stage for DockerStage {
                         is_v2: false,
                         digest_disabled,
                         digest_name_template,
+                        env_vars: ctx.template_vars().all_env().clone(),
                     });
                 }
             }
@@ -1803,6 +1816,7 @@ impl Stage for DockerStage {
                         is_v2: true,
                         digest_disabled,
                         digest_name_template,
+                        env_vars: ctx.template_vars().all_env().clone(),
                     });
                 }
                 } // end for snapshot_plats
@@ -1925,6 +1939,7 @@ impl Stage for DockerStage {
         // Docker manifests (must run after all builds complete, since they
         // reference the built image digests)
         // ==================================================================
+        let manifest_env_vars = ctx.template_vars().all_env().clone();
         for krate in &crates {
             // ------------------------------------------------------------------
             // Docker manifests
@@ -2062,10 +2077,14 @@ impl Stage for DockerStage {
                         // failures on re-runs (GoReleaser does this too).
                         // We ignore "no such manifest" errors (manifest didn't
                         // exist yet, which is fine) but propagate other failures.
-                        if let Ok(rm_output) = Command::new(manifest_bin)
-                            .args(["manifest", "rm", &manifest_name])
-                            .output()
-                        {
+                        if let Ok(rm_output) = {
+                            let mut rm_cmd = Command::new(manifest_bin);
+                            rm_cmd.args(["manifest", "rm", &manifest_name]);
+                            for (key, value) in &manifest_env_vars {
+                                rm_cmd.env(key, value);
+                            }
+                            rm_cmd.output()
+                        } {
                             if !rm_output.status.success() {
                                 let stderr =
                                     String::from_utf8_lossy(&rm_output.stderr).to_lowercase();
@@ -2116,9 +2135,12 @@ impl Stage for DockerStage {
                                     std::thread::sleep(delay);
                                 }
                                 log.status(&format!("running: {}", create_cmd.join(" ")));
-                                let output = Command::new(&create_cmd[0])
-                                    .args(&create_cmd[1..])
-                                    .output()
+                                let mut create_command = Command::new(&create_cmd[0]);
+                                create_command.args(&create_cmd[1..]);
+                                for (key, value) in &manifest_env_vars {
+                                    create_command.env(key, value);
+                                }
+                                let output = create_command.output()
                                     .with_context(|| {
                                         format!(
                                             "docker: manifest create for crate {} manifest {} (attempt {}/{})",
@@ -2187,9 +2209,12 @@ impl Stage for DockerStage {
                                     std::thread::sleep(delay);
                                 }
                                 log.status(&format!("running: {}", push_cmd.join(" ")));
-                                let output = Command::new(&push_cmd[0])
-                                    .args(&push_cmd[1..])
-                                    .output()
+                                let mut push_command = Command::new(&push_cmd[0]);
+                                push_command.args(&push_cmd[1..]);
+                                for (key, value) in &manifest_env_vars {
+                                    push_command.env(key, value);
+                                }
+                                let output = push_command.output()
                                     .with_context(|| {
                                         format!(
                                             "docker: manifest push for crate {} manifest {} (attempt {}/{})",
@@ -5432,6 +5457,16 @@ disable: "{{ .IsSnapshot }}"
 "#;
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.disable.unwrap().is_template());
+    }
+
+    #[test]
+    fn test_docker_build_job_has_env_vars() {
+        // Verify that env_vars field exists and can hold context env
+        let mut env = HashMap::new();
+        env.insert("DOCKER_BUILDKIT".to_string(), "1".to_string());
+        env.insert("REGISTRY_TOKEN".to_string(), "secret123".to_string());
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.get("DOCKER_BUILDKIT").unwrap(), "1");
     }
 
     #[test]
