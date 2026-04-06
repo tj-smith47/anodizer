@@ -57,6 +57,30 @@ pub struct PkgbuildParams<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// archive extension helper
+// ---------------------------------------------------------------------------
+
+/// Extract the archive extension from a URL path.
+///
+/// Handles compound extensions like `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`
+/// and simple ones like `.zip`, `.gz`, `.xz`.
+fn extract_archive_extension(url: &str) -> &str {
+    let path = url.split('?').next().unwrap_or(url);
+    let path = path.split('#').next().unwrap_or(path);
+    let filename = path.rsplit('/').next().unwrap_or(path);
+    for ext in &[".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz4", ".tar.sz"] {
+        if filename.ends_with(ext) {
+            return &ext[1..];
+        }
+    }
+    if let Some(dot_pos) = filename.rfind('.') {
+        &filename[dot_pos + 1..]
+    } else {
+        ""
+    }
+}
+
+// ---------------------------------------------------------------------------
 // generate_pkgbuild
 // ---------------------------------------------------------------------------
 
@@ -78,7 +102,7 @@ license=('{{ license }}')
 {% endif %}{% if replaces | length > 0 %}replaces=({% for r in replaces %}'{{ r }}'{% if not loop.last %} {% endif %}{% endfor %})
 {% endif %}{% if backup | length > 0 %}backup=({% for b in backup %}'{{ b }}'{% if not loop.last %} {% endif %}{% endfor %})
 {% endif %}{% if install_file %}install={{ install_file }}
-{% endif %}{% for s in sources %}source_{{ s.arch }}=("{{ s.url }}")
+{% endif %}{% for s in sources %}source_{{ s.arch }}=("{{ s.rename }}::{{ s.url }}")
 sha256sums_{{ s.arch }}=('{{ s.hash }}')
 {% endfor %}
 package() {
@@ -126,21 +150,28 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     // Sources as objects for template iteration.
     // Replace the version string in URLs with ${pkgver} so the PKGBUILD
     // automatically uses the pkgver variable (GoReleaser convention).
-    let substituted_sources: Vec<(String, String, String)> = params
+    let substituted_sources: Vec<(String, String, String, String)> = params
         .sources
         .iter()
         .map(|(arch, url, hash)| {
             let substituted_url = url.replace(params.version, "${pkgver}");
-            (arch.clone(), substituted_url, hash.clone())
+            let format = extract_archive_extension(url);
+            let rename = format!(
+                "{}_{}_{}{}",
+                params.name, "${pkgver}", arch,
+                if format.is_empty() { String::new() } else { format!(".{}", format) }
+            );
+            (arch.clone(), substituted_url, hash.clone(), rename)
         })
         .collect();
     let sources: Vec<std::collections::HashMap<&str, &str>> = substituted_sources
         .iter()
-        .map(|(arch, url, hash)| {
+        .map(|(arch, url, hash, rename)| {
             let mut m = std::collections::HashMap::new();
             m.insert("arch", arch.as_str());
             m.insert("url", url.as_str());
             m.insert("hash", hash.as_str());
+            m.insert("rename", rename.as_str());
             m
         })
         .collect();
@@ -169,8 +200,9 @@ const SRCINFO_TEMPLATE: &str = r#"pkgbase = {{ name }}
 	pkgdesc = {{ description }}
 	pkgver = {{ version }}
 	pkgrel = {{ pkgrel }}
-	url = {{ url }}
-	license = {{ license }}
+{% if url %}	url = {{ url }}
+{% endif %}{% if license %}	license = {{ license }}
+{% endif %}
 {% for d in depends %}	depends = {{ d }}
 {% endfor %}{% for o in optdepends %}	optdepends = {{ o }}
 {% endfor %}{% for c in conflicts %}	conflicts = {{ c }}
@@ -201,14 +233,27 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("conflicts", params.conflicts);
     ctx.insert("provides", params.provides);
 
-    let sources: Vec<std::collections::HashMap<&str, &str>> = params
+    let source_data: Vec<(String, String, String, String)> = params
         .sources
         .iter()
         .map(|(arch, url, hash)| {
+            let format = extract_archive_extension(url);
+            let rename = format!(
+                "{}_{}_{}{}",
+                params.name, params.version, arch,
+                if format.is_empty() { String::new() } else { format!(".{}", format) }
+            );
+            (arch.clone(), url.clone(), hash.clone(), rename)
+        })
+        .collect();
+    let sources: Vec<std::collections::HashMap<&str, &str>> = source_data
+        .iter()
+        .map(|(arch, url, hash, rename)| {
             let mut m = std::collections::HashMap::new();
             m.insert("arch", arch.as_str());
             m.insert("url", url.as_str());
             m.insert("hash", hash.as_str());
+            m.insert("rename", rename.as_str());
             m
         })
         .collect();
@@ -280,7 +325,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let description = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
-    let license = aur_cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
+    let license = aur_cfg.license.clone().unwrap_or_default();
     let url = aur_cfg
         .url
         .as_deref()
@@ -321,9 +366,13 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let replaces = aur_cfg.replaces.clone().unwrap_or_default();
     let backup = aur_cfg.backup.clone().unwrap_or_default();
 
-    // Find Linux artifacts for the AUR package, applying IDs filter.
+    // Find Linux artifacts for the AUR package, applying IDs + goamd64 filter.
+    // GoReleaser hardcodes goarm to "7" for AUR (no config option).
     let ids_filter = aur_cfg.ids.as_deref();
-    let linux_artifacts = util::find_artifacts_by_os_filtered(ctx, crate_name, "linux", ids_filter);
+    let goamd64 = aur_cfg.goamd64.as_deref().or(Some("v1"));
+    let linux_artifacts = util::find_artifacts_by_os_with_goarch(
+        ctx, crate_name, "linux", ids_filter, goamd64, Some("7"),
+    );
 
     let url_template = aur_cfg.url_template.as_deref();
 
@@ -533,7 +582,7 @@ mod tests {
         assert!(pkgbuild.contains("license=('MIT')"));
         assert!(pkgbuild.contains("depends=()"));
         assert!(pkgbuild.contains(
-            "source_x86_64=(\"https://example.com/mytool-${pkgver}-linux-amd64.tar.gz\")"
+            "source_x86_64=(\"mytool_${pkgver}_x86_64.tar.gz::https://example.com/mytool-${pkgver}-linux-amd64.tar.gz\")"
         ));
         assert!(pkgbuild.contains("sha256sums_x86_64=('deadbeef1234')"));
         assert!(pkgbuild.contains("package()"));

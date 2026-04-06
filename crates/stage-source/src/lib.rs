@@ -571,7 +571,7 @@ impl SourceStage {
         // Default args for syft
         let args = sbom_cfg.args.clone().unwrap_or_else(|| {
             if cmd == "syft" {
-                vec!["$artifact".to_string(), "--output".to_string(), "spdx-json=$document".to_string()]
+                vec!["$artifact".to_string(), "--output".to_string(), "spdx-json=$document".to_string(), "--enrich".to_string(), "all".to_string()]
             } else {
                 vec![]
             }

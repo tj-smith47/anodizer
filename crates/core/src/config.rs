@@ -131,6 +131,11 @@ pub struct Config {
     pub cloudsmiths: Option<Vec<CloudSmithConfig>>,
     /// NPM publisher configurations.
     pub npms: Option<Vec<NpmConfig>>,
+    /// Top-level Homebrew Cask configurations.
+    /// GoReleaser parity: `homebrew_casks` is a top-level array with its own
+    /// repository, commit_author, directory, skip_upload, hooks, dependencies,
+    /// conflicts, completions, manpages, structured uninstall/zap, etc.
+    pub homebrew_casks: Option<Vec<TopLevelHomebrewCaskConfig>>,
     /// Automatic semantic version tagging configuration.
     pub tag: Option<TagConfig>,
     /// Git-level tag discovery and sorting settings.
@@ -233,6 +238,7 @@ impl Default for Config {
             fury: None,
             cloudsmiths: None,
             npms: None,
+            homebrew_casks: None,
             tag: None,
             git: None,
             partial: None,
@@ -1846,6 +1852,12 @@ pub struct HomebrewConfig {
     pub service: Option<String>,
     /// Homebrew Cask configuration (macOS .app bundles).
     pub cask: Option<HomebrewCaskConfig>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub goamd64: Option<String>,
+    /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
+    /// variant are included.
+    pub goarm: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -1920,6 +1932,178 @@ pub struct HomebrewCaskConfig {
     pub uninstall: Option<Vec<String>>,
 }
 
+// ---------------------------------------------------------------------------
+// Top-level Homebrew Cask config (GoReleaser `homebrew_casks` parity)
+// ---------------------------------------------------------------------------
+
+/// Top-level Homebrew Cask configuration.
+/// GoReleaser has `homebrew_casks` as a top-level config array with its own
+/// repository, commit_author, directory, skip_upload, etc.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct TopLevelHomebrewCaskConfig {
+    /// Cask name (default: project name).
+    pub name: Option<String>,
+    /// Unified repository config for the Homebrew tap.
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Custom commit message template.
+    /// Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+    pub commit_msg_template: Option<String>,
+    /// Subdirectory in the tap repo for cask placement (default: "Casks").
+    pub directory: Option<String>,
+    /// Cask description.
+    pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
+    /// Skip publishing the cask. `"true"` always skips; `"auto"` skips
+    /// for prerelease versions. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
+    /// Custom Ruby code block inserted into the cask definition.
+    pub custom_block: Option<String>,
+    /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Homebrew service block content.
+    pub service: Option<String>,
+    /// Binary stubs to create in /usr/local/bin.
+    pub binaries: Option<Vec<String>>,
+    /// Manpage file paths (glob patterns supported).
+    pub manpages: Option<Vec<String>>,
+    /// Custom caveats shown after install.
+    pub caveats: Option<String>,
+    /// SPDX license identifier.
+    pub license: Option<String>,
+    /// Download URL configuration.
+    pub url: Option<HomebrewCaskURL>,
+    /// Shell completion file paths.
+    pub completions: Option<HomebrewCaskCompletions>,
+    /// Cask/formula dependencies.
+    pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
+    /// Conflicting casks/formulas.
+    pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
+    /// Pre/post install/uninstall hooks.
+    pub hooks: Option<HomebrewCaskHooks>,
+    /// Uninstall stanza configuration.
+    pub uninstall: Option<HomebrewCaskUninstall>,
+    /// Deep uninstall (zap) stanza configuration.
+    pub zap: Option<HomebrewCaskUninstall>,
+    /// Auto-generate shell completions from an executable.
+    pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
+    /// macOS .app bundle name (e.g. "MyApp.app").
+    pub app: Option<String>,
+    /// Alternative cask names (aliases).
+    pub alternative_names: Option<Vec<String>>,
+}
+
+/// Structured URL configuration for Homebrew Cask downloads.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskURL {
+    /// URL template for the download.
+    pub template: Option<String>,
+    /// Verification string (domain shown to user).
+    pub verified: Option<String>,
+    /// Custom downloader (e.g. `:homebrew_curl`, `:post`).
+    pub using: Option<String>,
+    /// HTTP cookies for the download.
+    pub cookies: Option<HashMap<String, String>>,
+    /// Referer header for the download.
+    pub referer: Option<String>,
+    /// Custom HTTP headers.
+    pub headers: Option<Vec<String>>,
+    /// Custom user agent string.
+    pub user_agent: Option<String>,
+    /// POST data for form submissions.
+    pub data: Option<HashMap<String, String>>,
+}
+
+/// Structured uninstall/zap configuration for Homebrew Cask.
+/// Used for both `uninstall` and `zap` stanzas.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskUninstall {
+    /// Launch daemon/agent identifiers to stop.
+    pub launchctl: Option<Vec<String>>,
+    /// Application bundle IDs to quit.
+    pub quit: Option<Vec<String>>,
+    /// Login item names to remove.
+    pub login_item: Option<Vec<String>>,
+    /// File paths to delete.
+    pub delete: Option<Vec<String>>,
+    /// File paths to trash (preserves app state).
+    pub trash: Option<Vec<String>>,
+}
+
+/// Pre/post install/uninstall hooks for Homebrew Cask.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskHooks {
+    /// Pre-install/uninstall hooks.
+    pub pre: Option<HomebrewCaskHook>,
+    /// Post-install/uninstall hooks.
+    pub post: Option<HomebrewCaskHook>,
+}
+
+/// Individual hook for install/uninstall phases.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskHook {
+    /// Ruby code for preflight/postflight during install.
+    pub install: Option<String>,
+    /// Ruby code for uninstall_preflight/uninstall_postflight.
+    pub uninstall: Option<String>,
+}
+
+/// Shell completion file paths for Homebrew Cask.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskCompletions {
+    /// Path to bash completion file.
+    pub bash: Option<String>,
+    /// Path to zsh completion file.
+    pub zsh: Option<String>,
+    /// Path to fish completion file.
+    pub fish: Option<String>,
+}
+
+/// Cask dependency (on another cask or formula).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskDependencyEntry {
+    /// Dependent cask name.
+    pub cask: Option<String>,
+    /// Dependent formula name.
+    pub formula: Option<String>,
+}
+
+/// Cask conflict (with another cask or formula).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskConflictEntry {
+    /// Conflicting cask name.
+    pub cask: Option<String>,
+    /// Conflicting formula name (deprecated by Homebrew).
+    pub formula: Option<String>,
+}
+
+/// Auto-generate shell completions from an executable.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskGeneratedCompletions {
+    /// Binary to generate completions from.
+    pub executable: Option<String>,
+    /// Arguments to pass to the executable.
+    pub args: Option<Vec<String>>,
+    /// Base name for completion files.
+    pub base_name: Option<String>,
+    /// Shell completion framework type (arg, clap, click, cobra, flag, none, typer).
+    pub shell_parameter_format: Option<String>,
+    /// Target shells (bash, zsh, fish, pwsh).
+    pub shells: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ScoopConfig {
@@ -1966,6 +2150,9 @@ pub struct ScoopConfig {
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub goamd64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2054,6 +2241,9 @@ pub struct ChocolateyConfig {
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub goamd64: Option<String>,
 }
 
 /// Chocolatey package dependency with optional version constraint.
@@ -2144,6 +2334,9 @@ pub struct WingetConfig {
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub goamd64: Option<String>,
 }
 
 /// WinGet package dependency.
@@ -2229,6 +2422,9 @@ pub struct AurConfig {
     pub url: Option<String>,
     /// Packages this PKGBUILD replaces (for upgrade paths from old package names).
     pub replaces: Option<Vec<String>>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub goamd64: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2266,6 +2462,12 @@ pub struct KrewConfig {
     pub skip_upload: Option<StringOrBool>,
     /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub goamd64: Option<String>,
+    /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
+    /// variant are included.
+    pub goarm: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2317,6 +2519,9 @@ pub struct NixConfig {
     pub dependencies: Option<Vec<NixDependency>>,
     /// Nix formatter to run on the generated file: "alejandra" or "nixfmt".
     pub formatter: Option<String>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub goamd64: Option<String>,
 }
 
 /// Nix package dependency with optional OS restriction.
@@ -2368,6 +2573,9 @@ pub struct DockerConfig {
     /// Docker backend: "docker", "buildx" (default), or "podman".
     #[serde(rename = "use")]
     pub use_backend: Option<String>,
+    /// When truthy, skip this docker build entirely. Supports templates.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -2458,6 +2666,9 @@ pub struct DockerManifestConfig {
     pub use_backend: Option<String>,
     /// Retry configuration for manifest push (handles transient registry errors).
     pub retry: Option<DockerRetryConfig>,
+    /// When truthy, skip this docker manifest entirely. Supports templates.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3854,7 +4065,7 @@ impl Default for UpxConfig {
         UpxConfig {
             id: None,
             ids: None,
-            enabled: true,
+            enabled: false,
             binary: "upx".to_string(),
             args: Vec::new(),
             required: false,
@@ -4407,6 +4618,13 @@ pub struct ArtifactoryConfig {
     pub meta: Option<bool>,
     /// Use custom artifact naming instead of default.
     pub custom_artifact_name: Option<bool>,
+    /// When true, upload only extra_files (skip normal artifacts).
+    pub extra_files_only: Option<bool>,
+    /// HTTP method to use for uploads (default: "PUT").
+    pub method: Option<String>,
+    /// PEM-encoded trusted CA certificates for TLS verification.
+    /// Appended to the system certificate pool.
+    pub trusted_certificates: Option<String>,
     /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,

@@ -210,9 +210,68 @@ GoReleaser source: `internal/pipe/release/`, `internal/pipe/publish/`
 - [ ] changelog.use: gitlab backend
 - [ ] changelog.use: gitea backend
 
+### Session G: Parity Audit Findings (from 2026-04-05 audit)
+
+**Pervasive: `goamd64`/`goarm` config fields across all publishers**
+GoReleaser source: every publisher pipe's `Default()` method sets `Goamd64 = "v1"` and uses it to filter amd64 microarchitecture variants. All 7 core publishers + Nix lack these fields in anodize. Requires adding `goamd64: Option<String>` and `goarm: Option<String>` to each publisher config, defaulting goamd64 to `"v1"`, and wiring the filter into `find_all_platform_artifacts_filtered()` in `util.rs`.
+- [x] Add `goamd64` field to HomebrewConfig, ScoopConfig, ChocolateyConfig, WingetConfig, AurConfig, KrewConfig, NixConfig
+- [x] Add `goarm` field to HomebrewConfig, KrewConfig
+- [x] Wire goamd64/goarm into artifact filtering in `util.rs:find_all_platform_artifacts_filtered()`
+- [x] Default goamd64 to "v1" in each publisher's defaults path
+
+**Artifactory/Fury/CloudSmith: non-functional live mode**
+These publishers only have dry-run logging — no actual HTTP upload code. GoReleaser source: `internal/http/http.go` (shared upload module). Anodize files: `artifactory.rs`, `fury.rs`, `cloudsmith.rs` all have `"artifact registry not yet implemented"` placeholders. All config fields (ids, exts, mode, checksum, signature, meta, custom_artifact_name, custom_headers, extra_files, client_x509_cert/key) are declared but unwired.
+- [x] Implement HTTP upload in `artifactory.rs` using reqwest: artifact iteration, per-artifact URL template rendering, Basic Auth, checksum header, TLS client certs, custom headers
+- [x] Implement Fury push in `fury.rs`: HTTP PUT to `https://push.fury.io/v1/` with token auth
+- [x] Implement CloudSmith push in `cloudsmith.rs`: HTTP upload to CloudSmith API
+- [x] Add `method` and `trusted_certificates` fields to ArtifactoryConfig
+- [x] Add username/password cross-validation to artifactory defaults
+
+**Notarize: missing artifact refresh, timestamp server, timeout default**
+GoReleaser source: `internal/pipe/notary/macos.go:144` calls `binaries.Refresh()` after signing (updates checksums). Line 95 passes `http://timestamp.apple.com/ts01` timestamp server. Line 33 defaults timeout to 10 minutes. Line 35 defaults IDs to project name.
+- [x] Add `--timestamp-url http://timestamp.apple.com/ts01` to rcodesign sign command in `stage-notarize/src/lib.rs`
+- [x] Refresh artifact checksums after signing (call equivalent of `artifacts.refresh()`)
+- [x] Default notarize timeout to 10 minutes when not specified
+- [x] Default notarize IDs to project name when empty (match GoReleaser)
+
+**UPX/Notarize: missing UniversalBinary artifact filter**
+GoReleaser source: `upx.go:119` filters `ByTypes(Binary, UniversalBinary)`. `macos.go:79` same. Anodize only matches `ArtifactKind::Binary`. macOS universal/fat binaries are silently skipped.
+- [x] Add `ArtifactKind::UniversalBinary` to UPX binary filter in `stage-upx/src/lib.rs:117`
+- [x] Add `ArtifactKind::UniversalBinary` to notarize binary filter in `stage-notarize/src/lib.rs:197`
+
+**Template engine: Go block syntax preprocessor**
+GoReleaser uses Go text/template `{{ if }}/{{ end }}/{{ range }}` block syntax. Tera uses `{% if %}/{% endif %}/{% for %}/{% endfor %}`. No preprocessor pass converts between these. Affects users migrating GoReleaser configs with control flow.
+- [x] Add preprocessor pass to convert `{{ if .Condition }}` → `{% if Condition %}`
+- [x] Convert `{{ else }}` → `{% else %}`
+- [x] Convert `{{ end }}` → context-aware `{% endif %}` or `{% endfor %}`
+- [x] Convert `{{ range $k, $v := .Map }}` → `{% for k, v in Map %}`
+- [x] Convert `{{ with .Field }}` → `{% if Field %}{% set _with = Field %}`
+- [x] Convert `{{ $var := expr }}` → `{% set var = expr %}`
+
+**Homebrew Cask: incomplete as child config**
+GoReleaser source: `internal/pipe/cask/` — Cask is a top-level config section (`homebrew_casks []HomebrewCask`) with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, manpages, completions, service, structured uninstall/zap, and structured URL config. Anodize nests cask as a child of HomebrewConfig with ~15 missing fields.
+- [x] Promote `HomebrewCaskConfig` to top-level config (Vec in Config struct)
+- [x] Add missing fields: repository, commit_author, commit_msg_template, directory, skip_upload, custom_block, ids, service, manpages, completions, dependencies, conflicts, hooks, generate_completions_from_executable
+- [x] Add structured `HomebrewCaskURL` (verified, using, cookies, referer, headers, user_agent, data)
+- [x] Add structured `HomebrewCaskUninstall` (launchctl, quit, login_item, delete, trash)
+
+**Winget: missing portable binary support + validation**
+GoReleaser source: `internal/pipe/winget/winget.go:437-476` sets InstallerType to `"portable"` for bare binaries (not archives), populates `Commands` field. Lines 488-494 error on mixed formats or duplicate architectures. Line 187 filters to `.zip` only.
+- [x] Add `"portable"` InstallerType path for `UploadableBinary` artifacts in `winget.rs`
+- [x] Add `Commands` field to installer manifest for portable binaries
+- [x] Add mixed-format validation (error if both .exe and .zip)
+- [x] Add duplicate-architecture validation
+- [x] Filter to `.zip` archives only (reject tar.gz/7z)
+
+**Winget/Chocolatey: under-templated fields**
+GoReleaser source: `winget.go:115-134` templates 18 fields; `chocolatey.go:218-227` templates 4 fields with Changelog support.
+- [x] Winget: template-expand all 18 fields (Publisher, Name, PackageName, Author, etc.) in `winget.rs`
+- [x] Chocolatey: template-expand Copyright, Summary, ReleaseNotes (with Changelog variable) in `chocolatey.rs`
+- [x] Chocolatey: template-expand APIKey (GoReleaser treats it as a template)
+
 ### Phase Z: Final Parity Audit
 
-**After ALL sessions A-F complete:**
+**After ALL sessions A-G complete:**
 - [ ] Update goreleaser-parity-matrix.md — mark all items Implemented
 - [ ] Delete superseded docs: parity-gap-analysis.md
 - [ ] Consolidate fresh-parity-gap-analysis.md into matrix

@@ -255,9 +255,13 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .unwrap_or_else(|_| homepage_raw.clone());
     let caveats = krew_cfg.caveats.clone().unwrap_or_default();
 
-    // Find artifacts across all platforms, applying IDs filter.
+    // Find artifacts across all platforms, applying IDs + goamd64/goarm filter.
     let ids_filter = krew_cfg.ids.as_deref();
-    let all_artifacts = util::find_all_platform_artifacts_filtered(ctx, crate_name, ids_filter);
+    let goamd64 = krew_cfg.goamd64.as_deref().or(Some("v1"));
+    let goarm = krew_cfg.goarm.as_deref();
+    let all_artifacts = util::find_all_platform_artifacts_with_goarch(
+        ctx, crate_name, ids_filter, goamd64, goarm,
+    );
 
     let url_template = krew_cfg.url_template.as_deref();
 

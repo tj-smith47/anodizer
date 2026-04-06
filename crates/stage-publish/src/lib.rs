@@ -25,7 +25,7 @@ use cloudsmith::publish_to_cloudsmith;
 use crates_io::publish_to_crates_io;
 use dockerhub::publish_to_dockerhub;
 use fury::publish_to_fury;
-use homebrew::publish_to_homebrew;
+use homebrew::{publish_to_homebrew, publish_top_level_homebrew_casks};
 use krew::publish_to_krew;
 use nix::publish_to_nix;
 use npm::publish_to_npm;
@@ -110,6 +110,9 @@ impl Stage for PublishStage {
 
         // 13. NPM — top-level publisher (not per-crate).
         publish_to_npm(ctx, &log)?;
+
+        // 14. Homebrew Casks — top-level publisher (GoReleaser parity).
+        publish_top_level_homebrew_casks(ctx, &log)?;
 
         Ok(())
     }

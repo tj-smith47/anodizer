@@ -22,16 +22,286 @@ static GO_BLOCK_RE: LazyLock<Regex> =
 
 /// Preprocess a template: convert Go-style syntax to Tera-native syntax.
 ///
+/// Pass 0: convert Go template block syntax (`{{ if }}`, `{{ range }}`, `{{ end }}`, etc.)
+///         to Tera block syntax (`{% if %}`, `{% for %}`, `{% endif %}`, etc.).
 /// Pass 1: strip Go-style leading dots (`{{ .Field }}` → `{{ Field }}`).
 /// Pass 2: rewrite Go-style `(list ...)` subexpressions to Tera array literals.
 /// Pass 3: convert positional function syntax to named-arg syntax.
+/// Pass 4: rewrite Go-style `.Now.Format "..."` method calls to Tera filter syntax.
 pub fn preprocess(template: &str) -> String {
+    // Pass 0: convert Go block syntax to Tera block syntax.
+    let block_converted = preprocess_go_blocks(template);
     // Pass 1: strip Go-style leading dots.
-    let dot_stripped = preprocess_strip_dots(template);
+    let dot_stripped = preprocess_strip_dots(&block_converted);
     // Pass 2: rewrite `(list "a" "b")` → `["a", "b"]`.
     let list_rewritten = preprocess_list_subexpr(&dot_stripped);
     // Pass 3: convert positional function syntax to named-arg syntax.
-    preprocess_positional_syntax(&list_rewritten)
+    let positional_rewritten = preprocess_positional_syntax(&list_rewritten);
+    // Pass 4: rewrite `Now.Format "..."` → `Now | now_format(format="...")`.
+    preprocess_method_calls(&positional_rewritten)
+}
+
+// ---------------------------------------------------------------------------
+// Pass 0: Go template block syntax → Tera block syntax
+// ---------------------------------------------------------------------------
+
+/// Regexes for matching Go template block constructs.
+///
+/// These match `{{ if ... }}`, `{{ else }}`, `{{ else if ... }}`, `{{ end }}`,
+/// `{{ range ... }}`, `{{ with ... }}`, and `{{ $var := ... }}` patterns.
+/// Whitespace trimming markers (`-`) are preserved.
+static GO_IF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{(-?)\s*if\s+(.+?)\s*(-?)\}\}").unwrap()
+});
+static GO_ELSE_IF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{(-?)\s*else\s+if\s+(.+?)\s*(-?)\}\}").unwrap()
+});
+static GO_ELSE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{(-?)\s*else\s*(-?)\}\}").unwrap()
+});
+static GO_END_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{(-?)\s*end\s*(-?)\}\}").unwrap()
+});
+static GO_RANGE_KV_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // {{ range $k, $v := .Map }}
+    Regex::new(r"^\{\{(-?)\s*range\s+\$(\w+)\s*,\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}").unwrap()
+});
+static GO_RANGE_V_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // {{ range $v := .Slice }} or {{ range .Slice }}
+    Regex::new(r"^\{\{(-?)\s*range\s+(?:\$(\w+)\s*:=\s*)?(.+?)\s*(-?)\}\}").unwrap()
+});
+static GO_WITH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{(-?)\s*with\s+(.+?)\s*(-?)\}\}").unwrap()
+});
+static GO_VAR_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // {{ $var := expr }}
+    Regex::new(r"^\{\{(-?)\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}").unwrap()
+});
+/// Match `{{ . }}` (bare dot reference to current context).
+static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\{\{(-?)\s*\.\s*(-?)\}\}").unwrap()
+});
+
+/// Format a Tera block tag with optional whitespace trim markers.
+fn tera_block(ltrim: &str, content: &str, rtrim: &str) -> String {
+    let l = if ltrim == "-" { "{%-" } else { "{%" };
+    let r = if rtrim == "-" { "-%}" } else { "%}" };
+    format!("{l} {content} {r}")
+}
+
+/// Convert Go template block syntax to Tera block syntax.
+///
+/// Tracks a stack of block types (`if`, `for`, `with`) to emit the correct
+/// closing tag (`endif`, `endfor`, `endif`) for each `{{ end }}`.
+fn preprocess_go_blocks(template: &str) -> String {
+    // Strategy: scan for Go block patterns and replace them.
+    // We need a stack to track what `{{ end }}` should become.
+    //
+    // Process line-by-line isn't suitable since blocks can be inline.
+    // Instead, scan left to right, replacing each Go block pattern.
+
+    let mut result = String::with_capacity(template.len());
+    // Stack tracks block type and context variable (for `with`/`range` dot-rewriting).
+    // The context var is used to rewrite `{{ . }}` to `{{ var }}` inside the block.
+    let mut block_stack: Vec<(&str, Option<String>)> = Vec::new();
+    let mut pos = 0;
+    let bytes = template.as_bytes();
+
+    while pos < bytes.len() {
+        // Look for `{{` at current position
+        if pos + 1 < bytes.len() && bytes[pos] == b'{' && bytes[pos + 1] == b'{' {
+            let remaining = &template[pos..];
+
+            // Try each pattern in order of specificity
+
+            // Bare dot reference: {{ . }} → {{ <context_var> }}
+            // Inside `with` or `range` blocks, `{{ . }}` refers to the block's context variable.
+            if let Some(cap) = GO_DOT_RE.captures(remaining) {
+                let full = &cap[0];
+                let ltrim = &cap[1];
+                let rtrim = &cap[2];
+                // Find the innermost context variable from the block stack
+                let context_var = block_stack
+                    .iter()
+                    .rev()
+                    .find_map(|(_, var)| var.as_deref())
+                    .unwrap_or(".");
+                let l = if ltrim == "-" { "{{-" } else { "{{" };
+                let r = if rtrim == "-" { "-}}" } else { "}}" };
+                result.push_str(&format!("{l} {context_var} {r}"));
+                pos += full.len();
+                continue;
+            }
+
+            // Variable assignment: {{ $var := expr }}
+            // Must check before other patterns since $var could look like other things
+            if let Some(cap) = GO_VAR_ASSIGN_RE.captures(remaining) {
+                let full = &cap[0];
+                // Make sure this isn't an `if`, `range`, `with`, or `else` block
+                // (those are handled by their own patterns)
+                let inner_trimmed = remaining[2..].trim_start_matches('-').trim_start();
+                if !inner_trimmed.starts_with("if ")
+                    && !inner_trimmed.starts_with("else")
+                    && !inner_trimmed.starts_with("end")
+                    && !inner_trimmed.starts_with("range ")
+                    && !inner_trimmed.starts_with("with ")
+                {
+                    let ltrim = &cap[1];
+                    let var = &cap[2];
+                    let expr = &cap[3];
+                    let rtrim = &cap[4];
+                    result.push_str(&tera_block(ltrim, &format!("set {var} = {expr}"), rtrim));
+                    pos += full.len();
+                    continue;
+                }
+            }
+
+            // else if: {{ else if ... }}
+            if let Some(cap) = GO_ELSE_IF_RE.captures(remaining) {
+                let full = &cap[0];
+                result.push_str(&tera_block(&cap[1], &format!("elif {}", &cap[2]), &cap[3]));
+                pos += full.len();
+                continue;
+            }
+
+            // if: {{ if ... }}
+            if let Some(cap) = GO_IF_RE.captures(remaining) {
+                let full = &cap[0];
+                result.push_str(&tera_block(&cap[1], &format!("if {}", &cap[2]), &cap[3]));
+                block_stack.push(("if", None));
+                pos += full.len();
+                continue;
+            }
+
+            // else: {{ else }}
+            if let Some(cap) = GO_ELSE_RE.captures(remaining) {
+                let full = &cap[0];
+                result.push_str(&tera_block(&cap[1], "else", &cap[2]));
+                pos += full.len();
+                continue;
+            }
+
+            // end: {{ end }}
+            if let Some(cap) = GO_END_RE.captures(remaining) {
+                let full = &cap[0];
+                let end_tag = match block_stack.pop() {
+                    Some(("for", _)) => "endfor",
+                    _ => "endif", // if, with, or unknown
+                };
+                result.push_str(&tera_block(&cap[1], end_tag, &cap[2]));
+                pos += full.len();
+                continue;
+            }
+
+            // range with key-value: {{ range $k, $v := .Map }}
+            if let Some(cap) = GO_RANGE_KV_RE.captures(remaining) {
+                let full = &cap[0];
+                let (key, val, collection) = (&cap[2], &cap[3], &cap[4]);
+                result.push_str(&tera_block(
+                    &cap[1],
+                    &format!("for {key}, {val} in {collection}"),
+                    &cap[5],
+                ));
+                block_stack.push(("for", Some(val.to_string())));
+                pos += full.len();
+                continue;
+            }
+
+            // range with value or bare: {{ range $v := .Slice }} or {{ range .Slice }}
+            if let Some(cap) = GO_RANGE_V_RE.captures(remaining) {
+                let full = &cap[0];
+                let loop_var = cap.get(2).map(|m| m.as_str()).unwrap_or("val");
+                let collection = &cap[3];
+                result.push_str(&tera_block(
+                    &cap[1],
+                    &format!("for {loop_var} in {collection}"),
+                    &cap[4],
+                ));
+                block_stack.push(("for", Some(loop_var.to_string())));
+                pos += full.len();
+                continue;
+            }
+
+            // with: {{ with .Field }}
+            // Tera has no `with`. Convert to `{% if Field %}` and note on stack.
+            // The field becomes the context variable for `{{ . }}` rewriting.
+            if let Some(cap) = GO_WITH_RE.captures(remaining) {
+                let full = &cap[0];
+                let field = cap[2].to_string();
+                result.push_str(&tera_block(&cap[1], &format!("if {}", &field), &cap[3]));
+                block_stack.push(("with", Some(field)));
+                pos += full.len();
+                continue;
+            }
+        }
+
+        // No match at this position — copy one byte and advance.
+        result.push(bytes[pos] as char);
+        pos += 1;
+    }
+
+    // Post-pass: strip `$` prefix from Go variable references inside template blocks.
+    // Go templates use `$var` for loop/assignment variables; Tera uses plain `var`.
+    // Must NOT strip `$` inside quoted strings (e.g., regex `$1` replacements).
+    strip_dollar_vars(&result)
+}
+
+/// Strip `$` prefix from Go variable references inside `{{ }}` and `{% %}` blocks.
+///
+/// Scans each block character by character, skipping quoted strings, and removes
+/// `$` when followed by a word character (e.g., `$var` → `var`).
+fn strip_dollar_vars(template: &str) -> String {
+    // Match both {{ ... }} and {% ... %} blocks
+    static BLOCK_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\{\{.*?\}\}|\{%.*?%\}").unwrap());
+
+    BLOCK_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let block = &caps[0];
+            let bytes = block.as_bytes();
+            let mut result = String::with_capacity(block.len());
+            let mut i = 0;
+
+            while i < bytes.len() {
+                // Skip quoted strings entirely
+                if bytes[i] == b'"' || bytes[i] == b'\'' {
+                    let quote = bytes[i];
+                    result.push(quote as char);
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                            result.push(bytes[i] as char);
+                            result.push(bytes[i + 1] as char);
+                            i += 2;
+                        } else {
+                            result.push(bytes[i] as char);
+                            i += 1;
+                        }
+                    }
+                    if i < bytes.len() {
+                        result.push(bytes[i] as char);
+                        i += 1;
+                    }
+                    continue;
+                }
+
+                // Strip `$` when followed by a word character (variable reference)
+                if bytes[i] == b'$'
+                    && i + 1 < bytes.len()
+                    && (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+                {
+                    // Skip the `$`, keep the variable name
+                    i += 1;
+                    continue;
+                }
+
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+
+            result
+        })
+        .to_string()
 }
 
 /// Pass 1: Strip Go-style leading dots from variable references.
@@ -191,6 +461,41 @@ fn preprocess_positional_syntax(template: &str) -> String {
 
             // No positional syntax detected; return unchanged.
             block.to_string()
+        })
+        .to_string()
+}
+
+/// Regex matching `Now.Format` with a quoted format argument inside `{{ }}` blocks.
+/// Captures: (1) the format string including quotes.
+/// After Pass 1 (dot stripping), `{{ .Now.Format "2006-01-02" }}` becomes
+/// `{{ Now.Format "2006-01-02" }}`. This regex rewrites it to
+/// `{{ Now | now_format(format="2006-01-02") }}`.
+static NOW_FORMAT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"Now\.Format\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#).unwrap()
+});
+
+/// Pass 4: Rewrite Go-style method calls to Tera filter syntax.
+///
+/// Currently handles:
+/// - `Now.Format "2006-01-02"` → `Now | now_format(format="2006-01-02")`
+///
+/// This runs after all other passes so that dot-stripping and positional
+/// syntax rewrites have already been applied.
+fn preprocess_method_calls(template: &str) -> String {
+    GO_BLOCK_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let block = &caps[0];
+            if !block.contains("Now.Format") {
+                return block.to_string();
+            }
+            let (open, inner, close) = extract_block_parts(block);
+            let rewritten = NOW_FORMAT_RE
+                .replace_all(inner, |mcaps: &regex::Captures| {
+                    let fmt_arg = &mcaps[1];
+                    format!("Now | now_format(format={})", fmt_arg)
+                })
+                .to_string();
+            format!("{}{}{}", open, rewritten, close)
         })
         .to_string()
 }
@@ -445,6 +750,31 @@ static POSITIONAL_FUNCTIONS: &[PositionalSyntax] = &[
         standalone_params: &["pattern", "input", "replacement"],
         piped_params: &["pattern", "replacement"],
     },
+    PositionalSyntax {
+        name: "filter",
+        arity: 2,
+        standalone_params: &["items", "regexp"],
+        piped_params: &["regexp"],
+    },
+    PositionalSyntax {
+        name: "reverseFilter",
+        arity: 2,
+        standalone_params: &["items", "regexp"],
+        piped_params: &["regexp"],
+    },
+    PositionalSyntax {
+        name: "readFile",
+        arity: 1,
+        standalone_params: &["path"],
+        piped_params: &[],
+    },
+    PositionalSyntax {
+        name: "mustReadFile",
+        arity: 1,
+        standalone_params: &["path"],
+        piped_params: &[],
+    },
+    // map takes variadic key-value pairs; rewritten to array form by subexpr handling
 ];
 
 /// Look up a function name in the positional syntax table.
@@ -998,6 +1328,194 @@ mod tests {
         assert_eq!(
             result,
             "{{ in(items=[Os, \"windows\", Arch], value=\"test\") }}"
+        );
+    }
+
+    // --- Now.Format method call rewrite tests ---
+
+    #[test]
+    fn test_preprocess_now_format_go_style() {
+        // {{ .Now.Format "2006-01-02" }} → {{ Now | now_format(format="2006-01-02") }}
+        let input = "{{ .Now.Format \"2006-01-02\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ Now | now_format(format=\"2006-01-02\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_now_format_no_dot_prefix() {
+        // {{ Now.Format "2006-01-02" }} (without leading dot) should also work
+        let input = "{{ Now.Format \"2006-01-02\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ Now | now_format(format=\"2006-01-02\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_now_format_with_time_pattern() {
+        // {{ .Now.Format "2006-01-02 15:04:05" }}
+        let input = "{{ .Now.Format \"2006-01-02 15:04:05\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ Now | now_format(format=\"2006-01-02 15:04:05\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_now_format_single_quotes() {
+        // {{ .Now.Format '2006-01-02' }} (single quotes)
+        let input = "{{ .Now.Format '2006-01-02' }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ Now | now_format(format='2006-01-02') }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_now_format_whitespace_control() {
+        // {{- .Now.Format "2006-01-02" -}}
+        let input = "{{- .Now.Format \"2006-01-02\" -}}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{- Now | now_format(format=\"2006-01-02\") -}}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_now_format_compact() {
+        // {{.Now.Format "2006-01-02"}} (no spaces after {{ or before }})
+        let input = "{{.Now.Format \"2006-01-02\"}}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{Now | now_format(format=\"2006-01-02\")}}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_now_format_does_not_affect_other_blocks() {
+        // Other blocks should not be affected
+        let input = "{{ Version }} - {{ .Now.Format \"2006-01-02\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ Version }} - {{ Now | now_format(format=\"2006-01-02\") }}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 0: Go block syntax tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_go_if_end() {
+        let input = "{{ if .IsSnapshot }}pre{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if IsSnapshot %}pre{% endif %}");
+    }
+
+    #[test]
+    fn test_go_if_else_end() {
+        let input = "{{ if .IsSnapshot }}pre{{ else }}stable{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if IsSnapshot %}pre{% else %}stable{% endif %}");
+    }
+
+    #[test]
+    fn test_go_if_else_if_end() {
+        let input = "{{ if eq .Os \"windows\" }}win{{ else if eq .Os \"darwin\" }}mac{{ else }}linux{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if eq Os \"windows\" %}win{% elif eq Os \"darwin\" %}mac{% else %}linux{% endif %}"
+        );
+    }
+
+    #[test]
+    fn test_go_range_bare() {
+        let input = "{{ range .Maintainers }}# {{ . }}{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% for val in Maintainers %}# {{ val }}{% endfor %}");
+    }
+
+    #[test]
+    fn test_go_range_with_variable() {
+        let input = "{{ range $release := .Packages }}{{ $release.Name }}{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% for release in Packages %}{{ release.Name }}{% endfor %}"
+        );
+    }
+
+    #[test]
+    fn test_go_range_kv() {
+        let input = "{{ range $key, $value := .Checksums }}{{ $value }} {{ $key }}{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% for key, value in Checksums %}{{ value }} {{ key }}{% endfor %}"
+        );
+    }
+
+    #[test]
+    fn test_go_with() {
+        let input = "{{ with .Arm }}v{{ . }}{{ end }}";
+        let result = preprocess(input);
+        // `with` becomes `if`, `{{ . }}` rewrites to the with argument
+        assert_eq!(result, "{% if Arm %}v{{ Arm }}{% endif %}");
+    }
+
+    #[test]
+    fn test_go_var_assignment() {
+        let input = "{{ $m := map \"a\" \"1\" }}{{ index $m \"a\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% set m = map \"a\" \"1\" %}{{ index m \"a\" }}"
+        );
+    }
+
+    #[test]
+    fn test_go_whitespace_trim() {
+        let input = "{{- if .Cond -}}yes{{- end -}}";
+        let result = preprocess(input);
+        assert_eq!(result, "{%- if Cond -%}yes{%- endif -%}");
+    }
+
+    #[test]
+    fn test_go_nested_if_range() {
+        let input = "{{ range .Items }}{{ if .Active }}*{{ end }}{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% for val in Items %}{% if Active %}*{% endif %}{% endfor %}"
+        );
+    }
+
+    #[test]
+    fn test_go_blocks_plain_expressions_unchanged() {
+        // Plain Go expressions (no block keywords) should pass through
+        let input = "{{ .ProjectName }}_{{ .Version }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ ProjectName }}_{{ Version }}");
+    }
+
+    #[test]
+    fn test_go_complex_nfpm_template() {
+        // Real-world GoReleaser template: nfpm default name_template
+        let input = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ if not (eq .Amd64 \"v1\") }}{{ .Amd64 }}{{ end }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if not (eq Amd64 \"v1\") %}{{ Amd64 }}{% endif %}"
         );
     }
 }

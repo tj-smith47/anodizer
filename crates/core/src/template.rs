@@ -47,6 +47,62 @@ fn value_to_string(v: &Value) -> Cow<'_, str> {
     }
 }
 
+/// Translate a Go time format layout string to a chrono strftime format string.
+///
+/// Go uses a reference date (Mon Jan 2 15:04:05 MST 2006) as the layout template.
+/// If the format string contains `%` characters, it's already chrono format and is
+/// returned as-is. Otherwise, Go reference date components are replaced with chrono
+/// strftime equivalents, longest patterns first to avoid partial matches.
+fn translate_go_time_format(fmt: &str) -> Cow<'_, str> {
+    // If the format contains `%`, it's already chrono strftime format.
+    if fmt.contains('%') {
+        return Cow::Borrowed(fmt);
+    }
+
+    // Check if any Go reference date patterns are present.
+    // Go reference date: Mon Jan 2 15:04:05 MST 2006
+    const GO_MARKERS: &[&str] = &[
+        "2006", "06", "January", "Jan", "01", "Monday", "Mon", "02", "15", "03", "04", "05",
+        "PM", "pm", "-0700", "Z0700", "MST",
+    ];
+    let has_go_patterns = GO_MARKERS.iter().any(|p| fmt.contains(p));
+    if !has_go_patterns {
+        return Cow::Borrowed(fmt);
+    }
+
+    // Replace Go patterns with chrono equivalents, longest first.
+    // Order matters: longer patterns must be replaced before shorter ones to avoid
+    // partial matches (e.g. "January" before "Jan", "2006" before "06").
+    let mut result = fmt.to_string();
+
+    let replacements: &[(&str, &str)] = &[
+        // Multi-char patterns (longest first)
+        ("January", "%B"),  // full month name
+        ("Monday", "%A"),   // full weekday name
+        ("-0700", "%z"),    // timezone offset
+        ("Z0700", "%z"),    // timezone offset (Z variant)
+        ("2006", "%Y"),     // 4-digit year
+        ("Jan", "%b"),      // abbreviated month
+        ("Mon", "%a"),      // abbreviated weekday
+        ("MST", "%Z"),      // timezone name
+        ("PM", "%p"),       // AM/PM
+        ("pm", "%P"),       // am/pm
+        ("15", "%H"),       // 24-hour
+        ("06", "%y"),       // 2-digit year
+        ("05", "%S"),       // second
+        ("04", "%M"),       // minute
+        ("03", "%I"),       // 12-hour zero-padded
+        ("02", "%d"),       // zero-padded day
+        ("01", "%m"),       // zero-padded month
+    ];
+
+    for (go_pat, chrono_pat) in replacements {
+        result = result.replace(go_pat, chrono_pat);
+    }
+
+    Cow::Owned(result)
+}
+
 enum VersionPart {
     Major,
     Minor,
@@ -306,6 +362,8 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     // --- time function ---
     // time(format="%Y-%m-%d") — current UTC time formatted
+    // Also accepts Go time format layout (e.g. "2006-01-02") and translates
+    // to chrono strftime before formatting.
     tera.register_function(
         "time",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -313,8 +371,9 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("format")
                 .and_then(|v| v.as_str())
                 .unwrap_or("%Y-%m-%dT%H:%M:%SZ");
+            let chrono_fmt = translate_go_time_format(fmt);
             let now = chrono::Utc::now();
-            Ok(Value::String(now.format(fmt).to_string()))
+            Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );
 
@@ -428,6 +487,27 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
+    // map(pairs=[k1, v1, k2, v2, ...]) — create a map from alternating key-value pairs
+    // GoReleaser: {{ $m := map "a" "1" "b" "2" }}
+    tera.register_function(
+        "map",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let pairs = args
+                .get("pairs")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| tera::Error::msg("map requires `pairs` argument"))?;
+            if pairs.len() % 2 != 0 {
+                return Err(tera::Error::msg("map requires an even number of arguments (key-value pairs)"));
+            }
+            let mut result = tera::Map::new();
+            for chunk in pairs.chunks(2) {
+                let key = chunk[0].as_str().unwrap_or("").to_string();
+                result.insert(key, chunk[1].clone());
+            }
+            Ok(Value::Object(result))
+        },
+    );
+
     // in(items=[...], value="x") — check if a list contains a value (GoReleaser Pro parity)
     // Go-style: {{ in (list "a" "b" "c") "b" }} → true
     // Named:    {{ in(items=["a","b","c"], value="b") }} → true
@@ -527,6 +607,68 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 }
             };
             Ok(Value::String(result))
+        },
+    );
+
+    // englishJoin filter: {{ list "a" "b" "c" | englishJoin }} — GoReleaser pipe form
+    tera.register_filter(
+        "englishJoin",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let items = value
+                .as_array()
+                .ok_or_else(|| tera::Error::msg("englishJoin filter expects an array"))?;
+            let oxford = args.get("oxford").and_then(|v| v.as_bool()).unwrap_or(true);
+            let strs: Vec<String> = items
+                .iter()
+                .map(|v| v.as_str().unwrap_or("").to_string())
+                .filter(|s| !s.trim().is_empty())
+                .collect();
+            let result = match strs.len() {
+                0 => String::new(),
+                1 => strs[0].clone(),
+                2 => format!("{} and {}", strs[0], strs[1]),
+                _ => {
+                    let (last, rest) = strs.split_last().unwrap();
+                    if oxford {
+                        format!("{}, and {}", rest.join(", "), last)
+                    } else {
+                        format!("{} and {}", rest.join(", "), last)
+                    }
+                }
+            };
+            Ok(Value::String(result))
+        },
+    );
+
+    // filter as pipe form: {{ items | filter(regexp="pattern") }}
+    tera.register_filter(
+        "filter",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let pattern = args
+                .get("regexp")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("filter requires `regexp` argument"))?;
+            let re = regex::Regex::new(pattern)
+                .map_err(|e| tera::Error::msg(format!("invalid regex '{}': {}", pattern, e)))?;
+            let input = value.as_str().unwrap_or("");
+            let result: Vec<&str> = input.lines().filter(|line| re.is_match(line)).collect();
+            Ok(Value::String(result.join("\n")))
+        },
+    );
+
+    // reverseFilter as pipe form: {{ items | reverseFilter(regexp="pattern") }}
+    tera.register_filter(
+        "reverseFilter",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let pattern = args
+                .get("regexp")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("reverseFilter requires `regexp` argument"))?;
+            let re = regex::Regex::new(pattern)
+                .map_err(|e| tera::Error::msg(format!("invalid regex '{}': {}", pattern, e)))?;
+            let input = value.as_str().unwrap_or("");
+            let result: Vec<&str> = input.lines().filter(|line| !re.is_match(line)).collect();
+            Ok(Value::String(result.join("\n")))
         },
     );
 
@@ -932,6 +1074,24 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         let v = tera::try_get_value!("incmajor", "value", String, value);
         Ok(Value::String(increment_version(&v, VersionPart::Major)))
     });
+
+    // now_format — filter form: {{ Now | now_format(format="2006-01-02") }}
+    // Formats the current UTC time using the given format string.
+    // Accepts both Go time layout (e.g. "2006-01-02") and chrono strftime
+    // (e.g. "%Y-%m-%d"). The piped value (Now) is ignored — the filter always
+    // uses the current UTC time, matching GoReleaser's `.Now.Format` behavior.
+    tera.register_filter(
+        "now_format",
+        |_value: &Value, args: &HashMap<String, Value>| {
+            let fmt = args
+                .get("format")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("now_format requires a `format` argument"))?;
+            let chrono_fmt = translate_go_time_format(fmt);
+            let now = chrono::Utc::now();
+            Ok(Value::String(now.format(&chrono_fmt).to_string()))
+        },
+    );
 
     // in — filter form: {{ myList | in(value="x") }}
     // Checks whether the piped array contains the given value (string comparison).
@@ -2972,5 +3132,106 @@ mod tests {
         vars.set("Checksums", checksum_content);
         let result = render("{{ .Checksums }}", &vars).unwrap();
         assert_eq!(result, checksum_content);
+    }
+
+    // --- Go time format translation tests ---
+
+    #[test]
+    fn test_translate_go_time_format_basic_date() {
+        let result = translate_go_time_format("2006-01-02");
+        assert_eq!(result, "%Y-%m-%d");
+    }
+
+    #[test]
+    fn test_translate_go_time_format_full_datetime() {
+        let result = translate_go_time_format("2006-01-02 15:04:05");
+        assert_eq!(result, "%Y-%m-%d %H:%M:%S");
+    }
+
+    #[test]
+    fn test_translate_go_time_format_chrono_passthrough() {
+        // Already chrono format -- should pass through unchanged
+        let result = translate_go_time_format("%Y-%m-%d");
+        assert_eq!(result, "%Y-%m-%d");
+    }
+
+    #[test]
+    fn test_translate_go_time_format_no_go_patterns() {
+        // Plain text with no Go patterns -- should pass through unchanged
+        let result = translate_go_time_format("hello world");
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn test_translate_go_time_format_month_name() {
+        let result = translate_go_time_format("January 02, 2006");
+        assert_eq!(result, "%B %d, %Y");
+    }
+
+    #[test]
+    fn test_translate_go_time_format_weekday() {
+        let result = translate_go_time_format("Monday, January 02, 2006");
+        assert_eq!(result, "%A, %B %d, %Y");
+    }
+
+    #[test]
+    fn test_time_go_format_end_to_end() {
+        // The `time` function should accept Go format and produce a valid date
+        let vars = test_vars();
+        let result = render("{{ time(format=\"2006-01-02\") }}", &vars).unwrap();
+        // Should match YYYY-MM-DD pattern
+        assert!(
+            result.len() == 10 && result.chars().nth(4) == Some('-'),
+            "expected date in YYYY-MM-DD format, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_time_chrono_format_still_works() {
+        // The `time` function should still accept chrono format
+        let vars = test_vars();
+        let result = render("{{ time(format=\"%Y-%m-%d\") }}", &vars).unwrap();
+        assert!(
+            result.len() == 10 && result.chars().nth(4) == Some('-'),
+            "expected date in YYYY-MM-DD format, got: {result}"
+        );
+    }
+
+    // --- now_format filter tests ---
+
+    #[test]
+    fn test_now_format_filter_go_format() {
+        let mut vars = test_vars();
+        vars.set("Now", "2026-04-05T12:00:00Z"); // value is ignored by filter
+        let result = render("{{ Now | now_format(format=\"2006-01-02\") }}", &vars).unwrap();
+        // Should be a YYYY-MM-DD date string
+        assert!(
+            result.len() == 10 && result.chars().nth(4) == Some('-'),
+            "expected date in YYYY-MM-DD format, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_now_format_filter_chrono_format() {
+        let mut vars = test_vars();
+        vars.set("Now", "2026-04-05T12:00:00Z");
+        let result = render("{{ Now | now_format(format=\"%Y-%m-%d\") }}", &vars).unwrap();
+        assert!(
+            result.len() == 10 && result.chars().nth(4) == Some('-'),
+            "expected date in YYYY-MM-DD format, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_now_format_preprocessed_from_go_style() {
+        // GoReleaser-style: {{ .Now.Format "2006-01-02" }}
+        // After preprocessing: {{ Now | now_format(format="2006-01-02") }}
+        let mut vars = test_vars();
+        vars.set("Now", "2026-04-05T12:00:00Z");
+        let result = render("{{ .Now.Format \"2006-01-02\" }}", &vars).unwrap();
+        assert!(
+            result.len() == 10 && result.chars().nth(4) == Some('-'),
+            "expected date in YYYY-MM-DD format, got: {result}"
+        );
     }
 }

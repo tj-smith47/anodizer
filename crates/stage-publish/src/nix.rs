@@ -566,14 +566,19 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .render_template(homepage_raw)
         .unwrap_or_else(|_| homepage_raw.to_string());
     let homepage = homepage_rendered.as_str();
-    let license = nix_cfg.license.as_deref().unwrap_or("mit");
+    let license = nix_cfg.license.as_deref().unwrap_or("");
 
-    // Validate license identifier against known Nix licenses.
-    validate_nix_license(license)?;
+    // Validate license identifier against known Nix licenses (skip if empty).
+    if !license.is_empty() {
+        validate_nix_license(license)?;
+    }
 
-    // Find artifacts for Linux and Darwin platforms, applying IDs filter.
+    // Find artifacts for Linux and Darwin platforms, applying IDs + goamd64 filter.
     let ids_filter = nix_cfg.ids.as_deref();
-    let all_artifacts = util::find_all_platform_artifacts_filtered(ctx, crate_name, ids_filter);
+    let goamd64 = nix_cfg.goamd64.as_deref().or(Some("v1"));
+    let all_artifacts = util::find_all_platform_artifacts_with_goarch(
+        ctx, crate_name, ids_filter, goamd64, None,
+    );
 
     let url_template = nix_cfg.url_template.as_deref();
 

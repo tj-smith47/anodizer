@@ -612,11 +612,11 @@ pub fn format_for_target(
 // ---------------------------------------------------------------------------
 
 fn default_name_template() -> &'static str {
-    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}"
 }
 
 fn default_binary_name_template() -> &'static str {
-    "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}"
 }
 
 // ---------------------------------------------------------------------------

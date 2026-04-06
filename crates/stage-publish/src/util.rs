@@ -6,6 +6,41 @@ use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
 
+// ---------------------------------------------------------------------------
+// Shared helpers for HTTP publishers (Artifactory, Fury, CloudSmith)
+// ---------------------------------------------------------------------------
+
+/// Default package formats for push-based publishers (Fury, CloudSmith).
+pub(crate) fn default_package_formats() -> Vec<&'static str> {
+    vec!["apk", "deb", "rpm"]
+}
+
+/// Check if a filename matches any of the given format extensions.
+pub(crate) fn format_matches(filename: &str, formats: &[impl AsRef<str>]) -> bool {
+    formats
+        .iter()
+        .any(|fmt| filename.ends_with(&format!(".{}", fmt.as_ref())))
+}
+
+/// Check if an artifact matches an optional ID filter.
+pub(crate) fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
+    match ids {
+        Some(id_list) if !id_list.is_empty() => {
+            let artifact_id = artifact.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+            id_list.iter().any(|id| id == artifact_id)
+        }
+        _ => true, // no filter = matches all
+    }
+}
+
+/// Resolve a secret/token env var name from config with template rendering.
+pub(crate) fn resolve_secret_name(ctx: &Context, secret_name: Option<&str>, default: &str) -> String {
+    let name = secret_name.unwrap_or(default);
+    ctx.render_template(name).unwrap_or_else(|_| name.to_string())
+}
+
+// ---------------------------------------------------------------------------
+
 /// Run a command in a specific working directory, failing with `label`
 /// on spawn failure or non-zero exit.  Captures stdout/stderr so that
 /// diagnostics are included in the error message.
@@ -251,10 +286,176 @@ pub(crate) fn clone_repo(
     clone_repo_with_auth(&repo_url, token, tmp_dir, label, log)
 }
 
+// ---------------------------------------------------------------------------
+// Fork sync helper
+// ---------------------------------------------------------------------------
+
+/// Sync a fork with its upstream base repository.
+///
+/// When PR mode targets a different (upstream) repository, the fork may be
+/// behind.  This fetches the upstream base branch and rebases local work on
+/// top, mirroring GoReleaser's `ForkSyncer.SyncFork()` behaviour.
+///
+/// This is a best-effort operation: if the sync fails the push will still
+/// proceed (the PR may simply have merge conflicts).
+fn sync_fork(
+    repo_path: &Path,
+    upstream_url: &str,
+    base_branch: &str,
+    label: &str,
+    log: &StageLogger,
+) {
+    // Add the upstream remote (ignore error if it already exists).
+    let _ = run_cmd_in(
+        repo_path,
+        "git",
+        &["remote", "add", "upstream", upstream_url],
+        &format!("{label}: git remote add upstream"),
+    );
+
+    // Fetch the upstream base branch.
+    if let Err(e) = run_cmd_in(
+        repo_path,
+        "git",
+        &["fetch", "upstream", base_branch],
+        &format!("{label}: git fetch upstream"),
+    ) {
+        log.warn(&format!(
+            "{label}: fork sync: fetch upstream failed, continuing without sync: {e}"
+        ));
+        return;
+    }
+
+    // Rebase local work on top of the upstream base branch.
+    let upstream_ref = format!("upstream/{}", base_branch);
+    if let Err(e) = run_cmd_in(
+        repo_path,
+        "git",
+        &["rebase", &upstream_ref],
+        &format!("{label}: git rebase upstream"),
+    ) {
+        log.warn(&format!(
+            "{label}: fork sync: rebase failed, aborting rebase and continuing: {e}"
+        ));
+        // Abort the failed rebase so the repo is in a clean state.
+        let _ = run_cmd_in(
+            repo_path,
+            "git",
+            &["rebase", "--abort"],
+            &format!("{label}: git rebase --abort"),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PR creation helpers (gh CLI + GitHub API fallback)
+// ---------------------------------------------------------------------------
+
+/// Check whether the `gh` CLI is available in PATH.
+fn gh_is_available() -> bool {
+    Command::new("gh")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Submit a pull request via the GitHub CLI (`gh pr create`).
+fn create_pr_via_gh_cli(
+    repo_path: &Path,
+    upstream_repo: &str,
+    head: &str,
+    base_branch: &str,
+    title: &str,
+    body: &str,
+    draft: bool,
+    label: &str,
+    log: &StageLogger,
+) {
+    let mut args = vec![
+        "pr", "create", "--repo", upstream_repo, "--title", title, "--body", body, "--head", head,
+        "--base", base_branch,
+    ];
+    if draft {
+        args.push("--draft");
+    }
+    let pr_result = Command::new("gh").current_dir(repo_path).args(&args).output();
+    match pr_result {
+        Ok(output) if output.status.success() => {
+            log.status(&format!("{label}: PR submitted via gh CLI"));
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log.warn(&format!(
+                "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
+                output.status,
+                if stderr.is_empty() { String::new() } else { format!("\n{}", stderr) }
+            ));
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "{label}: could not run gh to create PR: {} -- you may need to create the PR manually", e
+            ));
+        }
+    }
+}
+
+/// Submit a pull request via the GitHub REST API (native fallback when `gh`
+/// CLI is not installed).
+///
+/// Uses `POST /repos/{owner}/{repo}/pulls` with token-based auth.
+#[allow(clippy::too_many_arguments)]
+fn create_pr_via_api(
+    upstream_owner: &str, upstream_name: &str, head: &str, base_branch: &str,
+    title: &str, body: &str, draft: bool, token: &str, label: &str, log: &StageLogger,
+) {
+    let url = format!("https://api.github.com/repos/{}/{}/pulls", upstream_owner, upstream_name);
+    let payload = serde_json::json!({
+        "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,
+    });
+    let client = reqwest::blocking::Client::new();
+    let result = client
+        .post(&url)
+        .header("Authorization", format!("token {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "anodize")
+        .json(&payload)
+        .send();
+    match result {
+        Ok(resp) if resp.status().is_success() => {
+            log.status(&format!("{label}: PR submitted via GitHub API"));
+        }
+        Ok(resp) => {
+            let status = resp.status();
+            let body_text = resp.text().unwrap_or_default();
+            log.warn(&format!(
+                "{label}: GitHub API PR creation returned {status} -- you may need to create the PR manually\n{body_text}"
+            ));
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "{label}: GitHub API PR creation failed: {e} -- you may need to create the PR manually"
+            ));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Public PR submission entry points
+// ---------------------------------------------------------------------------
+
 /// Submit a pull request if `repo.pull_request.enabled` is true.
 ///
 /// Uses `pull_request.base` for the upstream target when available,
 /// falling back to `repo_owner/repo_name`.  Supports `pull_request.draft`.
+///
+/// When the base repository differs from the fork (i.e. a PR across repos),
+/// the fork is synced with upstream before submitting (GoReleaser parity).
+///
+/// Tries `gh` CLI first; if unavailable, falls back to the GitHub REST API
+/// using the token from the RepositoryConfig (or `GITHUB_TOKEN` env var).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn maybe_submit_pr(
     repo_path: &Path,
@@ -271,78 +472,40 @@ pub(crate) fn maybe_submit_pr(
         Some(pr) if pr.enabled == Some(true) => pr,
         _ => return,
     };
-
-    // Determine the upstream target repo slug.
-    let upstream_slug = if let Some(ref base) = pr_cfg.base {
-        if let (Some(owner), Some(name)) = (&base.owner, &base.name) {
-            format!("{}/{}", owner, name)
-        } else {
-            format!("{}/{}", repo_owner, repo_name)
-        }
+    let (upstream_owner, upstream_name) = if let Some(ref base) = pr_cfg.base {
+        (base.owner.as_deref().unwrap_or(repo_owner), base.name.as_deref().unwrap_or(repo_name))
     } else {
-        format!("{}/{}", repo_owner, repo_name)
+        (repo_owner, repo_name)
     };
-
-    // Build the PR body, preferring the config body if set.
+    let upstream_slug = format!("{}/{}", upstream_owner, upstream_name);
     let pr_body = pr_cfg.body.as_deref().unwrap_or(body);
-
-    // Build head reference: owner:branch.
     let head = format!("{}:{}", repo_owner, branch_name);
-
     let is_draft = pr_cfg.draft == Some(true);
+    let base_branch = pr_cfg.base.as_ref().and_then(|b| b.branch.as_deref()).unwrap_or("main");
+    let token = repo.and_then(|r| r.token.clone())
+        .or_else(|| std::env::var("ANODIZE_GITHUB_TOKEN").ok())
+        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
-    // Determine the target base branch for the PR.
-    let base_branch = pr_cfg.base.as_ref().and_then(|b| b.branch.as_deref());
-
-    let mut args = vec![
-        "pr",
-        "create",
-        "--repo",
-        &upstream_slug,
-        "--title",
-        title,
-        "--body",
-        pr_body,
-        "--head",
-        &head,
-    ];
-
-    if let Some(base) = base_branch {
-        args.push("--base");
-        args.push(base);
+    // Fork sync: when the PR targets a different upstream repository, sync first.
+    let is_cross_repo = upstream_owner != repo_owner || upstream_name != repo_name;
+    if is_cross_repo {
+        let upstream_url = format!("https://github.com/{}/{}.git", upstream_owner, upstream_name);
+        sync_fork(repo_path, &upstream_url, base_branch, label, log);
+        if let Err(e) = run_cmd_in(
+            repo_path, "git", &["push", "--force-with-lease", "origin", branch_name],
+            &format!("{label}: git push (post-sync)"),
+        ) {
+            log.warn(&format!("{label}: fork sync: force-push after rebase failed, PR may have conflicts: {e}"));
+        }
     }
 
-    if is_draft {
-        args.push("--draft");
-    }
-
-    let pr_result = Command::new("gh")
-        .current_dir(repo_path)
-        .args(&args)
-        .output();
-
-    match pr_result {
-        Ok(output) if output.status.success() => {
-            log.status(&format!("{label}: PR submitted"));
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log.warn(&format!(
-                "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
-            ));
-        }
-        Err(e) => {
-            log.warn(&format!(
-                "{label}: could not run gh to create PR: {} -- you may need to create the PR manually",
-                e
-            ));
-        }
+    // PR creation: try gh CLI first, fall back to GitHub API.
+    if gh_is_available() {
+        create_pr_via_gh_cli(repo_path, &upstream_slug, &head, base_branch, title, pr_body, is_draft, label, log);
+    } else if let Some(ref tok) = token {
+        create_pr_via_api(upstream_owner, upstream_name, &head, base_branch, title, pr_body, is_draft, tok, label, log);
+    } else {
+        log.warn(&format!("{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"));
     }
 }
 
@@ -406,7 +569,7 @@ pub(crate) fn resolve_commit_opts<'a>(
     }
 }
 
-/// Resolve the repository token from: RepositoryConfig.token → env_var → ANODIZE_GITHUB_TOKEN → GITHUB_TOKEN.
+/// Resolve the repository token from: RepositoryConfig.token -> env_var -> ANODIZE_GITHUB_TOKEN -> GITHUB_TOKEN.
 pub(crate) fn resolve_repo_token(
     ctx: &Context,
     repo: Option<&anodize_core::config::RepositoryConfig>,
@@ -510,11 +673,14 @@ pub(crate) fn commit_and_push_with_opts(
 }
 
 // ---------------------------------------------------------------------------
-// PR submission via `gh` CLI
+// PR submission via `gh` CLI (legacy wrapper)
 // ---------------------------------------------------------------------------
 
 /// Submit a pull request via the GitHub CLI. Logs a warning instead of failing
 /// if `gh` is not available or the command exits non-zero.
+///
+/// Falls back to the GitHub REST API when `gh` is unavailable and a token
+/// can be resolved from the environment.
 pub(crate) fn submit_pr_via_gh(
     repo_path: &Path,
     upstream_repo: &str,
@@ -524,44 +690,17 @@ pub(crate) fn submit_pr_via_gh(
     label: &str,
     log: &StageLogger,
 ) {
-    let pr_result = Command::new("gh")
-        .current_dir(repo_path)
-        .args([
-            "pr",
-            "create",
-            "--repo",
-            upstream_repo,
-            "--title",
-            title,
-            "--body",
-            body,
-            "--head",
-            head,
-        ])
-        .output();
-
-    match pr_result {
-        Ok(output) if output.status.success() => {
-            log.status(&format!("{label}: PR submitted"));
+    let token = std::env::var("ANODIZE_GITHUB_TOKEN").ok().or_else(|| std::env::var("GITHUB_TOKEN").ok());
+    if gh_is_available() {
+        create_pr_via_gh_cli(repo_path, upstream_repo, head, "main", title, body, false, label, log);
+    } else if let Some(ref tok) = token {
+        if let Some((owner, name)) = upstream_repo.split_once('/') {
+            create_pr_via_api(owner, name, head, "main", title, body, false, tok, label, log);
+        } else {
+            log.warn(&format!("{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"));
         }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log.warn(&format!(
-                "{label}: gh pr create exited with {} — you may need to create the PR manually{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
-                }
-            ));
-        }
-        Err(e) => {
-            log.warn(&format!(
-                "{label}: could not run gh to create PR: {} — you may need to create the PR manually",
-                e
-            ));
-        }
+    } else {
+        log.warn(&format!("{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"));
     }
 }
 
@@ -640,6 +779,12 @@ pub(crate) struct OsArtifact {
     pub arch: String,
     #[allow(dead_code)]
     pub id: Option<String>,
+    /// amd64 microarchitecture variant (e.g. "v1", "v2", "v3", "v4").
+    /// Populated from artifact metadata when present.
+    pub goamd64: Option<String>,
+    /// ARM version (e.g. "6", "7").
+    /// Populated from artifact metadata when present.
+    pub goarm: Option<String>,
 }
 
 /// Convert a single `Artifact` reference into an `OsArtifact`, using the
@@ -655,6 +800,8 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         .unwrap_or_else(|| a.path.to_string_lossy().into_owned());
     let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
     let id = a.metadata.get("id").cloned();
+    let goamd64 = a.metadata.get("goamd64").cloned();
+    let goarm = a.metadata.get("goarm").cloned();
     let target = a.target.as_deref().unwrap_or("");
     OsArtifact {
         url,
@@ -662,6 +809,8 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         os: infer_os(target, os_fallback),
         arch: infer_arch(target),
         id,
+        goamd64,
+        goarm,
     }
 }
 
@@ -754,6 +903,22 @@ pub(crate) fn find_artifacts_by_os_filtered(
     os_needle: &str,
     ids: Option<&[String]>,
 ) -> Vec<OsArtifact> {
+    find_artifacts_by_os_with_goarch(ctx, crate_name, os_needle, ids, None, None)
+}
+
+/// Find artifacts by OS with optional goamd64/goarm microarchitecture filtering.
+///
+/// When `goamd64` is `Some`, only amd64 artifacts whose metadata `goamd64`
+/// matches (or have no goamd64 metadata, for backward compat) are included.
+/// Similarly for `goarm` and arm artifacts.
+pub(crate) fn find_artifacts_by_os_with_goarch(
+    ctx: &Context,
+    crate_name: &str,
+    os_needle: &str,
+    ids: Option<&[String]>,
+    goamd64: Option<&str>,
+    goarm: Option<&str>,
+) -> Vec<OsArtifact> {
     // Include both Archive and Binary artifacts — GoReleaser supports both
     // UploadableArchive and UploadableBinary types for publisher packages.
     let mut all = ctx
@@ -764,7 +929,7 @@ pub(crate) fn find_artifacts_by_os_filtered(
             .by_kind_and_crate(ArtifactKind::Binary, crate_name),
     );
     let filtered = filter_by_ids(all, ids);
-    filtered
+    let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
         .filter(|a| {
             a.target
@@ -777,7 +942,8 @@ pub(crate) fn find_artifacts_by_os_filtered(
                     .contains(os_needle)
         })
         .map(|a| artifact_to_os_artifact(a, os_needle))
-        .collect()
+        .collect();
+    filter_by_goarch(os_artifacts, goamd64, goarm)
 }
 
 /// Find all Archive artifacts for the given crate across all platforms.
@@ -796,6 +962,22 @@ pub(crate) fn find_all_platform_artifacts_filtered(
     crate_name: &str,
     ids: Option<&[String]>,
 ) -> Vec<OsArtifact> {
+    find_all_platform_artifacts_with_goarch(ctx, crate_name, ids, None, None)
+}
+
+/// Find all platform artifacts with optional goamd64/goarm microarchitecture
+/// filtering.
+///
+/// When `goamd64` is `Some`, only amd64 artifacts whose metadata `goamd64`
+/// matches (or have no goamd64 metadata, for backward compat) are included.
+/// Similarly for `goarm` and arm artifacts.
+pub(crate) fn find_all_platform_artifacts_with_goarch(
+    ctx: &Context,
+    crate_name: &str,
+    ids: Option<&[String]>,
+    goamd64: Option<&str>,
+    goarm: Option<&str>,
+) -> Vec<OsArtifact> {
     let mut all = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);
@@ -804,9 +986,46 @@ pub(crate) fn find_all_platform_artifacts_filtered(
             .by_kind_and_crate(ArtifactKind::Binary, crate_name),
     );
     let filtered = filter_by_ids(all, ids);
-    filtered
+    let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
         .map(|a| artifact_to_os_artifact(a, "unknown"))
+        .collect();
+    filter_by_goarch(os_artifacts, goamd64, goarm)
+}
+
+/// Filter a vec of `OsArtifact` by goamd64/goarm microarchitecture variants.
+///
+/// For amd64 artifacts: when `goamd64` is set, keep only artifacts whose
+/// `goamd64` metadata matches the config value or that have no goamd64
+/// metadata (backward compat).
+///
+/// For arm artifacts (armv6, armv7): when `goarm` is set, keep only artifacts
+/// whose `goarm` metadata matches or that have no goarm metadata.
+///
+/// Non-amd64/non-arm artifacts always pass through.
+fn filter_by_goarch(
+    artifacts: Vec<OsArtifact>,
+    goamd64: Option<&str>,
+    goarm: Option<&str>,
+) -> Vec<OsArtifact> {
+    artifacts
+        .into_iter()
+        .filter(|a| {
+            // Filter amd64 artifacts by goamd64 config
+            if a.arch == "amd64" {
+                if let Some(want) = goamd64 {
+                    // Keep if artifact has no goamd64 (compat) or matches
+                    return a.goamd64.as_deref().map_or(true, |v| v == want);
+                }
+            }
+            // Filter arm artifacts by goarm config
+            if a.arch.starts_with("arm") && a.arch != "arm64" {
+                if let Some(want) = goarm {
+                    return a.goarm.as_deref().map_or(true, |v| v == want);
+                }
+            }
+            true
+        })
         .collect()
 }
 
@@ -1122,6 +1341,8 @@ mod tests {
                 os: "linux".to_string(),
                 arch: "amd64".to_string(),
                 id: Some("a".to_string()),
+                goamd64: None,
+                goarm: None,
             },
             OsArtifact {
                 url: "u2".to_string(),
@@ -1129,6 +1350,8 @@ mod tests {
                 os: "darwin".to_string(),
                 arch: "arm64".to_string(),
                 id: Some("b".to_string()),
+                goamd64: None,
+                goarm: None,
             },
         ];
         let result = filter_os_artifacts_by_ids(artifacts, None);
@@ -1144,6 +1367,8 @@ mod tests {
                 os: "linux".to_string(),
                 arch: "amd64".to_string(),
                 id: Some("keep-me".to_string()),
+                goamd64: None,
+                goarm: None,
             },
             OsArtifact {
                 url: "u2".to_string(),
@@ -1151,6 +1376,8 @@ mod tests {
                 os: "darwin".to_string(),
                 arch: "arm64".to_string(),
                 id: Some("drop-me".to_string()),
+                goamd64: None,
+                goarm: None,
             },
             OsArtifact {
                 url: "u3".to_string(),
@@ -1158,6 +1385,8 @@ mod tests {
                 os: "windows".to_string(),
                 arch: "amd64".to_string(),
                 id: None,
+                goamd64: None,
+                goarm: None,
             },
         ];
         let ids = vec!["keep-me".to_string()];
@@ -1174,6 +1403,8 @@ mod tests {
             os: "linux".to_string(),
             arch: "amd64".to_string(),
             id: Some("a".to_string()),
+            goamd64: None,
+            goarm: None,
         }];
         let ids: Vec<String> = vec![];
         let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
@@ -1247,5 +1478,113 @@ mod tests {
             "linux",
         );
         assert_eq!(url, "https://example.com/{{ bad unclosed");
+    }
+
+    // -----------------------------------------------------------------------
+    // filter_by_goarch tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filter_by_goarch_no_filter_passes_all() {
+        let artifacts = vec![
+            OsArtifact {
+                url: "u1".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "amd64".into(), id: None,
+                goamd64: Some("v1".into()), goarm: None,
+            },
+            OsArtifact {
+                url: "u2".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "amd64".into(), id: None,
+                goamd64: Some("v3".into()), goarm: None,
+            },
+        ];
+        let result = filter_by_goarch(artifacts, None, None);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_by_goarch_amd64_v1() {
+        let artifacts = vec![
+            OsArtifact {
+                url: "v1".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "amd64".into(), id: None,
+                goamd64: Some("v1".into()), goarm: None,
+            },
+            OsArtifact {
+                url: "v3".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "amd64".into(), id: None,
+                goamd64: Some("v3".into()), goarm: None,
+            },
+            OsArtifact {
+                url: "arm64".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "arm64".into(), id: None,
+                goamd64: None, goarm: None,
+            },
+        ];
+        let result = filter_by_goarch(artifacts, Some("v1"), None);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].url, "v1");
+        assert_eq!(result[1].url, "arm64"); // non-amd64 passes through
+    }
+
+    #[test]
+    fn test_filter_by_goarch_amd64_no_metadata_passes() {
+        // Artifacts without goamd64 metadata pass through (backward compat).
+        let artifacts = vec![OsArtifact {
+            url: "u1".into(), sha256: "s".into(), os: "linux".into(),
+            arch: "amd64".into(), id: None,
+            goamd64: None, goarm: None,
+        }];
+        let result = filter_by_goarch(artifacts, Some("v1"), None);
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_filter_by_goarch_arm_filter() {
+        let artifacts = vec![
+            OsArtifact {
+                url: "arm6".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "armv6".into(), id: None,
+                goamd64: None, goarm: Some("6".into()),
+            },
+            OsArtifact {
+                url: "arm7".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "armv7".into(), id: None,
+                goamd64: None, goarm: Some("7".into()),
+            },
+        ];
+        let result = filter_by_goarch(artifacts, None, Some("7"));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].url, "arm7");
+    }
+
+    #[test]
+    fn test_filter_by_goarch_combined() {
+        let artifacts = vec![
+            OsArtifact {
+                url: "amd64-v1".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "amd64".into(), id: None,
+                goamd64: Some("v1".into()), goarm: None,
+            },
+            OsArtifact {
+                url: "amd64-v3".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "amd64".into(), id: None,
+                goamd64: Some("v3".into()), goarm: None,
+            },
+            OsArtifact {
+                url: "arm6".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "armv6".into(), id: None,
+                goamd64: None, goarm: Some("6".into()),
+            },
+            OsArtifact {
+                url: "arm7".into(), sha256: "s".into(), os: "linux".into(),
+                arch: "armv7".into(), id: None,
+                goamd64: None, goarm: Some("7".into()),
+            },
+        ];
+        let result = filter_by_goarch(artifacts, Some("v1"), Some("7"));
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|a| a.url == "amd64-v1"));
+        assert!(result.iter().any(|a| a.url == "arm7"));
     }
 }

@@ -111,10 +111,11 @@ impl Stage for UpxStage {
                 continue;
             }
 
-            // Collect matching Binary artifacts
-            let matching_artifacts: Vec<(std::path::PathBuf, Option<String>)> = ctx
-                .artifacts
-                .by_kind(ArtifactKind::Binary)
+            // Collect matching Binary + UniversalBinary artifacts
+            // (GoReleaser parity: upx.go:119 filters ByTypes(Binary, UniversalBinary))
+            let mut binary_artifacts = ctx.artifacts.by_kind(ArtifactKind::Binary);
+            binary_artifacts.extend(ctx.artifacts.by_kind(ArtifactKind::UniversalBinary));
+            let matching_artifacts: Vec<(std::path::PathBuf, Option<String>)> = binary_artifacts
                 .iter()
                 .filter(|a| {
                     should_compress(
@@ -497,7 +498,7 @@ crates: []
         assert_eq!(config.upx.len(), 1);
         assert_eq!(config.upx[0].binary, "/usr/bin/upx");
         assert_eq!(config.upx[0].args, vec!["--best", "--lzma"]);
-        assert!(config.upx[0].enabled);
+        assert!(!config.upx[0].enabled);
         assert!(!config.upx[0].required);
     }
 
@@ -531,7 +532,7 @@ crates: []
 "#;
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
-        assert!(config.upx[0].enabled);
+        assert!(!config.upx[0].enabled);
         assert_eq!(config.upx[0].binary, "upx");
         assert!(config.upx[0].args.is_empty());
         assert!(!config.upx[0].required);
@@ -653,6 +654,7 @@ crates: []
         let upx = vec![UpxConfig {
             binary: "/nonexistent/upx-binary-that-does-not-exist".to_string(),
             required: true,
+            enabled: true,
             ..Default::default()
         }];
 

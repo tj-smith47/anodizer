@@ -269,6 +269,7 @@ dependencies = [
  "anodize-core",
  "anyhow",
  "serde_yaml_ng",
+ "sha2",
 ]
 
 [[package]]
@@ -300,11 +301,13 @@ dependencies = [
  "anodize-core",
  "anyhow",
  "base64",
+ "glob",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
  "tempfile",
  "tera",
 ]

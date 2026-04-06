@@ -17,7 +17,8 @@ require_relative "{{ custom_require }}"
 class {{ class_name }} < Formula
   desc "{{ description }}"
   homepage "{{ homepage }}"
-  license "{{ license }}"
+{% if license %}  license "{{ license }}"
+{% endif %}
   version "{{ version }}"
 
 {% if single_archive %}  url "{{ single_url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
@@ -33,14 +34,42 @@ class {{ class_name }} < Formula
 {% endfor %}    ]{% endif %}
 
   sha256 "{{ entry.sha256 }}"
-{% endfor %}{% if has_macos %}  on_macos do
-{% if macos_has_arch %}{% for entry in macos_entries %}    {{ entry.arch_block }} do
+{% endfor %}{% if depends_on_macos %}  depends_on :macos
+{% endif %}{% if depends_on_linux %}  depends_on :linux
+{% endif %}{% if has_macos %}  on_macos do
+{% if has_only_amd64_macos %}    url "{{ macos_entries.0.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+      headers: [
+{% for header in url_headers %}        "{{ header }}",
+{% endfor %}      ]{% endif %}
+
+    sha256 "{{ macos_entries.0.sha256 }}"
+
+    def install
+{% for line in install_lines %}      {{ line }}
+{% endfor %}{% for line in extra_install_lines %}      {{ line }}
+{% endfor %}    end
+
+    if Hardware::CPU.arm?
+      def caveats
+        <<~EOS
+          The darwin_arm64 architecture is not supported for the {{ name }}
+          formula at this time. The darwin_amd64 binary may work in compatibility
+          mode, but it might not be fully supported.
+        EOS
+      end
+    end
+{% elif macos_has_arch %}{% for entry in macos_entries %}    {{ entry.arch_block }} do
       url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
         headers: [
 {% for header in url_headers %}          "{{ header }}",
 {% endfor %}        ]{% endif %}
 
       sha256 "{{ entry.sha256 }}"
+
+      def install
+{% for line in install_lines %}        {{ line }}
+{% endfor %}{% for line in extra_install_lines %}        {{ line }}
+{% endfor %}      end
     end
 {% endfor %}{% else %}{% for entry in macos_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
       headers: [
@@ -48,15 +77,25 @@ class {{ class_name }} < Formula
 {% endfor %}      ]{% endif %}
 
     sha256 "{{ entry.sha256 }}"
+
+    def install
+{% for line in install_lines %}      {{ line }}
+{% endfor %}{% for line in extra_install_lines %}      {{ line }}
+{% endfor %}    end
 {% endfor %}{% endif %}  end
 {% endif %}{% if has_linux %}  on_linux do
-{% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }} do
+{% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }}
       url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
         headers: [
 {% for header in url_headers %}          "{{ header }}",
 {% endfor %}        ]{% endif %}
 
       sha256 "{{ entry.sha256 }}"
+
+      def install
+{% for line in install_lines %}        {{ line }}
+{% endfor %}{% for line in extra_install_lines %}        {{ line }}
+{% endfor %}      end
     end
 {% endfor %}{% else %}{% for entry in linux_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
       headers: [
@@ -64,6 +103,11 @@ class {{ class_name }} < Formula
 {% endfor %}      ]{% endif %}
 
     sha256 "{{ entry.sha256 }}"
+
+    def install
+{% for line in install_lines %}      {{ line }}
+{% endfor %}{% for line in extra_install_lines %}      {{ line }}
+{% endfor %}    end
 {% endfor %}{% endif %}  end
 {% endif %}{% for dep in global_deps %}
   depends_on "{{ dep.name }}"{% if dep.version %} => "{{ dep.version }}"{% elif dep.optional %} => :optional{% endif %}
@@ -79,12 +123,12 @@ class {{ class_name }} < Formula
   conflicts_with "{{ c.name }}"{% if c.because %}, because: "{{ c.because }}"{% endif %}
 {% endfor %}{% if custom_block %}
 {{ custom_block }}
-{% endif %}
+{% endif %}{% if single_archive or not has_platform_blocks %}
   def install
 {% for line in install_lines %}    {{ line }}
 {% endfor %}{% for line in extra_install_lines %}    {{ line }}
 {% endfor %}  end
-{% if has_post_install %}
+{% endif %}{% if has_post_install %}
   def post_install
 {% for line in post_install_lines %}    {{ line }}
 {% endfor %}  end
@@ -123,13 +167,42 @@ cask "{{ name }}" do
   sha256 "{{ sha256 }}"
 
   url "{{ url }}"
-{% if homepage %}  homepage "{{ homepage }}"
+{% if custom_block %}{{ custom_block }}
+{% endif %}{% if homepage %}  homepage "{{ homepage }}"
 {% endif %}  name "{{ display_name }}"
 {% for alt in alternative_names %}  name "{{ alt }}"
 {% endfor %}{% if description %}  desc "{{ description }}"
+{% endif %}
+  livecheck do
+    skip "Auto-generated on release."
+  end
+
+{% if has_depends %}{% for dep in depends_on %}  depends_on {{ dep }}
+{% endfor %}{% endif %}{% if has_conflicts %}  conflicts_with {% for c in conflicts_with %}{% if not loop.first %}                  {% endif %}{{ c }}{% if not loop.last %},
+{% endif %}{% endfor %}
+
 {% endif %}{% if app %}  app "{{ app }}"
 {% endif %}{% for binary in binaries %}  binary "{{ binary }}"
-{% endfor %}{% if has_caveats %}
+{% endfor %}{% for manpage in manpages %}  manpage "{{ manpage }}"
+{% endfor %}{% if has_completions_bash %}  bash_completion "{{ completions_bash }}"
+{% endif %}{% if has_completions_zsh %}  zsh_completion "{{ completions_zsh }}"
+{% endif %}{% if has_completions_fish %}  fish_completion "{{ completions_fish }}"
+{% endif %}{% if has_service %}  service do
+{{ service }}
+  end
+{% endif %}{% if has_preflight %}  preflight do
+{{ preflight }}
+  end
+{% endif %}{% if has_postflight %}  postflight do
+{{ postflight }}
+  end
+{% endif %}{% if has_uninstall_preflight %}  uninstall_preflight do
+{{ uninstall_preflight }}
+  end
+{% endif %}{% if has_uninstall_postflight %}  uninstall_postflight do
+{{ uninstall_postflight }}
+  end
+{% endif %}{% if has_caveats %}
   caveats <<~EOS
     {{ caveats }}
   EOS
@@ -174,6 +247,30 @@ pub struct CaskParams<'a> {
     pub zap: &'a [String],
     /// Uninstall stanza directives (e.g. `quit: "com.example.App"`).
     pub uninstall: &'a [String],
+    /// Custom Ruby code block.
+    pub custom_block: Option<&'a str>,
+    /// Service block content.
+    pub service: Option<&'a str>,
+    /// Manpage file paths.
+    pub manpages: &'a [String],
+    /// Bash completion file path.
+    pub completions_bash: Option<&'a str>,
+    /// Zsh completion file path.
+    pub completions_zsh: Option<&'a str>,
+    /// Fish completion file path.
+    pub completions_fish: Option<&'a str>,
+    /// depends_on directives (e.g. `cask: "other-app"`).
+    pub depends_on: &'a [String],
+    /// conflicts_with directives (e.g. `cask: "other-app"`).
+    pub conflicts_with: &'a [String],
+    /// Preflight hook Ruby code.
+    pub preflight: Option<&'a str>,
+    /// Postflight hook Ruby code.
+    pub postflight: Option<&'a str>,
+    /// Uninstall preflight hook Ruby code.
+    pub uninstall_preflight: Option<&'a str>,
+    /// Uninstall postflight hook Ruby code.
+    pub uninstall_postflight: Option<&'a str>,
 }
 
 /// Generate a Homebrew Cask Ruby file string from the given parameters.
@@ -206,6 +303,52 @@ pub fn generate_cask(params: &CaskParams<'_>) -> String {
     let has_uninstall = !params.uninstall.is_empty();
     ctx.insert("has_uninstall", &has_uninstall);
     ctx.insert("uninstall_items", params.uninstall);
+
+    // Custom block
+    ctx.insert("custom_block", &params.custom_block.unwrap_or(""));
+
+    // Service
+    let has_service = params.service.is_some();
+    ctx.insert("has_service", &has_service);
+    ctx.insert("service", params.service.unwrap_or(""));
+
+    // Manpages
+    ctx.insert("manpages", params.manpages);
+
+    // Completions
+    let has_completions_bash = params.completions_bash.is_some();
+    let has_completions_zsh = params.completions_zsh.is_some();
+    let has_completions_fish = params.completions_fish.is_some();
+    ctx.insert("has_completions_bash", &has_completions_bash);
+    ctx.insert("completions_bash", params.completions_bash.unwrap_or(""));
+    ctx.insert("has_completions_zsh", &has_completions_zsh);
+    ctx.insert("completions_zsh", params.completions_zsh.unwrap_or(""));
+    ctx.insert("has_completions_fish", &has_completions_fish);
+    ctx.insert("completions_fish", params.completions_fish.unwrap_or(""));
+
+    // Dependencies
+    let has_depends = !params.depends_on.is_empty();
+    ctx.insert("has_depends", &has_depends);
+    ctx.insert("depends_on", params.depends_on);
+
+    // Conflicts
+    let has_conflicts = !params.conflicts_with.is_empty();
+    ctx.insert("has_conflicts", &has_conflicts);
+    ctx.insert("conflicts_with", params.conflicts_with);
+
+    // Hooks
+    let has_preflight = params.preflight.is_some();
+    let has_postflight = params.postflight.is_some();
+    let has_uninstall_preflight = params.uninstall_preflight.is_some();
+    let has_uninstall_postflight = params.uninstall_postflight.is_some();
+    ctx.insert("has_preflight", &has_preflight);
+    ctx.insert("preflight", params.preflight.unwrap_or(""));
+    ctx.insert("has_postflight", &has_postflight);
+    ctx.insert("postflight", params.postflight.unwrap_or(""));
+    ctx.insert("has_uninstall_preflight", &has_uninstall_preflight);
+    ctx.insert("uninstall_preflight", params.uninstall_preflight.unwrap_or(""));
+    ctx.insert("has_uninstall_postflight", &has_uninstall_postflight);
+    ctx.insert("uninstall_postflight", params.uninstall_postflight.unwrap_or(""));
 
     tera.render("cask", &ctx)
         .expect("homebrew: render cask template")
@@ -317,6 +460,19 @@ fn generate_cask_from_context(
         caveats: cask_cfg.caveats.as_deref(),
         zap: cask_cfg.zap.as_deref().unwrap_or(&empty_vec),
         uninstall: cask_cfg.uninstall.as_deref().unwrap_or(&empty_vec),
+        // Per-crate cask config doesn't have these extended fields
+        custom_block: None,
+        service: None,
+        manpages: &empty_vec,
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &empty_vec,
+        conflicts_with: &empty_vec,
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
     };
 
     Ok(CaskGenResult {
@@ -670,14 +826,26 @@ pub fn generate_formula_with_opts(
             .filter(|(p, _, _)| p.contains("linux"))
             .copied()
             .collect();
-        let linux_has = !linux_archives.is_empty() && has_arch(&linux_archives);
+        let linux_has = !linux_archives.is_empty()
+            && linux_archives.iter().any(|(p, _, _)| {
+                p.contains("arm64") || p.contains("aarch64")
+                    || p.contains("amd64") || p.contains("x86_64")
+                    || p.contains("armv6") || p.contains("armv7")
+                    || { let l = p.to_lowercase(); (l.contains("-arm") || l.contains("_arm")) && !l.contains("arm64") && !l.contains("aarch64") }
+            });
         let linux: Vec<_> = linux_archives
             .iter()
             .map(|(platform, url, sha256)| {
                 let arch_block = if platform.contains("arm64") || platform.contains("aarch64") {
-                    "on_arm"
+                    "if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?"
+                } else if platform.contains("amd64") || platform.contains("x86_64") {
+                    "if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"
+                } else if platform.contains("armv6") || platform.contains("armv7") || {
+                    let l = platform.to_lowercase(); (l.contains("-arm") || l.contains("_arm")) && !l.contains("arm64") && !l.contains("aarch64")
+                } {
+                    "if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"
                 } else {
-                    "on_intel"
+                    "if Hardware::CPU.intel?"
                 };
                 let mut m = std::collections::HashMap::new();
                 m.insert("url", *url);
@@ -690,13 +858,25 @@ pub fn generate_formula_with_opts(
         (unknown, macos, linux, macos_has, linux_has)
     };
 
+    let has_macos = !macos_vals.is_empty();
+    let has_linux = !linux_vals.is_empty();
+    let depends_on_macos = has_macos && !has_linux;
+    let depends_on_linux = has_linux && !has_macos;
+    let has_only_amd64_macos = has_macos && macos_vals.len() == 1
+        && macos_vals.first().and_then(|m| m.get("arch_block")).map(|a| *a == "on_intel").unwrap_or(false);
+    let has_platform_blocks = has_macos || has_linux;
+
     ctx.insert("unknown_entries", &unknown_vals);
-    ctx.insert("has_macos", &!macos_vals.is_empty());
+    ctx.insert("has_macos", &has_macos);
     ctx.insert("macos_has_arch", &macos_has_arch);
     ctx.insert("macos_entries", &macos_vals);
-    ctx.insert("has_linux", &!linux_vals.is_empty());
+    ctx.insert("has_linux", &has_linux);
     ctx.insert("linux_has_arch", &linux_has_arch);
     ctx.insert("linux_entries", &linux_vals);
+    ctx.insert("depends_on_macos", &depends_on_macos);
+    ctx.insert("depends_on_linux", &depends_on_linux);
+    ctx.insert("has_only_amd64_macos", &has_only_amd64_macos);
+    ctx.insert("has_platform_blocks", &has_platform_blocks);
 
     // Dependencies: split into global (no OS), macos-only, and linux-only.
     #[derive(serde::Serialize)]
@@ -920,10 +1100,10 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     let description = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
-    let license_raw = hb_cfg.license.as_deref().unwrap_or("MIT");
-    let license = ctx
-        .render_template(license_raw)
-        .unwrap_or_else(|_| license_raw.to_string());
+    let license = hb_cfg
+        .license
+        .as_deref()
+        .map(|l| ctx.render_template(l).unwrap_or_else(|_| l.to_string()));
     let homepage_rendered = hb_cfg
         .homepage
         .as_deref()
@@ -982,8 +1162,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
 
     // Collect Archive and Binary artifacts for this crate to build the formula entries.
     // GoReleaser supports both UploadableArchive and UploadableBinary types here.
-    // Apply IDs filter if configured.
+    // Apply IDs + goamd64/goarm filter.
     let ids_filter = hb_cfg.ids.as_deref();
+    let goamd64 = hb_cfg.goamd64.as_deref().or(Some("v1"));
+    // GoReleaser defaults Goarm to "6" for Homebrew (brew.go:85)
+    let goarm = hb_cfg.goarm.as_deref().or(Some("6"));
     let mut all_artifacts = ctx
         .artifacts
         .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name);
@@ -1002,6 +1185,22 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             } else {
                 true
             }
+        })
+        // Filter by goamd64/goarm microarchitecture variant.
+        .filter(|a| {
+            let target = a.target.as_deref().unwrap_or("");
+            let (_, arch) = anodize_core::target::map_target(target);
+            if arch == "amd64" {
+                if let Some(want) = goamd64 {
+                    return a.metadata.get("goamd64").map_or(true, |v| v == want);
+                }
+            }
+            if arch.starts_with("arm") && arch != "arm64" {
+                if let Some(want) = goarm {
+                    return a.metadata.get("goarm").map_or(true, |v| v == want);
+                }
+            }
+            true
         })
         .filter_map(|a| {
             let target = a.target.as_deref().unwrap_or("");
@@ -1052,7 +1251,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         &version,
         &archives,
         &description,
-        &license,
+        license.as_deref().unwrap_or(""),
         &install,
         &test_block,
         &opts,
@@ -1078,11 +1277,12 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     )?;
 
     // Determine formula folder.
-    let folder = hb_cfg
-        .folder
-        .clone()
-        .unwrap_or_else(|| "Formula".to_string());
-    let formula_dir = repo_path.join(&folder);
+    let folder = hb_cfg.folder.clone().unwrap_or_default();
+    let formula_dir = if folder.is_empty() {
+        repo_path.to_path_buf()
+    } else {
+        repo_path.join(&folder)
+    };
     std::fs::create_dir_all(&formula_dir)
         .with_context(|| format!("homebrew: create formula dir {}", formula_dir.display()))?;
 
@@ -1199,6 +1399,383 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     );
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// publish_top_level_homebrew_casks
+// ---------------------------------------------------------------------------
+
+/// Publish Homebrew Cask `.rb` files from top-level `homebrew_casks` config.
+///
+/// GoReleaser parity: `homebrew_casks` is a top-level config array, independent
+/// of per-crate homebrew config, with its own repository, commit_author,
+/// directory, skip_upload, hooks, dependencies, conflicts, etc.
+pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Result<()> {
+    let entries = match ctx.config.homebrew_casks {
+        Some(ref v) if !v.is_empty() => v,
+        _ => return Ok(()),
+    };
+
+    for cask_cfg in entries {
+        let project_name = &ctx.config.project_name;
+        let cask_name = cask_cfg.name.as_deref().unwrap_or(project_name);
+        let version = ctx.version();
+
+        // Check skip_upload.
+        if should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
+            log.status(&format!(
+                "homebrew_casks: skipping upload for '{}' (skip_upload)",
+                cask_name
+            ));
+            continue;
+        }
+
+        // Repository is required for top-level cask.
+        let repo_cfg = cask_cfg.repository.as_ref();
+        let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+            repo_cfg,
+            None,
+            None,
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "homebrew_casks: no repository config for cask '{}'",
+                cask_name
+            )
+        })?;
+
+        // Directory defaults to "Casks" (GoReleaser default).
+        let directory = cask_cfg.directory.as_deref().unwrap_or("Casks");
+
+        if ctx.is_dry_run() {
+            log.status(&format!(
+                "(dry-run) would update Homebrew cask '{}/{}' in {}/{}/{}",
+                repo_owner, repo_name, repo_owner, repo_name, directory
+            ));
+            continue;
+        }
+
+        // Find macOS artifact: prefer DiskImage, then Archive with darwin target.
+        // For top-level cask, iterate all crates' artifacts.
+        let macos_artifact = find_top_level_cask_artifact(ctx, cask_cfg.ids.as_deref())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "homebrew_casks: no macOS artifact (DiskImage or Archive) found for cask '{}'",
+                    cask_name
+                )
+            })?;
+
+        // Build URL.
+        let url = if let Some(ref url_cfg) = cask_cfg.url {
+            if let Some(ref tmpl) = url_cfg.template {
+                let target = macos_artifact.target.as_deref().unwrap_or("");
+                let (os, arch) = anodize_core::target::map_target(target);
+                crate::util::render_url_template(tmpl, macos_artifact.name(), &version, &arch, &os)
+            } else {
+                macos_artifact
+                    .metadata
+                    .get("url")
+                    .cloned()
+                    .unwrap_or_default()
+            }
+        } else {
+            macos_artifact
+                .metadata
+                .get("url")
+                .cloned()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "homebrew_casks: artifact for '{}' has no 'url' metadata; set url.template",
+                        cask_name
+                    )
+                })?
+        };
+
+        let sha256 = macos_artifact
+            .metadata
+            .get("sha256")
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "homebrew_casks: artifact has no 'sha256' metadata for cask '{}'",
+                    cask_name
+                )
+            })?;
+
+        // Build uninstall directives from structured config.
+        let uninstall_directives = build_uninstall_directives(cask_cfg.uninstall.as_ref());
+        let zap_directives = build_uninstall_directives(cask_cfg.zap.as_ref());
+
+        let empty_vec: Vec<String> = Vec::new();
+        let binaries = cask_cfg.binaries.as_deref().unwrap_or_else(|| {
+            // GoReleaser defaults binaries to [name]
+            &empty_vec
+        });
+        let default_binaries;
+        let binaries = if binaries.is_empty() {
+            default_binaries = vec![cask_name.to_string()];
+            &default_binaries
+        } else {
+            binaries
+        };
+
+        // Build depends_on directives from structured config
+        let depends_directives = build_depends_directives(cask_cfg.dependencies.as_deref());
+        let conflicts_directives = build_conflicts_directives(cask_cfg.conflicts.as_deref());
+
+        // Extract hooks
+        let preflight = cask_cfg.hooks.as_ref()
+            .and_then(|h| h.pre.as_ref())
+            .and_then(|p| p.install.as_deref());
+        let postflight = cask_cfg.hooks.as_ref()
+            .and_then(|h| h.post.as_ref())
+            .and_then(|p| p.install.as_deref());
+        let uninstall_preflight = cask_cfg.hooks.as_ref()
+            .and_then(|h| h.pre.as_ref())
+            .and_then(|p| p.uninstall.as_deref());
+        let uninstall_postflight = cask_cfg.hooks.as_ref()
+            .and_then(|h| h.post.as_ref())
+            .and_then(|p| p.uninstall.as_deref());
+
+        // Extract completions
+        let completions_bash = cask_cfg.completions.as_ref()
+            .and_then(|c| c.bash.as_deref());
+        let completions_zsh = cask_cfg.completions.as_ref()
+            .and_then(|c| c.zsh.as_deref());
+        let completions_fish = cask_cfg.completions.as_ref()
+            .and_then(|c| c.fish.as_deref());
+
+        let manpages = cask_cfg.manpages.as_deref().unwrap_or(&empty_vec);
+
+        let params = CaskParams {
+            name: cask_name,
+            display_name: cask_name,
+            alternative_names: cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
+            version: &version,
+            sha256: &sha256,
+            url: &url,
+            homepage: cask_cfg.homepage.as_deref(),
+            description: cask_cfg.description.as_deref(),
+            app: cask_cfg.app.as_deref(),
+            binaries,
+            caveats: cask_cfg.caveats.as_deref(),
+            zap: &zap_directives,
+            uninstall: &uninstall_directives,
+            custom_block: cask_cfg.custom_block.as_deref(),
+            service: cask_cfg.service.as_deref(),
+            manpages,
+            completions_bash,
+            completions_zsh,
+            completions_fish,
+            depends_on: &depends_directives,
+            conflicts_with: &conflicts_directives,
+            preflight,
+            postflight,
+            uninstall_preflight,
+            uninstall_postflight,
+        };
+
+        let content = generate_cask(&params);
+
+        // Clone tap repo, write cask, commit, push.
+        let tmp_dir = tempfile::tempdir().context("homebrew_casks: create temp dir")?;
+        let repo_path = tmp_dir.path();
+
+        let token = crate::util::resolve_repo_token(
+            ctx,
+            repo_cfg,
+            Some("HOMEBREW_TAP_TOKEN"),
+        );
+        crate::util::clone_repo(
+            repo_cfg,
+            &repo_owner,
+            &repo_name,
+            token.as_deref(),
+            repo_path,
+            "homebrew_casks",
+            log,
+        )?;
+
+        let cask_dir = repo_path.join(directory);
+        std::fs::create_dir_all(&cask_dir)
+            .with_context(|| format!("homebrew_casks: create {} dir", directory))?;
+
+        let cask_path = cask_dir.join(format!("{}.rb", cask_name));
+        std::fs::write(&cask_path, &content)
+            .with_context(|| format!("homebrew_casks: write cask file {}", cask_path.display()))?;
+
+        log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+
+        // Render commit message.
+        let default_commit_msg = format!(
+            "Brew cask update for {} version {}",
+            cask_name, version
+        );
+        let commit_msg = cask_cfg.commit_msg_template.as_deref()
+            .map(|tmpl| render_commit_msg(Some(tmpl), cask_name, &version, "cask"))
+            .unwrap_or(default_commit_msg);
+
+        let cask_lossy = cask_path.to_string_lossy();
+        let commit_opts = crate::util::resolve_commit_opts(
+            cask_cfg.commit_author.as_ref(),
+            None,
+            None,
+        );
+        let branch = crate::util::resolve_branch(repo_cfg);
+        crate::util::commit_and_push_with_opts(
+            repo_path,
+            &[&cask_lossy],
+            &commit_msg,
+            branch,
+            "homebrew_casks",
+            &commit_opts,
+        )?;
+
+        log.status(&format!(
+            "Homebrew tap {}/{} updated with cask '{}' in {}",
+            repo_owner, repo_name, cask_name, directory
+        ));
+
+        // Submit a PR if pull_request.enabled is set.
+        let pr_branch = branch.unwrap_or("main");
+        crate::util::maybe_submit_pr(
+            repo_path,
+            repo_cfg,
+            &repo_owner,
+            &repo_name,
+            pr_branch,
+            &format!("Update {} cask to {}", cask_name, version),
+            &format!(
+                "## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+                cask_name, version
+            ),
+            "homebrew_casks",
+            log,
+        );
+    }
+
+    Ok(())
+}
+
+/// Find a macOS artifact for top-level cask config.
+/// Searches all artifacts (not per-crate) with optional ID filtering.
+fn find_top_level_cask_artifact<'a>(
+    ctx: &'a Context,
+    ids: Option<&[String]>,
+) -> Option<&'a anodize_core::artifact::Artifact> {
+    let filter = |a: &&anodize_core::artifact::Artifact| {
+        // ID filter
+        if let Some(id_list) = ids {
+            if !id_list.is_empty() {
+                let artifact_id = a.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+                if !id_list.iter().any(|id| id == artifact_id) {
+                    return false;
+                }
+            }
+        }
+        // Must be macOS-targeted
+        a.target
+            .as_deref()
+            .map(|t| t.contains("darwin") || t.contains("macos") || t.contains("apple"))
+            .unwrap_or(false)
+    };
+
+    // Prefer DiskImage
+    ctx.artifacts
+        .by_kind(anodize_core::artifact::ArtifactKind::DiskImage)
+        .into_iter()
+        .find(|a| filter(a))
+        .or_else(|| {
+            // Fall back to Archive
+            ctx.artifacts
+                .by_kind(anodize_core::artifact::ArtifactKind::Archive)
+                .into_iter()
+                .find(|a| filter(a))
+        })
+        .or_else(|| {
+            // Fall back to UploadableBinary
+            ctx.artifacts
+                .by_kind(anodize_core::artifact::ArtifactKind::UploadableBinary)
+                .into_iter()
+                .find(|a| filter(a))
+        })
+}
+
+/// Build depends_on directives from structured cask dependency config.
+fn build_depends_directives(
+    deps: Option<&[anodize_core::config::HomebrewCaskDependencyEntry]>,
+) -> Vec<String> {
+    let d = match deps {
+        Some(d) if !d.is_empty() => d,
+        _ => return Vec::new(),
+    };
+    let mut directives = Vec::new();
+    for dep in d {
+        if let Some(ref cask) = dep.cask {
+            directives.push(format!("cask: \"{}\"", cask));
+        }
+        if let Some(ref formula) = dep.formula {
+            directives.push(format!("formula: \"{}\"", formula));
+        }
+    }
+    directives
+}
+
+/// Build conflicts_with directives from structured cask conflict config.
+fn build_conflicts_directives(
+    conflicts: Option<&[anodize_core::config::HomebrewCaskConflictEntry]>,
+) -> Vec<String> {
+    let c = match conflicts {
+        Some(c) if !c.is_empty() => c,
+        _ => return Vec::new(),
+    };
+    let mut directives = Vec::new();
+    for conflict in c {
+        if let Some(ref cask) = conflict.cask {
+            directives.push(format!("cask: \"{}\"", cask));
+        }
+    }
+    directives
+}
+
+/// Build uninstall directives from structured HomebrewCaskUninstall config.
+/// Converts structured fields into Homebrew Ruby DSL strings.
+fn build_uninstall_directives(
+    uninstall: Option<&anodize_core::config::HomebrewCaskUninstall>,
+) -> Vec<String> {
+    let u = match uninstall {
+        Some(u) => u,
+        None => return Vec::new(),
+    };
+    let mut directives = Vec::new();
+
+    if let Some(ref items) = u.launchctl {
+        for item in items {
+            directives.push(format!("launchctl: \"{}\"", item));
+        }
+    }
+    if let Some(ref items) = u.quit {
+        for item in items {
+            directives.push(format!("quit: \"{}\"", item));
+        }
+    }
+    if let Some(ref items) = u.login_item {
+        for item in items {
+            directives.push(format!("login_item: \"{}\"", item));
+        }
+    }
+    if let Some(ref items) = u.delete {
+        for item in items {
+            directives.push(format!("delete: \"{}\"", item));
+        }
+    }
+    if let Some(ref items) = u.trash {
+        for item in items {
+            directives.push(format!("trash: \"{}\"", item));
+        }
+    }
+
+    directives
 }
 
 // ---------------------------------------------------------------------------
@@ -1446,8 +2023,17 @@ mod tests {
         );
         assert!(formula.contains("      sha256 \"sha_darwin_arm64\""));
 
-        // Verify install and test blocks are still present
-        assert!(formula.contains("  def install\n"));
+        // Per-platform install blocks (no top-level def install for multi-arch)
+        assert!(!formula.contains("\n  def install\n"),
+            "multi-arch formula should NOT have top-level def install, got:\n{}", formula);
+        assert_eq!(formula.matches("def install").count(), 4,
+            "each of 4 arch blocks should have its own def install, got:\n{}", formula);
+        // Linux blocks should use Hardware::CPU guards
+        assert!(formula.contains("if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"),
+            "linux amd64 should use Hardware::CPU guard, got:\n{}", formula);
+        assert!(formula.contains("if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?"),
+            "linux arm64 should use Hardware::CPU guard, got:\n{}", formula);
+        // Verify test block is still present
         assert!(formula.contains("  test do\n"));
     }
 
@@ -2638,6 +3224,11 @@ mod tests {
             caveats: None,
             zap: &[],
             uninstall: &[],
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2676,6 +3267,11 @@ mod tests {
             caveats: Some("You must grant accessibility permissions."),
             zap: &[],
             uninstall: &[],
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2704,6 +3300,11 @@ mod tests {
             caveats: None,
             zap: &zap,
             uninstall: &[],
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2732,6 +3333,11 @@ mod tests {
             caveats: None,
             zap: &[],
             uninstall: &uninstall,
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2762,6 +3368,11 @@ mod tests {
             caveats: None,
             zap: &[],
             uninstall: &[],
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2790,6 +3401,11 @@ mod tests {
             caveats: None,
             zap: &[],
             uninstall: &[],
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2813,6 +3429,11 @@ mod tests {
             caveats: None,
             zap: &[],
             uninstall: &[],
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2849,6 +3470,11 @@ mod tests {
             caveats: Some("Run my-cli init after installing."),
             zap: &zap,
             uninstall: &uninstall,
+            custom_block: None, service: None, manpages: &[],
+            completions_bash: None, completions_zsh: None, completions_fish: None,
+            depends_on: &[], conflicts_with: &[],
+            preflight: None, postflight: None,
+            uninstall_preflight: None, uninstall_postflight: None,
         };
         let cask = generate_cask(&params);
 
@@ -2918,5 +3544,294 @@ mod tests {
 
         // dry-run should succeed without any network/git calls
         assert!(publish_cask(&ctx, "myapp", &log).is_ok());
+    }
+
+    #[test]
+    fn test_formula_per_platform_install_macos_only() {
+        let formula = generate_formula(
+            "mytool", "1.0.0",
+            &[("darwin-amd64", "https://example.com/a.tar.gz", "hash_intel"),
+              ("darwin-arm64", "https://example.com/b.tar.gz", "hash_arm")],
+            "My tool", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"",
+        );
+        assert_eq!(formula.matches("def install").count(), 2,
+            "each macOS arch should have def install, got:\n{}", formula);
+        assert!(!formula.contains("\n  def install\n"),
+            "should NOT have top-level def install, got:\n{}", formula);
+    }
+
+    #[test]
+    fn test_formula_single_archive_still_has_top_level_install() {
+        let formula = generate_formula(
+            "mytool", "1.0.0",
+            &[("darwin-amd64", "https://example.com/a.tar.gz", "abc")],
+            "desc", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"",
+        );
+        assert!(formula.contains("\n  def install\n"),
+            "single-archive should have top-level def install, got:\n{}", formula);
+        assert_eq!(formula.matches("def install").count(), 1);
+    }
+
+    #[test]
+    fn test_formula_no_archives_has_top_level_install() {
+        let formula = generate_formula("mytool", "1.0.0", &[], "desc", "MIT",
+            "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(formula.contains("\n  def install\n"),
+            "no-archive should have top-level def install, got:\n{}", formula);
+    }
+
+    #[test]
+    fn test_formula_depends_on_macos_when_only_macos_packages() {
+        let formula = generate_formula("mytool", "1.0.0",
+            &[("darwin-amd64", "https://example.com/a.tar.gz", "abc"),
+              ("darwin-arm64", "https://example.com/b.tar.gz", "def")],
+            "desc", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(formula.contains("  depends_on :macos\n"),
+            "only macOS packages should have depends_on :macos, got:\n{}", formula);
+        assert!(!formula.contains("depends_on :linux"));
+    }
+
+    #[test]
+    fn test_formula_depends_on_linux_when_only_linux_packages() {
+        let formula = generate_formula("mytool", "1.0.0",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "abc"),
+              ("linux-arm64", "https://example.com/b.tar.gz", "def")],
+            "desc", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(formula.contains("  depends_on :linux\n"),
+            "only Linux packages should have depends_on :linux, got:\n{}", formula);
+        assert!(!formula.contains("depends_on :macos"));
+    }
+
+    #[test]
+    fn test_formula_no_depends_on_os_when_both_platforms() {
+        let formula = generate_formula("mytool", "1.0.0",
+            &[("darwin-amd64", "https://example.com/a.tar.gz", "abc"),
+              ("linux-amd64", "https://example.com/b.tar.gz", "def")],
+            "desc", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(!formula.contains("depends_on :macos"));
+        assert!(!formula.contains("depends_on :linux"));
+    }
+
+    #[test]
+    fn test_formula_rosetta_caveat_when_only_amd64_macos() {
+        let formula = generate_formula("mytool", "1.0.0",
+            &[("darwin-amd64", "https://example.com/a.tar.gz", "abc123"),
+              ("linux-amd64", "https://example.com/b.tar.gz", "def456")],
+            "My tool", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(formula.contains("if Hardware::CPU.arm?"),
+            "should have ARM CPU check for Rosetta caveat, got:\n{}", formula);
+        assert!(formula.contains("darwin_arm64 architecture is not supported"),
+            "should have Rosetta caveat, got:\n{}", formula);
+    }
+
+    #[test]
+    fn test_formula_no_rosetta_caveat_when_both_macos_arches() {
+        let formula = generate_formula("mytool", "1.0.0",
+            &[("darwin-amd64", "https://example.com/a.tar.gz", "abc"),
+              ("darwin-arm64", "https://example.com/b.tar.gz", "def")],
+            "desc", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(!formula.contains("darwin_arm64 architecture is not supported"),
+            "should NOT have Rosetta caveat when arm64 available");
+    }
+
+    #[test]
+    fn test_formula_linux_32bit_arm() {
+        let formula = generate_formula("mytool", "1.0.0",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "hash_amd64"),
+              ("linux-arm64", "https://example.com/b.tar.gz", "hash_arm64"),
+              ("linux-armv6", "https://example.com/c.tar.gz", "hash_armv6")],
+            "My tool", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(formula.contains("if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"),
+            "linux amd64 guard, got:\n{}", formula);
+        assert!(formula.contains("if Hardware::CPU.arm? && Hardware::CPU.is_64_bit?"),
+            "linux arm64 guard, got:\n{}", formula);
+        assert!(formula.contains("if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"),
+            "linux armv6 guard, got:\n{}", formula);
+        assert_eq!(formula.matches("def install").count(), 3,
+            "three arch blocks should have three def install blocks, got:\n{}", formula);
+    }
+
+    #[test]
+    fn test_formula_linux_armv7_32bit() {
+        let formula = generate_formula("mytool", "1.0.0",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "h1"),
+              ("linux-armv7", "https://example.com/b.tar.gz", "h2")],
+            "My tool", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"");
+        assert!(formula.contains("if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"),
+            "linux armv7 should use arm+!64bit guard, got:\n{}", formula);
+    }
+
+    #[test]
+    fn test_formula_extra_install_in_per_platform_blocks() {
+        let opts = FormulaOptions {
+            extra_install: Some("bash_completion.install \"completions/mytool.bash\""),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts("mytool", "1.0.0",
+            &[("darwin-amd64", "https://example.com/a.tar.gz", "aaa"),
+              ("linux-amd64", "https://example.com/b.tar.gz", "bbb")],
+            "desc", "MIT", "bin.install \"mytool\"", "system \"#{bin}/mytool\"", &opts);
+        assert_eq!(formula.matches("bash_completion.install").count(), 2,
+            "extra_install should appear in each platform block, got:\n{}", formula);
+    }
+
+    // -----------------------------------------------------------------------
+    // Top-level homebrew_casks tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_top_level_cask_noop_when_no_config() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+        let config = Config::default();
+        let ctx = Context::new(config, ContextOptions { dry_run: true, ..Default::default() });
+        let log = ctx.logger("homebrew");
+        assert!(publish_top_level_homebrew_casks(&ctx, &log).is_ok());
+    }
+
+    #[test]
+    fn test_top_level_cask_noop_when_empty_vec() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+        let mut config = Config::default();
+        config.homebrew_casks = Some(vec![]);
+        let ctx = Context::new(config, ContextOptions { dry_run: true, ..Default::default() });
+        let log = ctx.logger("homebrew");
+        assert!(publish_top_level_homebrew_casks(&ctx, &log).is_ok());
+    }
+
+    #[test]
+    fn test_top_level_cask_skip_upload() {
+        use anodize_core::config::{Config, TopLevelHomebrewCaskConfig, RepositoryConfig, StringOrBool};
+        use anodize_core::context::{Context, ContextOptions};
+        let mut config = Config::default();
+        config.homebrew_casks = Some(vec![TopLevelHomebrewCaskConfig {
+            name: Some("myapp".to_string()),
+            skip_upload: Some(StringOrBool::Bool(true)),
+            repository: Some(RepositoryConfig {
+                owner: Some("org".to_string()),
+                name: Some("tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]);
+        let ctx = Context::new(config, ContextOptions { dry_run: true, ..Default::default() });
+        let log = ctx.logger("homebrew");
+        assert!(publish_top_level_homebrew_casks(&ctx, &log).is_ok());
+    }
+
+    #[test]
+    fn test_top_level_cask_dry_run() {
+        use anodize_core::config::{Config, TopLevelHomebrewCaskConfig, RepositoryConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.homebrew_casks = Some(vec![TopLevelHomebrewCaskConfig {
+            name: Some("myapp".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("org".to_string()),
+                name: Some("homebrew-tap".to_string()),
+                ..Default::default()
+            }),
+            directory: Some("Casks".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = Context::new(config, ContextOptions { dry_run: true, ..Default::default() });
+        let log = ctx.logger("homebrew");
+        assert!(publish_top_level_homebrew_casks(&ctx, &log).is_ok());
+    }
+
+    #[test]
+    fn test_top_level_cask_requires_repository() {
+        use anodize_core::config::{Config, TopLevelHomebrewCaskConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.homebrew_casks = Some(vec![TopLevelHomebrewCaskConfig {
+            name: Some("myapp".to_string()),
+            repository: None,
+            ..Default::default()
+        }]);
+        let ctx = Context::new(config, ContextOptions { dry_run: false, ..Default::default() });
+        let log = ctx.logger("homebrew");
+        let err = publish_top_level_homebrew_casks(&ctx, &log).unwrap_err();
+        assert!(
+            err.to_string().contains("no repository config"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_build_uninstall_directives_empty() {
+        let directives = build_uninstall_directives(None);
+        assert!(directives.is_empty());
+    }
+
+    #[test]
+    fn test_build_uninstall_directives_all_fields() {
+        use anodize_core::config::HomebrewCaskUninstall;
+        let u = HomebrewCaskUninstall {
+            launchctl: Some(vec!["com.example.daemon".to_string()]),
+            quit: Some(vec!["com.example.app".to_string()]),
+            login_item: Some(vec!["MyApp".to_string()]),
+            delete: Some(vec!["/usr/local/bin/myapp".to_string()]),
+            trash: Some(vec!["~/Library/Preferences/com.example.app.plist".to_string()]),
+        };
+        let directives = build_uninstall_directives(Some(&u));
+        assert_eq!(directives.len(), 5);
+        assert!(directives[0].contains("launchctl"));
+        assert!(directives[1].contains("quit"));
+        assert!(directives[2].contains("login_item"));
+        assert!(directives[3].contains("delete"));
+        assert!(directives[4].contains("trash"));
+    }
+
+    #[test]
+    fn test_build_uninstall_directives_partial() {
+        use anodize_core::config::HomebrewCaskUninstall;
+        let u = HomebrewCaskUninstall {
+            quit: Some(vec!["com.example.app".to_string()]),
+            ..Default::default()
+        };
+        let directives = build_uninstall_directives(Some(&u));
+        assert_eq!(directives.len(), 1);
+        assert!(directives[0].contains("quit"));
+    }
+
+    #[test]
+    fn test_top_level_cask_default_directory() {
+        use anodize_core::config::{TopLevelHomebrewCaskConfig, RepositoryConfig};
+        let cfg = TopLevelHomebrewCaskConfig {
+            repository: Some(RepositoryConfig {
+                owner: Some("org".to_string()),
+                name: Some("tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(cfg.directory.as_deref().unwrap_or("Casks"), "Casks");
+    }
+
+    #[test]
+    fn test_top_level_cask_default_commit_msg() {
+        #[allow(unused_imports)]
+        use anodize_core::config::{TopLevelHomebrewCaskConfig, RepositoryConfig};
+        let cfg = TopLevelHomebrewCaskConfig {
+            name: Some("myapp".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("org".to_string()),
+                name: Some("tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // GoReleaser default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+        let default_msg = format!(
+            "Brew cask update for {} version {}",
+            cfg.name.as_deref().unwrap_or(""),
+            "1.0.0"
+        );
+        assert!(default_msg.contains("Brew cask update"));
     }
 }

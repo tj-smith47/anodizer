@@ -10,6 +10,70 @@ use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
+// Helper: refresh artifact checksums after signing
+// ---------------------------------------------------------------------------
+
+/// Re-compute SHA256 for all darwin Binary/UniversalBinary artifacts whose
+/// files may have been modified by signing. Updates the `sha256` metadata
+/// field in-place (GoReleaser parity: macos.go:144 calls `binaries.Refresh()`).
+fn refresh_artifact_checksums(ctx: &mut Context, log: &anodize_core::log::StageLogger) {
+    use sha2::{Digest, Sha256};
+    use std::io::Read as _;
+
+    for artifact in ctx.artifacts.all_mut() {
+        if !matches!(
+            artifact.kind,
+            ArtifactKind::Binary | ArtifactKind::UniversalBinary
+        ) {
+            continue;
+        }
+        let is_darwin = artifact
+            .target
+            .as_deref()
+            .map(anodize_core::target::is_darwin)
+            .unwrap_or(false);
+        if !is_darwin {
+            continue;
+        }
+        // Only refresh if sha256 metadata was previously set
+        if !artifact.metadata.contains_key("sha256") {
+            continue;
+        }
+        match std::fs::File::open(&artifact.path) {
+            Ok(mut f) => {
+                let mut hasher = Sha256::new();
+                let mut buf = [0u8; 8192];
+                loop {
+                    match f.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => hasher.update(&buf[..n]),
+                        Err(e) => {
+                            log.warn(&format!(
+                                "notarize: failed to read {} for checksum refresh: {}",
+                                artifact.path.display(),
+                                e
+                            ));
+                            break;
+                        }
+                    }
+                }
+                let new_sha = format!("{:x}", hasher.finalize());
+                artifact
+                    .metadata
+                    .insert("sha256".to_string(), new_sha);
+            }
+            Err(e) => {
+                log.warn(&format!(
+                    "notarize: failed to open {} for checksum refresh: {}",
+                    artifact.path.display(),
+                    e
+                ));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helper: check if a StringOrBool-typed `enabled` field is active
 // ---------------------------------------------------------------------------
 
@@ -131,6 +195,12 @@ impl Stage for NotarizeStage {
             }
         }
 
+        // Refresh artifact checksums after signing (GoReleaser parity: macos.go:144).
+        // Signing modifies binaries in-place, so SHA256 metadata becomes stale.
+        if !dry_run {
+            refresh_artifact_checksums(ctx, &log);
+        }
+
         Ok(())
     }
 }
@@ -188,23 +258,34 @@ fn run_cross_platform(
             .ok_or_else(|| {
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.key_id is required when notarize block is present")
             })?;
-        Some((issuer_id, key, key_id, ncfg.wait.unwrap_or(false), ncfg.timeout.clone()))
+        // Default timeout to 10 minutes (GoReleaser parity: macos.go:33)
+        let timeout = ncfg.timeout.clone().or_else(|| Some("10m".to_string()));
+        Some((issuer_id, key, key_id, ncfg.wait.unwrap_or(false), timeout))
     } else {
         None
     };
 
-    // Collect darwin Binary artifacts, filtered by ids
+    // Default IDs to project name when not specified (GoReleaser parity: macos.go:35)
+    let ids = cfg.ids.clone().or_else(|| {
+        if ctx.config.project_name.is_empty() {
+            None
+        } else {
+            Some(vec![ctx.config.project_name.clone()])
+        }
+    });
+
+    // Collect darwin Binary + UniversalBinary artifacts, filtered by ids
     let darwin_artifacts: Vec<&Artifact> = ctx
         .artifacts
         .all()
         .iter()
         .filter(|a| {
-            matches!(a.kind, ArtifactKind::Binary)
+            matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary)
                 && a.target
                     .as_deref()
                     .map(anodize_core::target::is_darwin)
                     .unwrap_or(false)
-                && matches_ids(a, &cfg.ids)
+                && matches_ids(a, &ids)
         })
         .collect();
 
@@ -226,6 +307,9 @@ fn run_cross_platform(
             certificate.clone(),
             "--p12-password".to_string(),
             password.clone(),
+            // Apple's public timestamp server (GoReleaser parity: macos.go:95)
+            "--timestamp-url".to_string(),
+            "http://timestamp.apple.com/ts01".to_string(),
         ];
         if let Some(ref ent) = entitlements {
             sign_args.push("--entitlements-xml-path".to_string());
@@ -383,8 +467,19 @@ fn run_native(
 
     let wait = notarize.wait.unwrap_or(false);
 
+    // Default timeout to 10 minutes (GoReleaser parity: macos.go:33)
     let timeout = render_opt(ctx, &notarize.timeout)
-        .with_context(|| format!("notarize: macos_native[{idx}] render notarize.timeout"))?;
+        .with_context(|| format!("notarize: macos_native[{idx}] render notarize.timeout"))?
+        .or_else(|| Some("10m".to_string()));
+
+    // Default IDs to project name when not specified (GoReleaser parity: macos.go:35)
+    let ids = cfg.ids.clone().or_else(|| {
+        if ctx.config.project_name.is_empty() {
+            None
+        } else {
+            Some(vec![ctx.config.project_name.clone()])
+        }
+    });
 
     // Issue 9: Warn if options set with use: pkg (options only apply to DMGs)
     if artifact_type == "pkg" && sign.options.as_ref().is_some_and(|o| !o.is_empty()) {
@@ -402,7 +497,7 @@ fn run_native(
         profile_name: &profile_name,
         wait,
         timeout: timeout.as_deref(),
-        ids: &cfg.ids,
+        ids: &ids,
     };
 
     match artifact_type {

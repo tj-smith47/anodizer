@@ -2,6 +2,7 @@ use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{bail, Context as _, Result};
 use std::collections::HashMap;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // Helper types
@@ -405,28 +406,39 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
         };
 
         // Generate postinstall script.
-        let download_base = url_template.as_deref().unwrap_or("");
-        let postinstall = generate_postinstall_script(download_base, bin_name, archive_ext);
-
-        // Log extra_files / templated_extra_files presence — actual copying
-        // will be wired when the artifact registry is integrated.
-        if let Some(ref ef) = entry.extra_files {
-            log.status(&format!(
-                "npm: {} extra_files configured (will copy when artifact registry is wired)",
-                ef.len()
-            ));
-        }
-        if let Some(ref tef) = entry.templated_extra_files {
-            log.status(&format!(
-                "npm: {} templated_extra_files configured (will copy when artifact registry is wired)",
-                tef.len()
-            ));
-        }
+        // When url_template is set, use it directly as the download base.
+        // Otherwise, derive from the GitHub release config (owner/repo/tag),
+        // matching GoReleaser's default behavior.
+        let download_base = if let Some(ref ut) = url_template {
+            ut.clone()
+        } else {
+            derive_github_download_url(ctx, &version)
+        };
+        let postinstall = generate_postinstall_script(&download_base, bin_name, archive_ext);
 
         // Create a temp directory, write package.json and postinstall.js, run
         // `npm publish`.
         let tmp_dir = tempfile::tempdir()
             .context("npm: failed to create temporary directory")?;
+
+        // Copy extra_files into the npm package temp directory.
+        if let Some(ref ef) = entry.extra_files {
+            copy_extra_files(ef, tmp_dir.path(), log)?;
+        }
+
+        // Render and write templated_extra_files into the npm package temp directory.
+        if let Some(ref tef) = entry.templated_extra_files {
+            if !tef.is_empty() {
+                let rendered =
+                    anodize_core::templated_files::process_templated_extra_files(
+                        tef, ctx, tmp_dir.path(), "npm",
+                    )?;
+                log.status(&format!(
+                    "npm: rendered {} templated_extra_files",
+                    rendered.len()
+                ));
+            }
+        }
 
         let pkg_json_path = tmp_dir.path().join("package.json");
         let pkg_json_str = serde_json::to_string_pretty(&pkg)
@@ -475,6 +487,98 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
         log.status(&format!("npm: published '{}' v{}", name, version));
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Helper: derive GitHub download URL from release config
+// ---------------------------------------------------------------------------
+
+/// Derive the download URL base from the release config when no explicit
+/// `url_template` is set.  Uses the GitHub release download URL pattern:
+/// `https://github.com/{owner}/{repo}/releases/download/{tag}/`
+///
+/// Falls back to an empty string if the release config doesn't contain
+/// a GitHub (or Gitea/GitLab) repository configuration.
+fn derive_github_download_url(ctx: &Context, version: &str) -> String {
+    let tag = ctx
+        .template_vars()
+        .get("Tag")
+        .cloned()
+        .unwrap_or_else(|| format!("v{}", version));
+
+    if let Some(ref release) = ctx.config.release {
+        if let Some(ref gh) = release.github {
+            return format!(
+                "https://github.com/{}/{}/releases/download/{}/",
+                gh.owner, gh.name, tag
+            );
+        }
+        if let Some(ref gitea) = release.gitea {
+            return format!(
+                "https://{}/{}/releases/download/{}/",
+                gitea.owner, gitea.name, tag
+            );
+        }
+    }
+
+    // Last resort: use ReleaseURL if set (from a prior release stage).
+    if let Some(release_url) = ctx.template_vars().get("ReleaseURL") {
+        // ReleaseURL is like https://github.com/owner/repo/releases/tag/v1.0.0
+        // We need https://github.com/owner/repo/releases/download/v1.0.0/
+        if let Some(pos) = release_url.find("/releases/tag/") {
+            let base = &release_url[..pos];
+            return format!("{}/releases/download/{}/", base, tag);
+        }
+    }
+
+    String::new()
+}
+
+// ---------------------------------------------------------------------------
+// Helper: copy extra_files into a target directory
+// ---------------------------------------------------------------------------
+
+/// Resolve `extra_files` glob patterns and copy matching files into `dest_dir`.
+fn copy_extra_files(
+    specs: &[anodize_core::config::ExtraFileSpec],
+    dest_dir: &Path,
+    log: &StageLogger,
+) -> Result<()> {
+    for spec in specs {
+        let pattern = spec.glob();
+        let matches: Vec<_> = glob::glob(pattern)
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(|e| e.ok()))
+            .collect();
+
+        if matches.is_empty() {
+            log.status(&format!(
+                "npm: extra_files glob '{}' matched no files, skipping",
+                pattern
+            ));
+            continue;
+        }
+
+        for path in matches {
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if file_name.is_empty() {
+                continue;
+            }
+            let dest_path = dest_dir.join(&file_name);
+            std::fs::copy(&path, &dest_path).with_context(|| {
+                format!(
+                    "npm: failed to copy extra_file '{}' to '{}'",
+                    path.display(),
+                    dest_path.display()
+                )
+            })?;
+            log.status(&format!("npm: copied extra_file '{}'", file_name));
+        }
+    }
     Ok(())
 }
 
@@ -938,5 +1042,115 @@ mod tests {
         let log = ctx.logger("npm");
         // Should succeed — version comes from template vars.
         assert!(publish_to_npm(&ctx, &log).is_ok());
+    }
+
+    // --- derive_github_download_url tests ---
+
+    #[test]
+    fn test_derive_github_download_url_from_release_config() {
+        use anodize_core::config::{ReleaseConfig, ScmRepoConfig};
+        let mut config = Config::default();
+        config.release = Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "myorg".to_string(),
+                name: "myrepo".to_string(),
+            }),
+            ..Default::default()
+        });
+        let mut ctx = dry_run_ctx(config);
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
+        let url = derive_github_download_url(&ctx, "2.0.0");
+        assert_eq!(
+            url,
+            "https://github.com/myorg/myrepo/releases/download/v2.0.0/"
+        );
+    }
+
+    #[test]
+    fn test_derive_github_download_url_fallback_tag_from_version() {
+        use anodize_core::config::{ReleaseConfig, ScmRepoConfig};
+        let mut config = Config::default();
+        config.release = Some(ReleaseConfig {
+            github: Some(ScmRepoConfig {
+                owner: "org".to_string(),
+                name: "repo".to_string(),
+            }),
+            ..Default::default()
+        });
+        // No Tag set — should derive from version
+        let ctx = dry_run_ctx(config);
+        let url = derive_github_download_url(&ctx, "1.5.0");
+        assert_eq!(
+            url,
+            "https://github.com/org/repo/releases/download/v1.5.0/"
+        );
+    }
+
+    #[test]
+    fn test_derive_github_download_url_from_release_url() {
+        let config = Config::default();
+        let mut ctx = dry_run_ctx(config);
+        ctx.template_vars_mut().set("Tag", "v3.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/myorg/myrepo/releases/tag/v3.0.0",
+        );
+        let url = derive_github_download_url(&ctx, "3.0.0");
+        assert_eq!(
+            url,
+            "https://github.com/myorg/myrepo/releases/download/v3.0.0/"
+        );
+    }
+
+    #[test]
+    fn test_derive_github_download_url_empty_when_no_info() {
+        let config = Config::default();
+        let ctx = dry_run_ctx(config);
+        let url = derive_github_download_url(&ctx, "1.0.0");
+        assert_eq!(url, "");
+    }
+
+    // --- copy_extra_files tests ---
+
+    #[test]
+    fn test_copy_extra_files_basic() {
+        use anodize_core::config::ExtraFileSpec;
+        let src_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+
+        // Create source files
+        std::fs::write(src_dir.path().join("LICENSE"), "MIT").unwrap();
+        std::fs::write(src_dir.path().join("README.md"), "# Hello").unwrap();
+
+        let pattern = format!("{}/*", src_dir.path().display());
+        let specs = vec![ExtraFileSpec::Glob(pattern)];
+
+        let config = Config::default();
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("npm");
+        copy_extra_files(&specs, dest_dir.path(), &log).unwrap();
+
+        assert!(dest_dir.path().join("LICENSE").exists());
+        assert!(dest_dir.path().join("README.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest_dir.path().join("LICENSE")).unwrap(),
+            "MIT"
+        );
+    }
+
+    #[test]
+    fn test_copy_extra_files_no_match_skips() {
+        use anodize_core::config::ExtraFileSpec;
+        let dest_dir = tempfile::tempdir().unwrap();
+
+        let specs = vec![ExtraFileSpec::Glob(
+            "/nonexistent/path/*.xyz".to_string(),
+        )];
+
+        let config = Config::default();
+        let ctx = dry_run_ctx(config);
+        let log = ctx.logger("npm");
+        // Should succeed with no files copied
+        copy_extra_files(&specs, dest_dir.path(), &log).unwrap();
     }
 }

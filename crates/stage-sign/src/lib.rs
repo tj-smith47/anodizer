@@ -597,7 +597,7 @@ fn process_sign_configs(
                 id_label: sign_cfg.id.as_deref().unwrap_or("default").to_string(),
                 artifact_display: artifact_str.to_string(),
                 signature_display: signature_str.clone(),
-                output_flag: sign_cfg.output.unwrap_or(true),
+                output_flag: sign_cfg.output.unwrap_or(false),
                 new_artifacts: job_artifacts,
             });
         }

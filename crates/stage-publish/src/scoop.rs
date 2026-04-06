@@ -257,10 +257,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
 
-    let license = scoop_cfg
-        .license
-        .clone()
-        .unwrap_or_else(|| "MIT".to_string());
+    let license = scoop_cfg.license.clone().unwrap_or_default();
 
     // Use name override if set, otherwise crate name; render through template engine.
     let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
@@ -269,9 +266,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .unwrap_or_else(|_| manifest_name_raw.to_string());
     let manifest_name = manifest_name_rendered.as_str();
 
-    // Find all Windows Archive artifacts, applying IDs filter when configured.
+    // Find all Windows Archive artifacts, applying IDs + goamd64 filter.
     let ids_filter = scoop_cfg.ids.as_deref();
     let url_template = scoop_cfg.url_template.as_deref();
+    let goamd64 = scoop_cfg.goamd64.as_deref().or(Some("v1"));
 
     let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
@@ -299,6 +297,17 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
             } else {
                 true
             }
+        })
+        // Filter by goamd64 microarchitecture variant.
+        .filter(|a| {
+            let target = a.target.as_deref().unwrap_or("");
+            let (_, arch) = anodize_core::target::map_target(target);
+            if arch == "amd64" {
+                if let Some(want) = goamd64 {
+                    return a.metadata.get("goamd64").map_or(true, |v| v == want);
+                }
+            }
+            true
         })
         .map(|a| {
             let target = a.target.as_deref().unwrap_or("");

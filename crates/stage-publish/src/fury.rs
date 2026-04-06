@@ -1,3 +1,4 @@
+use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{bail, Context as _, Result};
@@ -8,19 +9,17 @@ use anyhow::{bail, Context as _, Result};
 
 /// Returns the default formats for Fury uploads: apk, deb, rpm.
 pub fn fury_default_formats() -> Vec<&'static str> {
-    vec!["apk", "deb", "rpm"]
+    crate::util::default_package_formats()
 }
 
 /// Build the Fury push URL for the given account.
 pub fn fury_push_url(account: &str) -> String {
-    format!("https://push.fury.io/{}/", account)
+    format!("https://push.fury.io/v1/{}/", account)
 }
 
 /// Check if a filename matches any of the given format extensions.
 pub fn fury_format_matches(filename: &str, formats: &[impl AsRef<str>]) -> bool {
-    formats
-        .iter()
-        .any(|fmt| filename.ends_with(&format!(".{}", fmt.as_ref())))
+    crate::util::format_matches(filename, formats)
 }
 
 // ---------------------------------------------------------------------------
@@ -60,16 +59,9 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
             .with_context(|| format!("fury: failed to render account '{}'", account_raw))?;
 
         // Resolve the secret env-var name (default: FURY_TOKEN).
-        let secret_name = entry
-            .secret_name
-            .as_deref()
-            .unwrap_or("FURY_TOKEN");
-
-        // Render secret_name through template engine in case it contains
-        // template expressions.
-        let secret_name_rendered = ctx
-            .render_template(secret_name)
-            .unwrap_or_else(|_| secret_name.to_string());
+        let secret_name_rendered = crate::util::resolve_secret_name(
+            ctx, entry.secret_name.as_deref(), "FURY_TOKEN",
+        );
 
         // Determine formats filter.
         let formats: Vec<String> = match entry.formats {
@@ -81,6 +73,30 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
         };
 
         let push_url = fury_push_url(&account);
+
+        // Collect matching artifacts: LinuxPackage artifacts matching format filter.
+        // Also check Archive artifacts for format matches (e.g. .deb in archives).
+        let artifacts: Vec<_> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| {
+                // Only package-like artifacts
+                let valid_kind = matches!(
+                    a.kind,
+                    ArtifactKind::LinuxPackage | ArtifactKind::Archive
+                );
+                if !valid_kind {
+                    return false;
+                }
+                // Must match format filter
+                if !fury_format_matches(a.name(), &formats) {
+                    return false;
+                }
+                // ID filter
+                crate::util::matches_id_filter(a, entry.ids.as_deref())
+            })
+            .collect();
 
         // --- Dry-run logging ---
         if ctx.is_dry_run() {
@@ -99,6 +115,10 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
                 "(dry-run) credential env var: {}",
                 secret_name_rendered
             ));
+            log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
+            for a in &artifacts {
+                log.status(&format!("(dry-run)   {} ({})", a.name(), a.kind));
+            }
             continue;
         }
 
@@ -112,12 +132,69 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
             )
         })?;
 
-        // Artifact iteration placeholder — no artifact registry in Context yet,
-        // so we log and continue.  When the registry is wired, iterate over
-        // matching artifacts and POST each to the push URL with Bearer auth.
-        let _ = token; // suppress unused warning until artifact iteration is wired
+        if artifacts.is_empty() {
+            log.status(&format!(
+                "fury: no matching artifacts for account '{}' (formats: {:?})",
+                account, formats
+            ));
+            continue;
+        }
+
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("anodize/1.0")
+            .build()
+            .context("fury: failed to build HTTP client")?;
+
         log.status(&format!(
-            "fury: no artifacts to upload for account '{}' (artifact registry not yet implemented)",
+            "fury: pushing {} packages to account '{}'",
+            artifacts.len(),
+            account
+        ));
+
+        for artifact in &artifacts {
+            let path = &artifact.path;
+            if !path.exists() {
+                bail!("fury: artifact file not found: {}", path.display());
+            }
+
+            let body = std::fs::read(path)
+                .with_context(|| format!("fury: failed to read '{}'", path.display()))?;
+
+            log.status(&format!(
+                "pushing {} ({} bytes) to {}",
+                artifact.name(),
+                body.len(),
+                push_url
+            ));
+
+            let resp = client
+                .put(&push_url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Length", body.len().to_string())
+                .body(body)
+                .send()
+                .with_context(|| {
+                    format!("fury: HTTP request failed for '{}'", artifact.name())
+                })?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let resp_body = resp.text().unwrap_or_default();
+                bail!(
+                    "fury: upload of '{}' to account '{}' failed: {} — {}",
+                    artifact.name(),
+                    account,
+                    status,
+                    resp_body
+                );
+            }
+
+            log.status(&format!("pushed {} ({})", artifact.name(), status));
+        }
+
+        log.status(&format!(
+            "fury: push complete for account '{}'",
             account
         ));
     }
@@ -133,8 +210,11 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use anodize_core::artifact::Artifact;
     use anodize_core::config::{Config, FuryConfig, StringOrBool};
     use anodize_core::context::{Context, ContextOptions};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
 
     fn dry_run_ctx(config: Config) -> Context {
         Context::new(
@@ -230,7 +310,7 @@ mod tests {
     #[test]
     fn test_fury_upload_url() {
         let url = fury_push_url("myaccount");
-        assert_eq!(url, "https://push.fury.io/myaccount/");
+        assert_eq!(url, "https://push.fury.io/v1/myaccount/");
     }
 
     #[test]
@@ -286,7 +366,7 @@ mod tests {
         let mut config = Config::default();
         config.fury = Some(vec![FuryConfig {
             account: Some("myaccount".to_string()),
-            secret_name: None, // should default to FURY_TOKEN
+            secret_name: None,
             ..Default::default()
         }]);
         let ctx = dry_run_ctx(config);
@@ -310,14 +390,12 @@ mod tests {
         ]);
         let ctx = dry_run_ctx(config);
         let log = ctx.logger("fury");
-        // First entry proceeds, second is skipped — both are ok
         assert!(publish_to_fury(&ctx, &log).is_ok());
     }
 
     #[test]
     fn test_fury_live_mode_errors_without_token() {
         let mut config = Config::default();
-        // Use a unique secret name to avoid collision with real env vars.
         let unique_secret = "FURY_TEST_TOKEN_SHOULD_NOT_EXIST_8f3a2c";
         config.fury = Some(vec![FuryConfig {
             account: Some("liveaccount".to_string()),
@@ -344,5 +422,44 @@ mod tests {
             "error should mention the account, got: {}",
             msg
         );
+    }
+
+    #[test]
+    fn test_fury_dry_run_lists_matching_artifacts() {
+        let mut config = Config::default();
+        config.project_name = "testapp".to_string();
+        config.fury = Some(vec![FuryConfig {
+            account: Some("myaccount".to_string()),
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            name: "testapp_1.0.0_amd64.deb".to_string(),
+            path: PathBuf::from("dist/testapp_1.0.0_amd64.deb"),
+            target: None,
+            crate_name: "testapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "testapp-1.0.0.tar.gz".to_string(),
+            path: PathBuf::from("dist/testapp-1.0.0.tar.gz"),
+            target: None,
+            crate_name: "testapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let log = ctx.logger("fury");
+        // Should succeed, matching only the .deb file
+        assert!(publish_to_fury(&ctx, &log).is_ok());
     }
 }
