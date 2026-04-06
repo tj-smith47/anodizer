@@ -198,17 +198,17 @@ GoReleaser source: `internal/pipe/git/`, `internal/pipe/metadata/`, `internal/pi
 ### Session F: Platform Support
 GoReleaser source: `internal/pipe/release/`, `internal/pipe/publish/`
 
-- [ ] GitLab release support
-- [ ] Gitea release support
-- [ ] GitHub Enterprise URLs (api/upload/download/skip_tls_verify)
+- [x] GitLab release support (create/update, dual upload paths, v17 detection, job tokens, replace_existing_artifacts, release link creation)
+- [x] Gitea release support (create/update, asset upload, pagination, draft/prerelease, replace_existing_artifacts)
+- [x] GitHub Enterprise URLs (api/upload/download/skip_tls_verify — config + octocrab client wiring + TLS bypass)
 - [x] DockerHub description sync: username, secret_name, images, description, full_description (from_url/from_file)
 - [x] Artifactory publisher: name, target (template), mode (archive/binary), username/password, client_x509_cert/key, custom_headers, ids/exts
 - [x] Fury.io publisher: account, disable, secret_name, ids, formats
 - [x] CloudSmith publisher: organization, repository, ids/formats, distributions, component
 - [x] NPM publisher: name, description, license, author, access, tag
 - [x] Snapcraft publish (upload to Snap Store)
-- [ ] changelog.use: gitlab backend
-- [ ] changelog.use: gitea backend
+- [x] changelog.use: gitlab backend (GitLab compare API, PRIVATE-TOKEN/JOB-TOKEN auth, commit extraction)
+- [x] changelog.use: gitea backend (Gitea compare API, token auth, username extraction)
 
 ### Session G: Parity Audit Findings (from 2026-04-05 audit)
 
@@ -269,9 +269,264 @@ GoReleaser source: `winget.go:115-134` templates 18 fields; `chocolatey.go:218-2
 - [x] Chocolatey: template-expand Copyright, Summary, ReleaseNotes (with Changelog variable) in `chocolatey.rs`
 - [x] Chocolatey: template-expand APIKey (GoReleaser treats it as a template)
 
+### Session H: Release & Changelog Behavioral Gaps (from 2026-04-06 audit)
+
+**GitHub Enterprise: download URL not wired to artifact metadata**
+GoReleaser's `ReleaseURLTemplate()` uses `GitHubURLs.Download` to construct artifact download URLs stored in artifact metadata. Publishers (homebrew, scoop, krew, nix, chocolatey, winget, cask) read `artifact.metadata["url"]` for download links. Anodize reads `github_urls.download` but never stores it in artifact metadata — publishers only work if `url_template` is explicitly set.
+- [x] After GitHub release asset upload, populate `artifact.metadata["url"]` using download URL + owner/name/tag/artifact pattern
+- [x] Set default `github_urls.download` to `"https://github.com"` when not specified
+- [x] Wire `ReleaseURLTemplate` for GitHub (matching `{download}/{owner}/{name}/releases/download/{tag}/{artifact}`)
+- [x] Verify all 7 publishers + cask read artifact URL metadata correctly when `url_template` is not set
+
+**GitLab/Gitea: upload retry with exponential backoff**
+GoReleaser wraps all upload errors in `RetriableError{}` and retries up to 10 times with 50ms base delay. Anodize has single-retry on link conflict (400/422) for GitLab, zero retry for Gitea uploads.
+- [x] Add configurable retry wrapper for GitLab `upload_via_package_registry()` and `upload_via_project_uploads()`
+- [x] Add retry wrapper for Gitea `gitea_upload_asset()`
+- [x] Match GoReleaser: 10 attempts, 50ms base delay, exponential backoff
+- [x] Wrap transient HTTP errors (5xx, timeouts) in retriable error type
+
+**GitLab: version detection API fallback**
+GoReleaser checks `CI_SERVER_VERSION` env, then falls back to `/api/v4/version` API call. Anodize only checks env, defaults to v17+ when absent.
+- [x] Add API call fallback to `/api/v4/version` when `CI_SERVER_VERSION` not set
+- [x] Parse version response and compare against v17.0.0
+
+**Changelog: co-author extraction from commit trailers**
+GoReleaser's `changelog.ExtractCoAuthors()` parses `Co-Authored-By:` trailers from commit message bodies for all three backends (GitHub, GitLab, Gitea). Anodize has zero co-author extraction.
+- [x] Implement `extract_co_authors()` parser for `Co-Authored-By:` trailer format
+- [x] Wire into all three SCM changelog backends (github, gitlab, gitea)
+- [x] Include co-authors in `CommitInfo.logins` aggregation
+
+**Changelog: GitLab/Gitea markdown newline handling**
+GoReleaser uses `"   \n"` (3 spaces + newline) for GitLab/Gitea changelog entries to force markdown line breaks. Anodize uses plain `"\n"`.
+- [x] Detect token type and use 3-space newline for GitLab/Gitea changelog formatting
+- [x] Apply in changelog entry joining (between bullet items)
+
+**Release: body truncation**
+GoReleaser truncates release body to `maxReleaseBodyLength = 125000` characters (client.go:19). Anodize has no truncation.
+- [x] Add body length check before release creation
+- [x] Truncate with warning when body exceeds 125,000 characters (GitHub limit)
+
+### Session I: Archive & Source Behavioral Gaps (from 2026-04-06 audit)
+
+**Archive: glob file resolution must preserve directory structure**
+GoReleaser's `archivefiles.go` computes longest common prefix when `destination` is set, preserving relative directory structure. Anodize flattens all resolved files to root — `docs/README.md` becomes just `README.md`.
+- [ ] Implement longest-common-prefix logic for glob resolution when `dst` is set
+- [ ] Preserve relative directory structure under destination prefix
+- [ ] Add tests comparing archive contents with GoReleaser output
+
+**Archive: duplicate destination path detection**
+GoReleaser's `unique()` function warns when same destination path would be overwritten. Anodize has no duplicate detection.
+- [ ] Add duplicate destination path detection in `resolve_file_specs()`
+- [ ] Emit warning when duplicate destinations found
+
+**Archive: file sorting for reproducibility**
+GoReleaser sorts resolved file list by destination path. Anodize does not sort.
+- [ ] Sort resolved files by destination path before archiving
+
+**Archive: template rendering for FileInfo fields**
+GoReleaser templates `owner`, `group`, `mtime` fields in FileInfo via `tmplInfo()`. Anodize uses raw config values.
+- [ ] Template-render `owner`, `group`, `mtime` in FileInfo before applying to archive entries
+
+**Archive: `binaries` filter field parsed but not wired**
+`ArchiveConfig.binaries` is parsed from config but never used in artifact filtering logic.
+- [ ] Wire `binaries` field to filter binary artifacts by name in archive stage
+
+**Archive: Amd64 version suffix in default template**
+GoReleaser's default archive name template includes `{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}`. Anodize's default omits this.
+- [ ] Add Amd64 suffix to default archive name template
+
+**Archive: support archiving UniversalBinary/Header/CArchive/CShared artifact types**
+GoReleaser archives Binary, UniversalBinary, Header, CArchive, CShared. Anodize only archives Binary.
+- [ ] Add UniversalBinary to archive artifact type filter
+- [ ] Add Header, CArchive, CShared to archive artifact type filter (for C library builds)
+
+**Source archive: strip_parent not implemented**
+Config field `SourceFileEntry.strip_parent` exists but stage logs "strip_parent is not yet supported".
+- [ ] Implement `strip_parent` in source archive file resolution
+
+**Source archive: file metadata (info) not implemented**
+Config fields `SourceFileInfo` (owner, group, mode, mtime) exist but stage logs "file info not yet supported".
+- [ ] Implement file metadata overrides (owner, group, mode, mtime) for source archive entries
+
+### Session J: Sign & Docker Behavioral Gaps (from 2026-04-06 audit)
+
+**Sign: binary_signs default signature template missing architecture**
+GoReleaser binary_signs use `${artifact}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}...` for signature naming. Anodize defaults to `{artifact}.sig` with no architecture info.
+- [ ] Implement architecture-aware default signature template for binary_signs
+- [ ] Include Os, Arch, Arm, Amd64 variant suffixes matching GoReleaser
+
+**Sign: IDs warning when used with checksum/source artifacts**
+GoReleaser warns when `ids` filter is set with `artifacts: "checksum"` or `"source"` (ids has no effect). Anodize is silent.
+- [ ] Add warning log when `ids` is set with checksum or source artifact filter
+
+**Sign: DockerImageV2 handling in docker_signs**
+GoReleaser includes `DockerImageV2` in both "images" and "manifests" filters. Anodize only handles `DockerImage` and `DockerManifest`.
+- [ ] Add `DockerImageV2` to docker_signs image and manifest filters
+
+**Sign: artifact refresh after signing**
+GoReleaser calls `ctx.Artifacts.Refresh()` after all signing. Anodize does not refresh.
+- [ ] Call artifact refresh equivalent after signing stage completes
+
+**Docker: DockerV2 missing defaults**
+GoReleaser sets defaults for DockerV2: ID=ProjectName, Dockerfile="Dockerfile", Tags=["{{.Tag}}"], Platforms=["linux/amd64","linux/arm64"], SBOM="true", Retry(10 attempts, 10s delay, 5m max).
+- [ ] Set default ID, Dockerfile, Tags, Platforms, SBOM, Retry for DockerV2 configs
+
+**Docker: platform tag suffix for snapshot builds**
+GoReleaser v2 adds platform suffix to tags during snapshot builds (e.g., "latest-amd64"). Anodize does not.
+- [ ] Add platform suffix to tags during snapshot builds for DockerV2
+
+**Docker: SBOM attestation format**
+GoReleaser uses `--attest=type=sbom` for proper OCI attestation. Anodize uses `--sbom=true`.
+- [ ] Change SBOM flag from `--sbom=true` to `--attest=type=sbom` for buildx
+
+**Docker: buildx driver validation**
+GoReleaser v2 checks buildx driver is "docker-container" or "docker". Anodize has no validation.
+- [ ] Validate buildx driver type and warn if non-standard
+
+**Docker: Dockerfile path template rendering**
+GoReleaser templates the `Dockerfile` field path. Anodize treats it as literal.
+- [ ] Template-render the Dockerfile path field before use
+
+**Docker: index annotation prefix for multi-platform**
+GoReleaser v2 adds "index:" prefix to annotations for multi-platform builds. Anodize does not.
+- [ ] Add "index:" annotation prefix for multi-platform Docker builds
+
+### Session K: nFPM & Publisher Behavioral Gaps (from 2026-04-06 audit)
+
+**nFPM: IPK format implementation**
+Config validation lists "ipk" but no underlying config struct or YAML generation exists. GoReleaser has full IPK support with 9 config fields: abi_version, alternatives, auto_installed, essential, predepends, tags, fields.
+- [ ] Add `NfpmIPK` config struct with all 9 fields
+- [ ] Wire IPK config into nFPM YAML generation
+- [ ] Add IPK-specific test cases
+
+**nFPM: template rendering for 8 missing field groups**
+GoReleaser templates these fields; anodize passes raw values:
+- [ ] Template-render `bindir` field
+- [ ] Template-render `mtime` field
+- [ ] Template-render script paths (preinstall, postinstall, preremove, postremove)
+- [ ] Template-render signature key files (deb, rpm, apk key_file + apk key_name)
+- [ ] Template-render libdirs (header, cshared, carchive)
+- [ ] Template-render content src/dst paths
+- [ ] Template-render content file_info.mtime
+
+**Chocolatey: skip_publish type and phase mismatch**
+GoReleaser's `SkipPublish` is a boolean checked in `Publish()`. Anodize uses `StringOrBool` checked inconsistently.
+- [ ] Change chocolatey `skip_publish` from StringOrBool to boolean (match GoReleaser)
+- [ ] Move skip_publish check to correct execution phase
+
+**Nix: license validation missing**
+GoReleaser validates license against a Nix-compatible allowlist. Anodize has no validation.
+- [ ] Add Nix license allowlist validation in nix publisher defaults
+
+**Publisher repository field templating**
+GoReleaser applies `TemplateRef()` to repository fields for Krew and Nix. Anodize does not template repository fields.
+- [ ] Template repository owner/name fields for Krew publisher
+- [ ] Template repository owner/name fields for Nix publisher
+
+**Scoop: missing default commit message template**
+GoReleaser sets a default `CommitMessageTemplate` in `Default()`. Anodize does not.
+- [ ] Set default commit_msg_template for Scoop publisher
+
+**Cask: directory field not templated + missing binary inference**
+GoReleaser templates directory and infers binaries from name when empty. Anodize does neither.
+- [ ] Template-render directory field for Cask publisher
+- [ ] Infer binary list from cask name when `binaries` is empty
+
+**Winget: PackageIdentifier missing from commit template context + PackageName fallback**
+GoReleaser adds PackageIdentifier to commit message template context and falls back PackageName to Name.
+- [ ] Add PackageIdentifier to winget commit message template context
+- [ ] Implement PackageName fallback to Name when empty
+
+**AUR: directory field not templated**
+GoReleaser templates the `directory` field. Anodize does not.
+- [ ] Template-render directory field for AUR publisher
+
+### Session L: Config/Defaults & Announce Gaps (from 2026-04-06 audit)
+
+**Defaults: missing default values matching GoReleaser**
+GoReleaser's defaults pipe sets many values that anodize does not:
+- [ ] Default `snapshot.version_template` to `"{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"`
+- [ ] Default `release.name_template` to `"{{ .Tag }}"`
+- [ ] Default `checksum.algorithm` to `"sha256"`
+- [ ] Default `git.tag_sort` to `"-version:refname"` when not set
+- [ ] Default archive `files` to include license/readme/changelog patterns (like GoReleaser)
+
+**Token file path defaults**
+GoReleaser defaults token files to `~/.config/goreleaser/{github,gitlab,gitea}_token`. Anodize has no defaults.
+- [ ] Set default token file paths in env_files when not configured
+
+**force_token environment variable override**
+GoReleaser supports `GORELEASER_FORCE_TOKEN` env var. Anodize only supports config field.
+- [ ] Read `GORELEASER_FORCE_TOKEN` (or `ANODIZE_FORCE_TOKEN`) env var as fallback
+
+**Announce: missing default values for providers**
+GoReleaser sets default username/author/icon for several providers. Anodize does not.
+- [ ] Slack: default username to "anodize"
+- [ ] Discord: default author to "anodize", default color to 3888754
+- [ ] Teams: default icon_url
+- [ ] Mattermost: align default username
+
+**Announce: webhook Content-Type charset**
+GoReleaser defaults to `"application/json; charset=utf-8"`. Anodize uses `"application/json"`.
+- [ ] Add `; charset=utf-8` to webhook default Content-Type
+
+**Announce: Mattermost top-level text with attachments**
+GoReleaser sets top-level `text` field when using attachments. Anodize intentionally omits it.
+- [ ] Verify Mattermost behavior: add top-level `text` when attachments present (match GoReleaser)
+
+### Session M: Missing Stages & Cross-Cutting (from 2026-04-06 audit)
+
+**Makeself: self-extracting archives (new stage)**
+GoReleaser has full makeself support (338 lines): `.run` self-extracting shell archives with embedded binaries, compression options, LSM metadata, per-platform packaging. Anodize has `ArtifactKind::Makeself` defined but zero implementation.
+- [ ] Create `stage-makeself` crate
+- [ ] Implement MakeselfConfig: id, ids, name_template, scripts, extra_files, compression (gzip/bzip2/xz/lzo/none), lsm_file, disable
+- [ ] Subprocess: `makeself --{compression} [--lsm] <archive_dir> <output.run> <label> [startup_script]`
+- [ ] Wire into pipeline ordering (after archive stage)
+
+**SRPM: source RPM packages (new stage)**
+GoReleaser has source RPM support (248 lines): `.src.rpm` from spec templates, signatures, per-format config.
+- [ ] Create `stage-srpm` crate
+- [ ] Implement SrpmConfig: id, ids, name_template, spec_template, extra_files, disable
+- [ ] Generate spec file from template with version/release/license substitution
+- [ ] Subprocess: `rpmbuild -bs <spec>` (or nfpm integration)
+
+**Milestone closing**
+GoReleaser closes GitHub/GitLab/Gitea milestones after release (93 lines). Anodize has no milestone support.
+- [ ] Add MilestoneConfig: close (bool), fail_on_error (bool), name_template (default "{{ .Tag }}")
+- [ ] Wire into existing VCS clients (GitHub via octocrab, GitLab/Gitea via reqwest)
+- [ ] Execute after release stage
+
+**Generic HTTP upload**
+GoReleaser has generic HTTP upload to arbitrary endpoints (42 lines in pipe, delegates to shared HTTP module). Distinct from specialized Artifactory/Fury/CloudSmith publishers.
+- [ ] Add UploadConfig: name, target (URL template), method (PUT/POST), username, password, custom_headers, ids, exts, checksum_header, trusted_certificates, disable
+- [ ] Implement generic HTTP upload reusing Artifactory's reqwest infrastructure
+
+**AUR source packages**
+GoReleaser's `aursources` pipe generates source-only PKGBUILD (not `-bin`). Anodize has AUR binary packages but not source variant.
+- [ ] Implement AUR source package generation (PKGBUILD without prebuilt binaries)
+- [ ] Wire separate AUR source config alongside existing binary AUR publisher
+
+**Snapcraft: plugs structure (dict vs list)**
+GoReleaser uses `Plugs map[string]any` (structured plug definitions). Anodize uses `Vec<String>` (list only).
+- [ ] Change snapcraft plugs from `Vec<String>` to structured map (interface + attributes)
+- [ ] Update snap.yaml generation to output structured plug definitions
+
+**Snapcraft: default grade and channel templates**
+GoReleaser defaults grade to "stable" and auto-populates channel_templates based on grade. Anodize does neither.
+- [ ] Default snapcraft grade to "stable"
+- [ ] Auto-populate channel_templates based on grade ("edge,beta,candidate,stable" for stable; "edge,beta" for devel)
+
+**Custom publishers: OS/Arch template variables**
+GoReleaser exposes per-artifact `.OS`, `.Arch`, `.Target` variables. Anodize exposes `ArtifactPath`, `ArtifactName`, `ArtifactKind` but not OS/Arch.
+- [ ] Add `Os`, `Arch`, `Target` template variables to custom publisher per-artifact context
+
+**Custom publishers: system environment passthrough**
+GoReleaser explicitly passes HOME, USER, PATH, TMPDIR, etc. Anodize only passes publisher-configured env.
+- [ ] Pass standard system environment variables to custom publisher commands
+
 ### Phase Z: Final Parity Audit
 
-**After ALL sessions A-G complete:**
+**After ALL sessions A-M complete:**
 - [ ] Update goreleaser-parity-matrix.md — mark all items Implemented
 - [ ] Delete superseded docs: parity-gap-analysis.md
 - [ ] Consolidate fresh-parity-gap-analysis.md into matrix

@@ -278,7 +278,7 @@ pub(crate) async fn gitlab_upload_asset(
 
     // Detect GitLab server version for the asset path field name.
     // GitLab v17+ uses `direct_asset_path`; older versions use `file_path`.
-    let use_legacy_file_path = detect_pre_v17_gitlab();
+    let use_legacy_file_path = detect_pre_v17_gitlab(client, api_url).await;
     let path_field = if use_legacy_file_path {
         "filepath"
     } else {
@@ -388,16 +388,35 @@ pub(crate) async fn gitlab_upload_asset(
     Ok(())
 }
 
-/// Detect whether the GitLab server is pre-v17 by checking the
-/// `CI_SERVER_VERSION` environment variable (set in GitLab CI runners).
+/// Detect whether the GitLab server is pre-v17.
 ///
-/// If the env var is absent or unparseable, defaults to v17+ behavior
-/// (using `direct_asset_path`).
-fn detect_pre_v17_gitlab() -> bool {
+/// Strategy (matching GoReleaser `isV17`):
+/// 1. Check `CI_SERVER_VERSION` environment variable (set in GitLab CI runners)
+/// 2. Fall back to `GET /api/v4/version` API call
+/// 3. If both fail, default to pre-v17 behavior (`filepath`) — conservative
+///    approach matching GoReleaser, which returns `isV17 = false` on failure.
+async fn detect_pre_v17_gitlab(client: &Client, api_url: &str) -> bool {
+    // 1. Check environment variable first.
     if let Ok(version_str) = std::env::var("CI_SERVER_VERSION") {
         return is_pre_v17(&version_str);
     }
-    false
+
+    // 2. Fall back to API call.
+    let api = api_url.trim_end_matches('/');
+    let version_url = format!("{}/version", api);
+    match client.get(&version_url).send().await {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                if let Some(version_str) = body["version"].as_str() {
+                    return is_pre_v17(version_str);
+                }
+            }
+            // Could not parse version — default to pre-v17 (conservative).
+            true
+        }
+        // API call failed — default to pre-v17 (conservative, matching GoReleaser).
+        _ => true,
+    }
 }
 
 /// Parse a GitLab version string and return true if the major version is < 17.

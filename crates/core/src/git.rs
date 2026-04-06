@@ -201,6 +201,9 @@ pub struct Commit {
     pub message: String,
     pub author_name: String,
     pub author_email: String,
+    /// Full commit message body (everything after the subject line).
+    /// Contains trailers like `Co-Authored-By:`.
+    pub body: String,
 }
 
 /// Run a git command and return stdout, trimmed.
@@ -489,22 +492,28 @@ pub fn find_latest_tag_matching_with_prefix(
     }
 }
 
-/// Parse git log output (formatted as `%H%n%h%n%s%n%an%n%ae`) into a vec of [`Commit`]s.
+/// Parse git log output (formatted as `%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e`)
+/// into a vec of [`Commit`]s.
+///
+/// Uses ASCII record separator (0x1e) between commits and unit separator (0x1f)
+/// between fields, so multi-line body text doesn't break parsing.
 fn parse_commit_output(output: &str) -> Vec<Commit> {
     if output.is_empty() {
         return vec![];
     }
-    let lines: Vec<&str> = output.lines().collect();
-    lines
-        .chunks(5)
-        .filter_map(|chunk| {
-            if chunk.len() == 5 {
+    output
+        .split('\x1e')
+        .filter(|record| !record.trim().is_empty())
+        .filter_map(|record| {
+            let fields: Vec<&str> = record.split('\x1f').collect();
+            if fields.len() >= 5 {
                 Some(Commit {
-                    hash: chunk[0].to_string(),
-                    short_hash: chunk[1].to_string(),
-                    message: chunk[2].to_string(),
-                    author_name: chunk[3].to_string(),
-                    author_email: chunk[4].to_string(),
+                    hash: fields[0].trim().to_string(),
+                    short_hash: fields[1].to_string(),
+                    message: fields[2].to_string(),
+                    author_name: fields[3].to_string(),
+                    author_email: fields[4].to_string(),
+                    body: fields.get(5).unwrap_or(&"").trim().to_string(),
                 })
             } else {
                 None
@@ -525,7 +534,7 @@ pub fn get_commits_between_paths(from: &str, to: &str, paths: &[String]) -> Resu
         "-c".to_string(),
         "log.showSignature=false".to_string(),
         "log".to_string(),
-        "--pretty=format:%H%n%h%n%s%n%an%n%ae".to_string(),
+        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
         range,
     ];
     if !paths.is_empty() {
@@ -551,7 +560,7 @@ pub fn get_all_commits_paths(paths: &[String]) -> Result<Vec<Commit>> {
         "-c".to_string(),
         "log.showSignature=false".to_string(),
         "log".to_string(),
-        "--pretty=format:%H%n%h%n%s%n%an%n%ae".to_string(),
+        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".to_string(),
         "HEAD".to_string(),
     ];
     if !paths.is_empty() {

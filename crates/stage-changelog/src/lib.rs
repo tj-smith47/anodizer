@@ -25,8 +25,10 @@ pub(crate) struct CommitInfo {
     pub full_hash: String,
     pub author_name: String,
     pub author_email: String,
-    /// GitHub login (populated only when `use: github`).
+    /// GitHub/Gitea login (populated only when `use: github` or `use: gitea`).
     pub login: String,
+    /// Co-author logins/names extracted from `Co-Authored-By:` trailers.
+    pub co_authors: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +79,31 @@ pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
             ..Default::default()
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// extract_co_authors — parse Co-Authored-By trailers from commit messages
+// ---------------------------------------------------------------------------
+
+/// Regex for parsing `Co-Authored-By:` trailers.
+/// Matches: `Co-Authored-By: Name <email>` (case-insensitive).
+/// GoReleaser reference: `changelog/changelog.go` `coauthorRe`.
+static CO_AUTHOR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^co-authored-by:\s*([^<]+[^<\s])\s*<([^>]+)>").unwrap());
+
+/// Extract co-author names from `Co-Authored-By:` trailers in a commit message.
+/// Returns a list of co-author names (not emails).
+pub(crate) fn extract_co_authors(message: &str) -> Vec<String> {
+    let mut authors = Vec::new();
+    for line in message.lines() {
+        if let Some(caps) = CO_AUTHOR_RE.captures(line.trim()) {
+            let name = caps[1].trim().to_string();
+            if !name.is_empty() {
+                authors.push(name);
+            }
+        }
+    }
+    authors
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +335,7 @@ fn group_commits_inner(
 /// When `abbrev < 0`, the default format becomes `{{ Message }}` (no hash prefix)
 /// regardless of the backend. Available template variables:
 /// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`, `Login`, `Logins`.
+#[cfg(test)]
 pub(crate) fn render_changelog(
     grouped: &[GroupedCommits],
     abbrev: i32,
@@ -316,6 +344,23 @@ pub(crate) fn render_changelog(
     use_source: &str,
     title: Option<&str>,
     divider: Option<&str>,
+) -> String {
+    render_changelog_with_provider(grouped, abbrev, format_template, logins, use_source, title, divider, None)
+}
+
+/// Inner render function that accepts an optional SCM provider override for
+/// newline handling. GoReleaser's `newLineFor()` checks `ctx.TokenType`, not
+/// the changelog source. When `scm_provider` is set, it overrides `use_source`
+/// for newline selection (but not for default format template selection).
+pub(crate) fn render_changelog_with_provider(
+    grouped: &[GroupedCommits],
+    abbrev: i32,
+    format_template: Option<&str>,
+    logins: &str,
+    use_source: &str,
+    title: Option<&str>,
+    divider: Option<&str>,
+    scm_provider: Option<&str>,
 ) -> String {
     let default_format = if abbrev < 0 {
         "{{ Message }}"
@@ -326,6 +371,14 @@ pub(crate) fn render_changelog(
         }
     };
     let tmpl = format_template.unwrap_or(default_format);
+    // GitLab and Gitea need trailing spaces before newlines for markdown line breaks.
+    // GoReleaser's newLineFor() checks ctx.TokenType, not the changelog source.
+    // See https://docs.gitlab.com/ee/user/markdown.html#newlines
+    let nl_source = scm_provider.unwrap_or(use_source);
+    let newline = match nl_source {
+        "gitlab" | "gitea" => "   \n",
+        _ => "\n",
+    };
     let mut out = String::new();
     // GoReleaser always emits a title heading (default "Changelog") when groups
     // are configured. When no groups are configured, the title is still emitted.
@@ -333,7 +386,7 @@ pub(crate) fn render_changelog(
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
     }
-    render_groups(&mut out, grouped, abbrev, tmpl, logins, divider, 3);
+    render_groups(&mut out, grouped, abbrev, tmpl, logins, divider, newline, 3);
     out
 }
 
@@ -346,6 +399,7 @@ fn render_groups(
     tmpl: &str,
     logins: &str,
     divider: Option<&str>,
+    newline: &str,
     depth: usize,
 ) {
     if depth > 6 {
@@ -368,11 +422,11 @@ fn render_groups(
             out.push_str(&format!("{} {}\n\n", hashes, group.title));
         }
         for commit in &group.commits {
-            render_commit_line(out, commit, abbrev, tmpl, logins);
+            render_commit_line(out, commit, abbrev, tmpl, logins, newline);
         }
         // Render nested subgroups one level deeper (no divider at subgroup level).
         if !group.subgroups.is_empty() {
-            render_groups(out, &group.subgroups, abbrev, tmpl, logins, None, depth + 1);
+            render_groups(out, &group.subgroups, abbrev, tmpl, logins, None, newline, depth + 1);
         }
         // Add trailing newline after commits. Skip if this group has subgroups
         // (they add their own spacing) and no direct commits.
@@ -398,6 +452,7 @@ fn render_commit_line(
     abbrev: i32,
     tmpl: &str,
     logins: &str,
+    newline: &str,
 ) {
     let short_sha = if abbrev < 0 {
         // Negative abbrev (e.g. GoReleaser's -1) means omit hash entirely.
@@ -428,7 +483,7 @@ fn render_commit_line(
             format!("{} {}", short_sha, commit.description)
         }
     });
-    out.push_str(&format!("- {}\n", rendered));
+    out.push_str(&format!("- {}{}", rendered, newline));
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +782,8 @@ impl Stage for ChangelogStage {
             };
 
             // Render the markdown for this crate.
-            let markdown = render_changelog(
+            let scm_provider = ctx.token_type.to_string();
+            let markdown = render_changelog_with_provider(
                 &grouped,
                 abbrev,
                 format_template.as_deref(),
@@ -735,6 +791,7 @@ impl Stage for ChangelogStage {
                 &use_source,
                 changelog_title.as_deref(),
                 changelog_divider.as_deref(),
+                Some(&scm_provider),
             );
 
             // Store per-crate changelog in context for the release stage.
@@ -814,6 +871,8 @@ fn fetch_git_commits(
         info.full_hash = commit.hash.clone();
         info.author_name = commit.author_name.clone();
         info.author_email = commit.author_email.clone();
+        // Extract co-authors from the commit body (trailers).
+        info.co_authors = extract_co_authors(&commit.body);
         all_commit_infos.push(info);
     }
     all_commit_infos
@@ -953,12 +1012,21 @@ fn fetch_github_commits(
             logins.insert(login.to_string());
         }
 
+        // Extract co-authors from the full commit message body.
+        let co_authors = extract_co_authors(message);
+        for co_author in &co_authors {
+            // Co-authors don't have GitHub logins in the trailer, just names.
+            // We still add them for visibility in the Logins variable.
+            logins.insert(co_author.clone());
+        }
+
         let mut info = parse_commit_message(subject);
         info.hash = short_sha.to_string();
         info.full_hash = sha.to_string();
         info.author_name = author_name.to_string();
         info.author_email = author_email.to_string();
         info.login = login.to_string();
+        info.co_authors = co_authors;
         all_commit_infos.push(info);
     }
 
@@ -1091,7 +1159,9 @@ fn fetch_gitlab_commits(
         info.full_hash = sha.to_string();
         info.author_name = author_name.to_string();
         info.author_email = author_email.to_string();
-        // GitLab's compare API does not include login information.
+        // GitLab's compare API does not include login information,
+        // but we can extract co-authors from commit message trailers.
+        info.co_authors = extract_co_authors(message);
         all_commit_infos.push(info);
     }
 
@@ -1100,8 +1170,15 @@ fn fetch_gitlab_commits(
         all_commit_infos.len()
     ));
 
-    // GitLab has no login concept like GitHub, so logins_str is empty.
-    Ok((all_commit_infos, String::new()))
+    // Aggregate co-author names into logins (GitLab has no username API).
+    let mut logins = std::collections::BTreeSet::new();
+    for info in &all_commit_infos {
+        for co_author in &info.co_authors {
+            logins.insert(co_author.clone());
+        }
+    }
+    let logins_str = logins.into_iter().collect::<Vec<_>>().join(",");
+    Ok((all_commit_infos, logins_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -1237,6 +1314,14 @@ fn fetch_gitea_commits(
         info.author_name = author_name.to_string();
         info.author_email = author_email.to_string();
         info.login = login.to_string();
+
+        // Extract co-authors from the full commit message body.
+        let co_authors = extract_co_authors(message);
+        for co_author in &co_authors {
+            logins.insert(co_author.clone());
+        }
+        info.co_authors = co_authors;
+
         all_commit_infos.push(info);
     }
 
@@ -1275,6 +1360,41 @@ mod tests {
             ..Default::default()
         }
     }
+
+    // ---- extract_co_authors tests ----
+
+    #[test]
+    fn test_extract_co_authors_basic() {
+        let msg = "feat: add feature\n\nSome details.\n\nCo-Authored-By: Alice Smith <alice@example.com>";
+        let authors = extract_co_authors(msg);
+        assert_eq!(authors, vec!["Alice Smith"]);
+    }
+
+    #[test]
+    fn test_extract_co_authors_multiple() {
+        let msg = "fix: bug\n\nCo-Authored-By: Alice <a@x.com>\nCo-Authored-By: Bob Jones <b@x.com>";
+        let authors = extract_co_authors(msg);
+        assert_eq!(authors, vec!["Alice", "Bob Jones"]);
+    }
+
+    #[test]
+    fn test_extract_co_authors_case_insensitive() {
+        let msg = "feat: thing\n\nco-authored-by: Jane <jane@x.com>\nCO-AUTHORED-BY: Joe <joe@x.com>";
+        let authors = extract_co_authors(msg);
+        assert_eq!(authors, vec!["Jane", "Joe"]);
+    }
+
+    #[test]
+    fn test_extract_co_authors_empty_message() {
+        assert!(extract_co_authors("").is_empty());
+    }
+
+    #[test]
+    fn test_extract_co_authors_no_trailers() {
+        assert!(extract_co_authors("feat: just a commit\n\nsome body").is_empty());
+    }
+
+    // ---- parse_commit_message tests ----
 
     #[test]
     fn test_parse_conventional_commit() {
@@ -2765,6 +2885,7 @@ abbrev: 10
                 author_name: "Alice".into(),
                 author_email: "alice@example.com".into(),
                 login: String::new(),
+                co_authors: Vec::new(),
             }],
             subgroups: Vec::new(),
         }];
@@ -2798,6 +2919,7 @@ abbrev: 10
                 author_name: "Bob".into(),
                 author_email: "bob@example.com".into(),
                 login: String::new(),
+                co_authors: Vec::new(),
             }],
             subgroups: Vec::new(),
         }];
@@ -3149,6 +3271,39 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     }
 
     #[test]
+    fn test_gitlab_newline_handling() {
+        let grouped = vec![GroupedCommits::new("", vec![
+            ci("feat: feature A", "feat", "feature A", "abc1234"),
+            ci("fix: bug B", "fix", "bug B", "def5678"),
+        ])];
+        // Use explicit format to keep assertions simple.
+        let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "gitlab", None, None);
+        // GitLab should use 3-space + newline for markdown line breaks.
+        assert!(md.contains("- abc1234 feature A   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
+        assert!(md.contains("- def5678 bug B   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
+    }
+
+    #[test]
+    fn test_gitea_newline_handling() {
+        let grouped = vec![GroupedCommits::new("", vec![
+            ci("feat: x", "feat", "x", "aaa1111"),
+        ])];
+        let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "gitea", None, None);
+        assert!(md.contains("- aaa1111 x   \n"), "Gitea should use '   \\n' for line breaks, got: {md}");
+    }
+
+    #[test]
+    fn test_github_newline_handling() {
+        let grouped = vec![GroupedCommits::new("", vec![
+            ci("feat: y", "feat", "y", "bbb2222"),
+        ])];
+        let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "github", None, None);
+        // GitHub should NOT use 3-space newlines.
+        assert!(md.contains("- bbb2222 y\n"), "GitHub should use plain newline, got: {md}");
+        assert!(!md.contains("   \n"), "GitHub should NOT use '   \\n', got: {md}");
+    }
+
+    #[test]
     fn test_render_logins_variable_in_format() {
         let grouped = vec![GroupedCommits::new(
             "",
@@ -3161,6 +3316,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
                 author_name: "Alice".into(),
                 author_email: "alice@example.com".into(),
                 login: "alice".into(),
+                co_authors: Vec::new(),
             }],
         )];
         let md = render_changelog(
@@ -3200,6 +3356,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
                 author_name: "Octocat".into(),
                 author_email: "octocat@github.com".into(),
                 login: "octocat".into(),
+                co_authors: Vec::new(),
             }],
         )];
         let md = render_changelog(

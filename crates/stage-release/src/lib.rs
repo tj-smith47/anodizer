@@ -17,6 +17,107 @@ use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
 mod gitea;
 mod gitlab;
 
+/// Percent-encode a URL path segment (matching Go's `url.PathEscape`).
+/// Encodes everything except unreserved characters and common path-safe chars.
+fn percent_encode_path(s: &str) -> String {
+    // PATH_SEGMENT set: encode everything except unreserved + sub-delims + ':'/'@'
+    // which matches RFC 3986 pchar = unreserved / pct-encoded / sub-delims / ":" / "@"
+    const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
+        .add(b' ')
+        .add(b'"')
+        .add(b'#')
+        .add(b'<')
+        .add(b'>')
+        .add(b'?')
+        .add(b'`')
+        .add(b'{')
+        .add(b'}')
+        .add(b'%')
+        .add(b'/');
+    percent_encoding::utf8_percent_encode(s, PATH_SEGMENT).to_string()
+}
+
+// ---------------------------------------------------------------------------
+// retry_upload — shared exponential-backoff retry for upload operations
+// ---------------------------------------------------------------------------
+
+/// Retry an async upload operation with exponential backoff.
+/// Matches GoReleaser: 10 attempts, 50ms initial delay.
+/// Retries on transient errors (5xx, timeouts, connection errors).
+async fn retry_upload<F, Fut>(operation_name: &str, mut f: F) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
+    const MAX_ATTEMPTS: u32 = 10;
+    const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+    const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+    // GoReleaser wraps ALL upload errors in RetriableError and retries all of
+    // them. We match that: retry every failure, not just specific HTTP codes.
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match f().await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                last_err = Some(err);
+                if attempt < MAX_ATTEMPTS {
+                    let delay = std::cmp::min(
+                        INITIAL_DELAY * 2u32.pow(attempt - 1),
+                        MAX_DELAY,
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        anyhow::anyhow!("{}: failed after {} attempts", operation_name, MAX_ATTEMPTS)
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// populate_artifact_download_urls
+// ---------------------------------------------------------------------------
+
+/// Set `metadata["url"]` on every artifact for the given crate, constructing
+/// the download URL from the SCM backend's download base, owner/repo, tag, and
+/// artifact name. This matches GoReleaser's `ReleaseURLTemplate()` pattern and
+/// allows publishers to resolve download URLs without explicit `url_template`.
+fn populate_artifact_download_urls(
+    ctx: &mut Context,
+    crate_name: &str,
+    token_type: ScmTokenType,
+    download_base: &str,
+    owner: &str,
+    repo: &str,
+    tag: &str,
+) {
+    let dl_base = download_base.trim_end_matches('/');
+    let url_tag = percent_encode_path(tag);
+    let url_prefix = match token_type {
+        ScmTokenType::GitLab => {
+            if owner.is_empty() {
+                format!("{dl_base}/{repo}/-/releases/{url_tag}/downloads")
+            } else {
+                format!("{dl_base}/{owner}/{repo}/-/releases/{url_tag}/downloads")
+            }
+        }
+        ScmTokenType::GitHub | ScmTokenType::Gitea => {
+            format!("{dl_base}/{owner}/{repo}/releases/download/{url_tag}")
+        }
+    };
+    for artifact in ctx.artifacts.all_mut() {
+        if artifact.crate_name == crate_name && !artifact.name.is_empty() {
+            let encoded_name = percent_encode_path(&artifact.name);
+            artifact
+                .metadata
+                .insert("url".to_string(), format!("{url_prefix}/{encoded_name}"));
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // should_mark_prerelease
 // ---------------------------------------------------------------------------
@@ -924,13 +1025,49 @@ impl Stage for ReleaseStage {
                         }
                     }
                 }
+
+                // Even in dry-run, populate artifact download URLs so publishers
+                // can generate manifests with correct URLs.
+                let dry_dl_base = match ctx.token_type {
+                    ScmTokenType::GitHub => {
+                        ctx.config.github_urls.as_ref()
+                            .and_then(|u| u.download.clone())
+                            .unwrap_or_else(|| "https://github.com".to_string())
+                    }
+                    ScmTokenType::GitLab => {
+                        ctx.config.gitlab_urls.as_ref()
+                            .and_then(|u| u.download.clone())
+                            .unwrap_or_else(|| "https://gitlab.com".to_string())
+                    }
+                    ScmTokenType::Gitea => {
+                        ctx.config.gitea_urls.as_ref()
+                            .and_then(|u| u.download.clone())
+                            .unwrap_or_else(|| "https://gitea.com".to_string())
+                    }
+                };
+                let dry_owner = match ctx.token_type {
+                    ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
+                    ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
+                    ScmTokenType::GitHub => release_cfg.github.as_ref(),
+                }.map(|r| r.owner.as_str()).unwrap_or("");
+                let dry_repo = match ctx.token_type {
+                    ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
+                    ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
+                    ScmTokenType::GitHub => release_cfg.github.as_ref(),
+                }.map(|r| r.name.as_str()).unwrap_or("");
+                populate_artifact_download_urls(
+                    ctx, &crate_name, ctx.token_type, &dry_dl_base, dry_owner, dry_repo, &tag,
+                );
+
                 continue;
             }
 
             // ---------------------------------------------------------------
             // Backend dispatch: GitHub, GitLab, or Gitea
             // ---------------------------------------------------------------
-            let release_url = match ctx.token_type {
+            // Each backend arm returns (release_html_url, download_base, owner, repo)
+            // so we can populate artifact metadata["url"] after the match.
+            let (release_url, download_base, repo_owner, repo_name) = match ctx.token_type {
 
             // ===============================================================
             // GitLab backend
@@ -1067,19 +1204,22 @@ impl Stage for ReleaseStage {
                                 let _permit = sem.acquire().await
                                     .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
 
-                                gitlab::gitlab_upload_asset(
-                                    &client,
-                                    &api_url,
-                                    &project_id,
-                                    &tag,
-                                    &path,
-                                    &file_name,
-                                    &project_name_for_pkg,
-                                    &version_for_pkg,
-                                    use_pkg_registry,
-                                    &download_url,
-                                    replace_existing_artifacts,
-                                )
+                                let op_name = format!("gitlab: upload '{}'", file_name);
+                                retry_upload(&op_name, || {
+                                    gitlab::gitlab_upload_asset(
+                                        &client,
+                                        &api_url,
+                                        &project_id,
+                                        &tag,
+                                        &path,
+                                        &file_name,
+                                        &project_name_for_pkg,
+                                        &version_for_pkg,
+                                        use_pkg_registry,
+                                        &download_url,
+                                        replace_existing_artifacts,
+                                    )
+                                })
                                 .await
                                 .with_context(|| {
                                     format!(
@@ -1111,7 +1251,7 @@ impl Stage for ReleaseStage {
                     Ok::<String, anyhow::Error>(html_url)
                 })?;
 
-                url
+                (url, download_url, repo_cfg.owner.clone(), repo_cfg.name.clone())
             }
 
             // ===============================================================
@@ -1257,15 +1397,18 @@ impl Stage for ReleaseStage {
                                     })?;
                                 }
 
-                                gitea::gitea_upload_asset(
-                                    &client,
-                                    &api_url,
-                                    &owner,
-                                    &repo,
-                                    release_id,
-                                    &path,
-                                    &file_name,
-                                )
+                                let op_name = format!("gitea: upload '{}'", file_name);
+                                retry_upload(&op_name, || {
+                                    gitea::gitea_upload_asset(
+                                        &client,
+                                        &api_url,
+                                        &owner,
+                                        &repo,
+                                        release_id,
+                                        &path,
+                                        &file_name,
+                                    )
+                                })
                                 .await
                                 .with_context(|| {
                                     format!(
@@ -1297,7 +1440,7 @@ impl Stage for ReleaseStage {
                     Ok::<String, anyhow::Error>(html_url)
                 })?;
 
-                url
+                (url, download_url, repo_cfg.owner.clone(), repo_cfg.name.clone())
             }
 
             // ===============================================================
@@ -1328,6 +1471,11 @@ impl Stage for ReleaseStage {
 
                 // Extract github_urls config for GitHub Enterprise support.
                 let github_urls = ctx.config.github_urls.clone();
+                // Default download URL to "https://github.com" (matches GoReleaser's DefaultGitHubDownloadURL).
+                let gh_download_base = github_urls
+                    .as_ref()
+                    .and_then(|u| u.download.clone())
+                    .unwrap_or_else(|| "https://github.com".to_string());
 
                 // Build the octocrab instance and perform async API calls inside a
                 // dedicated tokio runtime (the Stage trait is synchronous).
@@ -1460,6 +1608,13 @@ impl Stage for ReleaseStage {
                     // GitHub ignores discussion_category_name on draft releases and
                     // make_latest is meaningless until publish. Send them only in the
                     // un-draft PATCH (below) to match GoReleaser behaviour.
+                    if final_body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
+                        log.warn(&format!(
+                            "release body ({} chars) exceeds GitHub limit ({}); truncating",
+                            final_body.len(),
+                            GITHUB_RELEASE_BODY_MAX_CHARS,
+                        ));
+                    }
                     let json_body = build_release_json(
                         &tag,
                         &release_name,
@@ -1775,10 +1930,20 @@ impl Stage for ReleaseStage {
                     Ok::<String, anyhow::Error>(html_url)
                 })?;
 
-                url
+                (url, gh_download_base, github.owner.clone(), github.name.clone())
             }
 
             }; // end match ctx.token_type
+
+            // Populate artifact metadata["url"] for all uploadable artifacts
+            // so publishers (homebrew, scoop, chocolatey, winget, krew, nix, cask)
+            // can construct download links without requiring explicit url_template.
+            // Matches GoReleaser's ReleaseURLTemplate() pattern.
+            if !skip_upload {
+                populate_artifact_download_urls(
+                    ctx, &crate_name, ctx.token_type, &download_base, &repo_owner, &repo_name, &tag,
+                );
+            }
 
             ctx.set_release_url(&release_url);
         }
@@ -1844,6 +2009,256 @@ mod tests {
         let stage = ReleaseStage;
         // Should succeed — no crates have release config
         assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // ---- populate_artifact_download_urls tests ----
+
+    #[test]
+    fn test_populate_artifact_download_urls_github() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: "dist/myapp_1.0.0_linux_amd64.tar.gz".into(),
+            name: "myapp_1.0.0_linux_amd64.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: "dist/checksums.txt".into(),
+            name: "checksums.txt".to_string(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        populate_artifact_download_urls(
+            &mut ctx,
+            "myapp",
+            ScmTokenType::GitHub,
+            "https://github.com",
+            "octocat",
+            "hello",
+            "v1.0.0",
+        );
+
+        let archive = ctx.artifacts.all().iter().find(|a| a.name == "myapp_1.0.0_linux_amd64.tar.gz").unwrap();
+        assert_eq!(
+            archive.metadata.get("url").unwrap(),
+            "https://github.com/octocat/hello/releases/download/v1.0.0/myapp_1.0.0_linux_amd64.tar.gz"
+        );
+        let checksum = ctx.artifacts.all().iter().find(|a| a.name == "checksums.txt").unwrap();
+        assert_eq!(
+            checksum.metadata.get("url").unwrap(),
+            "https://github.com/octocat/hello/releases/download/v1.0.0/checksums.txt"
+        );
+    }
+
+    #[test]
+    fn test_populate_artifact_download_urls_github_enterprise() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: "dist/myapp.tar.gz".into(),
+            name: "myapp.tar.gz".to_string(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        populate_artifact_download_urls(
+            &mut ctx,
+            "myapp",
+            ScmTokenType::GitHub,
+            "https://github.example.com",
+            "org",
+            "repo",
+            "v2.0.0",
+        );
+
+        let a = ctx.artifacts.all().iter().find(|a| a.name == "myapp.tar.gz").unwrap();
+        assert_eq!(
+            a.metadata.get("url").unwrap(),
+            "https://github.example.com/org/repo/releases/download/v2.0.0/myapp.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_populate_artifact_download_urls_gitlab() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: "dist/app.tar.gz".into(),
+            name: "app.tar.gz".to_string(),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        populate_artifact_download_urls(
+            &mut ctx,
+            "app",
+            ScmTokenType::GitLab,
+            "https://gitlab.com",
+            "group",
+            "project",
+            "v1.0.0",
+        );
+
+        let a = ctx.artifacts.all().iter().find(|a| a.name == "app.tar.gz").unwrap();
+        assert_eq!(
+            a.metadata.get("url").unwrap(),
+            "https://gitlab.com/group/project/-/releases/v1.0.0/downloads/app.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_populate_artifact_download_urls_gitea() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: "dist/tool.tar.gz".into(),
+            name: "tool.tar.gz".to_string(),
+            target: None,
+            crate_name: "tool".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        populate_artifact_download_urls(
+            &mut ctx,
+            "tool",
+            ScmTokenType::Gitea,
+            "https://gitea.example.com",
+            "owner",
+            "repo",
+            "v3.0.0",
+        );
+
+        let a = ctx.artifacts.all().iter().find(|a| a.name == "tool.tar.gz").unwrap();
+        assert_eq!(
+            a.metadata.get("url").unwrap(),
+            "https://gitea.example.com/owner/repo/releases/download/v3.0.0/tool.tar.gz"
+        );
+    }
+
+    #[test]
+    fn test_populate_artifact_download_urls_encodes_special_chars() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: "dist/my app.tar.gz".into(),
+            name: "my app.tar.gz".to_string(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        populate_artifact_download_urls(
+            &mut ctx,
+            "myapp",
+            ScmTokenType::GitHub,
+            "https://github.com",
+            "owner",
+            "repo",
+            "v1.0.0-rc.1",
+        );
+
+        let a = ctx.artifacts.all().first().unwrap();
+        let url = a.metadata.get("url").unwrap();
+        assert!(url.contains("my%20app.tar.gz"), "spaces should be percent-encoded: {}", url);
+    }
+
+    #[test]
+    fn test_populate_artifact_download_urls_skips_other_crates() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: "dist/other.tar.gz".into(),
+            name: "other.tar.gz".to_string(),
+            target: None,
+            crate_name: "other_crate".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        populate_artifact_download_urls(
+            &mut ctx,
+            "myapp",
+            ScmTokenType::GitHub,
+            "https://github.com",
+            "owner",
+            "repo",
+            "v1.0.0",
+        );
+
+        let a = ctx.artifacts.all().first().unwrap();
+        assert!(a.metadata.get("url").is_none(), "should not set URL for different crate");
+    }
+
+    // ---- retry_upload tests ----
+
+    #[tokio::test]
+    async fn test_retry_upload_succeeds_immediately() {
+        let result = retry_upload("test", || async { Ok(()) }).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_retry_upload_retries_transient_errors() {
+        let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let attempt_clone = attempt.clone();
+        let result = retry_upload("test", move || {
+            let attempt = attempt_clone.clone();
+            async move {
+                let n = attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 2 {
+                    anyhow::bail!("HTTP 500 Internal Server Error");
+                }
+                Ok(())
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempt.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_retry_upload_retries_all_errors() {
+        // GoReleaser retries ALL upload errors. Verify non-5xx errors are also retried.
+        let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let attempt_clone = attempt.clone();
+        let result = retry_upload("test", move || {
+            let attempt = attempt_clone.clone();
+            async move {
+                let n = attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n < 1 {
+                    anyhow::bail!("HTTP 403: forbidden");
+                }
+                Ok(())
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempt.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     // ---- build_release_body tests ----
