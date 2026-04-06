@@ -90,22 +90,39 @@ fn create_source_archive(
         std::fs::create_dir_all(&prefixed_dir).context("source: create extra files staging dir")?;
 
         for entry in extra_files {
-            if entry.strip_parent.unwrap_or(false) {
-                log.warn("strip_parent is not yet supported for source archive extra files");
-            }
             if entry.info.is_some() {
                 log.warn("file info (owner/group/mode/mtime) is not yet supported for source archive extra files");
             }
 
             let src = Path::new(&entry.src);
-            let dest_name = if let Some(ref dst) = entry.dst {
-                std::ffi::OsString::from(dst)
+            let do_strip = entry.strip_parent.unwrap_or(false);
+
+            let dest_name: PathBuf = if let Some(ref dst) = entry.dst {
+                if do_strip {
+                    // strip_parent + dst: place filename directly under dst
+                    let fname = src.file_name().ok_or_else(|| {
+                        anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
+                    })?;
+                    PathBuf::from(dst).join(fname)
+                } else {
+                    PathBuf::from(dst)
+                }
             } else {
-                src.file_name()
-                    .ok_or_else(|| anyhow::anyhow!("source: extra file has no filename: {}", entry.src))?
-                    .to_os_string()
+                // No dst: use filename only (strip_parent or not, same result)
+                let fname = src.file_name().ok_or_else(|| {
+                    anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
+                })?;
+                PathBuf::from(fname)
             };
-            std::fs::copy(src, prefixed_dir.join(&dest_name))
+
+            // Ensure parent directories exist
+            let full_dest = prefixed_dir.join(&dest_name);
+            if let Some(parent) = full_dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("source: create parent dirs for '{}'", full_dest.display()))?;
+            }
+
+            std::fs::copy(src, &full_dest)
                 .with_context(|| format!("source: copy extra file '{}' to staging", entry.src))?;
         }
 
@@ -1677,6 +1694,217 @@ dependencies = [
         assert!(
             std::fs::metadata(&artifacts[0].path).unwrap().len() > 0,
             "archive file should not be empty"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_parent behavior
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_source_archive_strip_parent_flattens_nested_file() {
+        use anodize_core::config::SourceFileEntry;
+        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        // Create a test project and git repo FIRST
+        create_test_project(tmp.path());
+        init_git_repo(tmp.path());
+
+        // Create a nested file AFTER git init so it is NOT tracked by git archive
+        let nested_dir = tmp.path().join("extras").join("deep").join("nested");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(nested_dir.join("config.toml"), "[settings]\nkey = \"value\"\n").unwrap();
+
+        let log = anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+
+        let extra_files = vec![SourceFileEntry {
+            src: nested_dir.join("config.toml").to_string_lossy().to_string(),
+            dst: None,
+            strip_parent: Some(true),
+            info: None,
+        }];
+
+        // Save and set CWD to the temp dir so git commands work
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = create_source_archive(
+            &dist,
+            "tar.gz",
+            "test-project-1.0.0",
+            "test-project-1.0.0",
+            &extra_files,
+            tmp.path(),
+            "HEAD",
+            &log,
+        );
+
+        std::env::set_current_dir(&orig_dir).unwrap();
+
+        let archive_path = result.expect("create_source_archive should succeed");
+        assert!(archive_path.exists(), "archive should exist");
+
+        // Open the tar.gz and check that config.toml appears directly under
+        // the prefix, NOT under deep/nested/
+        let file = std::fs::File::open(&archive_path).unwrap();
+        let gz = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(gz);
+
+        let entries: Vec<String> = tar
+            .entries()
+            .unwrap()
+            .filter_map(|e| {
+                let e = e.ok()?;
+                Some(e.path().ok()?.to_string_lossy().to_string())
+            })
+            .collect();
+
+        // Should contain "test-project-1.0.0/config.toml"
+        assert!(
+            entries.iter().any(|e| e == "test-project-1.0.0/config.toml"),
+            "expected 'test-project-1.0.0/config.toml' in archive, got entries: {:?}",
+            entries
+        );
+        // Should NOT contain the nested path
+        assert!(
+            !entries.iter().any(|e| e.contains("deep/nested")),
+            "should not contain deep/nested path, got entries: {:?}",
+            entries
+        );
+    }
+
+    #[test]
+    fn test_source_archive_strip_parent_with_dst() {
+        use anodize_core::config::SourceFileEntry;
+        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        create_test_project(tmp.path());
+        init_git_repo(tmp.path());
+
+        // Create extra file AFTER git init so it is not tracked
+        let nested_dir = tmp.path().join("extras").join("deep");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(nested_dir.join("app.conf"), "port = 8080\n").unwrap();
+
+        let log = anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+
+        // strip_parent=true + dst="etc" => file should appear as prefix/etc/app.conf
+        let extra_files = vec![SourceFileEntry {
+            src: nested_dir.join("app.conf").to_string_lossy().to_string(),
+            dst: Some("etc".to_string()),
+            strip_parent: Some(true),
+            info: None,
+        }];
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = create_source_archive(
+            &dist,
+            "tar.gz",
+            "myapp-2.0.0",
+            "myapp-2.0.0",
+            &extra_files,
+            tmp.path(),
+            "HEAD",
+            &log,
+        );
+
+        std::env::set_current_dir(&orig_dir).unwrap();
+
+        let archive_path = result.expect("create_source_archive should succeed");
+
+        let file = std::fs::File::open(&archive_path).unwrap();
+        let gz = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(gz);
+
+        let entries: Vec<String> = tar
+            .entries()
+            .unwrap()
+            .filter_map(|e| {
+                let e = e.ok()?;
+                Some(e.path().ok()?.to_string_lossy().to_string())
+            })
+            .collect();
+
+        // strip_parent + dst: filename goes under dst directory
+        assert!(
+            entries.iter().any(|e| e == "myapp-2.0.0/etc/app.conf"),
+            "expected 'myapp-2.0.0/etc/app.conf' in archive, got entries: {:?}",
+            entries
+        );
+    }
+
+    #[test]
+    fn test_source_archive_no_strip_parent_dst_is_literal_rename() {
+        use anodize_core::config::SourceFileEntry;
+        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        create_test_project(tmp.path());
+        init_git_repo(tmp.path());
+
+        // Create extra file AFTER git init so it is not tracked
+        let extra_file = tmp.path().join("README.md");
+        std::fs::write(&extra_file, "# Hello\n").unwrap();
+
+        let log = anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+
+        // strip_parent=false (default) + dst="docs/README.txt" => literal rename
+        let extra_files = vec![SourceFileEntry {
+            src: extra_file.to_string_lossy().to_string(),
+            dst: Some("docs/README.txt".to_string()),
+            strip_parent: None,
+            info: None,
+        }];
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = create_source_archive(
+            &dist,
+            "tar.gz",
+            "proj-3.0.0",
+            "proj-3.0.0",
+            &extra_files,
+            tmp.path(),
+            "HEAD",
+            &log,
+        );
+
+        std::env::set_current_dir(&orig_dir).unwrap();
+
+        let archive_path = result.expect("create_source_archive should succeed");
+
+        let file = std::fs::File::open(&archive_path).unwrap();
+        let gz = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(gz);
+
+        let entries: Vec<String> = tar
+            .entries()
+            .unwrap()
+            .filter_map(|e| {
+                let e = e.ok()?;
+                Some(e.path().ok()?.to_string_lossy().to_string())
+            })
+            .collect();
+
+        // Without strip_parent, dst is used literally
+        assert!(
+            entries.iter().any(|e| e == "proj-3.0.0/docs/README.txt"),
+            "expected 'proj-3.0.0/docs/README.txt' in archive, got entries: {:?}",
+            entries
         );
     }
 }

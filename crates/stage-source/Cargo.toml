@@ -21,3 +21,5 @@ chrono.workspace = true
 anodize-core = { workspace = true, features = ["test-helpers"] }
 tempfile.workspace = true
 serde_yaml_ng.workspace = true
+flate2.workspace = true
+tar.workspace = true
