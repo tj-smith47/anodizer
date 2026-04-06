@@ -15,6 +15,33 @@ use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
 
 // ---------------------------------------------------------------------------
+// levenshtein_distance
+// ---------------------------------------------------------------------------
+
+/// Compute Levenshtein edit distance between two strings.
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_len = a.len();
+    let b_len = b.len();
+    if a_len == 0 { return b_len; }
+    if b_len == 0 { return a_len; }
+
+    let mut prev: Vec<usize> = (0..=b_len).collect();
+    let mut curr = vec![0usize; b_len + 1];
+
+    for (i, ca) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j] + cost)
+                .min(prev[j + 1] + 1)
+                .min(curr[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b_len]
+}
+
+// ---------------------------------------------------------------------------
 // find_image_digest
 // ---------------------------------------------------------------------------
 
@@ -116,6 +143,21 @@ fn docker_supports_provenance() -> bool {
             Err(_) => false, // docker not available — skip the flags
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// is_docker_daemon_available
+// ---------------------------------------------------------------------------
+
+/// Check if the Docker daemon is available by running `docker info`.
+fn is_docker_daemon_available() -> bool {
+    Command::new("docker")
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -433,6 +475,8 @@ pub fn build_docker_command(
 /// * `flags` – arbitrary extra flags passed directly.
 /// * `sbom` – when true, adds `--sbom=true`.
 /// * `push` – when `true`, adds `--push` to the command.
+/// * `load` – when `true`, adds `--load` for single-platform non-push builds
+///   (requires a running Docker daemon).
 #[allow(clippy::too_many_arguments)]
 pub fn build_docker_v2_command(
     staging_dir: &str,
@@ -444,6 +488,7 @@ pub fn build_docker_v2_command(
     flags: &[String],
     sbom: bool,
     push: bool,
+    load: bool,
 ) -> Result<Vec<String>> {
     // V2 always uses buildx when platforms are specified
     let multi_platform = platforms.len() > 1;
@@ -511,9 +556,10 @@ pub fn build_docker_v2_command(
     // --push / --load logic
     if push {
         cmd.push("--push".to_string());
-    } else if !multi_platform {
+    } else if load && !multi_platform {
         cmd.push("--load".to_string());
     }
+    // When neither push nor load: buildx builds to cache only (no daemon needed)
 
     // NOTE: GoReleaser V2 does NOT auto-add --provenance=false or --sbom=false.
     // Only the legacy docker pipe does that. V2 relies on explicit user flags
@@ -1136,6 +1182,39 @@ fn copy_dockerfile(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// warn_project_markers_in_extra_files
+// ---------------------------------------------------------------------------
+
+/// Project root markers that likely don't belong in Docker images.
+const PROJECT_MARKERS: &[&str] = &[
+    "go.mod", "go.sum", "Cargo.toml", "Cargo.lock",
+    "pyproject.toml", "setup.py", "setup.cfg",
+    "package.json", "package-lock.json", "yarn.lock",
+    "Gemfile", "Gemfile.lock", "Makefile", "CMakeLists.txt",
+    "pom.xml", "build.gradle", "build.gradle.kts",
+];
+
+fn warn_project_markers_in_extra_files(
+    extra_files: &[String],
+    log: &StageLogger,
+    label: &str,
+) {
+    for file in extra_files {
+        let filename = std::path::Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(file);
+        if PROJECT_MARKERS.contains(&filename) {
+            log.warn(&format!(
+                "{}: extra_files contains '{}' which looks like a project root marker — \
+                 this likely shouldn't be in a Docker image",
+                label, file
+            ));
+        }
+    }
+}
+
 /// Copy extra files into the staging directory.
 ///
 /// Preserves relative directory structure for relative paths. For absolute
@@ -1334,6 +1413,7 @@ impl Stage for DockerStage {
                 copy_dockerfile(&rendered_dockerfile, &staging_dir, dry_run, &log, "docker")?;
 
                 if let Some(ref extra_files) = docker_cfg.extra_files {
+                    warn_project_markers_in_extra_files(extra_files, &log, "docker");
                     stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker")?;
                 }
 
@@ -1605,6 +1685,7 @@ impl Stage for DockerStage {
                 copy_dockerfile(&rendered_dockerfile, &staging_dir, dry_run, &log, "docker_v2")?;
 
                 if let Some(ref extra_files) = v2_cfg.extra_files {
+                    warn_project_markers_in_extra_files(extra_files, &log, "docker_v2");
                     stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker_v2")?;
                 }
 
@@ -1757,6 +1838,21 @@ impl Stage for DockerStage {
                     !dry_run && !v2_skip_push
                 };
 
+                // Determine whether --load is safe (requires a running daemon).
+                // In snapshot mode, warn if daemon is unavailable and skip --load.
+                let should_load = if ctx.is_snapshot() {
+                    let daemon_ok = is_docker_daemon_available();
+                    if !daemon_ok {
+                        log.warn(
+                            "docker daemon not available; snapshot build will skip --load \
+                             (image won't be loaded into local daemon)"
+                        );
+                    }
+                    daemon_ok
+                } else {
+                    true
+                };
+
                 let cmd_args = build_docker_v2_command(
                     &staging_str,
                     &platform_refs,
@@ -1767,6 +1863,7 @@ impl Stage for DockerStage {
                     &rendered_flags,
                     sbom_enabled,
                     should_push,
+                    should_load,
                 )?;
 
                 // Resolve retry configuration
@@ -2060,7 +2157,24 @@ impl Stage for DockerStage {
                             log.verbose(&format!("manifest: pinning {} to digest {}", img, digest));
                             create_cmd.push(pinned);
                         } else {
-                            log.warn(&format!("no digest found for {}, using tag reference", img));
+                            // "Did you mean?" — find closest matching image by edit distance
+                            let all_image_names: Vec<&str> = new_artifacts
+                                .iter()
+                                .filter(|a| matches!(a.kind,
+                                    ArtifactKind::DockerImage | ArtifactKind::DockerImageV2))
+                                .filter_map(|a| a.metadata.get("tag").map(|s| s.as_str()))
+                                .collect();
+
+                            if let Some(suggestion) = all_image_names.iter()
+                                .min_by_key(|name| levenshtein_distance(img, name))
+                            {
+                                log.warn(&format!(
+                                    "could not find {:?}, did you mean {:?}?",
+                                    img, suggestion
+                                ));
+                            } else {
+                                log.warn(&format!("no digest found for {}, using tag reference", img));
+                            }
                             create_cmd.push(img.clone());
                         }
                     }
@@ -4171,6 +4285,7 @@ use: podman
             &[],
             false,
             false,
+            true,
         )
         .unwrap();
 
@@ -4212,6 +4327,7 @@ use: podman
             &[],
             false,
             false,
+            true,
         )
         .unwrap();
 
@@ -4254,6 +4370,7 @@ use: podman
             &[],
             false,
             false,
+            true,
         )
         .unwrap();
 
@@ -4292,6 +4409,7 @@ use: podman
             &[],
             false,
             false,
+            true,
         )
         .unwrap();
 
@@ -4311,6 +4429,7 @@ use: podman
             &[],
             true, // sbom enabled
             false,
+            true,
         )
         .unwrap();
 
@@ -4331,6 +4450,7 @@ use: podman
             &[],
             false, // sbom not enabled
             false,
+            true,
         )
         .unwrap();
 
@@ -4353,6 +4473,7 @@ use: podman
             &flags,
             false,
             false,
+            true,
         )
         .unwrap();
 
@@ -4372,6 +4493,7 @@ use: podman
             &[],
             false,
             true, // push
+            true,
         )
         .unwrap();
 
@@ -4391,6 +4513,7 @@ use: podman
             &[],
             false,
             false, // no push
+            true,  // load
         )
         .unwrap();
 
@@ -4410,6 +4533,7 @@ use: podman
             &[],
             false,
             false, // no push
+            true,  // load
         )
         .unwrap();
 
@@ -4441,6 +4565,7 @@ use: podman
             &flags,
             true, // sbom
             true, // push
+            true,
         )
         .unwrap();
 
@@ -4471,6 +4596,7 @@ use: podman
             &[],
             false,
             false,
+            true,
         )
         .unwrap();
         assert!(
@@ -5301,6 +5427,7 @@ crates:
             &[],
             true,
             false,
+            true,
         )
         .unwrap();
         assert!(
@@ -5326,6 +5453,7 @@ crates:
             &[],
             false,
             false,
+            true,
         )
         .unwrap();
         assert!(
@@ -5347,6 +5475,7 @@ crates:
             &[],
             false,
             true,
+            true,
         )
         .unwrap();
         assert!(
@@ -5367,6 +5496,7 @@ crates:
             &[],
             &[],
             false,
+            true,
             true,
         )
         .unwrap();
@@ -5536,5 +5666,73 @@ disable: "{{ .IsSnapshot }}"
         assert_eq!(tag_digests.len(), 2);
         assert_eq!(tag_digests.get("img:latest").unwrap(), digest);
         assert_eq!(tag_digests.get("img:v1.0.0").unwrap(), digest);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 8: Levenshtein distance tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_levenshtein_distance() {
+        assert_eq!(levenshtein_distance("kitten", "sitting"), 3);
+        assert_eq!(levenshtein_distance("", "abc"), 3);
+        assert_eq!(levenshtein_distance("abc", ""), 3);
+        assert_eq!(levenshtein_distance("abc", "abc"), 0);
+        assert_eq!(levenshtein_distance("ghcr.io/owner/app:latest", "ghcr.io/owner/app:latset"), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 9: Project marker detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_project_marker_detection() {
+        let markers = ["go.mod", "Cargo.toml", "package.json", "pom.xml"];
+        for m in &markers {
+            assert!(PROJECT_MARKERS.contains(m), "{} should be a project marker", m);
+        }
+        assert!(!PROJECT_MARKERS.contains(&"myapp.conf"));
+        assert!(!PROJECT_MARKERS.contains(&"config.yaml"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 10: Docker daemon / load parameter tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_docker_v2_command_no_load_when_disabled() {
+        let cmd = build_docker_v2_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+            false, // load=false (daemon unavailable)
+        )
+        .unwrap();
+        assert!(!cmd.contains(&"--load".to_string()));
+        assert!(!cmd.contains(&"--push".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_load_when_enabled() {
+        let cmd = build_docker_v2_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+            true, // load=true (daemon available)
+        )
+        .unwrap();
+        assert!(cmd.contains(&"--load".to_string()));
     }
 }
