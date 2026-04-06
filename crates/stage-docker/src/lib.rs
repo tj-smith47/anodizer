@@ -709,7 +709,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         for (key, value) in &job.env_vars {
             cmd.env(key, value);
         }
-        let output = cmd.output()
+        let mut output = cmd.output()
             .with_context(|| {
                 format!(
                     "docker: execute {} for crate {} index {} (attempt {}/{})",
@@ -717,7 +717,8 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 )
             })?;
 
-        // Collect env pairs for redaction (context env + process env)
+        // Redact secrets from stdout/stderr before any output or logging.
+        // This ensures secrets don't leak through error messages or diagnostics.
         let env_pairs: Vec<(String, String)> = job.env_vars
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -725,19 +726,23 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             .collect();
 
         if !output.stdout.is_empty() {
-            let stdout_str = String::from_utf8_lossy(&output.stdout);
-            let redacted = anodize_core::redact::redact_string(&stdout_str, &env_pairs);
-            use std::io::Write;
-            let _ = std::io::stdout().write_all(redacted.as_bytes());
+            let redacted = anodize_core::redact::redact_string(
+                &String::from_utf8_lossy(&output.stdout), &env_pairs);
+            output.stdout = redacted.into_bytes();
         }
         if !output.stderr.is_empty() {
-            let stderr_str = String::from_utf8_lossy(&output.stderr);
-            let redacted = anodize_core::redact::redact_string(&stderr_str, &env_pairs);
-            use std::io::Write;
-            let _ = std::io::stderr().write_all(redacted.as_bytes());
+            let redacted = anodize_core::redact::redact_string(
+                &String::from_utf8_lossy(&output.stderr), &env_pairs);
+            output.stderr = redacted.into_bytes();
         }
 
-        // Capture stderr for diagnostic hints before output is consumed.
+        {
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(&output.stdout);
+            let _ = std::io::stderr().write_all(&output.stderr);
+        }
+
+        // Capture redacted stderr for diagnostic hints.
         let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
 
         match log.check_output(output, &format!("docker {}", job.backend_label)) {
