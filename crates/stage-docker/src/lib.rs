@@ -20,17 +20,19 @@ use anodize_core::target::map_target;
 
 /// Compute Levenshtein edit distance between two strings.
 fn levenshtein_distance(a: &str, b: &str) -> usize {
-    let a_len = a.len();
-    let b_len = b.len();
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
     if a_len == 0 { return b_len; }
     if b_len == 0 { return a_len; }
 
     let mut prev: Vec<usize> = (0..=b_len).collect();
     let mut curr = vec![0usize; b_len + 1];
 
-    for (i, ca) in a.chars().enumerate() {
+    for (i, ca) in a_chars.iter().enumerate() {
         curr[0] = i + 1;
-        for (j, cb) in b.chars().enumerate() {
+        for (j, cb) in b_chars.iter().enumerate() {
             let cost = if ca == cb { 0 } else { 1 };
             curr[j + 1] = (prev[j] + cost)
                 .min(prev[j + 1] + 1)
@@ -149,15 +151,24 @@ fn docker_supports_provenance() -> bool {
 // is_docker_daemon_available
 // ---------------------------------------------------------------------------
 
+/// Cached result of probing `docker info` for daemon availability.
+///
+/// `docker info` can take several seconds when the daemon is down, so we
+/// cache the result for the lifetime of the process — consistent with how
+/// `DOCKER_SUPPORTS_PROVENANCE` caches its probe result.
+static DOCKER_DAEMON_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
 /// Check if the Docker daemon is available by running `docker info`.
 fn is_docker_daemon_available() -> bool {
-    Command::new("docker")
-        .arg("info")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    *DOCKER_DAEMON_AVAILABLE.get_or_init(|| {
+        Command::new("docker")
+            .arg("info")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2165,12 +2176,14 @@ impl Stage for DockerStage {
                                 .filter_map(|a| a.metadata.get("tag").map(|s| s.as_str()))
                                 .collect();
 
-                            if let Some(suggestion) = all_image_names.iter()
-                                .min_by_key(|name| levenshtein_distance(img, name))
+                            if let Some((suggestion, dist)) = all_image_names.iter()
+                                .map(|name| (name, levenshtein_distance(img, name)))
+                                .min_by_key(|&(_, d)| d)
+                                .filter(|&(_, d)| d <= img.len() / 2)
                             {
                                 log.warn(&format!(
-                                    "could not find {:?}, did you mean {:?}?",
-                                    img, suggestion
+                                    "could not find {:?}, did you mean {:?}? (edit distance: {})",
+                                    img, suggestion, dist
                                 ));
                             } else {
                                 log.warn(&format!("no digest found for {}, using tag reference", img));
@@ -5693,6 +5706,17 @@ disable: "{{ .IsSnapshot }}"
         }
         assert!(!PROJECT_MARKERS.contains(&"myapp.conf"));
         assert!(!PROJECT_MARKERS.contains(&"config.yaml"));
+    }
+
+    #[test]
+    fn test_project_marker_in_subdirectory_path() {
+        // warn_project_markers_in_extra_files extracts filename from paths
+        let path = "subdir/nested/Cargo.toml";
+        let filename = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap();
+        assert!(PROJECT_MARKERS.contains(&filename));
     }
 
     // -----------------------------------------------------------------------
