@@ -1181,26 +1181,7 @@ impl Stage for DockerStage {
                 // Determine platforms (default: empty = use host platform, no --platform flag).
                 // GoReleaser omits --platform when unset, letting Docker use the host platform.
                 // Setting platforms forces buildx mode and requires QEMU/binfmt for cross-arch.
-                //
-                // GoReleaser compat: when `platforms` is absent/empty, construct a
-                // synthetic platform from the legacy goos/goarch/goarm fields.
-                let platforms: Vec<String> = if docker_cfg.platforms.as_ref().map_or(true, |p| p.is_empty()) {
-                    if docker_cfg.goos.is_some() || docker_cfg.goarch.is_some() {
-                        let goos = docker_cfg.goos.as_deref().unwrap_or("linux");
-                        let goarch = docker_cfg.goarch.as_deref().unwrap_or("amd64");
-                        if docker_cfg.goarm.is_some() && goarch.starts_with("arm") {
-                            let goarm = docker_cfg.goarm.as_deref().unwrap_or("7");
-                            vec![format!("{}/{}/v{}", goos, goarch, goarm)]
-                        } else {
-                            vec![format!("{}/{}", goos, goarch)]
-                        }
-                    } else {
-                        // Neither platforms nor goos/goarch set — use host platform (empty).
-                        Vec::new()
-                    }
-                } else {
-                    docker_cfg.platforms.clone().unwrap_or_default()
-                };
+                let platforms: Vec<String> = docker_cfg.platforms.clone().unwrap_or_default();
 
                 // Validate the backend early — before staging files — so a
                 // typo like `use: "dockr"` is caught immediately.
@@ -2324,10 +2305,6 @@ mod tests {
             retry: None,
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -2531,10 +2508,6 @@ push_flags:
             retry: None,
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -2610,10 +2583,6 @@ push_flags:
             }),
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -2784,10 +2753,6 @@ dockerfile: Dockerfile
             retry: None,
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -2867,10 +2832,6 @@ dockerfile: Dockerfile
             }),
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let dist = tmp.path().join("dist");
@@ -3004,10 +2965,6 @@ dockerfile: Dockerfile
             retry: None,
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3067,10 +3024,6 @@ dockerfile: Dockerfile
             retry: None,
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3136,10 +3089,6 @@ dockerfile: Dockerfile
             retry: None,
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3413,10 +3362,6 @@ retry:
             }),
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3481,10 +3426,6 @@ retry:
             retry: None, // No retry config = default 10 attempts
             use_backend: None,
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3987,10 +3928,6 @@ use: podman
             retry: None,
             use_backend: Some("podman".to_string()),
             disable: None,
-            goos: None,
-            goarch: None,
-            goarm: None,
-            goamd64: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -5281,39 +5218,5 @@ cmd: cosign
 "#;
         let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.output.is_none());
-    }
-
-    #[test]
-    fn test_docker_config_goos_goarch_fields() {
-        use anodize_core::config::DockerConfig;
-        let yaml = r#"
-image_templates:
-  - "ghcr.io/owner/app:latest"
-dockerfile: Dockerfile
-goos: linux
-goarch: arm64
-goarm: "7"
-goamd64: v2
-"#;
-        let cfg: DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.goos.as_deref(), Some("linux"));
-        assert_eq!(cfg.goarch.as_deref(), Some("arm64"));
-        assert_eq!(cfg.goarm.as_deref(), Some("7"));
-        assert_eq!(cfg.goamd64.as_deref(), Some("v2"));
-    }
-
-    #[test]
-    fn test_docker_config_goos_goarch_defaults_to_none() {
-        use anodize_core::config::DockerConfig;
-        let yaml = r#"
-image_templates:
-  - "ghcr.io/owner/app:latest"
-dockerfile: Dockerfile
-"#;
-        let cfg: DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(cfg.goos.is_none());
-        assert!(cfg.goarch.is_none());
-        assert!(cfg.goarm.is_none());
-        assert!(cfg.goamd64.is_none());
     }
 }

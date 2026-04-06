@@ -2612,15 +2612,6 @@ pub struct DockerConfig {
     /// When truthy, skip this docker build entirely. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
-    /// Target OS for artifact filtering (GoReleaser compat). Default: "linux".
-    /// Only used with legacy docker configs; V2 uses `platforms` instead.
-    pub goos: Option<String>,
-    /// Target architecture for artifact filtering (GoReleaser compat). Default: "amd64".
-    pub goarch: Option<String>,
-    /// ARM version for artifact filtering (GoReleaser compat, e.g. "6", "7").
-    pub goarm: Option<String>,
-    /// AMD64 microarchitecture version (GoReleaser compat, e.g. "v1", "v2", "v3").
-    pub goamd64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
