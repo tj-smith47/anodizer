@@ -352,44 +352,132 @@ Config fields `SourceFileInfo` (owner, group, mode, mtime) exist but stage logs 
 
 **Sign: binary_signs default signature template missing architecture**
 GoReleaser binary_signs use `${artifact}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}...` for signature naming. Anodize defaults to `{artifact}.sig` with no architecture info.
-- [ ] Implement architecture-aware default signature template for binary_signs
-- [ ] Include Os, Arch, Arm, Amd64 variant suffixes matching GoReleaser
+- [x] Implement architecture-aware default signature template for binary_signs
+- [x] Include Os, Arch, Arm, Amd64 variant suffixes matching GoReleaser
 
 **Sign: IDs warning when used with checksum/source artifacts**
 GoReleaser warns when `ids` filter is set with `artifacts: "checksum"` or `"source"` (ids has no effect). Anodize is silent.
-- [ ] Add warning log when `ids` is set with checksum or source artifact filter
+- [x] Add warning log when `ids` is set with checksum or source artifact filter
 
 **Sign: DockerImageV2 handling in docker_signs**
 GoReleaser includes `DockerImageV2` in both "images" and "manifests" filters. Anodize only handles `DockerImage` and `DockerManifest`.
-- [ ] Add `DockerImageV2` to docker_signs image and manifest filters
+- [x] Add `DockerImageV2` to docker_signs image and manifest filters
 
 **Sign: artifact refresh after signing**
 GoReleaser calls `ctx.Artifacts.Refresh()` after all signing. Anodize does not refresh.
-- [ ] Call artifact refresh equivalent after signing stage completes
+- [x] Call artifact refresh equivalent after signing stage completes
 
 **Docker: DockerV2 missing defaults**
 GoReleaser sets defaults for DockerV2: ID=ProjectName, Dockerfile="Dockerfile", Tags=["{{.Tag}}"], Platforms=["linux/amd64","linux/arm64"], SBOM="true", Retry(10 attempts, 10s delay, 5m max).
-- [ ] Set default ID, Dockerfile, Tags, Platforms, SBOM, Retry for DockerV2 configs
+- [x] Set default ID, Dockerfile, Tags, Platforms, SBOM, Retry for DockerV2 configs
 
 **Docker: platform tag suffix for snapshot builds**
 GoReleaser v2 adds platform suffix to tags during snapshot builds (e.g., "latest-amd64"). Anodize does not.
-- [ ] Add platform suffix to tags during snapshot builds for DockerV2
+- [x] Add platform suffix to tags during snapshot builds for DockerV2
 
 **Docker: SBOM attestation format**
 GoReleaser uses `--attest=type=sbom` for proper OCI attestation. Anodize uses `--sbom=true`.
-- [ ] Change SBOM flag from `--sbom=true` to `--attest=type=sbom` for buildx
+- [x] Change SBOM flag from `--sbom=true` to `--attest=type=sbom` for buildx
 
 **Docker: buildx driver validation**
 GoReleaser v2 checks buildx driver is "docker-container" or "docker". Anodize has no validation.
-- [ ] Validate buildx driver type and warn if non-standard
+- [x] Validate buildx driver type and warn if non-standard
 
 **Docker: Dockerfile path template rendering**
 GoReleaser templates the `Dockerfile` field path. Anodize treats it as literal.
-- [ ] Template-render the Dockerfile path field before use
+- [x] Template-render the Dockerfile path field before use
 
 **Docker: index annotation prefix for multi-platform**
 GoReleaser v2 adds "index:" prefix to annotations for multi-platform builds. Anodize does not.
-- [ ] Add "index:" annotation prefix for multi-platform Docker builds
+- [x] Add "index:" annotation prefix for multi-platform Docker builds
+
+**Docker (deep audit): V2 snapshot/publish split**
+GoReleaser V2 has separate Snapshot.Run() (per-platform --load, no push, no SBOM) and Publish.Publish() (--push). Anodize had a single path.
+- [x] Split V2 snapshot into per-platform --load builds (no push, no SBOM)
+- [x] Remove auto --provenance=false and --sbom=false from V2 (only legacy does this)
+
+**Docker (deep audit): V2 staging layout and artifact types**
+GoReleaser V2 stages to os/arch/name and stages Binary, LinuxPackage, CArchive, CShared, PyWheel. Anodize used binaries/arch and only Binary.
+- [x] Implement stage_artifacts_v2() with GoReleaser layout (os/arch/name)
+- [x] Stage Binary, LinuxPackage, CArchive, CShared, PyWheel artifacts
+- [x] Handle "all" goos artifacts (copied to every platform dir)
+
+**Docker (deep audit): V2 artifact registration**
+GoReleaser registers V2 artifacts as DockerImageV2 with image ref as name/path.
+- [x] Register V2 artifacts as DockerImageV2 (not DockerImage) with correct name/path
+
+**Docker (deep audit): Template map keys and empty filtering**
+GoReleaser's tplMapFlags() templates both keys and values; skips empty entries. Also templates platforms.
+- [x] Template-render map keys for labels/annotations/build_args
+- [x] Skip empty key/value entries after templating
+- [x] Template-render platform strings, filter empty results
+- [x] Filter empty rendered flags
+
+**Docker (deep audit): Legacy docker defaults and template rendering**
+GoReleaser defaults dockerfile to "Dockerfile" and template-renders the path.
+- [x] Default dockerfile to "Dockerfile" when empty
+- [x] Template-render legacy docker dockerfile path
+
+**Docker (deep audit): Retry pattern precision**
+GoReleaser uses precise HTTP error patterns and manifest verification retry.
+- [x] Narrow "500" retry pattern to full HTTP error format
+- [x] Add "manifest verification failed for digest" retry pattern
+
+**Docker (deep audit): Manifest push digest capture**
+GoReleaser captures sha256 digest from docker manifest push stdout.
+- [x] Capture digest from manifest push output and store in artifact metadata
+
+**Docker (deep audit): SkipPush template support**
+GoReleaser's skip_push accepts template strings (e.g., "{{ if .IsSnapshot }}true{{ end }}"). Anodize only accepts "auto" or bool.
+- [ ] Add Template(String) variant to SkipPushConfig (IN PROGRESS)
+- [ ] Wire Template variant through resolve_skip_push
+
+**Docker (deep audit): DockerSignConfig.env type mismatch**
+GoReleaser uses []string ("KEY=VAL" list) for docker_signs env. Anodize uses HashMap. YAML input from GoReleaser configs won't deserialize.
+- [ ] Add custom deserializer that accepts both map and list-of-strings formats
+
+**Docker (deep audit): DockerSignConfig.output type**
+GoReleaser accepts string-or-bool for docker_signs output. Anodize only accepts bool.
+- [ ] Change DockerSignConfig.output from Option<bool> to Option<StringOrBool>
+
+**Docker (deep audit): Environment variable passthrough**
+GoReleaser passes ctx.Env.Strings() to docker commands. Anodize inherits process env but doesn't inject context env vars.
+- [ ] Merge context env vars into docker command environment
+
+**Docker (deep audit): Output secret redaction**
+GoReleaser pipes docker command output through redact.Writer to strip secrets. Anodize writes raw output.
+- [ ] Implement output redaction for docker command stdout/stderr
+
+**Docker (deep audit): UX diagnostics**
+GoReleaser has several diagnostic helpers that Anodize lacks.
+- [ ] Zero-artifact warning when no matching binaries found for platform
+- [ ] File-not-found diagnostic (detect COPY/ADD failures, show staging dir contents)
+- [ ] Buildx context error diagnostic (suggest "docker context use default")
+- [ ] "Did you mean?" Levenshtein suggestion for manifest image mismatches
+- [ ] Heuristic warnings when extra_files contain project markers (go.mod, Cargo.toml)
+- [ ] Docker daemon availability check before snapshot builds
+
+**Docker (deep audit): ID uniqueness validation**
+GoReleaser validates docker V2 config IDs are unique. Anodize allows duplicates silently.
+- [ ] Validate ID uniqueness for docker V2 and manifest configs
+
+**Docker (deep audit): Image tag deduplication and sorting**
+GoReleaser deduplicates and sorts image:tag lists. Anodize does neither.
+- [ ] Deduplicate and sort generated image:tag combinations
+
+**Docker (deep audit): Missing config fields on legacy Docker**
+GoReleaser legacy Docker has goos, goarch, goarm, goamd64 fields for artifact filtering. Anodize uses platforms instead.
+- [ ] Add goos/goarch/goarm/goamd64 fields to DockerConfig for GoReleaser config portability
+- [ ] Wire these fields into artifact filtering in the legacy docker path
+
+**Docker (deep audit): Missing DockerDigest config type**
+GoReleaser has a top-level docker_digest config with disable and name_template fields that controls docker image digest artifact naming.
+- [ ] Add DockerDigest config struct with disable and name_template fields
+- [ ] Wire DockerDigest into the pipeline
+
+**Docker (deep audit): --iidfile for V2 digest capture**
+GoReleaser V2 uses --iidfile=id.txt to capture image digest from buildx instead of docker inspect post-push. This works even without push.
+- [ ] Add --iidfile support to build_docker_v2_command and read digest from file
 
 ### Session K: nFPM & Publisher Behavioral Gaps (from 2026-04-06 audit)
 

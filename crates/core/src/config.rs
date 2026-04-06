@@ -1602,14 +1602,49 @@ impl<'de> Deserialize<'de> for MakeLatestConfig {
     }
 }
 
-/// `skip_push` can be the string `"auto"` (skip for prereleases) or a boolean.
+/// `skip_push` can be `"auto"` (skip for prereleases), a boolean, or a template string.
+/// GoReleaser accepts template expressions like `"{{ if .IsSnapshot }}true{{ end }}"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkipPushConfig {
     Auto,
     Bool(bool),
+    /// Arbitrary template string — rendered at runtime, truthy result means skip push.
+    Template(String),
 }
 
-impl_auto_or_bool_serde!(SkipPushConfig, SkipPushConfig::Auto, SkipPushConfig::Bool);
+impl Serialize for SkipPushConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            SkipPushConfig::Auto => serializer.serialize_str("auto"),
+            SkipPushConfig::Bool(b) => serializer.serialize_bool(*b),
+            SkipPushConfig::Template(s) => serializer.serialize_str(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SkipPushConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = SkipPushConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "\"auto\", a boolean, or a template string")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<SkipPushConfig, E> {
+                Ok(SkipPushConfig::Bool(v))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<SkipPushConfig, E> {
+                match v {
+                    "auto" => Ok(SkipPushConfig::Auto),
+                    "true" => Ok(SkipPushConfig::Bool(true)),
+                    "false" => Ok(SkipPushConfig::Bool(false)),
+                    other => Ok(SkipPushConfig::Template(other.to_string())),
+                }
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Shared publisher config types: RepositoryConfig, CommitAuthorConfig
