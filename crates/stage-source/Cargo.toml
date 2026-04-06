@@ -16,10 +16,10 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 chrono.workspace = true
+tar.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
 anodize-core = { workspace = true, features = ["test-helpers"] }
 tempfile.workspace = true
 serde_yaml_ng.workspace = true
-flate2.workspace = true
-tar.workspace = true

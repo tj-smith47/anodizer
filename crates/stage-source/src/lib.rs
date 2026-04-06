@@ -82,101 +82,149 @@ fn create_source_archive(
         bail!("source: git archive failed: {}", stderr.trim());
     }
 
-    // Append extra files under the prefix directory using tar
+    // Append extra files using the Rust tar crate for per-file metadata control
     if needs_post_append {
-        // Create a temp staging dir with the prefix structure
-        let staging = dist.join(format!(".{}-extra-staging", prefix));
-        let prefixed_dir = staging.join(prefix);
-        std::fs::create_dir_all(&prefixed_dir).context("source: create extra files staging dir")?;
+        use std::io::Read as _;
 
-        for entry in extra_files {
-            if entry.info.is_some() {
-                log.warn("file info (owner/group/mode/mtime) is not yet supported for source archive extra files");
+        // Read the git-archive tar into memory
+        let existing_tar_data =
+            std::fs::read(&initial_path).context("source: read initial tar")?;
+
+        // Build a new tar with existing entries + extra files
+        let mut new_tar_data = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut new_tar_data);
+
+            // Copy all entries from the git archive
+            let mut archive = tar::Archive::new(&existing_tar_data[..]);
+            for tar_entry in archive.entries().context("source: read tar entries")? {
+                let mut tar_entry = tar_entry.context("source: read tar entry")?;
+                let header = tar_entry.header().clone();
+                let mut data = Vec::new();
+                tar_entry
+                    .read_to_end(&mut data)
+                    .context("source: read tar entry data")?;
+                builder
+                    .append(&header, &data[..])
+                    .context("source: copy tar entry")?;
             }
 
-            let src = Path::new(&entry.src);
-            let do_strip = entry.strip_parent.unwrap_or(false);
+            // Add extra files with metadata
+            for entry in extra_files {
+                let src = Path::new(&entry.src);
+                let do_strip = entry.strip_parent.unwrap_or(false);
 
-            let dest_name: PathBuf = if let Some(ref dst) = entry.dst {
-                if do_strip {
-                    // strip_parent + dst: place filename directly under dst
-                    let fname = src.file_name().ok_or_else(|| {
-                        anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
-                    })?;
-                    PathBuf::from(dst).join(fname)
+                // Compute destination name inside the prefix (same logic as strip_parent)
+                let dest_rel: PathBuf = if let Some(ref dst) = entry.dst {
+                    if do_strip {
+                        let fname = src.file_name().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "source: extra file has no filename: {}",
+                                entry.src
+                            )
+                        })?;
+                        PathBuf::from(dst).join(fname)
+                    } else {
+                        PathBuf::from(dst)
+                    }
                 } else {
-                    PathBuf::from(dst)
+                    let fname = src.file_name().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "source: extra file has no filename: {}",
+                            entry.src
+                        )
+                    })?;
+                    PathBuf::from(fname)
+                };
+
+                let archive_path = Path::new(prefix).join(&dest_rel);
+
+                // Read file content
+                let mut file_data = Vec::new();
+                std::fs::File::open(src)
+                    .with_context(|| format!("source: open extra file '{}'", entry.src))?
+                    .read_to_end(&mut file_data)
+                    .with_context(|| format!("source: read extra file '{}'", entry.src))?;
+
+                // Build tar header from filesystem metadata
+                let metadata = std::fs::metadata(src)
+                    .with_context(|| format!("source: metadata for '{}'", entry.src))?;
+                let mut header = tar::Header::new_gnu();
+                header.set_size(file_data.len() as u64);
+
+                // Default mode from filesystem
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    header.set_mode(metadata.permissions().mode());
                 }
-            } else {
-                // No dst: use filename only (strip_parent or not, same result)
-                let fname = src.file_name().ok_or_else(|| {
-                    anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
+                #[cfg(not(unix))]
+                {
+                    header.set_mode(0o644);
+                }
+
+                // Default mtime from filesystem
+                header.set_mtime(
+                    metadata
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0),
+                );
+
+                // Apply info overrides if present
+                if let Some(ref info) = entry.info {
+                    if let Some(ref owner) = info.owner {
+                        header.set_username(owner).ok();
+                    }
+                    if let Some(ref group) = info.group {
+                        header.set_groupname(group).ok();
+                    }
+                    if let Some(mode) = info.mode {
+                        header.set_mode(mode);
+                    }
+                    if let Some(ref mtime_str) = info.mtime {
+                        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(mtime_str) {
+                            header.set_mtime(dt.timestamp() as u64);
+                        } else if let Ok(ts) = mtime_str.parse::<u64>() {
+                            header.set_mtime(ts);
+                        } else {
+                            log.warn(&format!(
+                                "could not parse mtime '{}' as RFC3339 or unix timestamp",
+                                mtime_str
+                            ));
+                        }
+                    }
+                }
+
+                header.set_path(&archive_path).with_context(|| {
+                    format!("source: set tar path for '{}'", archive_path.display())
                 })?;
-                PathBuf::from(fname)
-            };
+                header.set_cksum();
 
-            // Ensure parent directories exist
-            let full_dest = prefixed_dir.join(&dest_name);
-            if let Some(parent) = full_dest.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("source: create parent dirs for '{}'", full_dest.display()))?;
+                builder
+                    .append(&header, &file_data[..])
+                    .with_context(|| format!("source: append '{}' to tar", entry.src))?;
             }
 
-            std::fs::copy(src, &full_dest)
-                .with_context(|| format!("source: copy extra file '{}' to staging", entry.src))?;
+            builder.finish().context("source: finish tar")?;
         }
 
-        // Append to the tar archive
-        let append_output = Command::new("tar")
-            .arg("--append")
-            .arg("-f")
-            .arg(&initial_path)
-            .arg("-C")
-            .arg(&staging)
-            .arg(prefix)
-            .output()
-            .context("source: failed to run 'tar --append' for extra files")?;
-
-        if !append_output.status.success() {
-            let stderr = String::from_utf8_lossy(&append_output.stderr);
-            bail!("source: tar append failed: {}", stderr.trim());
-        }
-
-        // Clean up staging dir
-        let _ = std::fs::remove_dir_all(&staging);
-
-        // Compress if the original format was tar.gz
+        // Write final output (compressed or plain)
         if git_format == "tar.gz" {
-            let gz_output = Command::new("gzip")
-                .arg("-f")
-                .arg(&initial_path)
-                .output()
-                .context("source: failed to gzip archive")?;
-
-            if !gz_output.status.success() {
-                let stderr = String::from_utf8_lossy(&gz_output.stderr);
-                bail!("source: gzip failed: {}", stderr.trim());
-            }
-
-            // gzip creates .tar.tmp.gz — rename to final path
-            let gzipped = dist.join(format!("{}.tar.tmp.gz", name));
-            std::fs::rename(&gzipped, &output_path).with_context(|| {
-                format!(
-                    "source: rename {} -> {}",
-                    gzipped.display(),
-                    output_path.display()
-                )
-            })?;
+            let gz_file = std::fs::File::create(&output_path)
+                .context("source: create gzip output file")?;
+            let mut encoder =
+                flate2::write::GzEncoder::new(gz_file, flate2::Compression::default());
+            std::io::Write::write_all(&mut encoder, &new_tar_data)
+                .context("source: write gzip data")?;
+            encoder.finish().context("source: finish gzip")?;
         } else {
-            // Plain tar — rename from .tar.tmp to final path
-            std::fs::rename(&initial_path, &output_path).with_context(|| {
-                format!(
-                    "source: rename {} -> {}",
-                    initial_path.display(),
-                    output_path.display()
-                )
-            })?;
+            std::fs::write(&output_path, &new_tar_data)
+                .context("source: write tar output")?;
         }
+        let _ = std::fs::remove_file(&initial_path);
     }
 
     Ok(output_path)
@@ -1906,5 +1954,85 @@ dependencies = [
             "expected 'proj-3.0.0/docs/README.txt' in archive, got entries: {:?}",
             entries
         );
+    }
+
+    #[test]
+    fn test_source_extra_files_with_info() {
+        use anodize_core::config::{SourceFileEntry, SourceFileInfo};
+        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use std::io::Read as _;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        create_test_project(tmp.path());
+        init_git_repo(tmp.path());
+
+        // Create extra file AFTER git init so it is not tracked
+        let extra_file = tmp.path().join("config.toml");
+        std::fs::write(&extra_file, b"[settings]\nfoo = true").unwrap();
+
+        let log =
+            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+
+        let extra_files = vec![SourceFileEntry {
+            src: extra_file.to_string_lossy().to_string(),
+            dst: None,
+            strip_parent: None,
+            info: Some(SourceFileInfo {
+                owner: Some("deploy".to_string()),
+                group: Some("staff".to_string()),
+                mode: Some(0o644),
+                mtime: Some("2024-01-01T00:00:00Z".to_string()),
+            }),
+        }];
+
+        let orig_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let result = create_source_archive(
+            &dist,
+            "tar.gz",
+            "test-src",
+            "test-src",
+            &extra_files,
+            tmp.path(),
+            "HEAD",
+            &log,
+        );
+
+        std::env::set_current_dir(&orig_dir).unwrap();
+
+        assert!(result.is_ok(), "failed: {:?}", result.err());
+
+        // Read back and verify metadata
+        let archive_path = result.unwrap();
+        let file = std::fs::File::open(&archive_path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let mut tar_archive = tar::Archive::new(dec);
+
+        for tar_entry in tar_archive.entries().unwrap() {
+            let tar_entry = tar_entry.unwrap();
+            let path = tar_entry.path().unwrap().to_string_lossy().to_string();
+            if path.ends_with("config.toml") {
+                let header = tar_entry.header();
+                assert_eq!(header.mode().unwrap(), 0o644, "mode mismatch");
+                assert_eq!(
+                    header.username().unwrap().unwrap(),
+                    "deploy",
+                    "owner mismatch"
+                );
+                assert_eq!(
+                    header.groupname().unwrap().unwrap(),
+                    "staff",
+                    "group mismatch"
+                );
+                // 2024-01-01T00:00:00Z = 1704067200 unix timestamp
+                assert_eq!(header.mtime().unwrap(), 1704067200, "mtime mismatch");
+                return;
+            }
+        }
+        panic!("config.toml not found in source archive");
     }
 }
