@@ -760,11 +760,11 @@ pub fn format_for_target(
 // ---------------------------------------------------------------------------
 
 fn default_name_template() -> &'static str {
-    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}"
+    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
 }
 
 fn default_binary_name_template() -> &'static str {
-    "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}"
+    "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
 }
 
 // ---------------------------------------------------------------------------
@@ -4956,5 +4956,53 @@ crates:
             "should NOT contain app-b: {:?}",
             found_files.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_default_name_template_includes_amd64_suffix() {
+        let tmpl = default_name_template();
+        assert!(
+            tmpl.contains("Amd64"),
+            "default name template should contain Amd64 conditional: {tmpl}"
+        );
+        let bin_tmpl = default_binary_name_template();
+        assert!(
+            bin_tmpl.contains("Amd64"),
+            "default binary name template should contain Amd64 conditional: {bin_tmpl}"
+        );
+    }
+
+    #[test]
+    fn test_default_template_renders_amd64_v2_suffix() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Os", "linux");
+        ctx.template_vars_mut().set("Arch", "amd64");
+        ctx.template_vars_mut().set("Amd64", "v2");
+
+        let result = ctx.render_template(default_name_template()).unwrap();
+        assert_eq!(result, "myapp_1.0.0_linux_amd64v2");
+    }
+
+    #[test]
+    fn test_default_template_omits_amd64_v1_suffix() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Os", "linux");
+        ctx.template_vars_mut().set("Arch", "amd64");
+        ctx.template_vars_mut().set("Amd64", "v1");
+
+        let result = ctx.render_template(default_name_template()).unwrap();
+        assert_eq!(result, "myapp_1.0.0_linux_amd64");
     }
 }
