@@ -100,6 +100,7 @@ static DOCKER_SUPPORTS_PROVENANCE: OnceLock<bool> = OnceLock::new();
 
 fn docker_supports_provenance() -> bool {
     *DOCKER_SUPPORTS_PROVENANCE.get_or_init(|| {
+        // Capability probe — no context env injection needed (reads --help output only).
         // Try `docker buildx build --help` first (buildx is the common path).
         // Fall back to `docker build --help` for non-buildx installs.
         let output = Command::new("docker")
@@ -128,6 +129,7 @@ fn docker_supports_provenance() -> bool {
 /// on invalid drivers. We warn rather than error to be lenient, but the
 /// check ensures users know their setup may not work for multi-platform builds.
 fn check_buildx_driver(log: &StageLogger) {
+    // Capability probe — no context env injection needed (reads driver info only).
     let output = Command::new("docker")
         .args(["buildx", "inspect"])
         .output();
@@ -5460,13 +5462,36 @@ disable: "{{ .IsSnapshot }}"
     }
 
     #[test]
-    fn test_docker_build_job_has_env_vars() {
-        // Verify that env_vars field exists and can hold context env
+    fn test_docker_build_job_env_vars_field() {
+        // Verify DockerBuildJob carries env_vars through to execution
         let mut env = HashMap::new();
         env.insert("DOCKER_BUILDKIT".to_string(), "1".to_string());
-        env.insert("REGISTRY_TOKEN".to_string(), "secret123".to_string());
-        assert_eq!(env.len(), 2);
-        assert_eq!(env.get("DOCKER_BUILDKIT").unwrap(), "1");
+        env.insert("MY_VAR".to_string(), "value".to_string());
+
+        let job = DockerBuildJob {
+            cmd_args: vec!["echo".to_string(), "test".to_string()],
+            backend_label: "test".to_string(),
+            crate_name: "test".to_string(),
+            idx: 0,
+            max_attempts: 1,
+            base_delay: Duration::from_secs(1),
+            max_delay: None,
+            should_push: false,
+            rendered_tags: vec![],
+            platforms_str: String::new(),
+            staging_dir: PathBuf::new(),
+            id: None,
+            use_backend: None,
+            dist: PathBuf::new(),
+            is_v2: false,
+            digest_disabled: false,
+            digest_name_template: None,
+            env_vars: env,
+        };
+
+        assert_eq!(job.env_vars.len(), 2);
+        assert_eq!(job.env_vars.get("DOCKER_BUILDKIT").unwrap(), "1");
+        assert_eq!(job.env_vars.get("MY_VAR").unwrap(), "value");
     }
 
     #[test]
