@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -560,6 +560,8 @@ pub fn generate_v2_image_tags(images: &[String], tags: &[String]) -> Vec<String>
             result.push(format!("{}:{}", image, tag));
         }
     }
+    result.sort();
+    result.dedup();
     result
 }
 
@@ -572,6 +574,12 @@ pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> b
             ctx.template_vars()
                 .get("Prerelease")
                 .map(|p| !p.is_empty())
+                .unwrap_or(false)
+        }
+        Some(SkipPushConfig::Template(tmpl)) => {
+            // Render template string and treat truthy result as "skip"
+            ctx.render_template(tmpl)
+                .map(|rendered| rendered.trim().eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
         }
         None => false,
@@ -672,6 +680,9 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             let _ = std::io::stderr().write_all(&output.stderr);
         }
 
+        // Capture stderr for diagnostic hints before output is consumed.
+        let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
+
         match log.check_output(output, &format!("docker {}", job.backend_label)) {
             Ok(_) => {
                 if attempt > 1 {
@@ -685,7 +696,27 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             }
             Err(e) => {
                 let err_msg = format!("{:#}", e);
-                if attempt < job.max_attempts && !is_retriable_error(&err_msg) {
+                let is_retriable = is_retriable_error(&err_msg);
+                if attempt < job.max_attempts && !is_retriable {
+                    // Diagnostic: file-not-found hints for COPY/ADD failures
+                    if stderr_text.contains("COPY") || stderr_text.contains("ADD") {
+                        log.warn(
+                            "the Dockerfile COPY/ADD failed — check that the \
+                             files referenced in your Dockerfile exist in the \
+                             staging directory; the available files may not match \
+                             what the Dockerfile expects",
+                        );
+                    }
+                    // Diagnostic: buildx context / TLS errors
+                    if stderr_text.contains("could not read certificates")
+                        || stderr_text
+                            .contains("server gave HTTP response to HTTPS client")
+                    {
+                        log.warn(
+                            "this may be a Docker context issue — \
+                             try running: docker context use default",
+                        );
+                    }
                     log.warn(&format!(
                         "docker {} failed with non-retriable error, not retrying",
                         job.backend_label
@@ -808,6 +839,13 @@ fn stage_binaries(
             })
             .collect();
 
+        if matching_binaries.is_empty() {
+            log.warn(&format!(
+                "no binaries found for platform {} — check ids/binary filters",
+                platform
+            ));
+        }
+
         for bin_artifact in matching_binaries {
             let bin_name = bin_artifact
                 .metadata
@@ -884,6 +922,7 @@ fn stage_artifacts_v2(
         let arch = platform_to_arch(platform);
         let os = parts.first().copied().unwrap_or("linux");
 
+        let mut platform_artifact_count = 0usize;
         for kind in &stageable_kinds {
             let artifacts: Vec<_> = ctx
                 .artifacts
@@ -909,6 +948,7 @@ fn stage_artifacts_v2(
                 })
                 .collect();
 
+            platform_artifact_count += artifacts.len();
             for artifact in artifacts {
                 let file_name = artifact
                     .path
@@ -938,6 +978,13 @@ fn stage_artifacts_v2(
                     })?;
                 }
             }
+        }
+
+        if platform_artifact_count == 0 {
+            log.warn(&format!(
+                "no binaries found for platform {} — check ids/binary filters",
+                platform
+            ));
         }
     }
     Ok(())
@@ -1075,6 +1122,27 @@ impl Stage for DockerStage {
             return Ok(());
         }
 
+        // Validate Docker V2 config ID uniqueness — duplicate IDs cause
+        // confusing artifact collisions and filtering bugs.
+        {
+            let mut seen_ids: HashSet<String> = HashSet::new();
+            for krate in &crates {
+                if let Some(ref v2_cfgs) = krate.docker_v2 {
+                    for v2_cfg in v2_cfgs {
+                        if let Some(ref id) = v2_cfg.id {
+                            if !seen_ids.insert(id.clone()) {
+                                log.warn(&format!(
+                                    "duplicate docker_v2 config id '{}' — \
+                                     each config should have a unique id",
+                                    id
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Validate the buildx driver once if any V2 configs exist (V2 always uses buildx).
         if !dry_run && crates.iter().any(|c| c.docker_v2.is_some()) {
             check_buildx_driver(&log);
@@ -1183,6 +1251,14 @@ impl Stage for DockerStage {
                         continue;
                     }
                     rendered_tags.push(tag);
+                }
+
+                if rendered_tags.is_empty() {
+                    log.warn(&format!(
+                        "docker[{}]: all image_templates rendered to empty for crate {}; skipping build",
+                        idx, krate.name
+                    ));
+                    continue;
                 }
 
                 // ------------------------------------------------------------------
@@ -3898,10 +3974,11 @@ use: podman
         let tags = vec!["latest".to_string(), "v1.0.0".to_string()];
         let result = generate_v2_image_tags(&images, &tags);
         assert_eq!(result.len(), 4);
-        assert_eq!(result[0], "ghcr.io/owner/app:latest");
-        assert_eq!(result[1], "ghcr.io/owner/app:v1.0.0");
-        assert_eq!(result[2], "docker.io/owner/app:latest");
-        assert_eq!(result[3], "docker.io/owner/app:v1.0.0");
+        // Results are sorted and deduped
+        assert_eq!(result[0], "docker.io/owner/app:latest");
+        assert_eq!(result[1], "docker.io/owner/app:v1.0.0");
+        assert_eq!(result[2], "ghcr.io/owner/app:latest");
+        assert_eq!(result[3], "ghcr.io/owner/app:v1.0.0");
     }
 
     #[test]
