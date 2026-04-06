@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{DockerRetryConfig, SkipPushConfig, StringOrBool};
+use anodize_core::config::{DockerDigestConfig, DockerRetryConfig, SkipPushConfig, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
@@ -534,6 +534,28 @@ pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> b
     }
 }
 
+/// Resolve the docker digest configuration for a crate into job-level fields.
+///
+/// Returns `(digest_disabled, digest_name_template)`.
+fn resolve_digest_config(
+    cfg: Option<&DockerDigestConfig>,
+    ctx: &Context,
+) -> (bool, Option<String>) {
+    let Some(dc) = cfg else {
+        return (false, None);
+    };
+    let disabled = match &dc.disable {
+        None => false,
+        Some(d) => d.is_disabled(|s| ctx.render_template(s)),
+    };
+    let name_template = dc
+        .name_template
+        .as_ref()
+        .and_then(|tmpl| ctx.render_template(tmpl).ok())
+        .filter(|s| !s.is_empty());
+    (disabled, name_template)
+}
+
 /// Evaluate whether the sbom flag should be added for a Docker V2 config.
 ///
 /// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
@@ -624,6 +646,10 @@ struct DockerBuildJob {
     dist: PathBuf,
     /// Whether this is a V2 docker build (affects artifact type registration).
     is_v2: bool,
+    /// Whether digest artifact creation is disabled.
+    digest_disabled: bool,
+    /// Digest file name template (rendered). None = use default tag-based naming.
+    digest_name_template: Option<String>,
 }
 
 /// Result of executing a single docker build job.
@@ -761,16 +787,25 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 let digest = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !digest.is_empty() {
                     tag_digests.insert(tag.clone(), digest.clone());
-                    let safe_name = tag.replace(['/', ':'], "_");
-                    let digest_file = job.dist.join(format!("{}.digest", safe_name));
-                    if let Err(e) = fs::write(&digest_file, &digest) {
-                        log.warn(&format!(
-                            "failed to write digest file {}: {}",
-                            digest_file.display(),
-                            e
-                        ));
-                    } else {
-                        log.status(&format!("saved digest to {}", digest_file.display()));
+
+                    // Write digest file unless docker_digest.disable is truthy
+                    if !job.digest_disabled {
+                        let filename = if let Some(ref tmpl) = job.digest_name_template {
+                            tmpl.clone()
+                        } else {
+                            let safe_name = tag.replace(['/', ':'], "_");
+                            format!("{}.digest", safe_name)
+                        };
+                        let digest_file = job.dist.join(&filename);
+                        if let Err(e) = fs::write(&digest_file, &digest) {
+                            log.warn(&format!(
+                                "failed to write digest file {}: {}",
+                                digest_file.display(),
+                                e
+                            ));
+                        } else {
+                            log.status(&format!("saved digest to {}", digest_file.display()));
+                        }
                     }
                 }
             }
@@ -1370,6 +1405,10 @@ impl Stage for DockerStage {
                         });
                     }
                 } else {
+                    // Resolve docker_digest config from the crate
+                    let (digest_disabled, digest_name_template) =
+                        resolve_digest_config(krate.docker_digest.as_ref(), ctx);
+
                     build_jobs.push(DockerBuildJob {
                         cmd_args,
                         backend_label: backend_label.to_string(),
@@ -1386,6 +1425,8 @@ impl Stage for DockerStage {
                         use_backend: docker_cfg.use_backend.clone(),
                         dist: dist.clone(),
                         is_v2: false,
+                        digest_disabled,
+                        digest_name_template,
                     });
                 }
             }
@@ -1694,6 +1735,10 @@ impl Stage for DockerStage {
                         });
                     }
                 } else {
+                    // Resolve docker_digest config from the crate
+                    let (digest_disabled, digest_name_template) =
+                        resolve_digest_config(krate.docker_digest.as_ref(), ctx);
+
                     build_jobs.push(DockerBuildJob {
                         cmd_args,
                         backend_label: "buildx".to_string(),
@@ -1710,6 +1755,8 @@ impl Stage for DockerStage {
                         use_backend: Some("buildx".to_string()),
                         dist: dist.clone(),
                         is_v2: true,
+                        digest_disabled,
+                        digest_name_template,
                     });
                 }
                 } // end for snapshot_plats
@@ -5249,5 +5296,39 @@ output: "false"
 "#;
         let cfg2: SignConfig = serde_yaml_ng::from_str(yaml_str).unwrap();
         assert!(!cfg2.output.unwrap().as_bool());
+    }
+
+    #[test]
+    fn test_docker_digest_config_parses() {
+        use anodize_core::config::DockerDigestConfig;
+        let yaml = r#"
+disable: false
+name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+"#;
+        let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(!cfg.disable.unwrap().as_bool());
+        assert_eq!(
+            cfg.name_template.as_deref(),
+            Some("{{ .ProjectName }}_{{ .Version }}_checksums.txt")
+        );
+    }
+
+    #[test]
+    fn test_docker_digest_config_defaults() {
+        use anodize_core::config::DockerDigestConfig;
+        let yaml = "{}";
+        let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.disable.is_none());
+        assert!(cfg.name_template.is_none());
+    }
+
+    #[test]
+    fn test_docker_digest_config_disable_template() {
+        use anodize_core::config::DockerDigestConfig;
+        let yaml = r#"
+disable: "{{ .IsSnapshot }}"
+"#;
+        let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.disable.unwrap().is_template());
     }
 }

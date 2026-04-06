@@ -734,6 +734,8 @@ pub struct CrateConfig {
     pub docker: Option<Vec<DockerConfig>>,
     /// Docker V2 image build configurations for this crate (newer API with images+tags, annotations, build_args, sbom, disable).
     pub docker_v2: Option<Vec<DockerV2Config>>,
+    /// Docker image digest file configuration for this crate.
+    pub docker_digest: Option<DockerDigestConfig>,
     /// Docker multi-platform manifest configurations for this crate.
     pub docker_manifests: Option<Vec<DockerManifestConfig>>,
     /// Linux package (deb, rpm, apk) configurations for this crate.
@@ -789,6 +791,7 @@ impl Default for CrateConfig {
             publish: None,
             docker: None,
             docker_v2: None,
+            docker_digest: None,
             docker_manifests: None,
             nfpm: None,
             snapcrafts: None,
@@ -2675,6 +2678,26 @@ pub struct DockerV2Config {
     /// When truthy, skip pushing images after build. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_push: Option<StringOrBool>,
+}
+
+// ---------------------------------------------------------------------------
+// DockerDigestConfig
+// ---------------------------------------------------------------------------
+
+/// Controls docker image digest file creation.
+///
+/// After each docker image push, a digest file (containing the sha256 digest)
+/// is written to the dist directory. This config controls whether that happens
+/// and how the files are named.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerDigestConfig {
+    /// When truthy, disable docker digest artifact creation.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Template for the digest artifact filename.
+    /// Default: tag-based naming (e.g., "ghcr.io_owner_app_v1.0.0.digest").
+    pub name_template: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
