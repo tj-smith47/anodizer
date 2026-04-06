@@ -429,8 +429,8 @@ GoReleaser captures sha256 digest from docker manifest push stdout.
 
 **Docker (deep audit): SkipPush template support**
 GoReleaser's skip_push accepts template strings (e.g., "{{ if .IsSnapshot }}true{{ end }}"). Anodize only accepts "auto" or bool.
-- [ ] Add Template(String) variant to SkipPushConfig (IN PROGRESS)
-- [ ] Wire Template variant through resolve_skip_push
+- [x] Add Template(String) variant to SkipPushConfig
+- [x] Wire Template variant through resolve_skip_push
 
 **Docker (deep audit): DockerSignConfig.env type mismatch**
 GoReleaser uses []string ("KEY=VAL" list) for docker_signs env. Anodize uses HashMap. YAML input from GoReleaser configs won't deserialize.
@@ -450,20 +450,20 @@ GoReleaser pipes docker command output through redact.Writer to strip secrets. A
 
 **Docker (deep audit): UX diagnostics**
 GoReleaser has several diagnostic helpers that Anodize lacks.
-- [ ] Zero-artifact warning when no matching binaries found for platform
-- [ ] File-not-found diagnostic (detect COPY/ADD failures, show staging dir contents)
-- [ ] Buildx context error diagnostic (suggest "docker context use default")
+- [x] Zero-artifact warning when no matching binaries found for platform
+- [x] File-not-found diagnostic (detect COPY/ADD failures, show staging dir contents)
+- [x] Buildx context error diagnostic (suggest "docker context use default")
 - [ ] "Did you mean?" Levenshtein suggestion for manifest image mismatches
 - [ ] Heuristic warnings when extra_files contain project markers (go.mod, Cargo.toml)
 - [ ] Docker daemon availability check before snapshot builds
 
 **Docker (deep audit): ID uniqueness validation**
 GoReleaser validates docker V2 config IDs are unique. Anodize allows duplicates silently.
-- [ ] Validate ID uniqueness for docker V2 and manifest configs
+- [x] Validate ID uniqueness for docker V2 and manifest configs
 
 **Docker (deep audit): Image tag deduplication and sorting**
 GoReleaser deduplicates and sorts image:tag lists. Anodize does neither.
-- [ ] Deduplicate and sort generated image:tag combinations
+- [x] Deduplicate and sort generated image:tag combinations
 
 **Docker (deep audit): Missing config fields on legacy Docker**
 GoReleaser legacy Docker has goos, goarch, goarm, goamd64 fields for artifact filtering. Anodize uses platforms instead.
