@@ -374,6 +374,39 @@ fn longest_common_prefix(strs: &[String]) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// render_file_info — template-render owner/group/mtime in ArchiveFileInfo
+// ---------------------------------------------------------------------------
+
+/// Render template expressions in `ArchiveFileInfo` fields.
+///
+/// GoReleaser processes `owner`, `group`, and `mtime` through its template
+/// engine (archivefiles.go `tmplInfo()`). `mode` is an octal literal and is
+/// passed through unchanged.
+fn render_file_info(
+    info: &anodize_core::config::ArchiveFileInfo,
+    ctx: &Context,
+) -> Result<anodize_core::config::ArchiveFileInfo> {
+    Ok(anodize_core::config::ArchiveFileInfo {
+        owner: info
+            .owner
+            .as_deref()
+            .map(|s| ctx.render_template(s))
+            .transpose()?,
+        group: info
+            .group
+            .as_deref()
+            .map(|s| ctx.render_template(s))
+            .transpose()?,
+        mode: info.mode.clone(),
+        mtime: info
+            .mtime
+            .as_deref()
+            .map(|s| ctx.render_template(s))
+            .transpose()?,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // resolve_file_specs — handle ArchiveFileSpec entries
 // ---------------------------------------------------------------------------
 
@@ -1059,6 +1092,7 @@ impl Stage for ArchiveStage {
                             ..Default::default()
                         }
                     });
+                    let binary_info = render_file_info(&binary_info, ctx)?;
 
                     // Build ArchiveEntry items for binaries.
                     // strip_binary_directory: when true, binaries skip the
@@ -1091,7 +1125,7 @@ impl Stage for ArchiveStage {
                     // archive-internal name; apply per-file info permissions.
                     let extra_entries: Vec<ArchiveEntry> = extra_files
                         .iter()
-                        .map(|ef| {
+                        .map(|ef| -> Result<ArchiveEntry> {
                             let base_name = if let Some(ref dst) = ef.dst {
                                 dst.clone()
                             } else if ef.strip_parent {
@@ -1116,13 +1150,17 @@ impl Stage for ArchiveStage {
                             } else {
                                 PathBuf::from(&base_name)
                             };
-                            ArchiveEntry {
+                            Ok(ArchiveEntry {
                                 src: ef.src.clone(),
                                 archive_name,
-                                info: ef.info.clone(),
-                            }
+                                info: ef
+                                    .info
+                                    .as_ref()
+                                    .map(|i| render_file_info(i, ctx))
+                                    .transpose()?,
+                            })
                         })
-                        .collect();
+                        .collect::<Result<Vec<_>>>()?;
 
                     // Combine binary + extra entries and deduplicate by archive_name.
                     // Matches GoReleaser's unique() — first occurrence wins,
@@ -4816,5 +4854,34 @@ crates:
             .map(|e| e.archive_name.to_string_lossy().to_string())
             .collect();
         assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
+    }
+
+    // ---------------------------------------------------------------------------
+    // render_file_info
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_render_file_info_templates() {
+        use anodize_core::config::ArchiveFileInfo;
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        let info = ArchiveFileInfo {
+            owner: Some("{{ .ProjectName }}".to_string()),
+            group: Some("staff".to_string()),
+            mode: Some("0755".to_string()),
+            mtime: Some("{{ .Version }}".to_string()),
+        };
+
+        let rendered = render_file_info(&info, &ctx).unwrap();
+        assert_eq!(rendered.owner.as_deref(), Some("myapp"));
+        assert_eq!(rendered.group.as_deref(), Some("staff"));
+        assert_eq!(rendered.mode.as_deref(), Some("0755")); // mode not rendered
+        assert_eq!(rendered.mtime.as_deref(), Some("1.2.3"));
     }
 }
