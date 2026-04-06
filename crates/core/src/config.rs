@@ -5095,11 +5095,6 @@ impl StringOrBool {
         matches!(self, StringOrBool::String(s) if s.contains('{'))
     }
 
-    /// Evaluate whether this value means "disabled".
-    ///
-    /// If the value is a template string (contains `{`), it is rendered via
-    /// the provided closure and the result is compared to `"true"`.
-    /// Otherwise, the plain bool / string value is evaluated directly.
     /// Evaluate whether this value resolves to `true`.
     ///
     /// If the value is a template string (contains `{`), it is rendered via

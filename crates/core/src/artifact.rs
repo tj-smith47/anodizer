@@ -46,6 +46,7 @@ pub enum ArtifactKind {
     DockerImageV2,
     PublishableDockerImage,
     DockerManifest,
+    DockerDigest,
 
     // --- Publisher manifests ---
     BrewFormula,
@@ -106,6 +107,7 @@ impl ArtifactKind {
             ArtifactKind::DockerImageV2 => "docker_image_v2",
             ArtifactKind::PublishableDockerImage => "publishable_docker_image",
             ArtifactKind::DockerManifest => "docker_manifest",
+            ArtifactKind::DockerDigest => "docker_digest",
             ArtifactKind::BrewFormula => "brew_formula",
             ArtifactKind::BrewCask => "brew_cask",
             ArtifactKind::Nixpkg => "nixpkg",
@@ -156,6 +158,7 @@ impl ArtifactKind {
             "docker_image_v2" => Some(ArtifactKind::DockerImageV2),
             "publishable_docker_image" => Some(ArtifactKind::PublishableDockerImage),
             "docker_manifest" => Some(ArtifactKind::DockerManifest),
+            "docker_digest" => Some(ArtifactKind::DockerDigest),
             "brew_formula" => Some(ArtifactKind::BrewFormula),
             "brew_cask" => Some(ArtifactKind::BrewCask),
             "nixpkg" => Some(ArtifactKind::Nixpkg),

@@ -537,23 +537,28 @@ pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> b
 /// Resolve the docker digest configuration for a crate into job-level fields.
 ///
 /// Returns `(digest_disabled, digest_name_template)`.
+/// Errors if the `name_template` contains a template expression that fails to render.
 fn resolve_digest_config(
     cfg: Option<&DockerDigestConfig>,
     ctx: &Context,
-) -> (bool, Option<String>) {
+) -> Result<(bool, Option<String>)> {
     let Some(dc) = cfg else {
-        return (false, None);
+        return Ok((false, None));
     };
     let disabled = match &dc.disable {
         None => false,
         Some(d) => d.is_disabled(|s| ctx.render_template(s)),
     };
-    let name_template = dc
-        .name_template
-        .as_ref()
-        .and_then(|tmpl| ctx.render_template(tmpl).ok())
-        .filter(|s| !s.is_empty());
-    (disabled, name_template)
+    let name_template = match dc.name_template.as_ref() {
+        Some(tmpl) => {
+            let rendered = ctx.render_template(tmpl).with_context(|| {
+                format!("docker: failed to render digest name_template '{}'", tmpl)
+            })?;
+            if rendered.is_empty() { None } else { Some(rendered) }
+        }
+        None => None,
+    };
+    Ok((disabled, name_template))
 }
 
 /// Evaluate whether the sbom flag should be added for a Docker V2 config.
@@ -656,6 +661,8 @@ struct DockerBuildJob {
 struct DockerBuildResult {
     /// Digests captured after a successful push, keyed by tag.
     tag_digests: HashMap<String, String>,
+    /// Paths to digest files written to the dist directory.
+    digest_files: Vec<PathBuf>,
 }
 
 /// Execute a single docker build job with retry logic.
@@ -770,6 +777,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
 
     // Capture digests after successful push
     let mut tag_digests = HashMap::new();
+    let mut digest_files = Vec::new();
     if job.should_push {
         for tag in &job.rendered_tags {
             let inspect_bin = if job.backend_label == "podman" {
@@ -788,14 +796,13 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 if !digest.is_empty() {
                     tag_digests.insert(tag.clone(), digest.clone());
 
-                    // Write digest file unless docker_digest.disable is truthy
+                    // Write per-tag digest file unless docker_digest.disable is truthy.
+                    // Always use tag-based naming for per-tag files to avoid collisions
+                    // when multiple tags exist. The name_template controls the artifact
+                    // name (metadata), not the file path.
                     if !job.digest_disabled {
-                        let filename = if let Some(ref tmpl) = job.digest_name_template {
-                            tmpl.clone()
-                        } else {
-                            let safe_name = tag.replace(['/', ':'], "_");
-                            format!("{}.digest", safe_name)
-                        };
+                        let safe_name = tag.replace(['/', ':'], "_");
+                        let filename = format!("{}.digest", safe_name);
                         let digest_file = job.dist.join(&filename);
                         if let Err(e) = fs::write(&digest_file, &digest) {
                             log.warn(&format!(
@@ -805,6 +812,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                             ));
                         } else {
                             log.status(&format!("saved digest to {}", digest_file.display()));
+                            digest_files.push(digest_file);
                         }
                     }
                 }
@@ -812,7 +820,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         }
     }
 
-    Ok(DockerBuildResult { tag_digests })
+    Ok(DockerBuildResult { tag_digests, digest_files })
 }
 
 // ---------------------------------------------------------------------------
@@ -1407,7 +1415,7 @@ impl Stage for DockerStage {
                 } else {
                     // Resolve docker_digest config from the crate
                     let (digest_disabled, digest_name_template) =
-                        resolve_digest_config(krate.docker_digest.as_ref(), ctx);
+                        resolve_digest_config(krate.docker_digest.as_ref(), ctx)?;
 
                     build_jobs.push(DockerBuildJob {
                         cmd_args,
@@ -1737,7 +1745,7 @@ impl Stage for DockerStage {
                 } else {
                     // Resolve docker_digest config from the crate
                     let (digest_disabled, digest_name_template) =
-                        resolve_digest_config(krate.docker_digest.as_ref(), ctx);
+                        resolve_digest_config(krate.docker_digest.as_ref(), ctx)?;
 
                     build_jobs.push(DockerBuildJob {
                         cmd_args,
@@ -1846,6 +1854,29 @@ impl Stage for DockerStage {
                         target: None,
                         crate_name: job.crate_name.clone(),
                         metadata: meta,
+                        size: None,
+                    });
+                }
+
+                // Register digest files as artifacts.
+                for digest_path in &build_result.digest_files {
+                    let artifact_name = if let Some(ref tmpl) = job.digest_name_template {
+                        // name_template controls the artifact name, not the file path
+                        tmpl.clone()
+                    } else {
+                        digest_path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string()
+                    };
+                    new_artifacts.push(Artifact {
+                        kind: ArtifactKind::DockerDigest,
+                        name: artifact_name,
+                        path: digest_path.clone(),
+                        target: None,
+                        crate_name: job.crate_name.clone(),
+                        metadata: HashMap::new(),
                         size: None,
                     });
                 }
