@@ -557,6 +557,32 @@ struct ArchiveEntry {
     info: Option<anodize_core::config::ArchiveFileInfo>,
 }
 
+// ---------------------------------------------------------------------------
+// deduplicate_entries — warn + skip when the same archive path appears twice
+// ---------------------------------------------------------------------------
+
+/// Deduplicate archive entries by `archive_name`. When a duplicate destination
+/// path is found, emit a warning to stderr and keep only the first occurrence.
+/// This matches GoReleaser's `unique()` in archivefiles.go.
+fn deduplicate_entries(entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
+    let mut seen: HashMap<PathBuf, PathBuf> = HashMap::new();
+    let mut result = Vec::with_capacity(entries.len());
+    for entry in entries {
+        if let Some(first_src) = seen.get(&entry.archive_name) {
+            eprintln!(
+                "Warning: [archive] file '{}' already exists in archive as '{}' — '{}' will be ignored",
+                entry.archive_name.display(),
+                first_src.display(),
+                entry.src.display(),
+            );
+        } else {
+            seen.insert(entry.archive_name.clone(), entry.src.clone());
+            result.push(entry);
+        }
+    }
+    result
+}
+
 /// Write a list of `ArchiveEntry` items into a tar builder, applying per-entry
 /// file info and an optional global mtime.
 fn write_archive_entries<W: std::io::Write>(
@@ -1086,16 +1112,20 @@ impl Stage for ArchiveStage {
                         })
                         .collect();
 
-                    let all_entries: Vec<&ArchiveEntry> =
-                        binary_entries.iter().chain(extra_entries.iter()).collect();
+                    // Combine binary + extra entries and deduplicate by archive_name.
+                    // Matches GoReleaser's unique() — first occurrence wins,
+                    // duplicates are warned and skipped.
+                    let combined: Vec<ArchiveEntry> = binary_entries
+                        .into_iter()
+                        .chain(extra_entries.into_iter())
+                        .collect();
+                    let deduped = deduplicate_entries(combined);
+                    let all_entries: Vec<&ArchiveEntry> = deduped.iter().collect();
 
                     // For gz/binary formats, collect flat path refs (these formats
                     // don't support per-entry metadata)
-                    let all_src_paths: Vec<PathBuf> = binary_paths
-                        .iter()
-                        .cloned()
-                        .chain(extra_files.iter().map(|ef| ef.src.clone()))
-                        .collect();
+                    let all_src_paths: Vec<PathBuf> =
+                        deduped.iter().map(|e| e.src.clone()).collect();
                     let path_refs: Vec<&Path> =
                         all_src_paths.iter().map(PathBuf::as_path).collect();
 
@@ -4710,5 +4740,36 @@ crates:
             0o755,
             "write_tar_entries should apply file_info mode"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // deduplicate_entries
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_deduplicate_entries_keeps_first_skips_later() {
+        let entries = vec![
+            ArchiveEntry {
+                src: PathBuf::from("/src/a/mybin"),
+                archive_name: PathBuf::from("bin/mybin"),
+                info: None,
+            },
+            ArchiveEntry {
+                src: PathBuf::from("/src/b/mybin"),
+                archive_name: PathBuf::from("bin/mybin"),
+                info: None,
+            },
+            ArchiveEntry {
+                src: PathBuf::from("LICENSE"),
+                archive_name: PathBuf::from("LICENSE"),
+                info: None,
+            },
+        ];
+
+        let deduped = deduplicate_entries(entries);
+        assert_eq!(deduped.len(), 2, "duplicate should be removed");
+        assert_eq!(deduped[0].src, PathBuf::from("/src/a/mybin"));
+        assert_eq!(deduped[0].archive_name, PathBuf::from("bin/mybin"));
+        assert_eq!(deduped[1].archive_name, PathBuf::from("LICENSE"));
     }
 }
