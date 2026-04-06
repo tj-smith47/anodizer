@@ -583,6 +583,18 @@ fn deduplicate_entries(entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
     result
 }
 
+// ---------------------------------------------------------------------------
+// sort_entries — deterministic archive order for reproducibility
+// ---------------------------------------------------------------------------
+
+/// Sort archive entries by `archive_name` to ensure deterministic ordering.
+/// This matches GoReleaser's sort in archivefiles.go:66-68 and is essential
+/// for reproducible archives.
+fn sort_entries(mut entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
+    entries.sort_by(|a, b| a.archive_name.cmp(&b.archive_name));
+    entries
+}
+
 /// Write a list of `ArchiveEntry` items into a tar builder, applying per-entry
 /// file info and an optional global mtime.
 fn write_archive_entries<W: std::io::Write>(
@@ -1120,12 +1132,13 @@ impl Stage for ArchiveStage {
                         .chain(extra_entries.into_iter())
                         .collect();
                     let deduped = deduplicate_entries(combined);
-                    let all_entries: Vec<&ArchiveEntry> = deduped.iter().collect();
+                    let sorted = sort_entries(deduped);
+                    let all_entries: Vec<&ArchiveEntry> = sorted.iter().collect();
 
                     // For gz/binary formats, collect flat path refs (these formats
                     // don't support per-entry metadata)
                     let all_src_paths: Vec<PathBuf> =
-                        deduped.iter().map(|e| e.src.clone()).collect();
+                        sorted.iter().map(|e| e.src.clone()).collect();
                     let path_refs: Vec<&Path> =
                         all_src_paths.iter().map(PathBuf::as_path).collect();
 
@@ -4771,5 +4784,37 @@ crates:
         assert_eq!(deduped[0].src, PathBuf::from("/src/a/mybin"));
         assert_eq!(deduped[0].archive_name, PathBuf::from("bin/mybin"));
         assert_eq!(deduped[1].archive_name, PathBuf::from("LICENSE"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // sort_entries
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_sort_entries_by_archive_name() {
+        let entries = vec![
+            ArchiveEntry {
+                src: PathBuf::from("z.txt"),
+                archive_name: PathBuf::from("c.txt"),
+                info: None,
+            },
+            ArchiveEntry {
+                src: PathBuf::from("a.txt"),
+                archive_name: PathBuf::from("a.txt"),
+                info: None,
+            },
+            ArchiveEntry {
+                src: PathBuf::from("m.txt"),
+                archive_name: PathBuf::from("b.txt"),
+                info: None,
+            },
+        ];
+
+        let sorted = sort_entries(entries);
+        let names: Vec<String> = sorted
+            .iter()
+            .map(|e| e.archive_name.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
     }
 }
