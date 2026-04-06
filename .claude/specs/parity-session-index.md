@@ -310,43 +310,43 @@ GoReleaser truncates release body to `maxReleaseBodyLength = 125000` characters 
 
 **Archive: glob file resolution must preserve directory structure**
 GoReleaser's `archivefiles.go` computes longest common prefix when `destination` is set, preserving relative directory structure. Anodize flattens all resolved files to root — `docs/README.md` becomes just `README.md`.
-- [ ] Implement longest-common-prefix logic for glob resolution when `dst` is set
-- [ ] Preserve relative directory structure under destination prefix
-- [ ] Add tests comparing archive contents with GoReleaser output
+- [x] Implement longest-common-prefix logic for glob resolution when `dst` is set
+- [x] Preserve relative directory structure under destination prefix
+- [x] Add tests comparing archive contents with GoReleaser output
 
 **Archive: duplicate destination path detection**
 GoReleaser's `unique()` function warns when same destination path would be overwritten. Anodize has no duplicate detection.
-- [ ] Add duplicate destination path detection in `resolve_file_specs()`
-- [ ] Emit warning when duplicate destinations found
+- [x] Add duplicate destination path detection in `resolve_file_specs()`
+- [x] Emit warning when duplicate destinations found
 
 **Archive: file sorting for reproducibility**
 GoReleaser sorts resolved file list by destination path. Anodize does not sort.
-- [ ] Sort resolved files by destination path before archiving
+- [x] Sort resolved files by destination path before archiving
 
 **Archive: template rendering for FileInfo fields**
 GoReleaser templates `owner`, `group`, `mtime` fields in FileInfo via `tmplInfo()`. Anodize uses raw config values.
-- [ ] Template-render `owner`, `group`, `mtime` in FileInfo before applying to archive entries
+- [x] Template-render `owner`, `group`, `mtime` in FileInfo before applying to archive entries
 
 **Archive: `binaries` filter field parsed but not wired**
 `ArchiveConfig.binaries` is parsed from config but never used in artifact filtering logic.
-- [ ] Wire `binaries` field to filter binary artifacts by name in archive stage
+- [x] Wire `binaries` field to filter binary artifacts by name in archive stage
 
 **Archive: Amd64 version suffix in default template**
 GoReleaser's default archive name template includes `{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}`. Anodize's default omits this.
-- [ ] Add Amd64 suffix to default archive name template
+- [x] Add Amd64 suffix to default archive name template
 
 **Archive: support archiving UniversalBinary/Header/CArchive/CShared artifact types**
 GoReleaser archives Binary, UniversalBinary, Header, CArchive, CShared. Anodize only archives Binary.
-- [ ] Add UniversalBinary to archive artifact type filter
-- [ ] Add Header, CArchive, CShared to archive artifact type filter (for C library builds)
+- [x] Add UniversalBinary to archive artifact type filter
+- [x] Add Header, CArchive, CShared to archive artifact type filter (for C library builds)
 
 **Source archive: strip_parent not implemented**
 Config field `SourceFileEntry.strip_parent` exists but stage logs "strip_parent is not yet supported".
-- [ ] Implement `strip_parent` in source archive file resolution
+- [x] Implement `strip_parent` in source archive file resolution
 
 **Source archive: file metadata (info) not implemented**
 Config fields `SourceFileInfo` (owner, group, mode, mtime) exist but stage logs "file info not yet supported".
-- [ ] Implement file metadata overrides (owner, group, mode, mtime) for source archive entries
+- [x] Implement file metadata overrides (owner, group, mode, mtime) for source archive entries
 
 ### Session J: Sign & Docker Behavioral Gaps (from 2026-04-06 audit)
 
