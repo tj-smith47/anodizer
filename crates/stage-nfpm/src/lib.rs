@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::{
-    NfpmApkConfig, NfpmArchlinuxConfig, NfpmConfig, NfpmDebConfig, NfpmRpmConfig,
+    NfpmApkConfig, NfpmArchlinuxConfig, NfpmConfig, NfpmDebConfig, NfpmIpkConfig, NfpmRpmConfig,
     NfpmSignatureConfig,
 };
 use anodize_core::context::Context;
@@ -81,6 +81,8 @@ struct NfpmYamlConfig {
     apk: Option<NfpmYamlApk>,
     #[serde(skip_serializing_if = "Option::is_none")]
     archlinux: Option<NfpmYamlArchlinux>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ipk: Option<NfpmYamlIpk>,
     #[serde(skip_serializing_if = "Option::is_none")]
     changelog: Option<String>,
 }
@@ -249,6 +251,34 @@ struct NfpmYamlArchlinux {
     packager: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scripts: Option<NfpmYamlArchlinuxScripts>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlIpk {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    abi_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    alternatives: Option<Vec<NfpmYamlIpkAlternative>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_installed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    essential: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    predepends: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fields: Option<HashMap<String, String>>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlIpkAlternative {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +464,11 @@ pub fn generate_nfpm_yaml(
         .as_ref()
         .filter(|a| !a.is_empty())
         .map(build_yaml_archlinux);
+    let ipk = config
+        .ipk
+        .as_ref()
+        .filter(|i| !i.is_empty())
+        .map(build_yaml_ipk);
 
     let yaml_config = NfpmYamlConfig {
         name: config.package_name.clone(),
@@ -465,6 +500,7 @@ pub fn generate_nfpm_yaml(
         deb,
         apk,
         archlinux,
+        ipk,
         changelog: config.changelog.clone(),
     };
 
@@ -600,6 +636,26 @@ fn build_yaml_archlinux(arch: &NfpmArchlinuxConfig) -> NfpmYamlArchlinux {
             preupgrade: s.preupgrade.clone(),
             postupgrade: s.postupgrade.clone(),
         }),
+    }
+}
+
+fn build_yaml_ipk(ipk: &NfpmIpkConfig) -> NfpmYamlIpk {
+    NfpmYamlIpk {
+        abi_version: ipk.abi_version.clone(),
+        alternatives: ipk.alternatives.as_ref().map(|alts| {
+            alts.iter()
+                .map(|a| NfpmYamlIpkAlternative {
+                    priority: a.priority,
+                    target: a.target.clone(),
+                    link_name: a.link_name.clone(),
+                })
+                .collect()
+        }),
+        auto_installed: ipk.auto_installed,
+        essential: ipk.essential,
+        predepends: ipk.predepends.clone(),
+        tags: ipk.tags.clone(),
+        fields: ipk.fields.clone(),
     }
 }
 
@@ -841,16 +897,80 @@ impl Stage for NfpmStage {
                         if let Some(ref s) = rendered_cfg.changelog {
                             rendered_cfg.changelog = Some(ctx.render_template(s)?);
                         }
+                        // Template-render bindir and mtime (GoReleaser parity)
+                        if let Some(ref s) = rendered_cfg.bindir {
+                            rendered_cfg.bindir = Some(ctx.render_template(s)?);
+                        }
+                        if let Some(ref s) = rendered_cfg.mtime {
+                            rendered_cfg.mtime = Some(ctx.render_template(s)?);
+                        }
+                        // Template-render script paths
+                        if let Some(ref mut scripts) = rendered_cfg.scripts {
+                            if let Some(ref s) = scripts.preinstall {
+                                scripts.preinstall = Some(ctx.render_template(s)?);
+                            }
+                            if let Some(ref s) = scripts.postinstall {
+                                scripts.postinstall = Some(ctx.render_template(s)?);
+                            }
+                            if let Some(ref s) = scripts.preremove {
+                                scripts.preremove = Some(ctx.render_template(s)?);
+                            }
+                            if let Some(ref s) = scripts.postremove {
+                                scripts.postremove = Some(ctx.render_template(s)?);
+                            }
+                        }
+                        // Template-render signature key_file and key_name
+                        if let Some(ref mut deb) = rendered_cfg.deb {
+                            if let Some(ref mut sig) = deb.signature {
+                                if let Some(ref s) = sig.key_file {
+                                    sig.key_file = Some(ctx.render_template(s)?);
+                                }
+                            }
+                        }
+                        if let Some(ref mut rpm) = rendered_cfg.rpm {
+                            if let Some(ref mut sig) = rpm.signature {
+                                if let Some(ref s) = sig.key_file {
+                                    sig.key_file = Some(ctx.render_template(s)?);
+                                }
+                            }
+                        }
+                        if let Some(ref mut apk) = rendered_cfg.apk {
+                            if let Some(ref mut sig) = apk.signature {
+                                if let Some(ref s) = sig.key_file {
+                                    sig.key_file = Some(ctx.render_template(s)?);
+                                }
+                                if let Some(ref s) = sig.key_name {
+                                    sig.key_name = Some(ctx.render_template(s)?);
+                                }
+                            }
+                        }
+                        // Template-render libdirs
+                        if let Some(ref mut libdirs) = rendered_cfg.libdirs {
+                            if let Some(ref s) = libdirs.header {
+                                libdirs.header = Some(ctx.render_template(s)?);
+                            }
+                            if let Some(ref s) = libdirs.cshared {
+                                libdirs.cshared = Some(ctx.render_template(s)?);
+                            }
+                            if let Some(ref s) = libdirs.carchive {
+                                libdirs.carchive = Some(ctx.render_template(s)?);
+                            }
+                        }
 
-                        // Template-render file_info.owner and group in contents entries
+                        // Template-render contents: src, dst, file_info.owner/group/mtime
                         if let Some(ref mut entries) = rendered_cfg.contents {
                             for entry in entries.iter_mut() {
+                                entry.src = ctx.render_template(&entry.src)?;
+                                entry.dst = ctx.render_template(&entry.dst)?;
                                 if let Some(ref mut fi) = entry.file_info {
                                     if let Some(ref s) = fi.owner {
                                         fi.owner = Some(ctx.render_template(s)?);
                                     }
                                     if let Some(ref s) = fi.group {
                                         fi.group = Some(ctx.render_template(s)?);
+                                    }
+                                    if let Some(ref s) = fi.mtime {
+                                        fi.mtime = Some(ctx.render_template(s)?);
                                     }
                                 }
                             }
@@ -4492,6 +4612,274 @@ crates:
         assert!(
             yaml.contains("src: ./lib.h"),
             "libdirs header src should be ./lib.h:\n{yaml}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // IPK format tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_nfpm_yaml_with_ipk_config() {
+        use anodize_core::config::{NfpmIpkAlternative, NfpmIpkConfig};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myrouter".to_string()),
+            formats: vec!["ipk".to_string()],
+            ipk: Some(NfpmIpkConfig {
+                abi_version: Some("1.0".to_string()),
+                auto_installed: Some(true),
+                essential: Some(false),
+                predepends: Some(vec!["libc".to_string()]),
+                tags: Some(vec!["network".to_string(), "router".to_string()]),
+                fields: Some(HashMap::from([("Custom-Field".to_string(), "value".to_string())])),
+                alternatives: Some(vec![NfpmIpkAlternative {
+                    priority: Some(100),
+                    target: Some("/usr/bin/myrouter".to_string()),
+                    link_name: Some("/usr/bin/router".to_string()),
+                }]),
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myrouter", Some("ipk"));
+        assert!(yaml.contains("ipk:"), "should have ipk section:\n{yaml}");
+        assert!(yaml.contains("abi_version: '1.0'"), "should have abi_version:\n{yaml}");
+        assert!(yaml.contains("auto_installed: true"), "should have auto_installed:\n{yaml}");
+        assert!(yaml.contains("essential: false"), "should have essential:\n{yaml}");
+        assert!(yaml.contains("- libc"), "should have predepends:\n{yaml}");
+        assert!(yaml.contains("- network"), "should have tags:\n{yaml}");
+        assert!(yaml.contains("Custom-Field: value"), "should have fields:\n{yaml}");
+        assert!(yaml.contains("priority: 100"), "should have alternative priority:\n{yaml}");
+        assert!(yaml.contains("target: /usr/bin/myrouter"), "should have alternative target:\n{yaml}");
+        assert!(yaml.contains("link_name: /usr/bin/router"), "should have alternative link_name:\n{yaml}");
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_ipk_empty_config_omitted() {
+        use anodize_core::config::NfpmIpkConfig;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["ipk".to_string()],
+            ipk: Some(NfpmIpkConfig::default()),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", Some("ipk"));
+        assert!(!yaml.contains("ipk:"), "empty ipk config should be omitted:\n{yaml}");
+    }
+
+    #[test]
+    fn test_ipk_format_dry_run_produces_artifact() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("openwrt-pkg".to_string()),
+            formats: vec!["ipk".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "openwrt-pkg".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "openwrt-pkg".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions { dry_run: true, ..Default::default() });
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].metadata.get("format"), Some(&"ipk".to_string()));
+        let path_str = pkgs[0].path.to_string_lossy();
+        assert!(path_str.ends_with(".ipk"), "artifact path should end with .ipk: {}", path_str);
+    }
+
+    #[test]
+    fn test_config_parse_ipk() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: myrouter
+        formats: [ipk]
+        ipk:
+          abi_version: "1.0"
+          auto_installed: true
+          essential: false
+          predepends: [libc]
+          tags: [network]
+          fields:
+            Custom: value
+          alternatives:
+            - priority: 50
+              target: /usr/bin/target
+              link_name: /usr/bin/link
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        let ipk = nfpm[0].ipk.as_ref().unwrap();
+        assert_eq!(ipk.abi_version.as_deref(), Some("1.0"));
+        assert_eq!(ipk.auto_installed, Some(true));
+        assert_eq!(ipk.essential, Some(false));
+        assert_eq!(ipk.predepends.as_ref().unwrap(), &["libc"]);
+        assert_eq!(ipk.tags.as_ref().unwrap(), &["network"]);
+        assert_eq!(ipk.fields.as_ref().unwrap().get("Custom"), Some(&"value".to_string()));
+        let alt = &ipk.alternatives.as_ref().unwrap()[0];
+        assert_eq!(alt.priority, Some(50));
+        assert_eq!(alt.target.as_deref(), Some("/usr/bin/target"));
+        assert_eq!(alt.link_name.as_deref(), Some("/usr/bin/link"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Template rendering tests for Session K gaps
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_template_rendering_in_nfpm_stage() {
+        use anodize_core::config::{
+            Config, CrateConfig, NfpmConfig, NfpmContent, NfpmFileInfo, NfpmLibdirs,
+            NfpmScripts, NfpmSignatureConfig, NfpmDebConfig,
+        };
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            bindir: Some("{{ .Env.PREFIX }}/bin".to_string()),
+            mtime: Some("{{ .CommitDate }}".to_string()),
+            scripts: Some(NfpmScripts {
+                preinstall: Some("{{ .Env.SCRIPTS }}/pre.sh".to_string()),
+                postinstall: Some("{{ .Env.SCRIPTS }}/post.sh".to_string()),
+                preremove: None,
+                postremove: None,
+            }),
+            deb: Some(NfpmDebConfig {
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("{{ .Env.KEY_DIR }}/deb.key".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            libdirs: Some(NfpmLibdirs {
+                header: Some("{{ .Env.PREFIX }}/include".to_string()),
+                cshared: Some("{{ .Env.PREFIX }}/lib".to_string()),
+                carchive: None,
+            }),
+            contents: Some(vec![NfpmContent {
+                src: "{{ .Env.CONF_DIR }}/app.conf".to_string(),
+                dst: "/etc/{{ .ProjectName }}/app.conf".to_string(),
+                content_type: Some("config".to_string()),
+                file_info: Some(NfpmFileInfo {
+                    mtime: Some("{{ .CommitDate }}".to_string()),
+                    ..Default::default()
+                }),
+                packager: None,
+                expand: None,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions { dry_run: true, ..Default::default() });
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("CommitDate", "2024-01-15");
+        ctx.template_vars_mut().set_env("PREFIX", "/usr/local");
+        ctx.template_vars_mut().set_env("SCRIPTS", "/opt/scripts");
+        ctx.template_vars_mut().set_env("KEY_DIR", "/etc/keys");
+        ctx.template_vars_mut().set_env("CONF_DIR", "/src/config");
+
+        // Stage should succeed with template vars set
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1, "should produce one deb artifact");
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_ipk_fields() {
+        use anodize_core::config::{NfpmIpkAlternative, NfpmIpkConfig};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["ipk".to_string()],
+            ipk: Some(NfpmIpkConfig {
+                abi_version: Some("1.0".to_string()),
+                alternatives: Some(vec![NfpmIpkAlternative {
+                    priority: Some(100),
+                    target: Some("/usr/bin/myapp".to_string()),
+                    link_name: Some("/usr/bin/app".to_string()),
+                }]),
+                auto_installed: Some(true),
+                essential: Some(false),
+                predepends: Some(vec!["libc".to_string()]),
+                tags: Some(vec!["utils".to_string(), "cli".to_string()]),
+                fields: Some(
+                    [("Source".to_string(), "myapp-src".to_string())]
+                        .into_iter()
+                        .collect(),
+                ),
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", Some("ipk"));
+        assert!(yaml.contains("ipk:"), "ipk section missing:\n{yaml}");
+        assert!(
+            yaml.contains("abi_version: '1.0'") || yaml.contains("abi_version: \"1.0\""),
+            "abi_version missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("alternatives:"),
+            "alternatives missing:\n{yaml}"
+        );
+        assert!(yaml.contains("priority: 100"), "priority missing:\n{yaml}");
+        assert!(
+            yaml.contains("/usr/bin/myapp"),
+            "target missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("/usr/bin/app"),
+            "link_name missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("auto_installed: true"),
+            "auto_installed missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("essential: false"),
+            "essential missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("predepends:"),
+            "predepends missing:\n{yaml}"
+        );
+        assert!(yaml.contains("- libc"), "libc predepend missing:\n{yaml}");
+        assert!(yaml.contains("tags:"), "tags missing:\n{yaml}");
+        assert!(yaml.contains("- utils"), "utils tag missing:\n{yaml}");
+        assert!(yaml.contains("- cli"), "cli tag missing:\n{yaml}");
+        assert!(yaml.contains("fields:"), "fields missing:\n{yaml}");
+        assert!(
+            yaml.contains("Source: myapp-src"),
+            "Source field missing:\n{yaml}"
         );
     }
 }

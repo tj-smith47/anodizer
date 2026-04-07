@@ -481,8 +481,10 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     // Determine output directory (optional subdirectory in the repo).
+    // GoReleaser templates the directory field (aur.go:103-108).
     let output_dir = if let Some(ref dir) = aur_cfg.directory {
-        let d = repo_path.join(dir);
+        let rendered_dir = ctx.render_template(dir).unwrap_or_else(|_| dir.clone());
+        let d = repo_path.join(&rendered_dir);
         std::fs::create_dir_all(&d)
             .with_context(|| format!("aur: create directory {}", d.display()))?;
         d

@@ -450,9 +450,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         manifest_path.display()
     ));
 
-    // Render commit message from template or use default.
+    // Render commit message from template or use Scoop-specific default.
+    // GoReleaser default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
+    let scoop_default = "Scoop update for {{ name }} version {{ version }}";
     let commit_msg = crate::homebrew::render_commit_msg(
-        scoop_cfg.commit_msg_template.as_deref(),
+        Some(scoop_cfg.commit_msg_template.as_deref().unwrap_or(scoop_default)),
         manifest_name,
         &version,
         "manifest",
@@ -1333,8 +1335,10 @@ mod tests {
 
     #[test]
     fn test_scoop_commit_msg_default() {
-        let msg = crate::homebrew::render_commit_msg(None, "mytool", "1.2.3", "manifest");
-        assert_eq!(msg, "chore: update mytool manifest to 1.2.3");
+        // GoReleaser default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
+        let scoop_default = "Scoop update for {{ name }} version {{ version }}";
+        let msg = crate::homebrew::render_commit_msg(Some(scoop_default), "mytool", "1.2.3", "manifest");
+        assert_eq!(msg, "Scoop update for mytool version 1.2.3");
     }
 
     #[test]

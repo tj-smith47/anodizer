@@ -2271,9 +2271,8 @@ pub struct ChocolateyConfig {
     pub api_key: Option<String>,
     /// Push source URL (default: "https://push.chocolatey.org/").
     pub source_repo: Option<String>,
-    /// Skip pushing to the Chocolatey community repository. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip_publish: Option<StringOrBool>,
+    /// Skip pushing to the Chocolatey community repository.
+    pub skip_publish: Option<bool>,
     /// Disable this chocolatey config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
@@ -2803,6 +2802,8 @@ pub struct NfpmConfig {
     pub apk: Option<NfpmApkConfig>,
     /// Archlinux-specific configuration.
     pub archlinux: Option<NfpmArchlinuxConfig>,
+    /// IPK-specific configuration (OpenWrt packages).
+    pub ipk: Option<NfpmIpkConfig>,
     /// CGo library installation directories (header, carchive, cshared).
     pub libdirs: Option<NfpmLibdirs>,
     /// Path to a YAML-format changelog file for deb/rpm packages.
@@ -3031,6 +3032,52 @@ pub struct NfpmArchlinuxScripts {
     pub preupgrade: Option<String>,
     /// Script to run after upgrading an existing package.
     pub postupgrade: Option<String>,
+}
+
+/// IPK (OpenWrt) package-specific configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmIpkConfig {
+    /// ABI version string for the package.
+    pub abi_version: Option<String>,
+    /// Alternative file links managed by the update-alternatives system.
+    pub alternatives: Option<Vec<NfpmIpkAlternative>>,
+    /// Whether the package was automatically installed as a dependency.
+    pub auto_installed: Option<bool>,
+    /// Whether the package is essential for the system.
+    pub essential: Option<bool>,
+    /// Strong pre-dependencies that must be fully installed before this package.
+    pub predepends: Option<Vec<String>>,
+    /// Tags for categorizing the package.
+    pub tags: Option<Vec<String>>,
+    /// Additional control fields as key-value pairs.
+    pub fields: Option<HashMap<String, String>>,
+}
+
+impl NfpmIpkConfig {
+    /// Returns `true` when every field is `None` — the YAML section would be
+    /// empty and should be omitted.
+    pub fn is_empty(&self) -> bool {
+        self.abi_version.is_none()
+            && self.alternatives.is_none()
+            && self.auto_installed.is_none()
+            && self.essential.is_none()
+            && self.predepends.is_none()
+            && self.tags.is_none()
+            && self.fields.is_none()
+    }
+}
+
+/// An alternative file link for IPK's update-alternatives system.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmIpkAlternative {
+    /// Priority for alternative selection (higher wins).
+    pub priority: Option<i32>,
+    /// Target file path that the alternative points to.
+    pub target: Option<String>,
+    /// Symlink name in the alternatives directory.
+    pub link_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

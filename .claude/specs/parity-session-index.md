@@ -478,55 +478,55 @@ GoReleaser has a top-level docker_digest config with disable and name_template f
 GoReleaser V2 uses --iidfile=id.txt to capture image digest from buildx instead of docker inspect post-push. This works even without push.
 - [x] Add --iidfile support to build_docker_v2_command and read digest from file
 
-### Session K: nFPM & Publisher Behavioral Gaps (from 2026-04-06 audit)
+### Session K: nFPM & Publisher Behavioral Gaps (from 2026-04-06 audit) — DONE
 
 **nFPM: IPK format implementation**
 Config validation lists "ipk" but no underlying config struct or YAML generation exists. GoReleaser has full IPK support with 9 config fields: abi_version, alternatives, auto_installed, essential, predepends, tags, fields.
-- [ ] Add `NfpmIPK` config struct with all 9 fields
-- [ ] Wire IPK config into nFPM YAML generation
-- [ ] Add IPK-specific test cases
+- [x] Add `NfpmIPK` config struct with all 9 fields
+- [x] Wire IPK config into nFPM YAML generation
+- [x] Add IPK-specific test cases
 
 **nFPM: template rendering for 8 missing field groups**
 GoReleaser templates these fields; anodize passes raw values:
-- [ ] Template-render `bindir` field
-- [ ] Template-render `mtime` field
-- [ ] Template-render script paths (preinstall, postinstall, preremove, postremove)
-- [ ] Template-render signature key files (deb, rpm, apk key_file + apk key_name)
-- [ ] Template-render libdirs (header, cshared, carchive)
-- [ ] Template-render content src/dst paths
-- [ ] Template-render content file_info.mtime
+- [x] Template-render `bindir` field
+- [x] Template-render `mtime` field
+- [x] Template-render script paths (preinstall, postinstall, preremove, postremove)
+- [x] Template-render signature key files (deb, rpm, apk key_file + apk key_name)
+- [x] Template-render libdirs (header, cshared, carchive)
+- [x] Template-render content src/dst paths
+- [x] Template-render content file_info.mtime
 
 **Chocolatey: skip_publish type and phase mismatch**
 GoReleaser's `SkipPublish` is a boolean checked in `Publish()`. Anodize uses `StringOrBool` checked inconsistently.
-- [ ] Change chocolatey `skip_publish` from StringOrBool to boolean (match GoReleaser)
-- [ ] Move skip_publish check to correct execution phase
+- [x] Change chocolatey `skip_publish` from StringOrBool to boolean (match GoReleaser)
+- [x] Move skip_publish check to correct execution phase
 
 **Nix: license validation missing**
 GoReleaser validates license against a Nix-compatible allowlist. Anodize has no validation.
-- [ ] Add Nix license allowlist validation in nix publisher defaults
+- [x] Add Nix license allowlist validation in nix publisher defaults (already implemented)
 
 **Publisher repository field templating**
 GoReleaser applies `TemplateRef()` to repository fields for Krew and Nix. Anodize does not template repository fields.
-- [ ] Template repository owner/name fields for Krew publisher
-- [ ] Template repository owner/name fields for Nix publisher
+- [x] Template repository owner/name fields for Krew publisher
+- [x] Template repository owner/name fields for Nix publisher
 
 **Scoop: missing default commit message template**
 GoReleaser sets a default `CommitMessageTemplate` in `Default()`. Anodize does not.
-- [ ] Set default commit_msg_template for Scoop publisher
+- [x] Set default commit_msg_template for Scoop publisher
 
 **Cask: directory field not templated + missing binary inference**
 GoReleaser templates directory and infers binaries from name when empty. Anodize does neither.
-- [ ] Template-render directory field for Cask publisher
-- [ ] Infer binary list from cask name when `binaries` is empty
+- [x] Template-render directory field for Cask publisher
+- [x] Infer binary list from cask name when `binaries` is empty (already implemented)
 
 **Winget: PackageIdentifier missing from commit template context + PackageName fallback**
 GoReleaser adds PackageIdentifier to commit message template context and falls back PackageName to Name.
-- [ ] Add PackageIdentifier to winget commit message template context
-- [ ] Implement PackageName fallback to Name when empty
+- [x] Add PackageIdentifier to winget commit message template context
+- [x] Implement PackageName fallback to Name when empty
 
 **AUR: directory field not templated**
 GoReleaser templates the `directory` field. Anodize does not.
-- [ ] Template-render directory field for AUR publisher
+- [x] Template-render directory field for AUR publisher
 
 ### Session L: Config/Defaults & Announce Gaps (from 2026-04-06 audit)
 

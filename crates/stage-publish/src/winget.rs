@@ -32,6 +32,34 @@ pub fn validate_package_identifier(id: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Winget commit message rendering
+// ---------------------------------------------------------------------------
+
+/// Render a commit message for WinGet with PackageIdentifier in the context.
+/// GoReleaser exposes `PackageIdentifier` as an extra template field
+/// (winget.go:291-293).
+fn render_winget_commit_msg(
+    template: Option<&str>,
+    package_id: &str,
+    version: &str,
+) -> String {
+    let default_tmpl = "chore: update {{ name }} manifest to {{ version }}";
+    let tmpl = template.unwrap_or(default_tmpl);
+
+    let mut tera = tera::Tera::default();
+    tera.autoescape_on(vec![]);
+    if tera.add_raw_template("msg", tmpl).is_err() {
+        return format!("chore: update {} manifest to {}", package_id, version);
+    }
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", package_id);
+    ctx.insert("version", version);
+    ctx.insert("PackageIdentifier", package_id);
+    tera.render("msg", &ctx)
+        .unwrap_or_else(|_| format!("chore: update {} manifest to {}", package_id, version))
+}
+
+// ---------------------------------------------------------------------------
 // WingetManifestParams
 // ---------------------------------------------------------------------------
 
@@ -760,7 +788,9 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let release_notes_url_rendered = render(winget_cfg.release_notes_url.as_deref());
     let installation_notes_rendered = render(winget_cfg.installation_notes.as_deref());
     let path_rendered = render(winget_cfg.path.as_deref());
-    let package_name_rendered = render(winget_cfg.package_name.as_deref());
+    // GoReleaser defaults PackageName to Name (winget.go:74: cmp.Or).
+    let package_name_rendered = render(winget_cfg.package_name.as_deref())
+        .or_else(|| Some(name.to_string()));
     // ReleaseNotes: template-rendered (GoReleaser parity: winget.go:173-175).
     // The `ReleaseNotes` template variable (populated from changelog) is already
     // available in the template context, matching GoReleaser's `Changelog` field.
@@ -839,12 +869,12 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         manifest_dir.display()
     ));
 
-    // Commit message
-    let commit_msg = crate::homebrew::render_commit_msg(
+    // Commit message — GoReleaser adds PackageIdentifier to the template context
+    // (winget.go:291-293) in addition to the standard name/version.
+    let commit_msg = render_winget_commit_msg(
         winget_cfg.commit_msg_template.as_deref(),
         package_id,
         &version,
-        "manifest",
     );
 
     // Use repository.branch if set, otherwise auto-generate from package_id + version.
@@ -1481,5 +1511,76 @@ mod tests {
         assert!(validate_package_identifier("Org..Tool").is_err());
         assert!(validate_package_identifier(".Org.Tool").is_err());
         assert!(validate_package_identifier("Org.Tool.").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Winget commit message with PackageIdentifier
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_winget_commit_msg_default() {
+        let msg = render_winget_commit_msg(None, "Org.MyTool", "1.0.0");
+        assert_eq!(msg, "chore: update Org.MyTool manifest to 1.0.0");
+    }
+
+    #[test]
+    fn test_winget_commit_msg_with_package_identifier_template() {
+        // GoReleaser exposes PackageIdentifier in the template context
+        let msg = render_winget_commit_msg(
+            Some("winget: {{ PackageIdentifier }} v{{ version }}"),
+            "Org.MyTool",
+            "2.0.0",
+        );
+        assert_eq!(msg, "winget: Org.MyTool v2.0.0");
+    }
+
+    #[test]
+    fn test_winget_commit_msg_custom() {
+        let msg = render_winget_commit_msg(
+            Some("release: {{ name }} {{ version }}"),
+            "Org.MyTool",
+            "3.0.0",
+        );
+        assert_eq!(msg, "release: Org.MyTool 3.0.0");
+    }
+
+    #[test]
+    fn test_winget_package_name_fallback_to_name() {
+        // When package_name is None, it should fall back to name
+        let params = WingetManifestParams {
+            package_id: "Org.MyTool",
+            name: "mytool",
+            package_name: None,
+            version: "1.0.0",
+            description: "desc",
+            short_description: "short",
+            license: "MIT",
+            ..default_params()
+        };
+        let (_, _, locale) = generate_manifests(&params);
+        // PackageName should be "mytool" (fallback from name)
+        assert!(
+            locale.contains("PackageName: mytool"),
+            "PackageName should fall back to name:\n{locale}"
+        );
+    }
+
+    #[test]
+    fn test_winget_package_name_override() {
+        let params = WingetManifestParams {
+            package_id: "Org.MyTool",
+            name: "mytool",
+            package_name: Some("My Tool Pro"),
+            version: "1.0.0",
+            description: "desc",
+            short_description: "short",
+            license: "MIT",
+            ..default_params()
+        };
+        let (_, _, locale) = generate_manifests(&params);
+        assert!(
+            locale.contains("PackageName: My Tool Pro"),
+            "PackageName should use the override:\n{locale}"
+        );
     }
 }

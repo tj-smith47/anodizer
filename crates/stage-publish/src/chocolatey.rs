@@ -236,6 +236,12 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         anyhow::anyhow!("chocolatey: no project_repo config for '{}'", crate_name)
     })?;
 
+    // GoReleaser checks SkipPublish early in Publish(), before any work.
+    if choco_cfg.skip_publish == Some(true) {
+        log.status(&format!("chocolatey: skipping publish for '{}' (skip_publish)", crate_name));
+        return Ok(());
+    }
+
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would push Chocolatey package for '{}' to {}/{}",
@@ -406,11 +412,6 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .map(|k| ctx.render_template(k).unwrap_or_else(|_| k.to_string()))
         .or_else(|| std::env::var("CHOCOLATEY_API_KEY").ok())
         .unwrap_or_default();
-
-    if crate::homebrew::should_skip_upload(choco_cfg.skip_publish.as_ref(), ctx) {
-        log.status(&format!("chocolatey: skipping push for '{}' (skip_publish)", crate_name));
-        return Ok(());
-    }
 
     let source = choco_cfg.source_repo.as_deref().unwrap_or("https://push.chocolatey.org/");
     let nupkg = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
@@ -688,5 +689,45 @@ mod tests {
         assert!(nuspec.contains("<dependencies>"));
         assert!(nuspec.contains("<dependency id=\"dotnetfx\" version=\"[4.5.1,)\" />"));
         assert!(nuspec.contains("<dependency id=\"vcredist140\" />"));
+    }
+
+    #[test]
+    fn test_chocolatey_skip_publish_bool_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        skip_publish: true
+        project_repo:
+          owner: org
+          name: test
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let choco = config.crates[0].publish.as_ref().unwrap().chocolatey.as_ref().unwrap();
+        assert_eq!(choco.skip_publish, Some(true));
+    }
+
+    #[test]
+    fn test_chocolatey_skip_publish_false_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        skip_publish: false
+        project_repo:
+          owner: org
+          name: test
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let choco = config.crates[0].publish.as_ref().unwrap().chocolatey.as_ref().unwrap();
+        assert_eq!(choco.skip_publish, Some(false));
     }
 }

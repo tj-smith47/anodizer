@@ -537,9 +537,12 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     // Resolve repository config.
-    let (repo_owner, repo_name) =
+    // GoReleaser applies TemplateRef() to repository fields (nix.go:159-162).
+    let (repo_owner_raw, repo_name_raw) =
         crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref(), None, None)
             .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
+    let repo_owner = ctx.render_template(&repo_owner_raw).unwrap_or(repo_owner_raw);
+    let repo_name = ctx.render_template(&repo_name_raw).unwrap_or(repo_name_raw);
 
     let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
     let name_rendered = ctx

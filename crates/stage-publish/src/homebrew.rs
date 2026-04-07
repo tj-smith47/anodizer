@@ -1445,7 +1445,9 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
         })?;
 
         // Directory defaults to "Casks" (GoReleaser default).
-        let directory = cask_cfg.directory.as_deref().unwrap_or("Casks");
+        // GoReleaser templates the directory field.
+        let directory_raw = cask_cfg.directory.as_deref().unwrap_or("Casks");
+        let directory = ctx.render_template(directory_raw).unwrap_or_else(|_| directory_raw.to_string());
 
         if ctx.is_dry_run() {
             log.status(&format!(
@@ -1596,7 +1598,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             log,
         )?;
 
-        let cask_dir = repo_path.join(directory);
+        let cask_dir = repo_path.join(&directory);
         std::fs::create_dir_all(&cask_dir)
             .with_context(|| format!("homebrew_casks: create {} dir", directory))?;
 

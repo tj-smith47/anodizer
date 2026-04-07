@@ -208,7 +208,8 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     }
 
     // Resolve repository config: prefer `repository` over legacy `manifests_repo`.
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+    // GoReleaser applies TemplateRef() to repository fields (krew.go:292-296).
+    let (repo_owner_raw, repo_name_raw) = crate::util::resolve_repo_owner_name(
         krew_cfg.repository.as_ref(),
         krew_cfg.manifests_repo.as_ref().map(|r| r.owner.as_str()),
         krew_cfg.manifests_repo.as_ref().map(|r| r.name.as_str()),
@@ -219,6 +220,8 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             crate_name
         )
     })?;
+    let repo_owner = ctx.render_template(&repo_owner_raw).unwrap_or(repo_owner_raw);
+    let repo_name = ctx.render_template(&repo_name_raw).unwrap_or(repo_name_raw);
 
     if ctx.is_dry_run() {
         log.status(&format!(
