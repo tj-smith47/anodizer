@@ -555,55 +555,55 @@ GoReleaser templates the `directory` field. Anodize does not.
 **Announce: Mattermost top-level text with attachments**
 - [x] Include `"text": ""` at top level when attachments present (matching GoReleaser's Go struct serialization)
 
-### Session M: Missing Stages & Cross-Cutting (from 2026-04-06 audit)
+### Session M: Missing Stages & Cross-Cutting (from 2026-04-06 audit) — DONE
 
 **Makeself: self-extracting archives (new stage)**
 GoReleaser has full makeself support (338 lines): `.run` self-extracting shell archives with embedded binaries, compression options, LSM metadata, per-platform packaging. Anodize has `ArtifactKind::Makeself` defined but zero implementation.
-- [ ] Create `stage-makeself` crate
-- [ ] Implement MakeselfConfig: id, ids, name_template, scripts, extra_files, compression (gzip/bzip2/xz/lzo/none), lsm_file, disable
-- [ ] Subprocess: `makeself --{compression} [--lsm] <archive_dir> <output.run> <label> [startup_script]`
-- [ ] Wire into pipeline ordering (after archive stage)
+- [x] Create `stage-makeself` crate
+- [x] Implement MakeselfConfig: id, ids, name_template, scripts, extra_files, compression (gzip/bzip2/xz/lzo/none), lsm_file, disable
+- [x] Subprocess: `makeself --{compression} [--lsm] <archive_dir> <output.run> <label> [startup_script]`
+- [x] Wire into pipeline ordering (after archive stage)
 
 **SRPM: source RPM packages (new stage)**
 GoReleaser has source RPM support (248 lines): `.src.rpm` from spec templates, signatures, per-format config.
-- [ ] Create `stage-srpm` crate
-- [ ] Implement SrpmConfig: id, ids, name_template, spec_template, extra_files, disable
-- [ ] Generate spec file from template with version/release/license substitution
-- [ ] Subprocess: `rpmbuild -bs <spec>` (or nfpm integration)
+- [x] Create `stage-srpm` crate
+- [x] Implement SrpmConfig: enabled, package_name, file_name_template, spec_file, signature, disable
+- [x] Generate spec file from template with version/release/license substitution, %changelog
+- [x] Subprocess: `rpmbuild -bs <spec>` with rpmbuild directory structure
 
 **Milestone closing**
 GoReleaser closes GitHub/GitLab/Gitea milestones after release (93 lines). Anodize has no milestone support.
-- [ ] Add MilestoneConfig: close (bool), fail_on_error (bool), name_template (default "{{ .Tag }}")
-- [ ] Wire into existing VCS clients (GitHub via octocrab, GitLab/Gitea via reqwest)
-- [ ] Execute after release stage
+- [x] Add MilestoneConfig: close (bool), fail_on_error (bool), name_template (default "{{ Tag }}")
+- [x] GitHub REST API milestone close with pagination and provider detection
+- [x] Execute after release stage, before after-hooks
 
 **Generic HTTP upload**
 GoReleaser has generic HTTP upload to arbitrary endpoints (42 lines in pipe, delegates to shared HTTP module). Distinct from specialized Artifactory/Fury/CloudSmith publishers.
-- [ ] Add UploadConfig: name, target (URL template), method (PUT/POST), username, password, custom_headers, ids, exts, checksum_header, trusted_certificates, disable
-- [ ] Implement generic HTTP upload reusing Artifactory's reqwest infrastructure
+- [x] Add UploadConfig: name, target (URL template), method (PUT/POST), username, password, custom_headers, ids, exts, checksum_header, trusted_certificates, disable
+- [x] Implement generic HTTP upload reusing Artifactory's reqwest infrastructure (mTLS, mode filtering)
 
 **AUR source packages**
 GoReleaser's `aursources` pipe generates source-only PKGBUILD (not `-bin`). Anodize has AUR binary packages but not source variant.
-- [ ] Implement AUR source package generation (PKGBUILD without prebuilt binaries)
-- [ ] Wire separate AUR source config alongside existing binary AUR publisher
+- [x] Implement AUR source package generation (PKGBUILD with cargo build, .SRCINFO, git push)
+- [x] Wire separate AurSourceConfig in PublishConfig alongside existing binary AUR publisher
 
 **Snapcraft: plugs structure (dict vs list)**
 GoReleaser uses `Plugs map[string]any` (structured plug definitions). Anodize uses `Vec<String>` (list only).
-- [ ] Change snapcraft plugs from `Vec<String>` to structured map (interface + attributes)
-- [ ] Update snap.yaml generation to output structured plug definitions
+- [x] Change snapcraft plugs from `Vec<String>` to `HashMap<String, serde_json::Value>` (interface + attributes)
+- [x] Update snap.yaml generation to output structured plug definitions
 
 **Snapcraft: default grade and channel templates**
 GoReleaser defaults grade to "stable" and auto-populates channel_templates based on grade. Anodize does neither.
-- [ ] Default snapcraft grade to "stable"
-- [ ] Auto-populate channel_templates based on grade ("edge,beta,candidate,stable" for stable; "edge,beta" for devel)
+- [x] Default snapcraft grade to "stable"
+- [x] Auto-populate channel_templates via resolve_effective_channels() (stable→[edge,beta,candidate,stable]; devel→[edge,beta])
 
 **Custom publishers: OS/Arch template variables**
 GoReleaser exposes per-artifact `.OS`, `.Arch`, `.Target` variables. Anodize exposes `ArtifactPath`, `ArtifactName`, `ArtifactKind` but not OS/Arch.
-- [ ] Add `Os`, `Arch`, `Target` template variables to custom publisher per-artifact context
+- [x] Add `Os`, `Arch`, `Target` template variables to custom publisher per-artifact context
 
 **Custom publishers: system environment passthrough**
 GoReleaser explicitly passes HOME, USER, PATH, TMPDIR, etc. Anodize only passes publisher-configured env.
-- [ ] Pass standard system environment variables to custom publisher commands
+- [x] System env inherited by default (Rust Command behavior, no env_clear). Documented.
 
 ### Phase Z: Final Parity Audit
 
