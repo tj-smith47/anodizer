@@ -429,7 +429,11 @@ crates:
 notarize:
   disable: true  # disabled — no Apple Developer credentials configured
 
-template_files: []  # no template files configured yet
+template_files:
+  - id: install-script
+    src: scripts/install.sh.tpl
+    dst: install.sh
+    mode: "0755"
 
 changelog:
   header: "# Changelog for {{ ProjectName }}"
@@ -578,7 +582,7 @@ srpm:
 makeselfs:
   - id: default
     name: "Anodize Installer"
-    script: scripts/install.sh
+    script: scripts/makeself-install.sh
     name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
 announce:
