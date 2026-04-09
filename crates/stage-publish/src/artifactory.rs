@@ -167,7 +167,11 @@ pub fn build_reqwest_client(
             .with_context(|| format!("artifactory: failed to read client cert '{}'", cert_path))?;
         let key_pem = fs::read(key_path)
             .with_context(|| format!("artifactory: failed to read client key '{}'", key_path))?;
-        let identity = reqwest::Identity::from_pkcs8_pem(&cert_pem, &key_pem)
+        // Identity::from_pem expects a single PEM buffer with both cert and key
+        let mut combined_pem = cert_pem;
+        combined_pem.push(b'\n');
+        combined_pem.extend_from_slice(&key_pem);
+        let identity = reqwest::Identity::from_pem(&combined_pem)
             .context("artifactory: failed to load client certificate identity")?;
         builder = builder.identity(identity);
     } else if client_cert_path.is_some() != client_key_path.is_some() {

@@ -20,7 +20,7 @@ tempfile.workspace = true
 tera.workspace = true
 base64.workspace = true
 regex.workspace = true
-reqwest = { workspace = true, features = ["native-tls"] }
+reqwest.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
