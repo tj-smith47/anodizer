@@ -514,7 +514,11 @@ mod tests {
         ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
             id: None,
             src: src_path.to_string_lossy().to_string(),
-            dst: "/etc/evil.txt".to_string(),
+            dst: if cfg!(windows) {
+                "C:\\etc\\evil.txt".to_string()
+            } else {
+                "/etc/evil.txt".to_string()
+            },
             mode: None,
         }]);
 
