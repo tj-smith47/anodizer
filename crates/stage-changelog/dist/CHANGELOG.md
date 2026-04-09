@@ -1,5 +1,9 @@
 ## Changelog
 
+* 7ae78183823b6c36a8f693a349943dded3dda685: revert msvc targets, add missing stage configs, install snapcraft/rpmbuild (TJ Smith <jane@work.com>)
+* 5049f2e046f3af90aafca84d6bc939a09025288e: eliminate Windows runner, use anodize-action in release (TJ Smith <jane@work.com>)
+* fbe8ddd1d46124fecd05a1f80a0cc1b22a826b21: clippy unnecessary_unwrap and fmt in nfpm test (TJ Smith <jane@work.com>)
+* 9687d2e0038336ab90dc89c5febe03ea8181d1e8: nfpm mode serialization and initial tag version (TJ Smith <jane@work.com>)
 * 4ff610db20928377a5bf360850582bf30cbb13df: copy binary artifacts into split dist for cross-machine merge (TJ Smith <jane@work.com>)
 * a049bccf9aa863b8c296ec4da12f43bd9093f262: skip dirty-dist check in merge mode (TJ Smith <jane@work.com>)
 * d3012d3a120de4856c737a742abe2027c481f53f: eliminate aws-lc-rs to fix macOS cross-compilation (TJ Smith <jane@work.com>)

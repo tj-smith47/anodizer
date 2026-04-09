@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read  # needed for cross-workflow artifact download
 
 concurrency:
   group: release
@@ -24,10 +25,13 @@ jobs:
         include:
           - os: ubuntu-latest
             targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+            artifact: anodize-linux
           - os: macos-latest
             targets: x86_64-apple-darwin,aarch64-apple-darwin
+            artifact: anodize-macos
           - os: windows-latest
             targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+            artifact: anodize-windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -69,24 +73,21 @@ jobs:
         shell: bash
         run: choco install upx -y
 
-      # Bootstrap anodize from source
-      - name: Build anodize
-        shell: bash
-        run: cargo build --release -p anodize
-
-      # Upload the anodize binary for reuse in the release job (Linux only)
-      - name: Upload anodize binary
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
+      # Download anodize binary from CI instead of rebuilding from source.
+      # Saves ~15 min on Windows, ~5 min on macOS.
+      - name: Install anodize from CI
+        uses: tj-smith47/anodize-action@master
         with:
-          name: anodize-linux
-          path: target/release/anodize
+          from-artifact: ${{ matrix.artifact }}
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          install-only: true
 
       # Run split build — anodize auto-detects host OS and builds matching targets
       # zigbuild handles cross-compilation via zig's linker (no gcc-aarch64 needed)
       - name: Run anodize release --split
         shell: bash
-        run: ./target/release/anodize release --split --clean
+        run: anodize release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -108,10 +109,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Install anodize from the build job artifact (skip cargo build)
-      - uses: tj-smith47/anodize-action@v1
+      # Install anodize from CI artifact (same as build jobs)
+      - uses: tj-smith47/anodize-action@master
         with:
           from-artifact: anodize-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
           install-only: true
 
       # nFPM for deb/rpm/apk packaging

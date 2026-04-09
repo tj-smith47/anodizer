@@ -27,8 +27,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: arduino/setup-task@v2
       - name: Check generated docs are up-to-date
-        run: cargo xtask gen-docs --check
+        run: task docs:check
 
   build:
     needs: docs-check
@@ -42,17 +43,19 @@ jobs:
         with:
           cache-targets: false
 
+      - uses: arduino/setup-task@v2
+
       - name: Install Zola
         uses: taiki-e/install-action@v2
         with:
           tool: zola
 
       - name: Generate reference docs
-        run: cargo xtask gen-docs
+        run: task docs
 
       - name: Generate JSON Schema
         run: |
-          cargo build --release -p anodize
+          task build
           ./target/release/anodize jsonschema > docs/site/static/schema.json
 
       - name: Build site

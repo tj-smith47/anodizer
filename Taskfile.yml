@@ -1,0 +1,95 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build all crates in release mode
+    sources:
+      - "crates/**/src/**/*.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+    generates:
+      - "target/release/anodize"
+    cmds:
+      - cargo build --release --workspace
+
+  check:
+    desc: Run cargo check on all crates
+    cmds:
+      - cargo check --workspace --all-targets
+
+  fmt:
+    desc: Format all code
+    cmds:
+      - cargo fmt
+
+  fmt:check:
+    desc: Check formatting without modifying files
+    cmds:
+      - cargo fmt -- --check
+
+  clippy:
+    desc: Run clippy with warnings as errors
+    cmds:
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    desc: Run all tests
+    cmds:
+      - cargo test --workspace
+
+  test:lib:
+    desc: Run unit tests only (no integration/doc tests)
+    cmds:
+      - cargo test --workspace --lib
+
+  docs:
+    desc: Generate reference docs (CLI + configuration)
+    deps: [build]
+    cmds:
+      - cargo xtask gen-docs
+
+  docs:check:
+    desc: Verify generated docs are up-to-date
+    deps: [build]
+    cmds:
+      - cargo xtask gen-docs --check
+
+  package:
+    desc: Dry-run package all publishable crates
+    cmds:
+      - cargo package --workspace --no-verify --allow-dirty --exclude xtask
+
+  snapshot:
+    desc: Dry-run release pipeline (single target, no publish)
+    deps: [build]
+    cmds:
+      - ./target/release/anodize release --snapshot --single-target --clean --dry-run
+
+  clean:
+    desc: Remove build artifacts and dist directory
+    cmds:
+      - cargo clean
+      - rm -rf dist/
+
+  ci:
+    desc: Run all CI checks locally (everything except cross-platform builds)
+    cmds:
+      - task: fmt:check
+      - task: clippy
+      - task: test
+      - task: docs:check
+      - task: package
+
+  commit:
+    desc: "Run CI checks, then commit. Usage: task commit -- -m 'my message'"
+    preconditions:
+      - sh: git diff --cached --quiet || test -n "$(git diff --cached --name-only)"
+        msg: "Nothing staged. Stage files with git add before running task commit."
+    cmds:
+      - task: ci
+      - git commit {{.CLI_ARGS}}

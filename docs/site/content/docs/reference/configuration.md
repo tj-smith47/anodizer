@@ -414,6 +414,7 @@ Tags matching this prefix are selected during tag discovery, and the prefix is s
 Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `disable` | StringOrBool | — | Disable all notarization. Accepts bool or template string. |
 | `macos` | list of MacOSSignNotarizeConfig | — | Cross-platform signing/notarization (rcodesign-based, works on any OS). |
 | `macos_native` | list of MacOSNativeSignNotarizeConfig | — | Native signing/notarization (codesign + xcrun, macOS only). |
 

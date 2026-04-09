@@ -104,6 +104,20 @@ impl Stage for FlatpakStage {
             return Ok(());
         }
 
+        // Check if any flatpak config is actually enabled before requiring tools
+        let has_enabled = crates.iter().any(|c| {
+            c.flatpaks.as_ref().is_some_and(|cfgs| {
+                cfgs.iter().any(|cfg| {
+                    cfg.disable
+                        .as_ref()
+                        .is_none_or(|d| !d.is_disabled(|s| ctx.render_template(s)))
+                })
+            })
+        });
+        if !has_enabled {
+            return Ok(());
+        }
+
         // Check tool availability once for the entire stage
         if !dry_run {
             if !anodize_core::util::find_binary("flatpak-builder") {

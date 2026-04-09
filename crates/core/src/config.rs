@@ -3669,6 +3669,9 @@ pub struct BinstallConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NotarizeConfig {
+    /// Disable all notarization. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Cross-platform signing/notarization (rcodesign-based, works on any OS).
     pub macos: Option<Vec<MacOSSignNotarizeConfig>>,
     /// Native signing/notarization (codesign + xcrun, macOS only).
