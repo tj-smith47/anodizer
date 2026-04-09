@@ -129,8 +129,12 @@ jobs:
 
       # Import GPG key for checksum signing (skipped if secret not configured)
       - name: Import GPG key
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
-        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          else
+            echo "GPG_PRIVATE_KEY not set, skipping"
+          fi
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
 

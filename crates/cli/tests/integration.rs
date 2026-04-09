@@ -3353,6 +3353,8 @@ fn test_e2e_before_hooks_execute() {
     init_git_repo(tmp.path());
 
     let marker_path = tmp.path().join("before-hook-ran.txt");
+    // Use forward slashes for YAML compatibility on Windows
+    let marker_yaml = marker_path.to_string_lossy().replace('\\', "/");
     let config = format!(
         r#"project_name: test-project
 before:
@@ -3373,7 +3375,7 @@ crates:
       name_template: "checksums.txt"
 "#,
         host = host,
-        marker = marker_path.display()
+        marker = marker_yaml
     );
     create_config(tmp.path(), &config);
 
@@ -3420,6 +3422,8 @@ fn test_e2e_before_hooks_dry_run() {
     init_git_repo(tmp.path());
 
     let marker_path = tmp.path().join("should-not-exist.txt");
+    // Use forward slashes for YAML compatibility on Windows
+    let marker_yaml = marker_path.to_string_lossy().replace('\\', "/");
     let config = format!(
         r#"project_name: test-project
 before:
@@ -3440,7 +3444,7 @@ crates:
       name_template: "checksums.txt"
 "#,
         host = host,
-        marker = marker_path.display()
+        marker = marker_yaml
     );
     create_config(tmp.path(), &config);
 

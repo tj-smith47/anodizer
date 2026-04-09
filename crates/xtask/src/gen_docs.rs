@@ -36,10 +36,43 @@ pub fn run(check: bool) -> Result<(), String> {
         let mut stale = false;
         if existing_cli != cli_content {
             eprintln!("STALE: {}", cli_path.display());
+            // Print first differing lines to aid debugging
+            for (i, (a, b)) in existing_cli.lines().zip(cli_content.lines()).enumerate() {
+                if a != b {
+                    eprintln!("  line {}: committed: {}", i + 1, a);
+                    eprintln!("  line {}: generated: {}", i + 1, b);
+                    break;
+                }
+            }
+            if existing_cli.lines().count() != cli_content.lines().count() {
+                eprintln!(
+                    "  line count: committed={}, generated={}",
+                    existing_cli.lines().count(),
+                    cli_content.lines().count()
+                );
+            }
             stale = true;
         }
         if existing_config != config_content {
             eprintln!("STALE: {}", config_path.display());
+            for (i, (a, b)) in existing_config
+                .lines()
+                .zip(config_content.lines())
+                .enumerate()
+            {
+                if a != b {
+                    eprintln!("  line {}: committed: {}", i + 1, a);
+                    eprintln!("  line {}: generated: {}", i + 1, b);
+                    break;
+                }
+            }
+            if existing_config.lines().count() != config_content.lines().count() {
+                eprintln!(
+                    "  line count: committed={}, generated={}",
+                    existing_config.lines().count(),
+                    config_content.lines().count()
+                );
+            }
             stale = true;
         }
         if stale {
