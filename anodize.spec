@@ -1,5 +1,5 @@
 Name:           anodize
-Version:        %{version}
+Version:        {{ Version }}
 Release:        1%{?dist}
 Summary:        A Rust-native release automation tool
 License:        MIT
