@@ -1022,14 +1022,24 @@ crates:
         });
 
         let result = PkgStage.run(&mut ctx);
-        // pkgbuild is not installed in CI — the error should be about the
-        // pkgbuild command, NOT about copying files.
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("pkgbuild") || err.contains("execute"),
-            "expected pkgbuild execution error, got: {err}"
-        );
+        // On macOS, pkgbuild is available so the stage may succeed.
+        // On Linux/Windows, it will fail because pkgbuild is not installed.
+        if cfg!(target_os = "macos") {
+            if let Err(e) = &result {
+                let err = e.to_string();
+                assert!(
+                    err.contains("pkgbuild") || err.contains("execute"),
+                    "unexpected error on macOS: {err}"
+                );
+            }
+        } else {
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("pkgbuild") || err.contains("execute"),
+                "expected pkgbuild execution error, got: {err}"
+            );
+        }
     }
 
     #[test]
