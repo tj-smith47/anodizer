@@ -489,10 +489,12 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                             .unwrap_or(&p)
                             .to_string_lossy()
                             .to_string();
-                        let dest = std::path::PathBuf::from(dst_prefix)
-                            .join(&rel)
-                            .to_string_lossy()
-                            .to_string();
+                        // Normalize to forward slashes — archive entry paths must
+                        // always use '/' regardless of platform.
+                        let dest =
+                            normalize_archive_path(std::path::PathBuf::from(dst_prefix).join(&rel))
+                                .to_string_lossy()
+                                .to_string();
                         results.push(ResolvedExtraFile {
                             src: p,
                             dst: Some(dest),
