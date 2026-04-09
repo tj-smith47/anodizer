@@ -234,11 +234,15 @@ pub(crate) fn resolve_sign_args(
         .map(|arg| {
             let mut resolved = arg
                 .replace("{{ .Artifact }}", artifact_path)
-                .replace("{{ .Signature }}", signature_path);
+                .replace("{{ Artifact }}", artifact_path)
+                .replace("{{ .Signature }}", signature_path)
+                .replace("{{ Signature }}", signature_path);
             // Replace certificate placeholder: with actual path if set, empty string otherwise.
             // This prevents `{{ .Certificate }}` from being fed to Tera and causing spurious warnings.
             let cert = certificate_path.unwrap_or("");
-            resolved = resolved.replace("{{ .Certificate }}", cert);
+            resolved = resolved
+                .replace("{{ .Certificate }}", cert)
+                .replace("{{ Certificate }}", cert);
             resolved
         })
         .collect()
