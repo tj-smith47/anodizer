@@ -1210,6 +1210,62 @@ mod tests {
     use super::*;
     use anodize_core::test_helpers::TestContextBuilder;
 
+    /// Return a shell command + args that writes `content_expr` to `dest_file`.
+    /// On Unix: sh -c "echo $VAR > file"
+    /// On Windows: cmd.exe /C "echo %VAR% > file"
+    fn shell_echo_to_file(env_var: &str, dest_file: &str) -> (String, Vec<String>) {
+        if cfg!(windows) {
+            (
+                "cmd.exe".to_string(),
+                vec![
+                    "/C".to_string(),
+                    format!("echo %{}% > {}", env_var, dest_file),
+                ],
+            )
+        } else {
+            (
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    format!("echo ${} > {}", env_var, dest_file),
+                ],
+            )
+        }
+    }
+
+    /// Return a shell command + args that writes a literal string to `dest_file`.
+    fn shell_echo_literal_to_file(literal: &str, dest_file: &str) -> (String, Vec<String>) {
+        if cfg!(windows) {
+            (
+                "cmd.exe".to_string(),
+                vec![
+                    "/C".to_string(),
+                    format!("echo {} > {}", literal, dest_file),
+                ],
+            )
+        } else {
+            (
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    format!("echo \"{}\" > {}", literal, dest_file),
+                ],
+            )
+        }
+    }
+
+    /// Return (cmd, args) for a simple echo command (no shell).
+    fn echo_command() -> (String, Vec<String>) {
+        if cfg!(windows) {
+            (
+                "cmd.exe".to_string(),
+                vec!["/C".to_string(), "echo".to_string()],
+            )
+        } else {
+            ("echo".to_string(), vec![])
+        }
+    }
+
     #[test]
     fn test_resolve_sign_args() {
         let args = vec![
@@ -1986,13 +2042,11 @@ stdin_file: "/path/to/password"
             "hello_from_sign".to_string(),
         );
 
+        let (cmd, args) = shell_echo_to_file("ANODIZE_TEST_SIGN_ENV", &marker_str);
         let signs = vec![SignConfig {
             id: Some("test-env".to_string()),
-            cmd: Some("sh".to_string()),
-            args: Some(vec![
-                "-c".to_string(),
-                format!("echo $ANODIZE_TEST_SIGN_ENV > {}", marker_str),
-            ]),
+            cmd: Some(cmd),
+            args: Some(args),
             artifacts: Some("checksum".to_string()),
             ids: None,
             signature: None,
@@ -2332,13 +2386,11 @@ env:
             "docker_hello".to_string(),
         );
 
+        let (cmd, args) = shell_echo_to_file("ANODIZE_TEST_DOCKER_ENV", &marker_str);
         let docker_signs = vec![DockerSignConfig {
             id: Some("test-env".to_string()),
-            cmd: Some("sh".to_string()),
-            args: Some(vec![
-                "-c".to_string(),
-                format!("echo $ANODIZE_TEST_DOCKER_ENV > {}", marker_str),
-            ]),
+            cmd: Some(cmd),
+            args: Some(args),
             artifacts: Some("all".to_string()),
             ids: None,
             stdin: None,
@@ -2780,17 +2832,15 @@ crates: []
         let marker_path = tmp.path().join("docker_vars.txt");
         let marker_str = marker_path.to_string_lossy().to_string();
 
-        // Use sh -c to capture template-resolved variables
+        // Use a shell to capture template-resolved variables
+        let (cmd, args) = shell_echo_literal_to_file(
+            "digest={{ digest }} artifactID={{ artifactID }}",
+            &marker_str,
+        );
         let docker_signs = vec![DockerSignConfig {
             id: Some("test-vars".to_string()),
-            cmd: Some("sh".to_string()),
-            args: Some(vec![
-                "-c".to_string(),
-                format!(
-                    "echo \"digest={{{{ digest }}}} artifactID={{{{ artifactID }}}}\" > {}",
-                    marker_str
-                ),
-            ]),
+            cmd: Some(cmd),
+            args: Some(args),
             artifacts: Some("all".to_string()),
             ids: None,
             stdin: None,
@@ -2882,10 +2932,12 @@ crates: []
         use anodize_core::artifact::{Artifact, ArtifactKind};
 
         // Use echo to produce stdout; with output: true it should be captured
+        let (cmd, mut base_args) = echo_command();
+        base_args.push("hello-from-sign".to_string());
         let signs = vec![SignConfig {
             id: Some("test-output".to_string()),
-            cmd: Some("echo".to_string()),
-            args: Some(vec!["hello-from-sign".to_string()]),
+            cmd: Some(cmd),
+            args: Some(base_args),
             artifacts: Some("checksum".to_string()),
             ids: None,
             signature: None,
@@ -3496,13 +3548,11 @@ crates: []
         let marker_str = marker_path.to_string_lossy().to_string();
 
         // Use Go-compat syntax {{ .Digest }} which gets preprocessed to {{ Digest }}
+        let (cmd, args) = shell_echo_literal_to_file("{{ Digest }}", &marker_str);
         let docker_signs = vec![DockerSignConfig {
             id: Some("test-digest-case".to_string()),
-            cmd: Some("sh".to_string()),
-            args: Some(vec![
-                "-c".to_string(),
-                format!("echo \"{{{{ Digest }}}}\" > {}", marker_str),
-            ]),
+            cmd: Some(cmd),
+            args: Some(args),
             artifacts: Some("all".to_string()),
             ids: None,
             stdin: None,
