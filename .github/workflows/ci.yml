@@ -93,6 +93,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build anodize
         run: cargo build --release -p anodize
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Auto-tag release
         run: |
           ./target/release/anodize tag
