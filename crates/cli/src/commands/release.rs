@@ -140,7 +140,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Error if dist directory is non-empty and --clean was not passed
     // (like GoReleaser's ErrDirtyDist).
-    if !opts.clean {
+    // Skip in --merge mode: dist must contain split artifacts.
+    if !opts.clean && !opts.merge {
         let dist = &config.dist;
         if dist.exists()
             && let Ok(mut entries) = dist.read_dir()
