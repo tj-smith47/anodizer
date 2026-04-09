@@ -20,7 +20,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  docs-check:
+    name: Docs freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check generated docs are up-to-date
+        run: cargo xtask gen-docs --check
+
   build:
+    needs: docs-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

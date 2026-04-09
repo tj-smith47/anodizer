@@ -1922,7 +1922,9 @@ ids:
         );
         let err = write_result.unwrap_err().to_string();
         assert!(
-            err.contains("No such file or directory") || err.contains("not found"),
+            err.contains("No such file or directory")
+                || err.contains("not found")
+                || err.contains("cannot find the path"),
             "error should mention missing directory, got: {err}"
         );
     }

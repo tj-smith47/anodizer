@@ -49,8 +49,9 @@ jobs:
           version: 0.13.0
 
       - name: Install cargo-zigbuild
-        shell: bash
-        run: cargo install cargo-zigbuild
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
 
       # UPX (matches .anodize.yaml upx.targets)
       - name: Install UPX (Linux)
