@@ -999,23 +999,34 @@ crates:
         let stage = DmgStage;
         let result = stage.run(&mut ctx);
 
-        // The stage will fail because hdiutil/genisoimage/mkisofs are not
-        // available in CI.  That's fine — what matters is it got past the
-        // staging-dir setup.  The error should mention the DMG creation tool,
-        // not a file-copy failure.
-        assert!(
-            result.is_err(),
-            "expected failure due to missing DMG tool in CI"
-        );
-        let err_msg = format!("{:#}", result.unwrap_err());
-        assert!(
-            err_msg.contains("hdiutil")
-                || err_msg.contains("genisoimage")
-                || err_msg.contains("mkisofs")
-                || err_msg.contains("DMG creation tool")
-                || err_msg.contains("no DMG"),
-            "error should mention missing DMG tool (staging succeeded), got: {err_msg}"
-        );
+        // On macOS, hdiutil is available so the stage may succeed (creates a real DMG).
+        // On Linux/Windows, it will fail because no DMG tool is installed.
+        if cfg!(target_os = "macos") {
+            // On macOS, either outcome is acceptable — the extra files were staged either way.
+            if let Err(e) = &result {
+                let err_msg = format!("{e:#}");
+                assert!(
+                    err_msg.contains("hdiutil")
+                        || err_msg.contains("DMG creation tool")
+                        || err_msg.contains("no DMG"),
+                    "unexpected error on macOS: {err_msg}"
+                );
+            }
+        } else {
+            assert!(
+                result.is_err(),
+                "expected failure due to missing DMG tool in CI"
+            );
+            let err_msg = format!("{:#}", result.unwrap_err());
+            assert!(
+                err_msg.contains("hdiutil")
+                    || err_msg.contains("genisoimage")
+                    || err_msg.contains("mkisofs")
+                    || err_msg.contains("DMG creation tool")
+                    || err_msg.contains("no DMG"),
+                "error should mention missing DMG tool (staging succeeded), got: {err_msg}"
+            );
+        }
     }
 
     #[test]

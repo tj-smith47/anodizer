@@ -70,7 +70,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Package all crates
-        run: cargo package --workspace --no-verify
+        run: cargo package --workspace --no-verify --exclude xtask
 
   snapshot:
     name: Snapshot (dry-run)

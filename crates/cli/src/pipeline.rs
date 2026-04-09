@@ -1119,7 +1119,14 @@ crates: []
         let cfg_path = tmp.path().join("anodize.yaml");
         fs::write(
             &cfg_path,
-            "project_name: test\nincludes:\n  - from_file:\n      path: /etc/passwd\ncrates: []\n",
+            format!(
+                "project_name: test\nincludes:\n  - from_file:\n      path: {}\ncrates: []\n",
+                if cfg!(windows) {
+                    "C:\\Windows\\System32\\drivers\\etc\\hosts"
+                } else {
+                    "/etc/passwd"
+                }
+            ),
         )
         .unwrap();
 
