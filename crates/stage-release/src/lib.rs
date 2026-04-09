@@ -1073,9 +1073,13 @@ impl Stage for ReleaseStage {
             // Collect uploadable artifacts for this crate, applying ids filter.
             // Each entry is (path, optional_custom_name). The custom name is only
             // set for extra_files with a name_template; regular artifacts use None.
+            // GoReleaser uploads archives, packages, and signatures — NOT raw
+            // binaries (Binary kind).  Raw binaries share the same filename
+            // across platforms, causing "already_exists" collisions.
             let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> = [
-                ArtifactKind::Binary,
                 ArtifactKind::Archive,
+                ArtifactKind::UploadableBinary,
+                ArtifactKind::UniversalBinary,
                 ArtifactKind::Checksum,
                 ArtifactKind::LinuxPackage,
                 ArtifactKind::Snap,
@@ -1083,9 +1087,16 @@ impl Stage for ReleaseStage {
                 ArtifactKind::Installer,
                 ArtifactKind::MacOsPackage,
                 ArtifactKind::SourceArchive,
+                ArtifactKind::SourceRpm,
+                ArtifactKind::Makeself,
+                ArtifactKind::Flatpak,
                 ArtifactKind::Sbom,
+                ArtifactKind::UploadableFile,
                 ArtifactKind::Signature,
                 ArtifactKind::Certificate,
+                ArtifactKind::Header,
+                ArtifactKind::CArchive,
+                ArtifactKind::CShared,
             ]
             .iter()
             .flat_map(|&kind| {
