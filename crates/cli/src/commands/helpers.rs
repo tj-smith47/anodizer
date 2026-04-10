@@ -87,21 +87,14 @@ pub fn resolve_git_context(
         .selected_crates
         .first()
         .and_then(|name| {
-            config
-                .crates
-                .iter()
-                .find(|c| &c.name == name)
-                .or_else(|| {
-                    config
-                        .workspaces
-                        .as_ref()
-                        .and_then(|ws_list| {
-                            ws_list
-                                .iter()
-                                .flat_map(|w| w.crates.iter())
-                                .find(|c| &c.name == name)
-                        })
+            config.crates.iter().find(|c| &c.name == name).or_else(|| {
+                config.workspaces.as_ref().and_then(|ws_list| {
+                    ws_list
+                        .iter()
+                        .flat_map(|w| w.crates.iter())
+                        .find(|c| &c.name == name)
                 })
+            })
         })
         .or_else(|| config.crates.first())
         .or_else(|| {
