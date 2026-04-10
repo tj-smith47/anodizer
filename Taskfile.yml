@@ -83,11 +83,12 @@ tasks:
       - task: docs
 
   lint:
-    desc: Local pre-commit check (tidy, clippy, build)
+    desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
       - task: tidy
       - task: clippy
       - task: build
+      - task: snapshot
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)
