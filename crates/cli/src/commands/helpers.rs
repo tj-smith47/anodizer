@@ -73,12 +73,43 @@ pub fn resolve_git_context(
         .ok()
         .filter(|s| !s.is_empty());
 
+    // Resolve a crate to derive the tag from. Selection order:
+    //   1. The first explicitly selected crate (--crate or --all selection)
+    //   2. The first top-level crate in config
+    //   3. The first crate of the first workspace (workspace-only configs)
+    //
+    // The workspace fallback is critical for snapshot/dry-run mode in
+    // workspace-only configs (e.g. cfgd) — without it, `Version` is never
+    // populated in the template context, breaking any template that
+    // references it.
     let first_crate = ctx
         .options
         .selected_crates
         .first()
-        .and_then(|name| config.crates.iter().find(|c| &c.name == name))
-        .or_else(|| config.crates.first());
+        .and_then(|name| {
+            config
+                .crates
+                .iter()
+                .find(|c| &c.name == name)
+                .or_else(|| {
+                    config
+                        .workspaces
+                        .as_ref()
+                        .and_then(|ws_list| {
+                            ws_list
+                                .iter()
+                                .flat_map(|w| w.crates.iter())
+                                .find(|c| &c.name == name)
+                        })
+                })
+        })
+        .or_else(|| config.crates.first())
+        .or_else(|| {
+            config
+                .workspaces
+                .as_ref()
+                .and_then(|ws_list| ws_list.iter().flat_map(|w| w.crates.iter()).next())
+        });
 
     if let Some(crate_cfg) = first_crate {
         let tag = if let Some(ref override_tag) = tag_override {
