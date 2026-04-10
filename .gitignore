@@ -1,5 +1,6 @@
 /target/
 /dist/
+.task/
 .worktrees/
 .superpowers/
 .zig-cache/
