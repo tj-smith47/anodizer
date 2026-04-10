@@ -24,6 +24,63 @@ pub fn publish_command(crate_name: &str) -> Vec<String> {
 // poll_crates_io_index
 // ---------------------------------------------------------------------------
 
+/// Build the sparse index URL for a crate name (path segments based on length).
+fn sparse_index_url(crate_name: &str) -> String {
+    let lower = crate_name.to_ascii_lowercase();
+    match lower.len() {
+        1 => format!("https://index.crates.io/1/{}", lower),
+        2 => format!("https://index.crates.io/2/{}", lower),
+        3 => format!("https://index.crates.io/3/{}/{}", &lower[..1], lower),
+        _ => format!(
+            "https://index.crates.io/{}/{}/{}",
+            &lower[..2],
+            &lower[2..4],
+            lower
+        ),
+    }
+}
+
+/// Check whether `crate_name` at `version` is already published on crates.io.
+///
+/// Returns `Ok(true)` if the index has the version, `Ok(false)` if the crate
+/// doesn't exist or the specific version isn't there, `Err` on transport errors.
+/// Used to make publishes idempotent across retries.
+fn is_already_published(crate_name: &str, version: &str) -> Result<bool> {
+    use std::time::Duration;
+
+    let url = sparse_index_url(crate_name);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("publish: build HTTP client for index check")?;
+
+    let resp = client
+        .get(&url)
+        .send()
+        .with_context(|| format!("publish: query index for '{}'", crate_name))?;
+
+    // 404 = crate has never been published — not already published.
+    if resp.status().as_u16() == 404 {
+        return Ok(false);
+    }
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "publish: crates.io index returned {} for '{}'",
+            resp.status(),
+            crate_name
+        );
+    }
+
+    let body = resp.text().unwrap_or_default();
+    let found = body.lines().any(|line| {
+        serde_json::from_str::<serde_json::Value>(line)
+            .ok()
+            .and_then(|v| v.get("vers")?.as_str().map(|s| s == version))
+            .unwrap_or(false)
+    });
+    Ok(found)
+}
+
 /// Poll the crates.io sparse index until `crate_name` at `version` appears or
 /// the deadline (seconds) is exceeded.  Uses exponential back-off starting at
 /// 5 s, capped at 60 s.
@@ -39,20 +96,7 @@ fn poll_crates_io_index(
 
     let start = Instant::now();
     let deadline = Duration::from_secs(timeout_secs);
-
-    // Sparse index URL: lowercase first two chars form the path segments.
-    let lower = crate_name.to_ascii_lowercase();
-    let url = match lower.len() {
-        1 => format!("https://index.crates.io/1/{}", lower),
-        2 => format!("https://index.crates.io/2/{}", lower),
-        3 => format!("https://index.crates.io/3/{}/{}", &lower[..1], lower),
-        _ => format!(
-            "https://index.crates.io/{}/{}/{}",
-            &lower[..2],
-            &lower[2..4],
-            lower
-        ),
-    };
+    let url = sparse_index_url(crate_name);
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -176,6 +220,32 @@ pub fn publish_to_crates_io(
     let version = ctx.version();
 
     for (i, name) in sorted_names.iter().enumerate() {
+        // Idempotency: skip if this version is already on crates.io.  Lets the
+        // publish stage tolerate retries after a partial run (e.g. crates.io
+        // new-crate rate-limit) without failing on the first already-published
+        // crate.  Index check failures are non-fatal — we still try to publish.
+        let already = if version.is_empty() {
+            false
+        } else {
+            match is_already_published(name, &version) {
+                Ok(found) => found,
+                Err(e) => {
+                    log.warn(&format!(
+                        "could not check crates.io index for '{}-{}' ({}); attempting publish anyway",
+                        name, version, e
+                    ));
+                    false
+                }
+            }
+        };
+        if already {
+            log.status(&format!(
+                "skipping '{}-{}' — already published on crates.io",
+                name, version
+            ));
+            continue;
+        }
+
         let cmd = publish_command(name);
         log.status(&format!("running: {}", cmd.join(" ")));
 
