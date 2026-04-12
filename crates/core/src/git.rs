@@ -899,6 +899,34 @@ pub fn has_changes_since(tag: &str, path: &str) -> Result<bool> {
     Ok(!output.is_empty())
 }
 
+/// Get last N commit subjects that touched a specific path.
+pub fn get_last_commit_messages_path(count: usize, path: &str) -> Result<Vec<String>> {
+    let output = git_output(&[
+        "-c",
+        "log.showSignature=false",
+        "log",
+        &format!("-{count}"),
+        "--pretty=format:%s",
+        "--",
+        path,
+    ])?;
+    Ok(output.lines().map(str::to_string).collect())
+}
+
+/// Get commit subjects between two refs that touched a specific path.
+pub fn get_commit_messages_between_path(from: &str, to: &str, path: &str) -> Result<Vec<String>> {
+    let output = git_output(&[
+        "-c",
+        "log.showSignature=false",
+        "log",
+        "--pretty=format:%s",
+        &format!("{from}..{to}"),
+        "--",
+        path,
+    ])?;
+    Ok(output.lines().map(str::to_string).collect())
+}
+
 /// Parse owner and repo name from a GitHub remote URL.
 /// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH (`git@github.com:owner/repo.git`).
 pub fn parse_github_remote(url: &str) -> Option<(String, String)> {

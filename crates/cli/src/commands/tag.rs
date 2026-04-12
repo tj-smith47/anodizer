@@ -94,11 +94,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
     // When --crate is given, look up the crate in config and derive the tag
-    // prefix from its tag_template (the part before the version placeholder).
+    // prefix from its tag_template.  Also capture the crate path so we can
+    // scope change detection to only that directory.
+    let mut crate_path: Option<String> = None;
     if let Some(ref crate_name) = opts.crate_name
-        && let Some(prefix) = load_crate_tag_prefix(&opts, crate_name)
+        && let Some(info) = load_crate_tag_info(&opts, crate_name)
     {
-        cfg.tag_prefix = prefix;
+        cfg.tag_prefix = info.tag_prefix;
+        crate_path = Some(info.path);
     }
 
     // Merge verbose from config: if config says verbose=true and CLI doesn't say quiet, enable verbose
@@ -171,9 +174,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
         prev_tag.as_deref().unwrap_or("(none)")
     ));
 
-    // Check for changes since last tag
+    // Check for changes since last tag.  When a crate path is known, scope
+    // to that directory so unrelated commits don't trigger a spurious bump.
     if let Some(ref tag) = prev_tag {
-        let has_changes = git::has_commits_since_tag(tag)?;
+        let has_changes = if let Some(ref path) = crate_path {
+            git::has_changes_since(tag, path)?
+        } else {
+            git::has_commits_since_tag(tag)?
+        };
         if !has_changes {
             let force = if cfg.prerelease {
                 cfg.force_without_changes_pre
@@ -194,8 +202,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
         }
     }
 
-    // Scan commit messages to determine bump
-    let messages = get_messages_for_bump(&cfg, prev_tag.as_deref())?;
+    // Scan commit messages to determine bump.  When a crate path is set,
+    // only consider commits that actually touched that directory.
+    let messages = get_messages_for_bump(&cfg, prev_tag.as_deref(), crate_path.as_deref())?;
     log.verbose(&format!("scanned {} commit message(s)", messages.len()));
 
     // Detect bump
@@ -277,15 +286,39 @@ fn load_tag_config(opts: &TagOpts) -> TagConfig {
     TagConfig::default()
 }
 
-/// When `--crate` is specified, extract the tag prefix from the matching
-/// crate's `tag_template` by stripping the version placeholder suffix.
-/// E.g. `mylib-v{{ .Version }}` -> `mylib-v`.
-fn load_crate_tag_prefix(opts: &TagOpts, crate_name: &str) -> Option<String> {
+/// Info extracted from a crate's config for path-scoped tagging.
+struct CrateTagInfo {
+    tag_prefix: String,
+    path: String,
+}
+
+/// When `--crate` is specified, look up the crate in top-level crates and
+/// workspace crates.  Returns the tag prefix (from `tag_template`) and the
+/// crate's `path` so change detection can be scoped to that directory.
+fn load_crate_tag_info(opts: &TagOpts, crate_name: &str) -> Option<CrateTagInfo> {
     let config_path = resolve_config_path(opts)?;
     let config = crate::pipeline::load_config(&config_path).ok()?;
-    let crate_cfg = config.crates.iter().find(|c| c.name == crate_name)?;
 
-    git::extract_tag_prefix(&crate_cfg.tag_template)
+    // Search top-level crates first, then workspace crates.
+    let crate_cfg = config
+        .crates
+        .iter()
+        .find(|c| c.name == crate_name)
+        .or_else(|| {
+            config
+                .workspaces
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .flat_map(|w| &w.crates)
+                .find(|c| c.name == crate_name)
+        })?;
+
+    let tag_prefix = git::extract_tag_prefix(&crate_cfg.tag_template)?;
+    Some(CrateTagInfo {
+        tag_prefix,
+        path: crate_cfg.path.clone(),
+    })
 }
 
 // TODO: Wire GitConfig (ignore_tags, ignore_tag_prefixes) into tag discovery
@@ -313,17 +346,22 @@ fn branch_matches(branch: &str, patterns: &[String]) -> bool {
     false
 }
 
-fn get_messages_for_bump(cfg: &ResolvedConfig, prev_tag: Option<&str>) -> Result<Vec<String>> {
+fn get_messages_for_bump(
+    cfg: &ResolvedConfig,
+    prev_tag: Option<&str>,
+    path: Option<&str>,
+) -> Result<Vec<String>> {
     match cfg.branch_history.as_str() {
-        "last" => git::get_last_commit_messages(1),
-        "full" | "compare" => {
-            if let Some(tag) = prev_tag {
-                git::get_commit_messages_between(tag, "HEAD")
-            } else {
-                // No previous tag: get all commit messages
-                git::get_last_commit_messages(500)
-            }
-        }
+        "last" => match path {
+            Some(p) => git::get_last_commit_messages_path(1, p),
+            None => git::get_last_commit_messages(1),
+        },
+        "full" | "compare" => match (prev_tag, path) {
+            (Some(tag), Some(p)) => git::get_commit_messages_between_path(tag, "HEAD", p),
+            (Some(tag), None) => git::get_commit_messages_between(tag, "HEAD"),
+            (None, Some(p)) => git::get_last_commit_messages_path(500, p),
+            (None, None) => git::get_last_commit_messages(500),
+        },
         other => {
             bail!("unknown branch_history mode: {}", other);
         }

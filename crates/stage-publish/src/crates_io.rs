@@ -14,14 +14,7 @@ use std::process::Command;
 fn expand_with_transitive_deps(all_crates: &[CrateConfig], seed: &[String]) -> Vec<String> {
     let name_to_deps: HashMap<&str, &[String]> = all_crates
         .iter()
-        .map(|c| {
-            (
-                c.name.as_str(),
-                c.depends_on
-                    .as_deref()
-                    .unwrap_or_default(),
-            )
-        })
+        .map(|c| (c.name.as_str(), c.depends_on.as_deref().unwrap_or_default()))
         .collect();
 
     let mut out: Vec<String> = Vec::new();
@@ -225,14 +218,12 @@ fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
             }
             continue;
         }
-        if in_package {
-            if let Some(rest) = trimmed.strip_prefix("version") {
-                let rest = rest.trim_start();
-                if let Some(rest) = rest.strip_prefix('=') {
-                    let rest = rest.trim();
-                    if rest.starts_with('"') {
-                        return rest.trim_matches('"').to_string().into();
-                    }
+        if in_package && let Some(rest) = trimmed.strip_prefix("version") {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let rest = rest.trim();
+                if rest.starts_with('"') {
+                    return rest.trim_matches('"').to_string().into();
                 }
             }
         }
@@ -493,7 +484,12 @@ mod tests {
             crate_with_deps("d", &["b", "c"]),
         ];
         let expanded = expand_with_transitive_deps(&crates, &["d".to_string()]);
-        assert_eq!(expanded.len(), 4, "expected all 4 crates once: {:?}", expanded);
+        assert_eq!(
+            expanded.len(),
+            4,
+            "expected all 4 crates once: {:?}",
+            expanded
+        );
     }
 
     #[test]
