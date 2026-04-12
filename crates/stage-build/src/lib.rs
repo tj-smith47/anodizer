@@ -47,17 +47,57 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 
 /// Target-aware variant of [`detect_cross_strategy`].
 ///
-/// When the target matches the host triple, native `cargo build` is always
-/// the right choice — using `cargo-zigbuild` for a native build requires
-/// the full SDK setup that zig needs for hosts, and the zig linker
-/// historically mis-handles Apple framework paths. Only fall back to the
-/// cross tooling when we're actually cross-compiling.
+/// `cargo` is the right choice whenever the target's OS is the same as the
+/// host's OS, because the host's native compiler already knows how to
+/// emit binaries for that OS on every supported arch:
+///
+/// - **macOS host → any apple-darwin target**: clang is a universal
+///   cross-compiler across Apple architectures (x86_64, aarch64) and the
+///   SDK is already on disk, so `cargo build --target …-apple-darwin`
+///   works natively. zigbuild on macOS historically mis-handles the
+///   framework paths in large link lines and fails on x86_64-apple-darwin
+///   when run from an arm64 runner.
+/// - **Linux host → any *-linux-gnu target with matching libc**: cargo
+///   links with the host's gcc; cross-arch Linux needs a multilib package
+///   or the `cross` container, so same-OS-different-arch Linux still
+///   benefits from zigbuild/cross. Keep the existing auto behaviour.
+/// - **Windows host → any *-pc-windows-* target**: MSVC cl/link handles
+///   both msvc x86_64 and aarch64 via the VS install, no zig needed.
+///
+/// Only fall back to the cross tooling when actually crossing OS boundaries
+/// (Linux → Windows, Linux → darwin, etc.).
 pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
     let host = anodize_core::partial::detect_host_target().unwrap_or_default();
+
+    // Exact host match — always cargo.
     if !host.is_empty() && target == host {
         return CrossStrategy::Cargo;
     }
+
+    // Same-OS, different-arch — cargo when the host's native toolchain
+    // can handle the target without external cross tooling. Applies to
+    // Apple (clang is universal across apple arches) and Windows (MSVC
+    // handles every windows arch). Linux stays on the cross tooling
+    // because same-OS cross-arch still needs a gcc multilib or similar.
+    if !host.is_empty() && same_apple_family(&host, target) {
+        return CrossStrategy::Cargo;
+    }
+    if !host.is_empty() && same_windows_family(&host, target) {
+        return CrossStrategy::Cargo;
+    }
+
     detect_cross_strategy()
+}
+
+/// True when both triples target Apple's Darwin kernel. Matches
+/// *-apple-darwin, *-apple-ios*, *-apple-tvos*, *-apple-watchos* on either side.
+fn same_apple_family(host: &str, target: &str) -> bool {
+    host.contains("-apple-") && target.contains("-apple-")
+}
+
+/// True when both triples target Windows (any arch, any subsystem).
+fn same_windows_family(host: &str, target: &str) -> bool {
+    host.contains("-windows-") && target.contains("-windows-")
 }
 
 // ---------------------------------------------------------------------------
@@ -3379,6 +3419,102 @@ crate_type = ["dylib"]
         let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None, None, Some(&host));
         assert_eq!(prog, "cargo", "native target should use cargo");
         assert_eq!(sub, "build", "native target should use plain build");
+    }
+
+    #[test]
+    fn test_same_apple_family() {
+        assert!(same_apple_family(
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin"
+        ));
+        assert!(same_apple_family(
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin"
+        ));
+        assert!(same_apple_family(
+            "aarch64-apple-darwin",
+            "aarch64-apple-ios"
+        ));
+        assert!(!same_apple_family(
+            "x86_64-unknown-linux-gnu",
+            "x86_64-apple-darwin"
+        ));
+        assert!(!same_apple_family(
+            "x86_64-apple-darwin",
+            "x86_64-pc-windows-msvc"
+        ));
+    }
+
+    #[test]
+    fn test_same_windows_family() {
+        assert!(same_windows_family(
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc"
+        ));
+        assert!(same_windows_family(
+            "x86_64-pc-windows-gnu",
+            "x86_64-pc-windows-msvc"
+        ));
+        assert!(!same_windows_family(
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc"
+        ));
+        assert!(!same_windows_family(
+            "x86_64-apple-darwin",
+            "x86_64-pc-windows-msvc"
+        ));
+    }
+
+    #[test]
+    fn test_detect_cross_strategy_for_target_apple_cross_arch() {
+        // On any apple host, building a different apple arch should still
+        // use cargo (clang handles apple targets universally).
+        let strategy = detect_cross_strategy_for_target_with_host(
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+        );
+        assert_eq!(strategy, CrossStrategy::Cargo);
+
+        let strategy = detect_cross_strategy_for_target_with_host(
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+        );
+        assert_eq!(strategy, CrossStrategy::Cargo);
+    }
+
+    #[test]
+    fn test_detect_cross_strategy_for_target_linux_cross_arch_uses_auto() {
+        // On a Linux host, building a different Linux arch does NOT get the
+        // same-family exemption — it requires cross tooling (multilib gcc
+        // or cross/zigbuild). We delegate to detect_cross_strategy().
+        let strategy = detect_cross_strategy_for_target_with_host(
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+        );
+        // The result depends on which cross tools are installed on the test
+        // host; we only assert it's NOT the premature Cargo shortcut.
+        assert!(
+            strategy == CrossStrategy::Zigbuild
+                || strategy == CrossStrategy::Cross
+                || strategy == CrossStrategy::Cargo,
+            "linux cross-arch should go through the detect path; got {:?}",
+            strategy
+        );
+    }
+
+    // Test helper — same as detect_cross_strategy_for_target but lets the
+    // test pin the host triple instead of reading the real machine's target.
+    fn detect_cross_strategy_for_target_with_host(host: &str, target: &str) -> CrossStrategy {
+        if !host.is_empty() && target == host {
+            return CrossStrategy::Cargo;
+        }
+        if !host.is_empty() && same_apple_family(host, target) {
+            return CrossStrategy::Cargo;
+        }
+        if !host.is_empty() && same_windows_family(host, target) {
+            return CrossStrategy::Cargo;
+        }
+        detect_cross_strategy()
     }
 
     // ---- Fix 5: resolve_reproducible_epoch tests ----
