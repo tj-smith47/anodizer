@@ -275,14 +275,26 @@ impl Context {
     /// - `Checksums` — combined checksum file contents, set by checksum stage
     pub fn populate_git_vars(&mut self) {
         if let Some(ref info) = self.git_info {
-            // Version: strip the `v` prefix from the tag (like GoReleaser's
-            // strings.TrimPrefix), preserving prerelease AND build metadata.
-            let version = info.tag.strip_prefix('v').unwrap_or(&info.tag).to_string();
-
+            // RawVersion: just major.minor.patch, no prerelease or build metadata.
             let raw_version = format!(
                 "{}.{}.{}",
                 info.semver.major, info.semver.minor, info.semver.patch
             );
+
+            // Version: clean semver derived from the parsed SemVer struct, not
+            // from the tag string.  The old `tag.strip_prefix('v')` approach
+            // broke for monorepo workspace tags like `core-v0.3.2` because it
+            // only stripped a leading 'v', leaving `core-v0.3.2` intact.
+            // Deriving from the struct handles all tag_template prefixes.
+            let mut version = raw_version.clone();
+            if let Some(ref pre) = info.semver.prerelease {
+                version.push('-');
+                version.push_str(pre);
+            }
+            if let Some(ref meta) = info.semver.build_metadata {
+                version.push('+');
+                version.push_str(meta);
+            }
 
             self.template_vars.set("Tag", &info.tag);
             self.template_vars.set("Version", &version);
@@ -748,6 +760,55 @@ mod tests {
             ctx.template_vars().get("BuildMetadata"),
             Some(&"".to_string())
         );
+    }
+
+    #[test]
+    fn test_populate_git_vars_monorepo_prefixed_tag() {
+        // Workspace tags like "core-v0.3.2" should produce Version="0.3.2",
+        // not "core-v0.3.2" (which breaks RPM Version fields and templates).
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut info = make_git_info(false, None);
+        info.tag = "core-v0.3.2".to_string();
+        info.semver = SemVer {
+            major: 0,
+            minor: 3,
+            patch: 2,
+            prerelease: None,
+            build_metadata: None,
+        };
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("Tag"), Some(&"core-v0.3.2".to_string()));
+        assert_eq!(v.get("Version"), Some(&"0.3.2".to_string()));
+        assert_eq!(v.get("RawVersion"), Some(&"0.3.2".to_string()));
+        assert_eq!(v.get("Major"), Some(&"0".to_string()));
+        assert_eq!(v.get("Minor"), Some(&"3".to_string()));
+        assert_eq!(v.get("Patch"), Some(&"2".to_string()));
+    }
+
+    #[test]
+    fn test_populate_git_vars_monorepo_prefixed_tag_with_prerelease() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut info = make_git_info(false, None);
+        info.tag = "operator-v1.0.0-rc.1".to_string();
+        info.semver = SemVer {
+            major: 1,
+            minor: 0,
+            patch: 0,
+            prerelease: Some("rc.1".to_string()),
+            build_metadata: None,
+        };
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("Tag"), Some(&"operator-v1.0.0-rc.1".to_string()));
+        assert_eq!(v.get("Version"), Some(&"1.0.0-rc.1".to_string()));
+        assert_eq!(v.get("RawVersion"), Some(&"1.0.0".to_string()));
     }
 
     #[test]

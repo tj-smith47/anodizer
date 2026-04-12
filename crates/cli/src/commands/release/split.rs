@@ -152,12 +152,22 @@ pub(super) fn run_split(
     // Copy binary artifacts into the split dist directory so they survive
     // upload/download between split and merge machines.  Update the artifact
     // paths to point at the copies inside dist/.
+    //
+    // Each artifact goes into a per-target subdirectory (e.g., dist/linux/
+    // x86_64-unknown-linux-gnu/cfgd) to prevent filename collisions when
+    // multiple architectures produce the same binary name.  Without this,
+    // the aarch64 copy would overwrite the x86_64 copy and merge would
+    // see only one artifact per OS context.
     for artifact in ctx.artifacts.all_mut() {
         if !artifact.path.exists() {
             continue; // dry-run or already relocated
         }
         if let Some(file_name) = artifact.path.file_name().map(|n| n.to_os_string()) {
-            let dest = split_dist.join(&file_name);
+            let target_subdir = artifact.target.as_deref().unwrap_or("default");
+            let dest_dir = split_dist.join(target_subdir);
+            std::fs::create_dir_all(&dest_dir)
+                .with_context(|| format!("split: create target dir {}", dest_dir.display()))?;
+            let dest = dest_dir.join(&file_name);
             if artifact.path != dest {
                 std::fs::copy(&artifact.path, &dest).with_context(|| {
                     format!(

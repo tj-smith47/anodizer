@@ -539,16 +539,70 @@ impl Pipeline {
             }
         }
 
+        // Stages that only make sense when binary artifacts exist.  When the
+        // build stage produces no binaries (library-only crate), these stages
+        // are skipped with a clear message instead of silently reporting ✓.
+        const BINARY_DEPENDENT_STAGES: &[&str] = &[
+            "upx",
+            "archive",
+            "makeself",
+            "nfpm",
+            "snapcraft",
+            "appbundle",
+            "dmg",
+            "msi",
+            "pkg",
+            "nsis",
+            "flatpak",
+            "notarize",
+            "srpm",
+        ];
+
+        // Check if binaries already exist (merge mode loads artifacts before
+        // the pipeline runs, so build stage never executes).
+        let mut has_binaries = ctx.artifacts.all().iter().any(|a| {
+            matches!(
+                a.kind,
+                anodize_core::artifact::ArtifactKind::Binary
+                    | anodize_core::artifact::ArtifactKind::UploadableBinary
+                    | anodize_core::artifact::ArtifactKind::UniversalBinary
+            )
+        });
+
         for stage in &self.stages {
             let name = stage.name();
             if ctx.should_skip(name) {
                 log.status(&format!("{} {}", name.bold(), "skipped".yellow()));
                 continue;
             }
+
+            // After the build stage, check if any binary artifacts were produced.
+            // Skip binary-dependent stages if not (library-only crate).
+            if BINARY_DEPENDENT_STAGES.contains(&name) && !has_binaries {
+                log.status(&format!(
+                    "{} {} {}",
+                    "\u{2713}".green().bold(),
+                    name.bold(),
+                    "(no binaries, skipped)".yellow()
+                ));
+                continue;
+            }
+
             log.status(&format!("\u{2022} {}...", name.bold()));
             match stage.run(ctx) {
                 Ok(()) => {
                     log.status(&format!("{} {}", "\u{2713}".green().bold(), name.bold()));
+                    // After the build stage, record whether binaries were produced.
+                    if name == "build" {
+                        has_binaries = ctx.artifacts.all().iter().any(|a| {
+                            matches!(
+                                a.kind,
+                                anodize_core::artifact::ArtifactKind::Binary
+                                    | anodize_core::artifact::ArtifactKind::UploadableBinary
+                                    | anodize_core::artifact::ArtifactKind::UniversalBinary
+                            )
+                        });
+                    }
                     // After the changelog stage completes, populate the ReleaseNotes
                     // template variable so subsequent stages can reference it.
                     if name == "changelog" {

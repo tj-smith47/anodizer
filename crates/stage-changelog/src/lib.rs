@@ -678,15 +678,20 @@ impl Stage for ChangelogStage {
         for crate_cfg in &crates {
             let crate_name = crate_cfg.name.clone();
 
-            // Find the previous tag for this crate.
+            // Find the previous tag for this crate by searching for tags that
+            // match the crate's tag_template pattern. We must exclude the
+            // current tag — otherwise the "latest matching tag" IS the current
+            // tag and `commits_between(current_tag, HEAD)` yields zero commits.
             let monorepo_prefix = ctx.config.monorepo_tag_prefix();
+            let current_tag = ctx.template_vars().get("Tag").cloned();
             let prev_tag = find_latest_tag_matching_with_prefix(
                 &crate_cfg.tag_template,
                 ctx.config.git.as_ref(),
                 Some(ctx.template_vars()),
                 monorepo_prefix,
             )
-            .unwrap_or(None);
+            .unwrap_or(None)
+            .filter(|t| current_tag.as_deref() != Some(t.as_str()));
 
             // Path filter: changelog-level `paths` takes precedence, then per-crate path,
             // then monorepo.dir as a fallback.

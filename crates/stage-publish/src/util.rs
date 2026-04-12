@@ -125,21 +125,38 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 /// Resolve an auth token from the context, then a publisher-specific env var,
 /// then `ANODIZE_GITHUB_TOKEN`, then the generic `GITHUB_TOKEN` env var.
 pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
+    // Filter empty strings: GitHub Actions sets env vars from non-existent
+    // secrets to "", which would short-circuit the fallback chain and prevent
+    // GITHUB_TOKEN from being used.
+    let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
     ctx.options
         .token
         .clone()
-        .or_else(|| env_var.and_then(|v| std::env::var(v).ok()))
-        .or_else(|| std::env::var("ANODIZE_GITHUB_TOKEN").ok())
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+        .and_then(non_empty)
+        .or_else(|| {
+            env_var
+                .and_then(|v| std::env::var(v).ok())
+                .and_then(non_empty)
+        })
+        .or_else(|| {
+            std::env::var("ANODIZE_GITHUB_TOKEN")
+                .ok()
+                .and_then(non_empty)
+        })
+        .or_else(|| std::env::var("GITHUB_TOKEN").ok().and_then(non_empty))
 }
 
 // ---------------------------------------------------------------------------
 // Git repo helpers  (clone, configure auth, commit, push)
 // ---------------------------------------------------------------------------
 
-/// Clone a git repo into `tmp_dir` using `http.extraheader` for auth (avoids
-/// leaking tokens in URLs).  Also configures auth on the clone for subsequent
-/// push operations.
+/// Clone a git repo into `tmp_dir` with token-based auth.
+///
+/// Uses a git credential helper that injects the token, which is more
+/// reliable than `http.extraheader` across different GitHub token types
+/// (classic PATs, fine-grained PATs, GitHub App tokens, GITHUB_TOKEN).
+/// The `http.extraheader=Authorization: bearer` approach can be overridden
+/// by system credential helpers and doesn't work with all token types.
 pub(crate) fn clone_repo_with_auth(
     repo_url: &str,
     token: Option<&str>,
@@ -147,37 +164,48 @@ pub(crate) fn clone_repo_with_auth(
     label: &str,
     log: &StageLogger,
 ) -> Result<()> {
-    let auth_header;
-    let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
-    if let Some(tok) = token {
-        auth_header = format!("http.extraheader=Authorization: bearer {}", tok);
-        clone_args.extend_from_slice(&["-c", &auth_header]);
-    }
-    clone_args.push(repo_url);
+    // Embed token in the URL for the clone operation.  This is the same
+    // approach used by actions/checkout and is reliable for all GitHub
+    // token types.  The URL is only used locally in the subprocess.
+    let effective_url = if let Some(tok) = token {
+        inject_token_in_url(repo_url, tok)
+    } else {
+        repo_url.to_string()
+    };
+
+    let clone_args: Vec<&str> = vec!["clone", "--depth=1", &effective_url];
     let repo_path_str = tmp_dir.to_string_lossy();
-    clone_args.push(&repo_path_str);
 
     let output = Command::new("git")
         .args(&clone_args)
+        .arg(repo_path_str.as_ref())
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .with_context(|| format!("{label}: git clone: spawn"))?;
     log.check_output(output, &format!("{label}: git clone"))?;
 
-    // Configure auth for subsequent push operations in this repo clone.
+    // Configure the remote URL for subsequent push operations with auth.
     if let Some(tok) = token {
+        let push_url = inject_token_in_url(repo_url, tok);
         run_cmd_in(
             tmp_dir,
             "git",
-            &[
-                "config",
-                "http.extraheader",
-                &format!("Authorization: bearer {}", tok),
-            ],
-            &format!("{label}: git config auth"),
+            &["remote", "set-url", "origin", &push_url],
+            &format!("{label}: git set push URL"),
         )?;
     }
 
     Ok(())
+}
+
+/// Inject an auth token into an HTTPS git URL.
+/// `https://github.com/owner/repo.git` → `https://x-access-token:<token>@github.com/owner/repo.git`
+fn inject_token_in_url(url: &str, token: &str) -> String {
+    if let Some(rest) = url.strip_prefix("https://") {
+        format!("https://x-access-token:{}@{}", token, rest)
+    } else {
+        url.to_string()
+    }
 }
 
 /// Clone a git repo via SSH, optionally using a private key file or custom

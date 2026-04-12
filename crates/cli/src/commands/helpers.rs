@@ -36,6 +36,9 @@ pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
     if !ws.signs.is_empty() {
         config.signs = ws.signs.clone();
     }
+    if !ws.binary_signs.is_empty() {
+        config.binary_signs = ws.binary_signs.clone();
+    }
     if ws.before.is_some() {
         config.before = ws.before.clone();
     }

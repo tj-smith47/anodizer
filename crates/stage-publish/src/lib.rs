@@ -62,74 +62,102 @@ impl Stage for PublishStage {
         let selected = ctx.options.selected_crates.clone();
         let log = ctx.logger("publish");
 
-        // 1. crates.io — publish all crates with `publish.crates` enabled.
+        // Individual publisher failures are collected and reported at the end
+        // rather than aborting the entire publish stage.  This prevents a single
+        // publisher (e.g. homebrew auth) from killing independent downstream
+        // publishers (docker, cosign, announce).  crates.io is the exception —
+        // it's the authoritative registry and its failure is always fatal.
+        let mut errors: Vec<String> = Vec::new();
+
+        // Helper: run a publisher, log + collect error on failure.
+        macro_rules! try_publish {
+            ($label:expr, $expr:expr) => {
+                if let Err(e) = $expr {
+                    log.warn(&format!("{}: {}", $label, e));
+                    errors.push(format!("{}: {}", $label, e));
+                }
+            };
+        }
+
+        // 1. crates.io — fatal (authoritative registry).
         publish_to_crates_io(ctx, &selected, &log)?;
 
         // 2. Homebrew — one call per crate that has a homebrew config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.homebrew.is_some()) {
-            publish_to_homebrew(ctx, crate_name, &log)?;
+            try_publish!("homebrew", publish_to_homebrew(ctx, crate_name, &log));
         }
 
         // 3. Scoop — one call per crate that has a scoop config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.scoop.is_some()) {
-            publish_to_scoop(ctx, crate_name, &log)?;
+            try_publish!("scoop", publish_to_scoop(ctx, crate_name, &log));
         }
 
         // 4. Chocolatey — one call per crate that has a chocolatey config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.chocolatey.is_some()) {
-            publish_to_chocolatey(ctx, crate_name, &log)?;
+            try_publish!("chocolatey", publish_to_chocolatey(ctx, crate_name, &log));
         }
 
         // 5. WinGet — one call per crate that has a winget config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.winget.is_some()) {
-            publish_to_winget(ctx, crate_name, &log)?;
+            try_publish!("winget", publish_to_winget(ctx, crate_name, &log));
         }
 
         // 6. AUR — one call per crate that has an aur config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur.is_some()) {
-            publish_to_aur(ctx, crate_name, &log)?;
+            try_publish!("aur", publish_to_aur(ctx, crate_name, &log));
         }
 
         // 7. Krew — one call per crate that has a krew config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.krew.is_some()) {
-            publish_to_krew(ctx, crate_name, &log)?;
+            try_publish!("krew", publish_to_krew(ctx, crate_name, &log));
         }
 
         // 8. Nix — one call per crate that has a nix config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.nix.is_some()) {
-            publish_to_nix(ctx, crate_name, &log)?;
+            try_publish!("nix", publish_to_nix(ctx, crate_name, &log));
         }
 
         // 9. DockerHub — top-level publisher (not per-crate).
-        publish_to_dockerhub(ctx, &log)?;
+        try_publish!("dockerhub", publish_to_dockerhub(ctx, &log));
 
         // 10. Artifactory — top-level publisher (not per-crate).
-        publish_to_artifactory(ctx, &log)?;
+        try_publish!("artifactory", publish_to_artifactory(ctx, &log));
 
         // 11. GemFury — top-level publisher (not per-crate).
-        publish_to_fury(ctx, &log)?;
+        try_publish!("fury", publish_to_fury(ctx, &log));
 
         // 12. CloudSmith — top-level publisher (not per-crate).
-        publish_to_cloudsmith(ctx, &log)?;
+        try_publish!("cloudsmith", publish_to_cloudsmith(ctx, &log));
 
         // 13. NPM — top-level publisher (not per-crate).
-        publish_to_npm(ctx, &log)?;
+        try_publish!("npm", publish_to_npm(ctx, &log));
 
         // 14. Homebrew Casks — top-level publisher (GoReleaser parity).
-        publish_top_level_homebrew_casks(ctx, &log)?;
+        try_publish!(
+            "homebrew-casks",
+            publish_top_level_homebrew_casks(ctx, &log)
+        );
 
         // 15. Generic HTTP upload — top-level publisher.
-        publish_to_upload(ctx, &log)?;
+        try_publish!("upload", publish_to_upload(ctx, &log));
 
         // 16. AUR source packages — per-crate publisher.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur_source.is_some()) {
-            publish_to_aur_source(ctx, crate_name, &log)?;
+            try_publish!("aur-source", publish_to_aur_source(ctx, crate_name, &log));
         }
 
         // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
-        publish_top_level_aur_sources(ctx, &log)?;
+        try_publish!("aur-sources", publish_top_level_aur_sources(ctx, &log));
 
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "{} publisher(s) failed:\n  {}",
+                errors.len(),
+                errors.join("\n  ")
+            )
+        }
     }
 }
 
