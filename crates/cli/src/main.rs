@@ -47,7 +47,45 @@ fn resolve_single_target(single_target: bool) -> Option<String> {
     }
 }
 
+/// Enable ANSI color output in non-TTY CI environments that still render
+/// color in logs (GitHub Actions, GitLab, CircleCI, most modern systems).
+///
+/// The `colored` crate auto-disables when stderr is not a real TTY, which
+/// means every CI run would show plain text. GitHub Actions, like cargo,
+/// preserves ANSI escapes in the log stream and renders them in the web
+/// UI, so the right behaviour is "force color when a CI environment is
+/// detected, unless the user has opted out via NO_COLOR".
+fn enable_ci_colors() {
+    // Honour the user's explicit opt-out first.
+    if std::env::var_os("NO_COLOR").is_some() {
+        return;
+    }
+    // Respect explicit overrides — ANODIZE_COLOR or CLICOLOR_FORCE.
+    if let Ok(val) = std::env::var("ANODIZE_COLOR") {
+        match val.as_str() {
+            "always" => {
+                colored::control::set_override(true);
+                return;
+            }
+            "never" => {
+                colored::control::set_override(false);
+                return;
+            }
+            _ => {}
+        }
+    }
+    // Auto-enable in common CI environments.
+    let ci_envs = ["GITHUB_ACTIONS", "GITLAB_CI", "CIRCLECI", "BUILDKITE", "CI"];
+    for key in ci_envs {
+        if std::env::var_os(key).is_some() {
+            colored::control::set_override(true);
+            return;
+        }
+    }
+}
+
 fn main() {
+    enable_ci_colors();
     let cli = Cli::parse();
     let result = match cli.command {
         Commands::Release {

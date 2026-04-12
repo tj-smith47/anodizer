@@ -1,9 +1,53 @@
+use anodize_core::config::CrateConfig;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::util::topological_sort;
 use anyhow::{Context as _, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
+
+/// Walk `depends_on` from each crate in `seed` to produce a de-duplicated
+/// list containing every seed crate plus every transitive dependency that
+/// lives in the same config. The `all_crates` slice is searched by name;
+/// deps pointing at crates outside the config are ignored (same as cargo's
+/// external-dep handling — they're expected to be on crates.io already).
+fn expand_with_transitive_deps(all_crates: &[CrateConfig], seed: &[String]) -> Vec<String> {
+    let name_to_deps: HashMap<&str, &[String]> = all_crates
+        .iter()
+        .map(|c| {
+            (
+                c.name.as_str(),
+                c.depends_on
+                    .as_deref()
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut stack: Vec<String> = seed.to_vec();
+    while let Some(name) = stack.pop() {
+        // Skip names we've already visited or that aren't in the config —
+        // external crates.io deps are resolved by cargo against the real
+        // registry and don't need to appear in our publish graph.
+        if !name_to_deps.contains_key(name.as_str()) {
+            continue;
+        }
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        out.push(name.clone());
+        if let Some(deps) = name_to_deps.get(name.as_str()) {
+            for dep in *deps {
+                if !seen.contains(dep) {
+                    stack.push(dep.clone());
+                }
+            }
+        }
+    }
+    out
+}
 
 // ---------------------------------------------------------------------------
 // publish_command
@@ -163,13 +207,28 @@ pub fn publish_to_crates_io(
     selected: &[String],
     log: &StageLogger,
 ) -> Result<()> {
+    // When a crate depends on another crate in the same workspace that
+    // isn't yet on crates.io, `cargo publish` for the dependent will fail
+    // with "no matching package named X found" because cargo verifies path
+    // deps against the registry. Walk depends_on transitively so we publish
+    // the dependency chain in topological order, not just the caller's
+    // --crate selection. Already-published versions are skipped below via
+    // the is_already_published check, so including extra crates is safe.
+    let expanded_selection: Vec<String> = if selected.is_empty() {
+        Vec::new()
+    } else {
+        expand_with_transitive_deps(&ctx.config.crates, selected)
+    };
+    let selected_set: std::collections::HashSet<&str> =
+        expanded_selection.iter().map(|s| s.as_str()).collect();
+
     // Collect (name, depends_on) for all crates with crates.io publishing enabled,
-    // filtered to `selected` when non-empty.
+    // filtered to the expanded selection when non-empty.
     let publishable: Vec<(String, Vec<String>)> = ctx
         .config
         .crates
         .iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter(|c| selected.is_empty() || selected_set.contains(c.name.as_str()))
         .filter(|c| {
             c.publish
                 .as_ref()
@@ -311,5 +370,66 @@ mod tests {
         assert!(cmd.contains(&"publish".to_string()));
         assert!(cmd.contains(&"-p".to_string()));
         assert!(cmd.contains(&"my-crate".to_string()));
+    }
+
+    fn crate_with_deps(name: &str, deps: &[&str]) -> CrateConfig {
+        let mut c = CrateConfig::default();
+        c.name = name.to_string();
+        c.depends_on = Some(deps.iter().map(|s| s.to_string()).collect());
+        c
+    }
+
+    #[test]
+    fn test_expand_transitive_deps_includes_direct_dep() {
+        // --crate cfgd should expand to [cfgd, cfgd-core] so cfgd-core
+        // gets published before cfgd tries to reference it on crates.io.
+        let crates = vec![
+            crate_with_deps("cfgd-core", &[]),
+            crate_with_deps("cfgd", &["cfgd-core"]),
+        ];
+        let selection = vec!["cfgd".to_string()];
+        let expanded = expand_with_transitive_deps(&crates, &selection);
+        assert!(expanded.contains(&"cfgd".to_string()));
+        assert!(expanded.contains(&"cfgd-core".to_string()));
+        assert_eq!(expanded.len(), 2);
+    }
+
+    #[test]
+    fn test_expand_transitive_deps_chains_through_multiple_levels() {
+        let crates = vec![
+            crate_with_deps("a", &[]),
+            crate_with_deps("b", &["a"]),
+            crate_with_deps("c", &["b"]),
+        ];
+        let expanded = expand_with_transitive_deps(&crates, &["c".to_string()]);
+        assert!(expanded.contains(&"a".to_string()));
+        assert!(expanded.contains(&"b".to_string()));
+        assert!(expanded.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_expand_transitive_deps_dedupes_shared_ancestors() {
+        // diamond: d depends on both b and c, which both depend on a.
+        let crates = vec![
+            crate_with_deps("a", &[]),
+            crate_with_deps("b", &["a"]),
+            crate_with_deps("c", &["a"]),
+            crate_with_deps("d", &["b", "c"]),
+        ];
+        let expanded = expand_with_transitive_deps(&crates, &["d".to_string()]);
+        assert_eq!(expanded.len(), 4, "expected all 4 crates once: {:?}", expanded);
+    }
+
+    #[test]
+    fn test_expand_transitive_deps_ignores_external_deps() {
+        // Deps on names not present in the config (i.e. external crates.io
+        // crates) are silently dropped — cargo verifies them against the
+        // real registry, not our workspace.
+        let crates = vec![crate_with_deps("cfgd", &["cfgd-core", "serde"])];
+        let expanded = expand_with_transitive_deps(&crates, &["cfgd".to_string()]);
+        assert!(expanded.contains(&"cfgd".to_string()));
+        // cfgd-core isn't in the config, so it won't appear
+        assert!(!expanded.contains(&"cfgd-core".to_string()));
+        assert!(!expanded.contains(&"serde".to_string()));
     }
 }
