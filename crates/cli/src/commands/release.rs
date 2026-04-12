@@ -154,14 +154,33 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         }
     }
 
+    // Flatten every known crate — top-level plus anything under workspaces —
+    // so that `--crate X` and `--all` resolve the same way regardless of whether
+    // the config is flat or workspace-based. apply_workspace_overlay already
+    // copies workspace crates into config.crates when --workspace is set, but
+    // without --workspace we still need to look inside workspaces ourselves.
+    let all_known_crates: Vec<CrateConfig> = {
+        let mut acc: Vec<CrateConfig> = config.crates.clone();
+        if let Some(ref ws_list) = config.workspaces {
+            for ws in ws_list {
+                for c in &ws.crates {
+                    if !acc.iter().any(|existing| existing.name == c.name) {
+                        acc.push(c.clone());
+                    }
+                }
+            }
+        }
+        acc
+    };
+
     // Determine selected crates
     let selected = if opts.all {
         if opts.force {
             // --all --force: include every crate
-            config.crates.iter().map(|c| c.name.clone()).collect()
+            all_known_crates.iter().map(|c| c.name.clone()).collect()
         } else {
             detect_changed_crates(
-                &config.crates,
+                &all_known_crates,
                 config.git.as_ref(),
                 config.monorepo_tag_prefix(),
                 &log,
@@ -171,8 +190,10 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         opts.crate_names.clone()
     };
 
-    // Topological sort of selected crates (respect depends_on ordering)
-    let selected_sorted = topo_sort_selected(&config.crates, &selected);
+    // Topological sort of selected crates (respect depends_on ordering).
+    // Passing the flattened crate list means --crate cfgd resolves correctly
+    // whether `cfgd` is a top-level crate or lives inside a workspace.
+    let selected_sorted = topo_sort_selected(&all_known_crates, &selected);
 
     let mut skip_stages = opts.skip;
     // Snapshot mode automatically skips publish and announce stages
