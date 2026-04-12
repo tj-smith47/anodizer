@@ -264,7 +264,10 @@ fn main() {
         } => {
             if !merge {
                 eprintln!(
-                    "{} `anodize continue` requires --merge flag",
+                    "{} `anodize continue` requires --merge flag \
+                     — this command merges split-build artifacts from \
+                     `anodize release --split` and runs post-build stages \
+                     (publish, announce, etc.)",
                     "Error:".red().bold()
                 );
                 std::process::exit(1);
@@ -1008,6 +1011,59 @@ mod tests {
             err.contains("--split") || err.contains("--merge") || err.contains("cannot be used"),
             "error should mention the conflicting flags: {}",
             err
+        );
+    }
+
+    #[test]
+    fn test_cli_release_crate_workspace_mutually_exclusive() {
+        let result =
+            Cli::try_parse_from(["anodize", "release", "--crate", "foo", "--workspace", "bar"]);
+        assert!(
+            result.is_err(),
+            "--crate and --workspace should be mutually exclusive on release"
+        );
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.contains("--crate")
+                || err.contains("--workspace")
+                || err.contains("cannot be used"),
+            "error should mention the conflicting flags: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_cli_build_crate_workspace_mutually_exclusive() {
+        let result =
+            Cli::try_parse_from(["anodize", "build", "--crate", "foo", "--workspace", "bar"]);
+        assert!(
+            result.is_err(),
+            "--crate and --workspace should be mutually exclusive on build"
+        );
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.contains("--crate")
+                || err.contains("--workspace")
+                || err.contains("cannot be used"),
+            "error should mention the conflicting flags: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_cli_check_workspace_has_no_crate_conflict() {
+        // Check command has --workspace but no --crate, so no conflict applies.
+        let result = Cli::try_parse_from(["anodize", "check", "--workspace", "bar"]);
+        assert!(
+            result.is_ok(),
+            "check --workspace should parse successfully: {:?}",
+            result.err()
         );
     }
 }

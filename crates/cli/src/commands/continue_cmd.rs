@@ -40,12 +40,8 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::resolve_scm_token_type(&mut ctx, &config);
-    ctx.populate_time_vars();
-    ctx.populate_runtime_vars();
+    helpers::setup_context(&mut ctx, &config, &log)?;
     ctx.populate_metadata_var();
-    helpers::setup_env(&mut ctx, &config, &log)?;
-    helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
     super::release::run_merge(&mut ctx, &config, &log, opts.dry_run, opts.dist.as_deref())
 }

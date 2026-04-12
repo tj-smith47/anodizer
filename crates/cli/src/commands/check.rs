@@ -586,7 +586,8 @@ pub fn find_cycle(crates: &[CrateConfig]) -> Option<Vec<String>> {
 fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<String>) {
     if !tag_template.is_empty() && !anodize_core::git::has_version_placeholder(tag_template) {
         errors.push(format!(
-            "{}: tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}'",
+            "{}: tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}' \
+             (e.g. 'v{{{{ .Version }}}}' or 'myapp-v{{{{ Version }}}}')",
             context, tag_template
         ));
     }

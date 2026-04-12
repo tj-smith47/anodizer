@@ -54,15 +54,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::resolve_scm_token_type(&mut ctx, &config);
-    ctx.populate_time_vars();
-    ctx.populate_runtime_vars();
-
-    // Populate user-defined env vars
-    helpers::setup_env(&mut ctx, &config, &log)?;
-
-    // Resolve git info
-    helpers::resolve_git_context(&mut ctx, &config, &log)?;
+    helpers::setup_context(&mut ctx, &config, &log)?;
 
     // Run build stage
     let build_stage = anodize_stage_build::BuildStage;

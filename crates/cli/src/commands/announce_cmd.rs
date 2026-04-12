@@ -40,11 +40,7 @@ pub fn run(opts: AnnounceOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::resolve_scm_token_type(&mut ctx, &config);
-    ctx.populate_time_vars();
-    ctx.populate_runtime_vars();
-    helpers::setup_env(&mut ctx, &config, &log)?;
-    helpers::resolve_git_context(&mut ctx, &config, &log)?;
+    helpers::setup_context(&mut ctx, &config, &log)?;
 
     // Load artifacts from dist/
     let dist = opts.dist.as_deref().unwrap_or(&config.dist);

@@ -72,7 +72,11 @@ pub enum Commands {
             help = "Path to a custom release notes file (overrides changelog)"
         )]
         release_notes: Option<PathBuf>,
-        #[arg(long, help = "Release a specific workspace in a monorepo config")]
+        #[arg(
+            long,
+            conflicts_with = "crate_names",
+            help = "Release a specific workspace in a monorepo config"
+        )]
         workspace: Option<String>,
         #[arg(long, help = "Set the release as a draft")]
         draft: bool,
@@ -128,7 +132,11 @@ pub enum Commands {
         parallelism: Option<usize>,
         #[arg(long, help = "Build only for the host target triple")]
         single_target: bool,
-        #[arg(long, help = "Build a specific workspace in a monorepo config")]
+        #[arg(
+            long,
+            conflicts_with = "crate_names",
+            help = "Build a specific workspace in a monorepo config"
+        )]
         workspace: Option<String>,
         #[arg(
             long,

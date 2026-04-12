@@ -430,6 +430,25 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
     }
 }
 
+/// Perform the standard context setup sequence shared by all pipeline commands.
+///
+/// This encapsulates the boilerplate that every pipeline entry point
+/// (release, publish, announce, continue) must run after constructing a
+/// `Context`:
+///   1. Resolve SCM token type from config/environment
+///   2. Populate time template variables
+///   3. Populate runtime template variables
+///   4. Load environment variables and `.env` files
+///   5. Resolve git context (tag discovery, git info)
+pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> Result<()> {
+    resolve_scm_token_type(ctx, config);
+    ctx.populate_time_vars();
+    ctx.populate_runtime_vars();
+    setup_env(ctx, config, log)?;
+    resolve_git_context(ctx, config, log)?;
+    Ok(())
+}
+
 /// Resolve the SCM token type and token value from config and environment.
 ///
 /// This sets `ctx.token_type` based on priority (highest first):
