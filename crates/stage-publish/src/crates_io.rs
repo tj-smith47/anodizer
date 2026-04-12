@@ -342,12 +342,22 @@ pub fn publish_to_crates_io(
 
         if has_dependents && !version.is_empty() {
             let timeout = timeout_map.get(name).copied().unwrap_or(300);
-            log.status(&format!(
-                "waiting for {}-{} in crates.io index (timeout={}s)…",
-                name, version, timeout
-            ));
-            poll_crates_io_index(name, &version, timeout, log)
-                .with_context(|| format!("publish: index poll for '{}'", name))?;
+            if timeout == 0 {
+                // index_timeout: 0 — skip the poll entirely and warn. Useful
+                // when the caller is willing to accept a downstream publish
+                // failure if the index hasn't propagated yet.
+                log.warn(&format!(
+                    "index_timeout is 0 for '{}'; skipping index poll (dependents may fail)",
+                    name
+                ));
+            } else {
+                log.status(&format!(
+                    "waiting for {}-{} in crates.io index (timeout={}s)…",
+                    name, version, timeout
+                ));
+                poll_crates_io_index(name, &version, timeout, log)
+                    .with_context(|| format!("publish: index poll for '{}'", name))?;
+            }
         }
     }
 
