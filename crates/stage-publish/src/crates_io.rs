@@ -202,6 +202,44 @@ fn poll_crates_io_index(
 // publish_to_crates_io
 // ---------------------------------------------------------------------------
 
+/// Read the `version = "X.Y.Z"` from a crate's Cargo.toml.
+/// Uses a simple line scan rather than a full TOML parse to avoid
+/// pulling in the `toml` crate as a dep of stage-publish.
+fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
+    let manifest = std::path::Path::new(crate_path).join("Cargo.toml");
+    let content = std::fs::read_to_string(&manifest).ok()?;
+    // Look for `version = "..."` in the [package] section (before any
+    // other `[section]` header). This covers both quoted and workspace
+    // forms; workspace references (version.workspace = true) return None
+    // since they don't have a literal version string.
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[package]" {
+            in_package = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            if in_package {
+                break;
+            }
+            continue;
+        }
+        if in_package {
+            if let Some(rest) = trimmed.strip_prefix("version") {
+                let rest = rest.trim_start();
+                if let Some(rest) = rest.strip_prefix('=') {
+                    let rest = rest.trim();
+                    if rest.starts_with('"') {
+                        return rest.trim_matches('"').to_string().into();
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn publish_to_crates_io(
     ctx: &mut Context,
     selected: &[String],
@@ -293,20 +331,36 @@ pub fn publish_to_crates_io(
 
     let version = ctx.version();
 
+    // Build a lookup from crate name → path so we can read each crate's
+    // actual Cargo.toml version for the already-published check. Transitive
+    // deps may have a DIFFERENT version than the release tag (e.g. cfgd-core
+    // is at 0.2.2 while cfgd releases 0.3.2).
+    let crate_paths: HashMap<String, String> = all_crates
+        .iter()
+        .map(|c| (c.name.clone(), c.path.clone()))
+        .collect();
+
     for (i, name) in sorted_names.iter().enumerate() {
+        // Read the crate's actual version from its Cargo.toml, falling back
+        // to the global release version if the path isn't found or parse fails.
+        let crate_version = crate_paths
+            .get(name)
+            .and_then(|path| read_cargo_toml_version(path))
+            .unwrap_or_else(|| version.clone());
+
         // Idempotency: skip if this version is already on crates.io.  Lets the
         // publish stage tolerate retries after a partial run (e.g. crates.io
         // new-crate rate-limit) without failing on the first already-published
         // crate.  Index check failures are non-fatal — we still try to publish.
-        let already = if version.is_empty() {
+        let already = if crate_version.is_empty() {
             false
         } else {
-            match is_already_published(name, &version) {
+            match is_already_published(name, &crate_version) {
                 Ok(found) => found,
                 Err(e) => {
                     log.warn(&format!(
                         "could not check crates.io index for '{}-{}' ({}); attempting publish anyway",
-                        name, version, e
+                        name, crate_version, e
                     ));
                     false
                 }
@@ -315,7 +369,7 @@ pub fn publish_to_crates_io(
         if already {
             log.status(&format!(
                 "skipping '{}-{}' — already published on crates.io",
-                name, version
+                name, crate_version
             ));
             continue;
         }
@@ -340,12 +394,9 @@ pub fn publish_to_crates_io(
                 .unwrap_or(false)
         });
 
-        if has_dependents && !version.is_empty() {
+        if has_dependents && !crate_version.is_empty() {
             let timeout = timeout_map.get(name).copied().unwrap_or(300);
             if timeout == 0 {
-                // index_timeout: 0 — skip the poll entirely and warn. Useful
-                // when the caller is willing to accept a downstream publish
-                // failure if the index hasn't propagated yet.
                 log.warn(&format!(
                     "index_timeout is 0 for '{}'; skipping index poll (dependents may fail)",
                     name
@@ -353,9 +404,9 @@ pub fn publish_to_crates_io(
             } else {
                 log.status(&format!(
                     "waiting for {}-{} in crates.io index (timeout={}s)…",
-                    name, version, timeout
+                    name, crate_version, timeout
                 ));
-                poll_crates_io_index(name, &version, timeout, log)
+                poll_crates_io_index(name, &crate_version, timeout, log)
                     .with_context(|| format!("publish: index poll for '{}'", name))?;
             }
         }
