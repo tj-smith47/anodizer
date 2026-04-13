@@ -1165,6 +1165,13 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 pub struct TemplateVars {
     vars: HashMap<String, String>,
     env: HashMap<String, String>,
+    /// Env vars explicitly configured by the user (config `env:`, `.env` files,
+    /// workspace `env:`).  These are safe to serialize into split contexts and
+    /// inject into subprocess commands.  Process-inherited env vars (HOME, PATH,
+    /// USER, etc.) live only in `env` for template rendering — they must NOT be
+    /// forwarded to subprocesses (which inherit them naturally) or serialized
+    /// across platforms (macOS HOME poisons Linux builds).
+    config_env: HashMap<String, String>,
     /// Custom user-defined variables accessible as {{ .Var.key }}.
     custom_vars: HashMap<String, String>,
     /// Pipeline outputs map accessible as {{ .Outputs.key }}.
@@ -1184,6 +1191,7 @@ impl TemplateVars {
         Self {
             vars: HashMap::new(),
             env: HashMap::new(),
+            config_env: HashMap::new(),
             custom_vars: HashMap::new(),
             outputs: HashMap::new(),
             structured: HashMap::new(),
@@ -1200,6 +1208,13 @@ impl TemplateVars {
 
     pub fn set_env(&mut self, key: &str, value: &str) {
         self.env.insert(key.to_string(), value.to_string());
+    }
+
+    /// Set an env var that was explicitly configured by the user.
+    /// Also adds it to the general env map for template rendering.
+    pub fn set_config_env(&mut self, key: &str, value: &str) {
+        self.env.insert(key.to_string(), value.to_string());
+        self.config_env.insert(key.to_string(), value.to_string());
     }
 
     pub fn set_custom_var(&mut self, key: &str, value: &str) {
@@ -1231,9 +1246,19 @@ impl TemplateVars {
         &self.vars
     }
 
-    /// Return all environment variables.
+    /// Return all environment variables (process + config).
+    /// Used for template rendering ({{ .Env.* }}).
     pub fn all_env(&self) -> &HashMap<String, String> {
         &self.env
+    }
+
+    /// Return only explicitly configured env vars (config `env:`, `.env` files).
+    /// Safe to serialize into split contexts and inject into subprocesses.
+    /// Process-inherited vars (HOME, PATH, etc.) are excluded — subprocesses
+    /// inherit them naturally, and serializing them across platforms is poison
+    /// (macOS HOME=/Users/runner breaks Linux docker builds).
+    pub fn all_config_env(&self) -> &HashMap<String, String> {
+        &self.config_env
     }
 
     /// Get a structured (non-string) template variable by key.

@@ -1828,7 +1828,7 @@ impl Stage for DockerStage {
                         is_v2: false,
                         digest_disabled,
                         digest_name_template,
-                        env_vars: ctx.template_vars().all_env().clone(),
+                        env_vars: ctx.template_vars().all_config_env().clone(),
                         push_flags,
                     });
                 }
@@ -2189,7 +2189,7 @@ impl Stage for DockerStage {
                             is_v2: true,
                             digest_disabled,
                             digest_name_template,
-                            env_vars: ctx.template_vars().all_env().clone(),
+                            env_vars: ctx.template_vars().all_config_env().clone(),
                             push_flags: Vec::new(), // V2 always uses buildx; push flags baked into cmd_args
                         });
                     }
@@ -2316,7 +2316,7 @@ impl Stage for DockerStage {
         // Docker manifests (must run after all builds complete, since they
         // reference the built image digests)
         // ==================================================================
-        let manifest_env_vars = ctx.template_vars().all_env().clone();
+        let manifest_env_vars = ctx.template_vars().all_config_env().clone();
         for krate in &crates {
             // ------------------------------------------------------------------
             // Docker manifests

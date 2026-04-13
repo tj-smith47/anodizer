@@ -257,20 +257,22 @@ pub fn setup_env(
 
     // Load env files into template context (overrides process env).
     // Supports both list form (array of .env files) and struct form (token file paths).
+    // These are user-configured, so use set_config_env (safe for cross-platform
+    // serialization and subprocess injection).
     if let Some(ref env_files_config) = config.env_files {
         match env_files_config {
             anodize_core::config::EnvFilesConfig::List(files) => {
                 let env_vars = anodize_core::config::load_env_files(files, log, ctx.is_strict())
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 for (key, value) in &env_vars {
-                    ctx.template_vars_mut().set_env(key, value);
+                    ctx.template_vars_mut().set_config_env(key, value);
                 }
             }
             anodize_core::config::EnvFilesConfig::TokenFiles(token_config) => {
                 let token_vars = anodize_core::config::load_token_files(token_config, log)
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 for (key, value) in &token_vars {
-                    ctx.template_vars_mut().set_env(key, value);
+                    ctx.template_vars_mut().set_config_env(key, value);
                     set_env_var_single_threaded(key, value);
                 }
             }
@@ -282,7 +284,7 @@ pub fn setup_env(
         let token_vars = anodize_core::config::load_token_files(&default_config, log)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         for (key, value) in &token_vars {
-            ctx.template_vars_mut().set_env(key, value);
+            ctx.template_vars_mut().set_config_env(key, value);
             set_env_var_single_threaded(key, value);
         }
     }
@@ -292,7 +294,7 @@ pub fn setup_env(
     if let Some(ref env_map) = config.env {
         for (key, value) in env_map {
             let rendered = ctx.render_template(value).unwrap_or_else(|_| value.clone());
-            ctx.template_vars_mut().set_env(key, &rendered);
+            ctx.template_vars_mut().set_config_env(key, &rendered);
             // Also set in the process environment so that child processes which
             // inherit env (docker, lipo, rustup, git, hook scripts) see these
             // values. Some commands use explicit `.envs()`, but many rely on

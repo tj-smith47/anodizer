@@ -188,7 +188,7 @@ pub(super) fn run_split(
     let split_ctx = SplitContext {
         partial_target: subdir.clone(),
         template_vars: ctx.template_vars().all().clone(),
-        env_vars: ctx.template_vars().all_env().clone(),
+        env_vars: ctx.template_vars().all_config_env().clone(),
         git_tag: ctx.template_vars().get("Tag").map(String::from),
         git_commit: ctx.template_vars().get("FullCommit").map(String::from),
         git_branch: ctx.template_vars().get("Branch").map(String::from),
@@ -307,7 +307,7 @@ pub fn run_merge(
                 ctx.template_vars_mut().set(key, value);
             }
             for (key, value) in &split_ctx.env_vars {
-                ctx.template_vars_mut().set_env(key, value);
+                ctx.template_vars_mut().set_config_env(key, value);
             }
             first_vars = Some(split_ctx.template_vars.clone());
         }
