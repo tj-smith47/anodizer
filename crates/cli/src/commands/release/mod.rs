@@ -302,8 +302,19 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     // but BEFORE git context resolution (matching GoReleaser ordering).
     // Skip in --merge and --split modes: CI already validates the code
     // before tagging, and hook compilation can dirty the working tree.
+    // Also skip when running from a tag checkout (CI tag-triggered release):
+    // hooks like `cargo test` can dirty the tree (Cargo.lock, binstall
+    // metadata), causing the dirty-state check to fail. The tag was created
+    // after CI already validated the code.
+    let is_tag_checkout = std::env::var("GITHUB_REF")
+        .map(|r| r.starts_with("refs/tags/"))
+        .unwrap_or(false)
+        || std::env::var("GITHUB_REF_TYPE")
+            .map(|t| t == "tag")
+            .unwrap_or(false);
     if !opts.merge
         && !opts.split
+        && !is_tag_checkout
         && let Some(before) = &config.before
         && let Some(ref hooks) = before.pre
     {

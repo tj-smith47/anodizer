@@ -617,8 +617,7 @@ fn create_nupkg(
     let file = std::fs::File::create(output_path)
         .with_context(|| format!("chocolatey: create nupkg {}", output_path.display()))?;
     let mut zip = zip::ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     // [Content_Types].xml (must be at root of ZIP)
     zip.start_file("[Content_Types].xml", options)?;
@@ -668,8 +667,8 @@ fn create_nupkg(
 /// Recursively collect all files in a directory.
 fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     let mut files = Vec::new();
-    for entry in std::fs::read_dir(dir)
-        .with_context(|| format!("chocolatey: read dir {}", dir.display()))?
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("chocolatey: read dir {}", dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
@@ -1185,7 +1184,8 @@ crates:
         // Write install script
         let tools_dir = pkg_dir.join("tools");
         std::fs::create_dir_all(&tools_dir).unwrap();
-        let script = generate_install_script("mytool", "https://example.com/dl.zip", "abc123", false);
+        let script =
+            generate_install_script("mytool", "https://example.com/dl.zip", "abc123", false);
         std::fs::write(tools_dir.join("chocolateyinstall.ps1"), &script).unwrap();
 
         // Create nupkg
