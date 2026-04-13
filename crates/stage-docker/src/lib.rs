@@ -398,6 +398,9 @@ pub fn build_docker_command(
         cmd.push(sub.to_string());
     }
 
+    // Always use plain progress for CI-friendly, verbose output.
+    cmd.push("--progress=plain".to_string());
+
     // --platform=linux/amd64,linux/arm64
     if !platforms.is_empty() {
         let platform_str = platforms.join(",");
@@ -507,6 +510,10 @@ pub fn build_docker_v2_command(
     for sub in subcommands {
         cmd.push(sub.to_string());
     }
+
+    // Always use plain progress for CI-friendly, verbose output that helps
+    // diagnose buildx errors (e.g., COPY failures, attestation issues).
+    cmd.push("--progress=plain".to_string());
 
     // --platform=linux/amd64,linux/arm64
     if !platforms.is_empty() {
