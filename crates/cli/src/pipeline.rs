@@ -701,38 +701,46 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_templatefiles::TemplateFilesStage;
     use anodize_stage_upx::UpxStage;
 
+    // Stage order matches GoReleaser pipeline.go for parity.
+    // Anodize-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
+    // release, snapcraft-publish, blob) are interleaved at logical positions.
     let mut p = Pipeline::new();
+
+    // ── Build ────────────────────────────────────────────────────────────
     p.add(Box::new(BuildStage));
     p.add(Box::new(UpxStage));
-    // Changelog runs before archive so release notes are available for archive naming.
-    p.add(Box::new(ChangelogStage));
-    p.add(Box::new(ArchiveStage));
-    // Makeself runs after archive (it packages binaries into self-extracting archives).
-    p.add(Box::new(MakeselfStage));
-    p.add(Box::new(NfpmStage));
-    p.add(Box::new(SnapcraftStage));
-    // AppBundle must run before DMG so signed bundles can be packaged into disk images.
+    // AppBundle → DMG → PKG must run before Notarize (macOS signing).
+    // MSI and NSIS are Windows equivalents at the same pipeline phase.
     p.add(Box::new(AppBundleStage));
     p.add(Box::new(DmgStage));
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
     p.add(Box::new(NsisStage));
-    p.add(Box::new(FlatpakStage));
-    // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
+
+    // ── Changelog ────────────────────────────────────────────────────────
+    p.add(Box::new(ChangelogStage));
+
+    // ── Packaging ────────────────────────────────────────────────────────
+    p.add(Box::new(ArchiveStage));
     p.add(Box::new(SourceStage));
-    // SBOM runs after source/build (catalogs built/archived artifacts).
-    p.add(Box::new(SbomStage));
-    // SRPM runs after source (it requires a source archive).
+    p.add(Box::new(NfpmStage));
     p.add(Box::new(SrpmStage));
-    // Template files run after source but before checksum so they are checksummed and signed.
+    p.add(Box::new(MakeselfStage));
+    p.add(Box::new(SnapcraftStage));
+    p.add(Box::new(FlatpakStage));
+    p.add(Box::new(SbomStage));
     p.add(Box::new(TemplateFilesStage));
+
+    // ── Integrity ────────────────────────────────────────────────────────
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
+
+    // ── Publish ──────────────────────────────────────────────────────────
     p.add(Box::new(ReleaseStage));
+    p.add(Box::new(DockerStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(SnapcraftPublishStage));
-    p.add(Box::new(DockerStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(AnnounceStage));
     p
@@ -799,33 +807,30 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_srpm::SrpmStage;
     use anodize_stage_templatefiles::TemplateFilesStage;
 
+    // Merge pipeline: same order as build_release_pipeline minus Build/UPX.
     let mut p = Pipeline::new();
-    // Changelog runs before archive so release notes are available for archive naming.
-    p.add(Box::new(ChangelogStage));
-    p.add(Box::new(ArchiveStage));
-    p.add(Box::new(MakeselfStage));
-    p.add(Box::new(NfpmStage));
-    p.add(Box::new(SnapcraftStage));
-    // AppBundle must run before DMG so signed bundles can be packaged into disk images.
     p.add(Box::new(AppBundleStage));
     p.add(Box::new(DmgStage));
     p.add(Box::new(MsiStage));
     p.add(Box::new(PkgStage));
     p.add(Box::new(NsisStage));
-    p.add(Box::new(FlatpakStage));
-    // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
+    p.add(Box::new(ChangelogStage));
+    p.add(Box::new(ArchiveStage));
     p.add(Box::new(SourceStage));
-    p.add(Box::new(SbomStage));
+    p.add(Box::new(NfpmStage));
     p.add(Box::new(SrpmStage));
-    // Template files run after source but before checksum so they are checksummed and signed.
+    p.add(Box::new(MakeselfStage));
+    p.add(Box::new(SnapcraftStage));
+    p.add(Box::new(FlatpakStage));
+    p.add(Box::new(SbomStage));
     p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
+    p.add(Box::new(DockerStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(SnapcraftPublishStage));
-    p.add(Box::new(DockerStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(AnnounceStage));
     p
