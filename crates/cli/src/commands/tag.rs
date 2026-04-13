@@ -333,7 +333,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 .map(|o| o.status.success())
                 .unwrap_or(false);
             if !lock_updated {
-                log.warn("version-sync: `cargo update --workspace` failed; Cargo.lock may be stale");
+                log.warn(
+                    "version-sync: `cargo update --workspace` failed; Cargo.lock may be stale",
+                );
             }
 
             let cargo_toml = format!("{}/Cargo.toml", path);

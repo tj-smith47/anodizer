@@ -727,6 +727,21 @@ pub(crate) fn commit_and_push_with_opts(
         )?;
     }
 
+    // Check if there are staged changes. If the manifest content is identical
+    // to what's already committed (e.g., retry after a partial publish that
+    // already pushed the formula), there's nothing to commit. This is
+    // idempotent success — the desired state is already in the repo.
+    let diff_output = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(repo_path)
+        .status();
+    if let Ok(status) = diff_output
+        && status.success()
+    {
+        // No staged changes — repo already has the correct content.
+        return Ok(());
+    }
+
     // Build commit args, optionally injecting -c user.name / -c user.email / signing.
     let mut commit_args: Vec<&str> = Vec::new();
     let name_cfg;
