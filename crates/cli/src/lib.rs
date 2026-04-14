@@ -187,6 +187,17 @@ pub enum Commands {
         #[arg(long, help = "Output as JSON")]
         json: bool,
     },
+    /// Emit the configured build targets as a GitHub Actions matrix.
+    ///
+    /// Derives `{os, target, artifact}` entries from `.anodize.yaml`. Used by
+    /// `tj-smith47/anodize-action`'s `split-matrix` output to feed a
+    /// `strategy.matrix` dynamically (via `fromJson`).
+    Targets {
+        #[arg(long, help = "Output as JSON (include-form matrix)")]
+        json: bool,
+        #[arg(long = "crate", action = clap::ArgAction::Append, help = "Restrict to specific crate(s)")]
+        crate_names: Vec<String>,
+    },
     /// Auto-tag based on commit message directives
     Tag {
         #[arg(long, help = "Show what tag would be created without pushing")]

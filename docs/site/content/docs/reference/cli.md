@@ -133,6 +133,17 @@ Resolve a git tag to its matching crate in the config
 | `--json` | — | — | Output as JSON |
 
 
+### `anodize targets`
+
+Emit the configured build targets as a GitHub Actions matrix
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--json` | — | — | Output as JSON (include-form matrix) |
+| `--crate` | — | — | Restrict to specific crate(s) |
+
+
 ### `anodize tag`
 
 Auto-tag based on commit message directives

@@ -56,3 +56,30 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 3. Copy relevant settings from your `.goreleaser.yaml` into `.anodize.yaml`, adjusting for the nested crate structure
 4. Run `anodize check` to validate
 5. Run `anodize release --dry-run` to verify the pipeline
+6. Replace the `goreleaser/goreleaser-action` step in CI with [`tj-smith47/anodize-action`](@/docs/ci/anodize-action.md)
+
+## CI workflow replacement
+
+Where a GoReleaser workflow looks like:
+
+```yaml
+- uses: goreleaser/goreleaser-action@v6
+  with:
+    version: latest
+    args: release --clean
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The anodize equivalent is:
+
+```yaml
+- uses: tj-smith47/anodize-action@v1
+  with:
+    auto-install: true          # auto-installs nfpm, cosign, etc. from .anodize.yaml
+    args: release --clean
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+`auto-install: true` parses `.anodize.yaml` and installs pipeline dependencies (nfpm for linux packages, cosign for signing, zig/cargo-zigbuild for cross-compilation, ...) — the anodize action's equivalent of GoReleaser's bundled Go-native implementations. See [anodize-action reference](@/docs/ci/anodize-action.md) for all inputs.

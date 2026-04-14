@@ -48,7 +48,22 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     // Semantic validation
     // ------------------------------------------------------------------
 
-    let crate_names: HashSet<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
+    // Flattened crate-name set across top-level crates + every workspace's
+    // crates. The release engine topo-sorts using this flattened set, so
+    // `depends_on` references can cross workspace boundaries at release time
+    // (e.g. a workspace crate depending on a crate in another workspace).
+    // The validator must mirror that resolution to avoid false positives.
+    let all_crate_names: HashSet<&str> = {
+        let mut s: HashSet<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
+        if let Some(ref workspaces) = config.workspaces {
+            for ws in workspaces {
+                for c in &ws.crates {
+                    s.insert(c.name.as_str());
+                }
+            }
+        }
+        s
+    };
 
     // 0a. Workspace names must be unique and non-empty
     if let Some(ref workspaces) = config.workspaces {
@@ -85,11 +100,13 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
                     &mut errors,
                 );
             }
-            // Validate depends_on references within workspace crates
+            // Validate depends_on references — resolved against the flattened
+            // crate set (top-level + every workspace) to match how the release
+            // engine topo-sorts dependencies at runtime.
             for c in &ws.crates {
                 if let Some(deps) = &c.depends_on {
                     for dep in deps {
-                        if !ws_crate_names.contains(dep.as_str()) {
+                        if !all_crate_names.contains(dep.as_str()) {
                             errors.push(format!(
                                 "workspace '{}': crate '{}': depends_on '{}' does not exist",
                                 ws.name, c.name, dep
@@ -108,11 +125,13 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
     }
 
-    // 1. depends_on references exist
+    // 1. depends_on references exist — flat crate case also resolves across
+    // the workspace-aware flattened set so a top-level crate can depend on a
+    // crate that lives in a workspace.
     for c in &config.crates {
         if let Some(deps) = &c.depends_on {
             for dep in deps {
-                if !crate_names.contains(dep.as_str()) {
+                if !all_crate_names.contains(dep.as_str()) {
                     errors.push(format!(
                         "crate '{}': depends_on '{}' does not exist",
                         c.name, dep
@@ -1025,6 +1044,33 @@ mod tests {
             msg.contains("1 error(s)"),
             "should report 1 validation error for missing depends_on: {}",
             msg
+        );
+    }
+
+    #[test]
+    fn test_workspace_depends_on_cross_workspace_passes() {
+        // A crate in one workspace can depend on a crate in another workspace.
+        // The release engine topo-sorts across all workspaces, so the check
+        // validator must not flag cross-workspace references as missing.
+        let config = Config {
+            project_name: "test".to_string(),
+            workspaces: Some(vec![
+                WorkspaceConfig {
+                    name: "core-ws".to_string(),
+                    crates: vec![make_crate("core", "core-v{{ .Version }}", None)],
+                    ..Default::default()
+                },
+                WorkspaceConfig {
+                    name: "app-ws".to_string(),
+                    crates: vec![make_crate("app", "app-v{{ .Version }}", Some(vec!["core"]))],
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        assert!(
+            run_checks(&config, false, &test_logger()).is_ok(),
+            "cross-workspace depends_on should be accepted"
         );
     }
 

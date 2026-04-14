@@ -234,6 +234,13 @@ fn main() {
                 })
         }
         Commands::Jsonschema => commands::jsonschema::run(),
+        Commands::Targets { json, crate_names } => {
+            commands::targets::run(commands::targets::TargetsOpts {
+                json,
+                crate_names,
+                config_override: cli.config.clone(),
+            })
+        }
         Commands::ResolveTag { tag, json } => {
             commands::resolve_tag::run(commands::resolve_tag::ResolveTagOpts {
                 tag,
@@ -475,6 +482,41 @@ mod tests {
             help.contains("jsonschema"),
             "help should mention jsonschema command"
         );
+        assert!(
+            help.contains("targets"),
+            "help should mention targets command"
+        );
+    }
+
+    #[test]
+    fn test_cli_parses_targets_json() {
+        let cli = Cli::try_parse_from(["anodize", "targets", "--json"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse targets --json: {:?}",
+            cli.err()
+        );
+        if let Commands::Targets { json, crate_names } = cli.unwrap().command {
+            assert!(json, "--json should be true");
+            assert!(crate_names.is_empty(), "crate_names should default empty");
+        } else {
+            panic!("expected Targets command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parses_targets_crate_filter() {
+        let cli = Cli::try_parse_from(["anodize", "targets", "--crate", "core", "--crate", "cli"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse targets --crate: {:?}",
+            cli.err()
+        );
+        if let Commands::Targets { crate_names, .. } = cli.unwrap().command {
+            assert_eq!(crate_names, vec!["core".to_string(), "cli".to_string()]);
+        } else {
+            panic!("expected Targets command");
+        }
     }
 
     #[test]

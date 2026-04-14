@@ -432,32 +432,66 @@ fn create_pr_via_gh_cli(
     if draft {
         args.push("--draft");
     }
-    let pr_result = Command::new("gh")
-        .current_dir(repo_path)
-        .args(&args)
-        .output();
-    match pr_result {
-        Ok(output) if output.status.success() => {
-            log.status(&format!("{label}: PR submitted via gh CLI"));
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            log.warn(&format!(
-                "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
-                output.status,
-                if stderr.is_empty() {
-                    String::new()
-                } else {
-                    format!("\n{}", stderr)
+    // GitHub's API occasionally lags behind a just-pushed fork branch, so the
+    // first `gh pr create` can fail with "No commits between ..." or "Head sha
+    // can't be blank" even though the push succeeded. These are transient and
+    // resolve within a few seconds. Retry up to 3 times with short backoffs
+    // before warning.
+    let mut last_stderr = String::new();
+    let mut last_status: Option<std::process::ExitStatus> = None;
+    for attempt in 1..=3 {
+        let pr_result = Command::new("gh")
+            .current_dir(repo_path)
+            .args(&args)
+            .output();
+        match pr_result {
+            Ok(output) if output.status.success() => {
+                log.status(&format!("{label}: PR submitted via gh CLI"));
+                return;
+            }
+            Ok(output) => {
+                last_stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                last_status = Some(output.status);
+                // Idempotent success: an open PR with identical head/base
+                // already exists. `gh` emits this after the fork was synced
+                // by a prior publish attempt.
+                if last_stderr.contains("already exists") {
+                    log.status(&format!(
+                        "{label}: PR for '{head}' already exists — skipping"
+                    ));
+                    return;
                 }
-            ));
-        }
-        Err(e) => {
-            log.warn(&format!(
-                "{label}: could not run gh to create PR: {} -- you may need to create the PR manually", e
-            ));
+                let transient = last_stderr.contains("No commits between")
+                    || last_stderr.contains("Head sha can't be blank")
+                    || last_stderr.contains("Head repository can't be blank")
+                    || last_stderr.contains("not all refs are readable");
+                if !transient || attempt == 3 {
+                    break;
+                }
+                log.warn(&format!(
+                    "{label}: gh pr create attempt {attempt}/3 hit transient error; retrying..."
+                ));
+                std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
+            }
+            Err(e) => {
+                log.warn(&format!(
+                    "{label}: could not run gh to create PR: {} -- you may need to create the PR manually", e
+                ));
+                return;
+            }
         }
     }
+    log.warn(&format!(
+        "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
+        last_status
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown status".to_string()),
+        if last_stderr.is_empty() {
+            String::new()
+        } else {
+            format!("\n{}", last_stderr)
+        }
+    ));
 }
 
 /// Submit a pull request via the GitHub REST API (native fallback when `gh`

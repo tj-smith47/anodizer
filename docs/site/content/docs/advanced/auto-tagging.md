@@ -62,6 +62,18 @@ tag:
 | `none_string_token` | string | `#none` | Custom skip trigger |
 | `git_api_tagging` | string | none (disabled) | Use GitHub API (`github`) or git CLI (`git`) to create tags |
 
+## Version source of truth
+
+The bumped version comes from the latest git tag, not `Cargo.toml`. Given a
+`patch` bump and the latest tag `v0.3.4`, the result is `v0.3.5` — regardless
+of what `Cargo.toml` currently says.
+
+`Cargo.toml` only enters the picture when `version_sync` is enabled and its
+version is strictly greater than the bumped version. In that case the higher
+`Cargo.toml` wins and no further bump is applied — this protects manual
+pre-bumps (e.g., `version = "2.0.0"` committed in advance of a major release)
+from being downgraded to `v1.1.0`.
+
 ## Workspace-aware tagging
 
 Tag individual crates in a workspace:
@@ -70,4 +82,72 @@ Tag individual crates in a workspace:
 anodize tag --crate my-crate
 ```
 
-Uses the crate's `tag_template` (e.g., `my-crate-v{{ Version }}`) to scope tags.
+Each crate has its own `tag_template` (e.g., `my-crate-v{{ Version }}`) used
+for both tag discovery (finding the latest `my-crate-v*` tag) and tag
+creation. This keeps workspaces independent — `my-core-v0.5.0` and
+`my-cli-v1.2.0` can coexist without collision.
+
+When `version_sync.enabled: true` is set per-crate, the tag command also
+updates that crate's `Cargo.toml` version (and any intra-workspace `path +
+version` dependency specs that reference it), commits the change with
+`[skip ci]`, and tags that commit so `cargo publish` reads the right version.
+
+## GitHub Actions: single-crate repo
+
+```yaml
+- uses: tj-smith47/anodize-action@v1
+  with:
+    args: tag
+  env:
+    GITHUB_TOKEN: ${{ secrets.GH_PAT }}     # PAT, not GITHUB_TOKEN
+```
+
+Use a PAT (not `GITHUB_TOKEN`) when pushing tags, so tag-scoped workflows
+like `release.yml` fire on the resulting push. `GITHUB_TOKEN`-authored pushes
+never trigger downstream workflows.
+
+## GitHub Actions: monorepo loop
+
+For multi-crate workspaces, tag each crate independently so each gets its
+own `release.yml` run:
+
+```yaml
+- uses: tj-smith47/anodize-action@v1
+  with:
+    install-only: true
+
+- name: Auto-tag all workspaces
+  env:
+    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+  run: |
+    for crate in my-core my-cli my-operator my-plugin; do
+      echo "--- tagging $crate ---"
+      if anodize tag --crate "$crate"; then
+        echo "::notice::$crate: tagged"
+      else
+        echo "::warning::$crate: skipped or failed"
+      fi
+    done
+    # Push any version_sync commits created by the tag step so tagged commits
+    # aren't orphaned from master — without this, tags point to commits that
+    # only exist as tag targets and CI never runs on them.
+    git push origin HEAD || true
+```
+
+See [GitHub Actions](@/docs/ci/github-actions.md) for the surrounding workflow.
+
+## Dry run
+
+Preview what would happen without actually tagging:
+
+```bash
+anodize tag --dry-run                      # single-crate repo
+anodize tag --crate my-core --dry-run      # specific crate in a workspace
+```
+
+## Override the bump
+
+```bash
+anodize tag --default-bump minor           # override config default
+anodize tag --custom-tag v2.0.0            # skip bump logic entirely
+```

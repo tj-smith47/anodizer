@@ -235,11 +235,14 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             skip_stages.push(stage.clone());
         }
     }
-    // Snapshot mode automatically skips publish and announce stages
-    // (like GoReleaser). The release stage is NOT skipped — it handles
-    // snapshot mode internally (e.g. creating draft releases for testing).
+    // Snapshot mode automatically skips every stage that performs an external
+    // upload: `publish` (registries / package indexes), `snapcraft-publish`
+    // (Snap Store), `blob` (S3 / GCS / Azure object storage), and `announce`.
+    // The release stage is NOT skipped — it handles snapshot mode internally
+    // (e.g. creating draft releases for testing). Matches GoReleaser behaviour
+    // and prevents `--snapshot` from accidentally pushing artifacts upstream.
     if opts.snapshot {
-        for stage in &["publish", "announce"] {
+        for stage in &["publish", "snapcraft-publish", "blob", "announce"] {
             if !skip_stages.iter().any(|s| s == stage) {
                 skip_stages.push(stage.to_string());
             }

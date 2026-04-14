@@ -714,6 +714,10 @@ impl Stage for BlobStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("blob");
+        if ctx.skip_in_snapshot(&log, "blob") {
+            return Ok(());
+        }
+
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
 

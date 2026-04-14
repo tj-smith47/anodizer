@@ -110,6 +110,9 @@ impl Stage for AnnounceStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("announce");
+        if ctx.skip_in_snapshot(&log, "announce") {
+            return Ok(());
+        }
 
         // Refresh Artifacts template var so announce templates can iterate artifacts.
         ctx.refresh_artifacts_var();

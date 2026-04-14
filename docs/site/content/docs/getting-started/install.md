@@ -19,6 +19,21 @@ cd anodize
 cargo install --path crates/cli
 ```
 
+## In GitHub Actions
+
+Use [`tj-smith47/anodize-action`](https://github.com/tj-smith47/anodize-action) instead of `cargo install` — it caches the binary, auto-installs pipeline dependencies (nfpm, cosign, zig, snapcraft, ...), and imports signing keys in a single step:
+
+```yaml
+- uses: tj-smith47/anodize-action@v1
+  with:
+    auto-install: true
+    args: release --clean
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+See [GitHub Actions](@/docs/ci/github-actions.md) for full examples.
+
 ## Verify installation
 
 ```bash

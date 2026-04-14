@@ -819,13 +819,44 @@ impl Stage for ArchiveStage {
             .cloned()
             .collect();
 
-        // Build a list of (crate_name, archive_configs) pairs to process
+        // Build a list of (crate_name, archive_configs) pairs to process.
+        //
+        // A crate enters the archive workflow only when it has *something to
+        // archive*: either configured builds, a meta-archive (which doesn't
+        // need binaries), or pre-existing binary artifacts inherited from a
+        // prior stage / split-merge context. Library-only crates with none of
+        // the above are silently skipped — treating "no binaries" as a
+        // strict-mode error for them would force every lib-only crate in a
+        // workspace to opt out via `archives: disabled`. The strict_guard
+        // further down still fires when a crate qualified to enter the
+        // workflow but produced no binaries — that's the genuine error case.
+        let archivable_kinds = [
+            ArtifactKind::Binary,
+            ArtifactKind::UniversalBinary,
+            ArtifactKind::Header,
+            ArtifactKind::CArchive,
+            ArtifactKind::CShared,
+        ];
         let work: Vec<(String, Vec<ArchiveConfig>)> = crates
             .into_iter()
             .filter_map(|c| {
                 match &c.archives {
                     ArchivesConfig::Disabled => None,
                     ArchivesConfig::Configs(cfgs) => {
+                        let has_builds = c
+                            .builds
+                            .as_ref()
+                            .map(|b| !b.is_empty())
+                            .unwrap_or(false);
+                        let has_meta_archive =
+                            cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
+                        let has_existing_artifacts = !ctx
+                            .artifacts
+                            .by_kinds_and_crate(&archivable_kinds, &c.name)
+                            .is_empty();
+                        if !has_builds && !has_meta_archive && !has_existing_artifacts {
+                            return None;
+                        }
                         let archive_cfgs = if cfgs.is_empty() {
                             // Default: one archive with all defaults
                             vec![ArchiveConfig::default()]

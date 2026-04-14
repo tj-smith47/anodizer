@@ -642,4 +642,5 @@ A workspace represents an independent project root within a monorepo. Each works
 Accepts both map form (`MY_VAR: hello`) and GoReleaser list form (`- MY_VAR=hello`). Values are template-rendered at pipeline startup. |
 | `name` | string | — | Workspace identifier used in logs and template variables. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
+| `skip` | list of string | `[]` | Pipeline stages to skip when releasing this workspace. Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`). |
 

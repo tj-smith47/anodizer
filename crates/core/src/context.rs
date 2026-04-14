@@ -20,6 +20,7 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "winget",
     "chocolatey",
     "snapcraft",
+    "snapcraft-publish",
     "scoop",
     "homebrew",
     "nix",
@@ -216,6 +217,23 @@ impl Context {
         }
         log.warn(msg);
         Ok(())
+    }
+
+    /// Defense-in-depth helper for upload-style stages.
+    ///
+    /// Returns `true` (after logging the skip) when the context is in snapshot
+    /// mode. Stages that perform external uploads (registries, package indexes,
+    /// object storage, snap store, …) call this at entry so they no-op even
+    /// when invoked directly without the orchestration layer's auto-skip.
+    /// Centralising the check keeps every publish stage consistent and avoids
+    /// per-stage copy-paste.
+    pub fn skip_in_snapshot(&self, log: &crate::log::StageLogger, stage: &str) -> bool {
+        if self.is_snapshot() {
+            log.status(&format!("{}: skipped (snapshot mode)", stage));
+            true
+        } else {
+            false
+        }
     }
 
     /// Render a template, failing in strict mode on error, or falling back to the raw string.

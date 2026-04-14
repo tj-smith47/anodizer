@@ -59,8 +59,11 @@ impl Stage for PublishStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
-        let selected = ctx.options.selected_crates.clone();
         let log = ctx.logger("publish");
+        if ctx.skip_in_snapshot(&log, "publish") {
+            return Ok(());
+        }
+        let selected = ctx.options.selected_crates.clone();
 
         // Individual publisher failures are collected and reported at the end
         // rather than aborting the entire publish stage.  This prevents a single

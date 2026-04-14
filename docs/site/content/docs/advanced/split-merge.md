@@ -95,6 +95,9 @@ A `dist/matrix.json` file is also written (on the first `--split` run) listing t
 
 ## GitHub Actions example
 
+Uses [`tj-smith47/anodize-action`](@/docs/ci/anodize-action.md) with built-in
+`upload-dist` / `download-dist` to handle artifact handoff:
+
 ```yaml
 name: Release
 
@@ -118,20 +121,18 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install anodize
-        run: cargo install anodize
-
-      - name: Build (split)
-        run: anodize release --split
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          install-rust: true
+          install: zig,cargo-zigbuild
+          upload-dist: true           # uploads dist/ as dist-$RUNNER_OS
+          args: release --split --clean
         env:
           ANODIZE_OS: ${{ matrix.target }}
-
-      - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.target }}
-          path: dist/${{ matrix.target }}/
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release:
     name: Release (merge)
@@ -139,24 +140,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install anodize
-        run: cargo install anodize
-
-      - name: Download all dist artifacts
-        uses: actions/download-artifact@v4
         with:
-          pattern: dist-*
-          path: dist/
-          merge-multiple: false
+          fetch-depth: 0
 
-      - name: Merge and release
-        run: anodize continue --merge
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          auto-install: true
+          download-dist: true         # downloads + merges dist-* artifacts
+          args: continue --merge
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-Note: when using `actions/download-artifact@v4` with `merge-multiple: false`, each artifact is downloaded into its own subdirectory. The directory names must match the `dist/<platform>/` subdirectory layout written by `--split`. Adjust the upload/download paths to match your `partial.by` setting.
+`upload-dist: true` uploads the split job's `dist/` directory as an artifact
+named `dist-$RUNNER_OS` (`dist-Linux`, `dist-macOS`, `dist-Windows`).
+`download-dist: true` in the merge job downloads every `dist-*` artifact and
+merges them into `dist/` in the expected layout, fails the job if no split
+context files are found.
+
+If you need to manage artifacts manually (e.g., a non-GitHub runner), upload
+each split job's `dist/<platform>/` and download them into `dist/` in the
+merge job — the subdirectory names must match the `dist/<platform>/` layout
+written by `--split`, which depends on your `partial.by` setting.
 
 ## Merge pipeline stages
 

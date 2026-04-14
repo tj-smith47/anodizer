@@ -2458,11 +2458,15 @@ impl Stage for DockerStage {
                                 .filter_map(|a| a.metadata.get("tag").map(|s| s.as_str()))
                                 .collect();
 
+                            // Distance > 0 to avoid suggesting the same name back (which
+                            // happens when `img` itself is in the candidate set but its
+                            // digest hadn't been recorded yet at lookup time — a stale-cache
+                            // race, not a typo).
                             if let Some((suggestion, dist)) = all_image_names
                                 .iter()
                                 .map(|name| (name, levenshtein_distance(img, name)))
                                 .min_by_key(|&(_, d)| d)
-                                .filter(|&(_, d)| d <= img.len() / 2)
+                                .filter(|&(_, d)| d > 0 && d <= img.len() / 2)
                             {
                                 log.warn(&format!(
                                     "could not find {:?}, did you mean {:?}? (edit distance: {})",

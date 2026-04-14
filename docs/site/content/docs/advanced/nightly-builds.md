@@ -43,9 +43,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install anodize cargo-zigbuild
-      - run: anodize release --nightly
+        with:
+          fetch-depth: 0
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          install-rust: true
+          auto-install: true
+          install: cargo-zigbuild
+          args: release --nightly
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```

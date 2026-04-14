@@ -65,7 +65,10 @@ setting up a fan-out build.
 ## Example: four-job GitHub Actions workflow
 
 This workflow separates build, merge, publish, and announce into four jobs
-so each can carry its own secrets and retry independently.
+so each can carry its own secrets and retry independently. It uses
+[`tj-smith47/anodize-action`](@/docs/ci/anodize-action.md), whose built-in
+`upload-dist` / `download-dist` inputs replace the manual
+upload-artifact/download-artifact plumbing.
 
 ```yaml
 name: Release
@@ -89,23 +92,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install anodize
-        run: cargo install anodize
-
-      - name: Build (split mode)
-        run: anodize release --split
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          install-rust: true
+          install: zig,cargo-zigbuild
+          upload-dist: true           # uploads dist/ as dist-$RUNNER_OS
+          args: release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.os }}
-          path: dist/
-
-  # Job 2: merge artifacts and run post-build stages
+  # Job 2: merge artifacts and run post-build stages (everything except publish/announce)
   merge:
     needs: build
     runs-on: ubuntu-latest
@@ -114,57 +110,31 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install anodize
-        run: cargo install anodize
-
-      - name: Download all dist artifacts
-        uses: actions/download-artifact@v4
+      - uses: tj-smith47/anodize-action@v1
         with:
-          path: dist-parts/
-          merge-multiple: false
-
-      - name: Merge dist directories
-        run: |
-          mkdir -p dist
-          cp -r dist-parts/dist-*/* dist/
-
-      - name: Merge and run post-build stages
-        run: anodize continue --merge --dist dist/
+          auto-install: true
+          download-dist: true         # downloads + merges dist-* artifacts
+          upload-dist: true           # re-uploads merged dist for downstream jobs
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          args: continue --merge --skip publish,announce
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Upload merged dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-merged
-          path: dist/
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
   # Job 3: publish releases and packages
   publish:
     needs: merge
     runs-on: ubuntu-latest
-    environment: production    # optional: require approval before publishing
+    environment: production           # optional: require approval before publishing
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install anodize
-        run: cargo install anodize
-
-      - name: Download merged dist
-        uses: actions/download-artifact@v4
+      - uses: tj-smith47/anodize-action@v1
         with:
-          name: dist-merged
-          path: dist/
-
-      - name: Publish
-        run: anodize publish
+          download-dist: true
+          args: publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -178,19 +148,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Install anodize
-        run: cargo install anodize
-
-      - name: Download merged dist
-        uses: actions/download-artifact@v4
+      - uses: tj-smith47/anodize-action@v1
         with:
-          name: dist-merged
-          path: dist/
-
-      - name: Announce
-        run: anodize announce
+          download-dist: true
+          args: announce
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
@@ -216,9 +177,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install anodize cargo-zigbuild
-      - run: anodize release --skip announce
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          install-rust: true
+          auto-install: true
+          install: cargo-zigbuild
+          upload-dist: true
+          args: release --skip announce
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -229,9 +194,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install anodize
-      - run: anodize announce
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          download-dist: true
+          args: announce
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

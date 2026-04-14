@@ -428,50 +428,11 @@ fn run_merge_legacy(
 }
 
 /// Collect all build targets from config for matrix generation.
+///
+/// Delegates to the shared `commands::helpers::collect_build_targets` so the
+/// `anodize targets` CLI and the split pipeline agree on target resolution.
 fn collect_build_targets(config: &Config, ctx: &Context) -> Vec<String> {
-    let mut targets = Vec::new();
-
-    for krate in &config.crates {
-        if !ctx.options.selected_crates.is_empty()
-            && !ctx.options.selected_crates.contains(&krate.name)
-        {
-            continue;
-        }
-
-        if let Some(ref builds) = krate.builds {
-            for build in builds {
-                if let Some(ref build_targets) = build.targets {
-                    for t in build_targets {
-                        if !targets.contains(t) {
-                            targets.push(t.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(ref defaults) = config.defaults
-            && let Some(ref default_targets) = defaults.targets
-        {
-            for t in default_targets {
-                if !targets.contains(t) {
-                    targets.push(t.clone());
-                }
-            }
-        }
-    }
-
-    // Filter out ignored os/arch combinations
-    if let Some(ref defaults) = config.defaults
-        && let Some(ref ignores) = defaults.ignore
-    {
-        targets.retain(|t| {
-            let (os, arch) = anodize_core::target::map_target(t);
-            !ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
-        });
-    }
-
-    targets
+    crate::commands::helpers::collect_build_targets(config, &ctx.options.selected_crates)
 }
 
 /// Find all context.json files in dist/ subdirectories (new split format).

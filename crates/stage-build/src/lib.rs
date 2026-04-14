@@ -1180,28 +1180,43 @@ impl Stage for BuildStage {
             .cloned()
             .collect();
 
-        // --- Version sync: update Cargo.toml versions before building ---
+        // --- Version sync + binstall: source-mutating steps ---
+        // Snapshot builds never mutate source files. The resolved version in
+        // snapshot mode is a synthetic identifier (e.g. `0.3.4-SNAPSHOT-abc`),
+        // and writing that — or worse, downgrading Cargo.toml when the working
+        // tree is ahead of the latest tag — corrupts the working copy. Binstall
+        // metadata in snapshot mode would reference a non-existent tag URL.
         let version = ctx
             .template_vars()
             .get("RawVersion")
             .or_else(|| ctx.template_vars().get("Version"))
             .cloned()
             .unwrap_or_default();
+        let is_snapshot = ctx.is_snapshot();
         for crate_cfg in &crates {
             if let Some(ref vs) = crate_cfg.version_sync
                 && vs.enabled.unwrap_or(false)
-                && !version.is_empty()
             {
-                version_sync::sync_version(&crate_cfg.path, &version, dry_run, &log)?;
+                if is_snapshot {
+                    log.verbose(&format!(
+                        "version-sync: skipping {} (snapshot mode does not mutate source files)",
+                        crate_cfg.path
+                    ));
+                } else if !version.is_empty() {
+                    version_sync::sync_version(&crate_cfg.path, &version, dry_run, &log)?;
+                }
             }
-        }
-
-        // --- Binstall: generate cargo-binstall metadata before building ---
-        for crate_cfg in &crates {
             if let Some(ref bs) = crate_cfg.binstall
                 && bs.enabled.unwrap_or(false)
             {
-                binstall::generate_binstall_metadata(&crate_cfg.path, bs, ctx, dry_run)?;
+                if is_snapshot {
+                    log.verbose(&format!(
+                        "binstall: skipping {} (snapshot mode does not mutate source files)",
+                        crate_cfg.path
+                    ));
+                } else {
+                    binstall::generate_binstall_metadata(&crate_cfg.path, bs, ctx, dry_run)?;
+                }
             }
         }
 

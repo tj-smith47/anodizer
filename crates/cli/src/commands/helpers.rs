@@ -23,6 +23,67 @@ fn set_env_var_single_threaded(key: &str, value: &str) {
     unsafe { std::env::set_var(key, value) };
 }
 
+/// Collect all configured build targets from a config, in declaration order.
+///
+/// Iterates `config.crates` plus every `config.workspaces[].crates` so monorepos
+/// with multi-root workspaces are covered. Per-crate `builds[].targets` entries
+/// are collected first, then `defaults.targets`. Duplicates are filtered, and
+/// `defaults.ignore` (os/arch pairs) removes matching targets.
+///
+/// `selected_crates` filters the iteration: when empty, all crates are used;
+/// otherwise only crates whose `name` is in the slice contribute.
+pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec<String> {
+    let mut targets: Vec<String> = Vec::new();
+
+    let all_crates = config.crates.iter().chain(
+        config
+            .workspaces
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|w| w.crates.iter()),
+    );
+
+    for krate in all_crates {
+        if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {
+            continue;
+        }
+
+        if let Some(ref builds) = krate.builds {
+            for build in builds {
+                if let Some(ref build_targets) = build.targets {
+                    for t in build_targets {
+                        if !targets.contains(t) {
+                            targets.push(t.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(ref defaults) = config.defaults
+            && let Some(ref default_targets) = defaults.targets
+        {
+            for t in default_targets {
+                if !targets.contains(t) {
+                    targets.push(t.clone());
+                }
+            }
+        }
+    }
+
+    if let Some(ref defaults) = config.defaults
+        && let Some(ref ignores) = defaults.ignore
+    {
+        targets.retain(|t| {
+            let (os, arch) = anodize_core::target::map_target(t);
+            !ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
+        });
+    }
+
+    targets
+}
+
 /// Apply a workspace's configuration overlay onto the top-level config.
 ///
 /// - `crates` is always replaced.

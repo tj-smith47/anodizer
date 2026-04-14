@@ -13,3 +13,4 @@ pub mod publisher;
 pub mod release;
 pub mod resolve_tag;
 pub mod tag;
+pub mod targets;

@@ -501,40 +501,20 @@ impl Pipeline {
     }
 
     pub fn run(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
-        // Validate --skip values against known stage names.
-        const KNOWN_STAGES: &[&str] = &[
-            "build",
-            "upx",
-            "archive",
-            "makeself",
-            "nfpm",
-            "snapcraft",
-            "snapcraft-publish",
-            "dmg",
-            "msi",
-            "pkg",
-            "nsis",
-            "appbundle",
-            "flatpak",
-            "notarize",
-            "source",
-            "srpm",
-            "templatefiles",
-            "changelog",
-            "checksum",
-            "sign",
-            "release",
-            "publish",
-            "docker",
-            "blob",
-            "announce",
-        ];
+        // The CLI-level validator (`VALID_RELEASE_SKIPS`) is the source of truth
+        // for accepted `--skip` values. The union includes top-level stage names
+        // (`publish`, `docker`, `archive`, ...) plus sub-stage aliases that
+        // filter inside a stage (`winget`, `chocolatey`, `homebrew`, ...) and
+        // lifecycle aliases (`before`, `validate`). Deferring here keeps both
+        // gates consistent — anything the CLI accepts, the runtime recognises.
+        // Unknown values can only reach this point if the caller bypassed the
+        // CLI gate (library consumers, tests), so a warning is still useful.
         for skip in &ctx.options.skip_stages {
-            if !KNOWN_STAGES.contains(&skip.as_str()) {
+            if !anodize_core::context::VALID_RELEASE_SKIPS.contains(&skip.as_str()) {
                 eprintln!(
                     "WARNING: unknown skip stage '{}'; valid stages: {}",
                     skip,
-                    KNOWN_STAGES.join(", ")
+                    anodize_core::context::VALID_RELEASE_SKIPS.join(", ")
                 );
             }
         }

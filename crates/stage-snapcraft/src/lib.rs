@@ -868,6 +868,10 @@ impl Stage for SnapcraftPublishStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("snapcraft-publish");
+        if ctx.skip_in_snapshot(&log, "snapcraft-publish") {
+            return Ok(());
+        }
+
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
 
