@@ -559,6 +559,17 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .as_deref()
         .unwrap_or("https://push.chocolatey.org/");
 
+    // Graceful idempotency: skip the push if this version is already on the
+    // feed (including pending-moderation). Re-pushing a version in moderation
+    // returns 403 from Chocolatey.
+    if package_exists(source, pkg_name, &version) {
+        log.status(&format!(
+            "chocolatey: skipping '{}-{}' — already on feed",
+            pkg_name, version
+        ));
+        return Ok(());
+    }
+
     // Push via NuGet V2 API — same protocol as `choco push`.
     push_nupkg(&nupkg_path, source, &api_key, log)?;
 
@@ -679,6 +690,56 @@ fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
         }
     }
     Ok(files)
+}
+
+/// Check whether a package version already exists on the NuGet V2 feed.
+///
+/// Chocolatey's community feed lives at `community.chocolatey.org`, but
+/// pushes go to `push.chocolatey.org`. Map push URLs to the query feed so
+/// the existence check works for either form.
+///
+/// Returns `true` when the feed responds with an OData entry for the given
+/// id+version. Returns `false` on any error (network, parse, 404) — the
+/// caller then proceeds with a push attempt, matching how `cargo publish`
+/// and `choco push` treat unknown states.
+fn package_exists(push_source: &str, name: &str, version: &str) -> bool {
+    let query_base = if push_source.contains("push.chocolatey.org") {
+        "https://community.chocolatey.org"
+    } else {
+        push_source.trim_end_matches('/')
+    };
+    // Normalize: strip any trailing /api/v2/package from push URLs.
+    let query_base = query_base
+        .trim_end_matches('/')
+        .trim_end_matches("/api/v2/package")
+        .trim_end_matches("/api/v2")
+        .trim_end_matches('/');
+
+    let url = format!(
+        "{}/api/v2/Packages(Id='{}',Version='{}')",
+        query_base, name, version
+    );
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    match client.get(&url).send() {
+        Ok(resp) if resp.status().is_success() => {
+            // OData returns a <m:properties> entry when the package exists,
+            // or an empty <feed>/<entry> skeleton when it doesn't. Presence
+            // of the id tag in the body means the version is registered.
+            let body = resp.text().unwrap_or_default();
+            body.contains("<id>")
+                && (body.contains(&format!(",Version='{}'", version))
+                    || body.contains(&format!("Version='{}'", version)))
+        }
+        _ => false,
+    }
 }
 
 /// Push a .nupkg to a NuGet V2 API endpoint (Chocolatey, NuGet.org, etc.).
