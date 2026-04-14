@@ -215,9 +215,30 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let bump = detect_bump(&messages, &cfg);
     log.verbose(&format!("detected bump: {:?}", bump));
 
-    // If #none token detected, skip tagging
-    if bump == BumpKind::None {
-        log.verbose("#none token found -- skipping tag");
+    // A manually-bumped Cargo.toml that is strictly ahead of the previous
+    // tag is itself a release signal — the operator has explicitly set the
+    // next version. Honor it even when no per-commit bump signal fired and
+    // even when the crate path had no changes. This prevents autotag from
+    // stalling at the old tag after a manual `cargo set-version` bump.
+    let cargo_ahead = version_sync_enabled
+        && match (crate_path.as_deref(), prev_tag.as_deref()) {
+            (Some(path), Some(prev)) => {
+                match (
+                    anodize_stage_build::version_sync::read_cargo_version(path)
+                        .ok()
+                        .and_then(|v| git::parse_semver(&v).ok()),
+                    git::parse_semver_tag(prev).ok(),
+                ) {
+                    (Some(c), Some(p)) => (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch),
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+
+    // If #none token detected (and Cargo.toml isn't explicitly ahead), skip.
+    if bump == BumpKind::None && !cargo_ahead {
+        log.verbose("no bump signal and Cargo.toml not ahead -- skipping tag");
         println!("new_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("part=none");
