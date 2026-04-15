@@ -774,10 +774,18 @@ pub(crate) fn commit_and_push_with_opts(
     opts: &CommitOptions<'_>,
 ) -> Result<()> {
     // Pre-fetch the target branch (if any) so `origin/<branch>` is populated
-    // locally. Ignore failure: the branch genuinely may not exist remotely.
+    // in the local ref store. We must use an explicit refspec: `clone
+    // --depth=1` implies `--single-branch`, which restricts the remote's
+    // default fetch refspec to just the cloned branch. Without the explicit
+    // `+refs/heads/<b>:refs/remotes/origin/<b>` mapping, a plain
+    // `git fetch origin <b>` fetches the commit into FETCH_HEAD but never
+    // updates the remote-tracking ref, leaving us unable to detect an
+    // existing remote branch. Ignore failure: the branch genuinely may not
+    // exist remotely.
     let remote_sha: Option<String> = if let Some(branch_name) = branch {
+        let refspec = format!("+refs/heads/{0}:refs/remotes/origin/{0}", branch_name);
         let _ = Command::new("git")
-            .args(["fetch", "--depth=1", "origin", branch_name])
+            .args(["fetch", "--depth=1", "origin", &refspec])
             .current_dir(repo_path)
             .env("GIT_TERMINAL_PROMPT", "0")
             .output();
