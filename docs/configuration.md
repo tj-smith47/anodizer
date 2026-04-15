@@ -168,7 +168,7 @@ crates:
         tap:
           owner: tj-smith47
           name: homebrew-tap
-        folder: Formula
+        directory: Formula
         description: "Declarative, GitOps-style machine configuration management"
         license: Apache-2.0
         install: |

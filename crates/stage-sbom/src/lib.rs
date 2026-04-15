@@ -354,6 +354,17 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             _ => vec!["{{ .ArtifactName }}.sbom.json".to_string()],
         });
 
+    // GoReleaser parity (sbom.go:91-93): when artifacts != "any", multiple
+    // SBOM output documents are unsupported because each document name is
+    // rendered per-artifact and would clobber on collision.
+    if artifacts_type != "any" && documents.len() > 1 {
+        anyhow::bail!(
+            "sbom[{}]: multiple SBOM outputs when artifacts={:?} is unsupported",
+            id,
+            artifacts_type
+        );
+    }
+
     // Default args for syft
     let args = sbom_cfg.args.clone().unwrap_or_else(|| {
         if cmd == "syft" {

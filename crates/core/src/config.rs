@@ -852,6 +852,10 @@ impl Default for CrateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct UniversalBinaryConfig {
+    /// Unique identifier for this universal binary, propagated into the
+    /// artifact's metadata as `id` (GoReleaser universalbinary.go:42-44).
+    #[serde(default)]
+    pub id: Option<String>,
     /// Output filename template for the universal binary (supports templates).
     pub name_template: Option<String>,
     /// When true, remove the individual arch binaries after creating the universal binary.
@@ -1893,9 +1897,8 @@ pub struct HomebrewConfig {
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
-    /// Formula directory in the tap (e.g. "Formula").
-    #[serde(alias = "directory")]
-    pub folder: Option<String>,
+    /// Formula directory in the tap (e.g. "Formula"). Matches GoReleaser `directory`.
+    pub directory: Option<String>,
     /// Override the formula name (default: crate name).
     pub name: Option<String>,
     /// Short description of the formula (shown in `brew info`).
@@ -2847,6 +2850,7 @@ pub struct NfpmConfig {
     /// Virtual packages provided by this package.
     pub provides: Option<Vec<String>>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// Package epoch for versioning (integer as string).
     pub epoch: Option<String>,
@@ -3178,6 +3182,7 @@ pub struct SnapcraftConfig {
     /// Unique identifier for this snapcraft config.
     pub id: Option<String>,
     /// Build IDs to include. Empty means all builds.
+    #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// Snap package name in the store.
     pub name: Option<String>,
@@ -4996,12 +5001,11 @@ pub struct PublisherConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct HooksConfig {
-    /// Commands to run before the pipeline or stage starts.
-    /// GoReleaser uses `hooks` as the field name under `before:`. We accept
-    /// both `pre` and `hooks` for migration compatibility.
-    #[serde(alias = "hooks")]
-    pub pre: Option<Vec<HookEntry>>,
-    /// Commands to run after the pipeline or stage completes.
+    /// Commands to run before the pipeline or stage starts. Matches GoReleaser
+    /// `before.hooks` canonically.
+    pub hooks: Option<Vec<HookEntry>>,
+    /// Commands to run after the pipeline or stage completes. Anodize extension
+    /// (GoReleaser has no top-level `after:` block).
     pub post: Option<Vec<HookEntry>>,
 }
 
@@ -5106,7 +5110,7 @@ pub struct GitConfig {
 /// When `monorepo` is configured, it takes precedence over `tag.tag_prefix`
 /// for `PrefixedTag` / `PrefixedPreviousTag` behavior.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MonorepoConfig {
     /// Tag prefix for this subproject (e.g. `"subproject1/"`).
     ///
@@ -5172,7 +5176,7 @@ pub struct TagConfig {
 /// Each workspace has its own crates, changelog, and release configuration,
 /// allowing independently-versioned components that aren't Cargo workspace members.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WorkspaceConfig {
     /// Workspace identifier used in logs and template variables.
     pub name: String,
@@ -10403,7 +10407,7 @@ before:
         - OTHER=bar=baz
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let hooks = cfg.before.as_ref().unwrap().pre.as_ref().unwrap();
+        let hooks = cfg.before.as_ref().unwrap().hooks.as_ref().unwrap();
         match &hooks[0] {
             HookEntry::Structured(h) => {
                 let env = h.env.as_ref().expect("env should be Some");
@@ -10426,7 +10430,7 @@ before:
         OTHER: "bar=baz"
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let hooks = cfg.before.as_ref().unwrap().pre.as_ref().unwrap();
+        let hooks = cfg.before.as_ref().unwrap().hooks.as_ref().unwrap();
         match &hooks[0] {
             HookEntry::Structured(h) => {
                 let env = h.env.as_ref().expect("env should be Some");

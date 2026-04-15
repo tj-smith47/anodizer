@@ -305,7 +305,7 @@ crates:
         tap:
           owner: tj-smith47
           name: homebrew-tap
-        folder: Formula
+        directory: Formula
         description: "A Rust-native release automation tool"
         license: MIT
         install: |

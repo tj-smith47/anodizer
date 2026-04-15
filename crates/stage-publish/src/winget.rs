@@ -773,12 +773,29 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let deps = winget_cfg.dependencies.as_deref().unwrap_or(&[]);
 
     // Generate release date from current date if available in context.
-    let release_date = ctx.template_vars().get("Date").map(|d| d.to_string());
+    // Winget spec requires YYYY-MM-DD (see winget.go: ctx.Date.Format(time.DateOnly)).
+    // Context stores Date as RFC 3339; slice the first 10 chars to get calendar date.
+    let release_date = ctx
+        .template_vars()
+        .get("Date")
+        .map(|d| d.chars().take(10).collect::<String>())
+        .filter(|s| s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-');
     let release_date_ref = release_date.as_deref();
 
     // Template-render all 18 fields (GoReleaser parity: winget.go:115-134).
+    // `Changelog` is injected per-render to match GoReleaser's WithExtraFields
+    // so users migrating configs using `{{ .Changelog }}` get the expected value.
+    let release_notes_var = ctx
+        .template_vars()
+        .get("ReleaseNotes")
+        .cloned()
+        .unwrap_or_default();
     let render = |s: Option<&str>| -> Option<String> {
-        s.map(|v| ctx.render_template(v).unwrap_or_else(|_| v.to_string()))
+        s.map(|v| {
+            let mut vars = ctx.template_vars().clone();
+            vars.set("Changelog", &release_notes_var);
+            anodize_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
+        })
     };
     let publisher_rendered = render(Some(publisher_name)).unwrap();
     let publisher_url_rendered = render(winget_cfg.publisher_url.as_deref());

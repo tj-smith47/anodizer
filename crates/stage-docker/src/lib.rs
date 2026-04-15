@@ -2744,7 +2744,22 @@ impl Stage for DockerStage {
             if !digest_lines.is_empty() {
                 digest_lines.sort();
                 digest_lines.dedup();
-                let digest_file = dist.join("digests.txt");
+                // GoReleaser parity (dockerdigest/digest.go): `docker_digest.name_template`
+                // controls the combined digest filename. Resolve the first non-empty
+                // template across configured crates; fall back to `digests.txt`.
+                let rendered_name: Option<String> = ctx
+                    .config
+                    .crates
+                    .iter()
+                    .filter_map(|k| k.docker_digest.as_ref())
+                    .find_map(|dc| {
+                        dc.name_template
+                            .as_ref()
+                            .and_then(|tmpl| ctx.render_template(tmpl).ok())
+                            .filter(|s| !s.is_empty())
+                    });
+                let digest_filename = rendered_name.unwrap_or_else(|| "digests.txt".to_string());
+                let digest_file = dist.join(&digest_filename);
                 if let Err(e) = fs::write(&digest_file, digest_lines.join("\n") + "\n") {
                     log.warn(&format!(
                         "failed to write combined digest file {}: {}",

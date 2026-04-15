@@ -38,7 +38,7 @@ pub struct ArchEntry {
     pub url: String,
     pub hash: String,
     /// When the archive wraps contents in a top-level directory, this holds that
-    /// directory name.  Bin entries will be prefixed with it (e.g. `dir\bin.exe`).
+    /// directory name.  Bin entries will be prefixed with it (e.g. `dir/bin.exe`).
     pub wrap_in_directory: Option<String>,
 }
 
@@ -100,7 +100,7 @@ pub fn generate_manifest_with_opts(
 
     // Compute bin value for a given wrap_in_directory prefix.
     // When wrap_in_directory is set, each bin entry becomes a pair:
-    //   ["wrap_dir\\binary.exe", "alias"]
+    //   ["wrap_dir/binary.exe", "alias"]  (GoReleaser scoop.go:384 parity)
     // where alias is the binary name without the .exe extension.
     // This matches GoReleaser's WrappedIn handling for Scoop manifests.
     let make_bin_value = |wrap_dir: Option<&str>| -> serde_json::Value {
@@ -114,7 +114,8 @@ pub fn generate_manifest_with_opts(
                     .iter()
                     .map(|exe| {
                         let alias = exe.strip_suffix(".exe").unwrap_or(exe);
-                        serde_json::json!([format!("{}\\{}", dir, exe), alias])
+                        // GoReleaser parity (scoop.go:384): filepath.ToSlash → forward-slash.
+                        serde_json::json!([format!("{}/{}", dir, exe), alias])
                     })
                     .collect();
                 serde_json::json!(pairs)
@@ -1107,12 +1108,13 @@ mod tests {
             &ManifestOptions::default(),
         );
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        // With wrap_in_directory, single bin becomes a pair: ["dir\\bin.exe", "alias"]
+        // With wrap_in_directory, single bin becomes a pair: ["dir/bin.exe", "alias"]
+        // (GoReleaser scoop.go:384 uses filepath.ToSlash → forward slashes.)
         let bin = &json["architecture"]["64bit"]["bin"];
         assert!(bin.is_array(), "bin should be an array");
         let pair = &bin[0];
         assert!(pair.is_array(), "bin entry should be a [path, alias] pair");
-        assert_eq!(pair[0], "app-1.0.0\\app.exe");
+        assert_eq!(pair[0], "app-1.0.0/app.exe");
         assert_eq!(pair[1], "app");
     }
 
@@ -1135,9 +1137,9 @@ mod tests {
         let bin = &json["architecture"]["64bit"]["bin"];
         assert!(bin.is_array());
         assert_eq!(bin.as_array().unwrap().len(), 2);
-        assert_eq!(bin[0][0], "suite-1.0.0\\cli.exe");
+        assert_eq!(bin[0][0], "suite-1.0.0/cli.exe");
         assert_eq!(bin[0][1], "cli");
-        assert_eq!(bin[1][0], "suite-1.0.0\\daemon.exe");
+        assert_eq!(bin[1][0], "suite-1.0.0/daemon.exe");
         assert_eq!(bin[1][1], "daemon");
     }
 

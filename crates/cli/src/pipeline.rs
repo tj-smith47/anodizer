@@ -65,6 +65,107 @@ fn merge_yaml(base: &mut serde_yaml_ng::Value, overlay: &serde_yaml_ng::Value) {
     }
 }
 
+/// Detect deprecated YAML aliases in a raw config value so commands can
+/// surface them via `Context::deprecate` after construction.
+///
+/// Returns `(property, message)` pairs. Only detects aliases whose renamed
+/// form actually exists in the current `Config` schema.
+///
+/// Parity with GoReleaser `internal/deprecate/deprecate.go` notices.
+pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+
+    let map = match raw {
+        serde_yaml_ng::Value::Mapping(m) => m,
+        _ => return found,
+    };
+
+    // top-level `gemfury:` -> `fury:`
+    if map.contains_key(serde_yaml_ng::Value::String("gemfury".to_string())) {
+        found.push((
+            "gemfury".to_string(),
+            "`gemfury:` is deprecated, use `fury:`".to_string(),
+        ));
+    }
+
+    // `snapshot.name_template:` -> `snapshot.version_template:`
+    if let Some(snapshot) = map.get(serde_yaml_ng::Value::String("snapshot".to_string()))
+        && let serde_yaml_ng::Value::Mapping(snapshot_map) = snapshot
+        && snapshot_map.contains_key(serde_yaml_ng::Value::String("name_template".to_string()))
+    {
+        found.push((
+            "snapshot.name_template".to_string(),
+            "`snapshot.name_template` is deprecated, use `snapshot.version_template`".to_string(),
+        ));
+    }
+
+    // `nfpms[].builds` -> `nfpms[].ids`, `snapcrafts[].builds` -> `snapcrafts[].ids`.
+    // Both live per-crate under `crates[]`.
+    let mut check_builds_alias = |seq_val: &serde_yaml_ng::Value, property: &str, msg: &str| {
+        if let serde_yaml_ng::Value::Sequence(seq) = seq_val {
+            for entry in seq {
+                if let serde_yaml_ng::Value::Mapping(m) = entry
+                    && m.contains_key(serde_yaml_ng::Value::String("builds".to_string()))
+                {
+                    found.push((property.to_string(), msg.to_string()));
+                    break;
+                }
+            }
+        }
+    };
+    if let Some(crates) = map.get(serde_yaml_ng::Value::String("crates".to_string()))
+        && let serde_yaml_ng::Value::Sequence(crates_seq) = crates
+    {
+        for crate_entry in crates_seq {
+            if let serde_yaml_ng::Value::Mapping(crate_map) = crate_entry {
+                if let Some(nfpms) =
+                    crate_map.get(serde_yaml_ng::Value::String("nfpms".to_string()))
+                {
+                    check_builds_alias(
+                        nfpms,
+                        "nfpms.builds",
+                        "`nfpms[].builds` is deprecated, use `nfpms[].ids`",
+                    );
+                }
+                if let Some(snaps) =
+                    crate_map.get(serde_yaml_ng::Value::String("snapcrafts".to_string()))
+                {
+                    check_builds_alias(
+                        snaps,
+                        "snapcrafts.builds",
+                        "`snapcrafts[].builds` is deprecated, use `snapcrafts[].ids`",
+                    );
+                }
+            }
+        }
+    }
+
+    found
+}
+
+/// Load a config file and return both the `Config` and any deprecation
+/// notices detected in the raw YAML/TOML body. Commands use the notices to
+/// call `Context::deprecate` after constructing their `Context`.
+pub fn load_config_with_deprecations(path: &Path) -> Result<(Config, Vec<(String, String)>)> {
+    let config = load_config(path)?;
+    let deprecations = match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "yaml" | "yml" => std::fs::read_to_string(path)
+            .ok()
+            .and_then(|content| serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content).ok())
+            .map(|raw| detect_deprecated_aliases(&raw))
+            .unwrap_or_default(),
+        "toml" => std::fs::read_to_string(path)
+            .ok()
+            .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+            .and_then(|toml_val| serde_json::to_value(&toml_val).ok())
+            .and_then(|json_val| serde_yaml_ng::to_value(json_val).ok())
+            .map(|raw| detect_deprecated_aliases(&raw))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    Ok((config, deprecations))
+}
+
 /// Load config from a file, auto-detecting format by extension.
 ///
 /// For YAML files, processes `includes` by deep-merging included files together as
@@ -501,23 +602,9 @@ impl Pipeline {
     }
 
     pub fn run(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
-        // The CLI-level validator (`VALID_RELEASE_SKIPS`) is the source of truth
-        // for accepted `--skip` values. The union includes top-level stage names
-        // (`publish`, `docker`, `archive`, ...) plus sub-stage aliases that
-        // filter inside a stage (`winget`, `chocolatey`, `homebrew`, ...) and
-        // lifecycle aliases (`before`, `validate`). Deferring here keeps both
-        // gates consistent — anything the CLI accepts, the runtime recognises.
-        // Unknown values can only reach this point if the caller bypassed the
-        // CLI gate (library consumers, tests), so a warning is still useful.
-        for skip in &ctx.options.skip_stages {
-            if !anodize_core::context::VALID_RELEASE_SKIPS.contains(&skip.as_str()) {
-                eprintln!(
-                    "WARNING: unknown skip stage '{}'; valid stages: {}",
-                    skip,
-                    anodize_core::context::VALID_RELEASE_SKIPS.join(", ")
-                );
-            }
-        }
+        // Skip-stage validation runs at the CLI entry (`validate_skip_values`
+        // in main.rs); the command never reaches this point with an unknown
+        // value. No runtime warning is needed.
 
         // Stages that only make sense when binary artifacts exist.  When the
         // build stage produces no binaries (library-only crate), these stages

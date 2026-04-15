@@ -1579,12 +1579,12 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         log,
     )?;
 
-    // Determine formula folder.
-    let folder = hb_cfg.folder.clone().unwrap_or_default();
-    let formula_dir = if folder.is_empty() {
+    // Determine formula directory (GoReleaser parity: `directory` field).
+    let directory = hb_cfg.directory.clone().unwrap_or_default();
+    let formula_dir = if directory.is_empty() {
         repo_path.to_path_buf()
     } else {
-        repo_path.join(&folder)
+        repo_path.join(&directory)
     };
     std::fs::create_dir_all(&formula_dir)
         .with_context(|| format!("homebrew: create formula dir {}", formula_dir.display()))?;

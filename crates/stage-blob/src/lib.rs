@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::artifact::{Artifact, ArtifactKind, release_uploadable_kinds};
 use anodize_core::config::{BlobConfig, ExtraFile, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
@@ -496,44 +496,15 @@ fn collect_artifacts<'a>(
         return vec![];
     }
 
-    // GoReleaser parity: blob upload includes Signature, Certificate,
-    // Flatpak, and SourceRpm artifact types alongside the standard set.
-    let uploadable_kinds = if config.include_meta.unwrap_or(false) {
-        vec![
-            ArtifactKind::Binary,
-            ArtifactKind::Archive,
-            ArtifactKind::Checksum,
-            ArtifactKind::LinuxPackage,
-            ArtifactKind::SourceArchive,
-            ArtifactKind::Sbom,
-            ArtifactKind::Snap,
-            ArtifactKind::DiskImage,
-            ArtifactKind::Installer,
-            ArtifactKind::MacOsPackage,
-            ArtifactKind::Signature,
-            ArtifactKind::Certificate,
-            ArtifactKind::Flatpak,
-            ArtifactKind::SourceRpm,
-            ArtifactKind::Metadata,
-        ]
-    } else {
-        vec![
-            ArtifactKind::Binary,
-            ArtifactKind::Archive,
-            ArtifactKind::Checksum,
-            ArtifactKind::LinuxPackage,
-            ArtifactKind::SourceArchive,
-            ArtifactKind::Sbom,
-            ArtifactKind::Snap,
-            ArtifactKind::DiskImage,
-            ArtifactKind::Installer,
-            ArtifactKind::MacOsPackage,
-            ArtifactKind::Signature,
-            ArtifactKind::Certificate,
-            ArtifactKind::Flatpak,
-            ArtifactKind::SourceRpm,
-        ]
-    };
+    // GoReleaser parity (blob.go): blob upload uses the canonical
+    // release-uploadable artifact list (ArtifactByType(Archive, UploadableBinary,
+    // UploadableFile, SourceArchive, Makeself, LinuxPackage, Flatpak, SourceRpm,
+    // Sbom, PyWheel, PySdist, Checksum, Signature, Certificate)). When
+    // `include_meta` is true, append Metadata.
+    let mut uploadable_kinds: Vec<ArtifactKind> = release_uploadable_kinds().to_vec();
+    if config.include_meta.unwrap_or(false) {
+        uploadable_kinds.push(ArtifactKind::Metadata);
+    }
 
     ctx.artifacts
         .all()

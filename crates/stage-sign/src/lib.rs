@@ -21,7 +21,8 @@ use anodize_core::target::map_target;
 /// Uses `{{ .Artifact }}` (Go-compat syntax, replaced before Tera rendering)
 /// for the artifact path, and Tera syntax for Os/Arch/Arm/Mips/Amd64
 /// conditionals that are set per-artifact from the target triple.
-const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &str = "{{ .Artifact }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.sig";
+// Matches GoReleaser sign_binary.go:16 default — no trailing `.sig` suffix.
+const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &str = "{{ .Artifact }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -736,21 +737,44 @@ fn process_sign_configs(
             )?;
 
             // Template-render each env value (GoReleaser sign.go:180-185, 310-320).
-            let rendered_env = sign_cfg.env.as_ref().map(|env_map| {
-                env_map
-                    .iter()
-                    .map(|(k, v)| {
-                        let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
-                            log.warn(&format!(
-                                "failed to render {} env '{}': {}, using raw value",
-                                label, k, e
-                            ));
-                            v.clone()
-                        });
-                        (k.clone(), rendered_val)
-                    })
-                    .collect::<HashMap<String, String>>()
-            });
+            // GoReleaser parity (sign.go:244): the same shell-style variables
+            // available for arg substitution (artifact, signature, certificate,
+            // artifactName, artifactID, digest) are ALSO injected as env vars
+            // for the sign subprocess. Skip keys with empty values.
+            let mut rendered_env: HashMap<String, String> = sign_cfg
+                .env
+                .as_ref()
+                .map(|env_map| {
+                    env_map
+                        .iter()
+                        .map(|(k, v)| {
+                            let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
+                                log.warn(&format!(
+                                    "failed to render {} env '{}': {}, using raw value",
+                                    label, k, e
+                                ));
+                                v.clone()
+                            });
+                            (k.clone(), rendered_val)
+                        })
+                        .collect::<HashMap<String, String>>()
+                })
+                .unwrap_or_default();
+
+            for (k, v) in shell_vars.iter() {
+                if v.is_empty() {
+                    continue;
+                }
+                rendered_env
+                    .entry((*k).to_string())
+                    .or_insert_with(|| (*v).to_string());
+            }
+
+            let rendered_env = if rendered_env.is_empty() {
+                None
+            } else {
+                Some(rendered_env)
+            };
 
             sign_jobs.push(SignJob {
                 cmd: cmd.clone(),
@@ -3020,8 +3044,8 @@ crates: []
             "binary signature template must include Amd64 conditional"
         );
         assert!(
-            DEFAULT_BINARY_SIGNATURE_TEMPLATE.ends_with(".sig"),
-            "binary signature template must end with .sig"
+            !DEFAULT_BINARY_SIGNATURE_TEMPLATE.ends_with(".sig"),
+            "binary signature template must NOT end with .sig (GoReleaser sign_binary.go:16 parity)"
         );
     }
 
@@ -3056,7 +3080,7 @@ crates: []
             &log,
             Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
         );
-        assert_eq!(result, "/dist/myapp_linux_amd64.sig");
+        assert_eq!(result, "/dist/myapp_linux_amd64");
     }
 
     #[test]
@@ -3091,7 +3115,7 @@ crates: []
             &log,
             Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
         );
-        assert_eq!(result, "/dist/myapp_linux_armv6.sig");
+        assert_eq!(result, "/dist/myapp_linux_armv6");
     }
 
     #[test]
@@ -3125,7 +3149,7 @@ crates: []
             &log,
             Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
         );
-        assert_eq!(result, "/dist/myapp_linux_amd64v2.sig");
+        assert_eq!(result, "/dist/myapp_linux_amd64v2");
     }
 
     #[test]

@@ -310,6 +310,34 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     let ids_filter = krew_cfg.ids.as_deref();
     let goamd64 = krew_cfg.goamd64.as_deref().or(Some("v1"));
     let goarm = krew_cfg.goarm.as_deref();
+
+    // GoReleaser parity (krew.go:233-236): Krew plugins only support a single
+    // binary per archive. Check archive artifacts before building the manifest
+    // so we fail fast with a clear error instead of shipping a broken plugin.
+    for archive in ctx
+        .artifacts
+        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
+    {
+        if let Some(ids) = ids_filter
+            && !ids.is_empty()
+            && !archive
+                .metadata
+                .get("id")
+                .map(|id| ids.iter().any(|i| i == id))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        let binary_count = archive.extra_binaries().len();
+        if binary_count != 1 {
+            anyhow::bail!(
+                "krew: only one binary per archive allowed, got {} on {:?}",
+                binary_count,
+                archive.name
+            );
+        }
+    }
+
     let all_artifacts =
         util::find_all_platform_artifacts_with_goarch(ctx, crate_name, ids_filter, goamd64, goarm);
 

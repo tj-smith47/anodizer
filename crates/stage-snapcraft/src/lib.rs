@@ -303,6 +303,12 @@ pub fn generate_snap_yaml(
         Vec::new()
     };
 
+    // GoReleaser parity (snapcraft.go:338-402): assumes, hooks, and plugs are
+    // populated inside the `for name, config := range snap.Apps` loop. When the
+    // apps map is empty, those fields remain zero-valued and `omitempty` drops
+    // them from the emitted YAML. Mirror that here.
+    let has_apps = config.apps.as_ref().map(|m| !m.is_empty()).unwrap_or(false);
+
     let yaml_model = SnapcraftYaml {
         name,
         version: version.to_string(),
@@ -314,13 +320,25 @@ pub fn generate_snap_yaml(
         license: config.license.clone(),
         title: config.title.clone(),
         icon: config.icon.clone(),
-        assumes: config.assumes.clone().unwrap_or_default(),
+        assumes: if has_apps {
+            config.assumes.clone().unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         architectures,
         apps,
-        plugs: config.plugs.clone().unwrap_or_default(), // structured map (HashMap<String, Value>)
+        plugs: if has_apps {
+            config.plugs.clone().unwrap_or_default()
+        } else {
+            HashMap::new()
+        },
         slots: config.slots.clone().unwrap_or_default(),
         layouts,
-        hooks: config.hooks.clone().unwrap_or_default(),
+        hooks: if has_apps {
+            config.hooks.clone().unwrap_or_default()
+        } else {
+            HashMap::new()
+        },
     };
 
     let yaml = serde_yaml_ng::to_string(&yaml_model).context("serialize snapcraft YAML")?;
@@ -1111,8 +1129,18 @@ mod tests {
             serde_json::json!({ "interface": "personal-files", "read": ["/etc/myapp"] }),
         );
 
+        // GoReleaser parity (snapcraft.go:338-402): plugs/hooks/assumes are only
+        // emitted when `apps` is non-empty (the Go loop runs per-app). Supply a
+        // minimal app so the plugs section appears.
+        let mut apps_map = HashMap::new();
+        apps_map.insert(
+            "mysnap".to_string(),
+            anodize_core::config::SnapcraftApp::default(),
+        );
+
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            apps: Some(apps_map),
             plugs: Some(plugs),
             slots: Some(vec!["dbus-slot".to_string()]),
             summary: Some("Test snap".to_string()),
@@ -2635,8 +2663,17 @@ crates:
             serde_json::json!({"plugs": ["home", "network"]}),
         );
 
+        // GoReleaser parity (snapcraft.go:338-402): hooks are emitted only when
+        // `apps` is non-empty (the loop runs per-app). Supply a minimal app.
+        let mut apps_map = HashMap::new();
+        apps_map.insert(
+            "mysnap".to_string(),
+            anodize_core::config::SnapcraftApp::default(),
+        );
+
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            apps: Some(apps_map),
             hooks: Some(hooks),
             summary: Some("Test snap".to_string()),
             description: Some("A test snap package".to_string()),

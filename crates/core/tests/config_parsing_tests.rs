@@ -1610,7 +1610,7 @@ crates:
         tap:
           owner: myorg
           name: homebrew-tap
-        folder: Formula
+        directory: Formula
         description: "My awesome tool"
         license: MIT
         install: |
@@ -1629,7 +1629,7 @@ crates:
     let tap = homebrew.tap.as_ref().unwrap();
     assert_eq!(tap.owner, "myorg");
     assert_eq!(tap.name, "homebrew-tap");
-    assert_eq!(homebrew.folder, Some("Formula".to_string()));
+    assert_eq!(homebrew.directory, Some("Formula".to_string()));
     assert_eq!(homebrew.description, Some("My awesome tool".to_string()));
     assert_eq!(homebrew.license, Some("MIT".to_string()));
     assert!(homebrew.install.is_some());
@@ -1658,7 +1658,7 @@ crates:
         .homebrew
         .as_ref()
         .unwrap();
-    assert_eq!(homebrew.folder, None);
+    assert_eq!(homebrew.directory, None);
     assert_eq!(homebrew.description, None);
     assert_eq!(homebrew.license, None);
     assert_eq!(homebrew.install, None);
@@ -2150,17 +2150,17 @@ fn test_parse_hooks_before() {
     let yaml = r#"
 project_name: test
 before:
-  pre:
+  hooks:
     - "go mod tidy"
     - "make generate"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let before = config.before.as_ref().unwrap();
-    let pre = before.pre.as_ref().unwrap();
-    assert_eq!(pre.len(), 2);
-    assert_eq!(pre[0], "go mod tidy");
-    assert_eq!(pre[1], "make generate");
+    let hooks = before.hooks.as_ref().unwrap();
+    assert_eq!(hooks.len(), 2);
+    assert_eq!(hooks[0], "go mod tidy");
+    assert_eq!(hooks[1], "make generate");
 }
 
 #[test]
@@ -2185,7 +2185,7 @@ fn test_parse_hooks_both_before_and_after() {
     let yaml = r#"
 project_name: test
 before:
-  pre:
+  hooks:
     - "pre-step"
 after:
   post:
@@ -2194,7 +2194,14 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
-        config.before.as_ref().unwrap().pre.as_ref().unwrap().len(),
+        config
+            .before
+            .as_ref()
+            .unwrap()
+            .hooks
+            .as_ref()
+            .unwrap()
+            .len(),
         1
     );
     assert_eq!(
@@ -2216,7 +2223,7 @@ fn test_parse_hooks_empty_hooks_list() {
     let yaml = r#"
 project_name: test
 before:
-  pre: []
+  hooks: []
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -2225,7 +2232,7 @@ crates: []
             .before
             .as_ref()
             .unwrap()
-            .pre
+            .hooks
             .as_ref()
             .unwrap()
             .is_empty()
@@ -2923,7 +2930,7 @@ fn test_parse_toml_hooks() {
 project_name = "test"
 
 [before]
-pre = ["cargo fmt", "cargo clippy"]
+hooks = ["cargo fmt", "cargo clippy"]
 
 [after]
 post = ["echo done"]
@@ -2935,7 +2942,14 @@ tag_template = "v{{ .Version }}"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     assert_eq!(
-        config.before.as_ref().unwrap().pre.as_ref().unwrap().len(),
+        config
+            .before
+            .as_ref()
+            .unwrap()
+            .hooks
+            .as_ref()
+            .unwrap()
+            .len(),
         2
     );
     assert_eq!(
@@ -3232,7 +3246,7 @@ env:
   GLOBAL_VAR: "value"
 report_sizes: true
 before:
-  pre:
+  hooks:
     - "cargo fmt --check"
 after:
   post:
@@ -3317,7 +3331,7 @@ crates:
         tap:
           owner: org
           name: homebrew-tap
-        folder: Formula
+        directory: Formula
         description: "App tool"
         license: MIT
       scoop:
@@ -3605,7 +3619,7 @@ fn test_sign_config_default_struct() {
 #[test]
 fn test_hooks_config_default_struct() {
     let config = HooksConfig::default();
-    assert!(config.pre.is_none());
+    assert!(config.hooks.is_none());
     assert!(config.post.is_none());
 }
 

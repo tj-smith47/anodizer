@@ -17,7 +17,21 @@ pub fn run(
 
     let path = pipeline::find_config(config_override)?;
     log.verbose(&format!("loading config from {}", path.display()));
-    let config = pipeline::load_config(&path)?;
+    let (mut config, deprecations) = pipeline::load_config_with_deprecations(&path)?;
+
+    // Surface deprecation warnings at check time so users catch aliases
+    // before they reach the release pipeline.
+    for (prop, msg) in &deprecations {
+        eprintln!(
+            "DEPRECATED: {} — see https://anodize.dev/deprecations#{}",
+            msg,
+            prop.replace('.', "-").to_lowercase()
+        );
+    }
+
+    // Auto-infer project_name from Cargo.toml when not set in config so
+    // check validates the same project_name the release pipeline would see.
+    helpers::infer_project_name(&mut config, &log);
 
     // Always validate the raw config first
     log.status("validating configuration");

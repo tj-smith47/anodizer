@@ -5,7 +5,6 @@ pub use split::run_merge;
 
 use super::helpers;
 use crate::pipeline;
-use anodize_core::artifact;
 use anodize_core::config::{Config, CrateConfig, WorkspaceConfig};
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::git;
@@ -58,8 +57,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         anyhow::bail!("--snapshot and --nightly cannot be combined");
     }
 
-    let mut config =
-        pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
+    let config_path = pipeline::find_config(opts.config_override.as_deref())?;
+    let (mut config, deprecations) = pipeline::load_config_with_deprecations(&config_path)?;
 
     // If --workspace is specified, resolve the workspace and overlay its config
     // onto the top-level config (replacing crates, changelog, signs, etc.).
@@ -96,19 +95,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         }
     }
 
-    // Auto-infer project_name from Cargo.toml when not set in config
-    // (GoReleaser project.go:22-43 infers from Cargo.toml/go.mod/git remote).
-    if config.project_name.is_empty()
-        && let Ok(cargo_toml) = std::fs::read_to_string("Cargo.toml")
-        && let Ok(doc) = cargo_toml.parse::<toml_edit::DocumentMut>()
-        && let Some(name) = doc
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(|n| n.as_str())
-    {
-        config.project_name = name.to_string();
-        log.verbose(&format!("inferred project_name '{}' from Cargo.toml", name));
-    }
+    // Auto-infer project_name from Cargo.toml when not set in config.
+    helpers::infer_project_name(&mut config, &log);
 
     // Auto-detect GitHub owner/name from git remote
     helpers::auto_detect_github(&mut config, &log);
@@ -292,6 +280,9 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         strict: opts.strict,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
+    for (prop, msg) in &deprecations {
+        ctx.deprecate(prop, msg);
+    }
     helpers::resolve_scm_token_type(&mut ctx, &config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
@@ -300,15 +291,21 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     // Populate user-defined env vars into template context
     helpers::setup_env(&mut ctx, &config, &log)?;
 
-    // Run hooks before pipeline — after env vars are populated so
-    // that template variables (Env.*, ProjectName, etc.) are available,
-    // but BEFORE git context resolution (matching GoReleaser ordering).
-    // Skip in --merge and --split modes: CI already validates the code
-    // before tagging, and hook compilation can dirty the working tree.
+    // Resolve tag and populate git variables before running the pipeline.
+    // GoReleaser runs git.Pipe (index 2) BEFORE before.Pipe (index 7) so
+    // before-hooks can rely on Git.Tag, Git.Commit, etc. in their template
+    // vars (pipeline.go:69,79).
+    helpers::resolve_git_context(&mut ctx, &config, &log)?;
+
+    // Run before-hooks now that env AND git vars are populated. Respect
+    // `--skip=before` (matching GoReleaser's skip.Before). Skip in --merge
+    // and --split modes: CI already validates the code before tagging, and
+    // hook compilation can dirty the working tree.
     if !opts.merge
         && !opts.split
+        && !ctx.should_skip("before")
         && let Some(before) = &config.before
-        && let Some(ref hooks) = before.pre
+        && let Some(ref hooks) = before.hooks
     {
         pipeline::run_hooks(
             hooks,
@@ -318,9 +315,6 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             Some(ctx.template_vars()),
         )?;
     }
-
-    // Resolve tag and populate git variables before running the pipeline.
-    helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
     // Render --release-notes-tmpl now that template vars are populated.
     // This overrides --release-notes.
@@ -436,24 +430,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Dump effective (resolved) config to dist/config.yaml before pipeline runs.
     // GoReleaser always writes this, including in dry-run mode.
-    {
-        let dist = config.dist.as_os_str();
-        std::fs::create_dir_all(&config.dist).with_context(|| {
-            format!(
-                "failed to create dist directory: {}",
-                dist.to_string_lossy()
-            )
-        })?;
-        let effective_path = config.dist.join("config.yaml");
-        let yaml =
-            serde_yaml_ng::to_string(&config).context("failed to serialize effective config")?;
-        std::fs::write(&effective_path, &yaml)
-            .with_context(|| format!("failed to write {}", effective_path.display()))?;
-        log.verbose(&format!(
-            "wrote effective config to {}",
-            effective_path.display()
-        ));
-    }
+    helpers::write_effective_config(&config, &log)?;
 
     // --split: run only the build stage, serialize artifacts to dist/, then exit
     if opts.split {
@@ -483,94 +460,11 @@ fn run_post_pipeline(
     log: &anodize_core::log::StageLogger,
 ) -> Result<()> {
     // Print artifact size table if configured
-    if config.report_sizes.unwrap_or(false) {
-        artifact::print_size_report(&mut ctx.artifacts, log);
-    }
+    helpers::run_report_sizes(ctx, config, log);
 
-    // GoReleaser writes metadata.json and artifacts.json even in dry-run mode.
-    let dist = &config.dist;
-    std::fs::create_dir_all(dist)
-        .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
-
-    // Write metadata.json with project metadata (GoReleaser parity).
-    let metadata_path = dist.join("metadata.json");
-    let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
-    let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
-
-    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
-    let previous_tag = ctx
-        .template_vars()
-        .get("PreviousTag")
-        .cloned()
-        .unwrap_or_default();
-    let version = ctx.version();
-    let commit = ctx
-        .template_vars()
-        .get("FullCommit")
-        .cloned()
-        .unwrap_or_default();
-    let date = ctx.template_vars().get("Date").cloned().unwrap_or_default();
-
-    let project_metadata = serde_json::json!({
-        "project_name": config.project_name,
-        "tag": tag,
-        "previous_tag": previous_tag,
-        "version": version,
-        "commit": commit,
-        "date": date,
-        "runtime": {
-            "goos": goos,
-            "goarch": goarch,
-        }
-    });
-
-    let json_str = serde_json::to_string_pretty(&project_metadata)
-        .context("failed to serialize project metadata JSON")?;
-    std::fs::write(&metadata_path, &json_str)
-        .with_context(|| format!("failed to write {}", metadata_path.display()))?;
-    log.status(&format!("wrote {}", metadata_path.display()));
-
-    // Register metadata.json as an artifact.
-    ctx.artifacts.add(anodize_core::artifact::Artifact {
-        kind: anodize_core::artifact::ArtifactKind::Metadata,
-        name: "metadata.json".to_string(),
-        path: metadata_path.clone(),
-        target: None,
-        crate_name: config.project_name.clone(),
-        metadata: Default::default(),
-        size: None,
-    });
-
-    // Write artifacts.json with the artifact list.
-    let artifacts_path = dist.join("artifacts.json");
-    let artifacts_json = ctx
-        .artifacts
-        .to_artifacts_json()
-        .context("failed to serialize artifact list")?;
-    let json_str = serde_json::to_string_pretty(&artifacts_json)
-        .context("failed to serialize artifacts JSON")?;
-    std::fs::write(&artifacts_path, &json_str)
-        .with_context(|| format!("failed to write {}", artifacts_path.display()))?;
-    log.status(&format!("wrote {}", artifacts_path.display()));
-
-    // Apply mod_timestamp to both metadata.json and artifacts.json if configured.
-    if let Some(ref meta) = config.metadata
-        && let Some(ref ts_tmpl) = meta.mod_timestamp
-    {
-        let rendered = ctx
-            .render_template(ts_tmpl)
-            .context("failed to render metadata.mod_timestamp template")?;
-        if !rendered.is_empty() {
-            let mtime = anodize_core::util::parse_mod_timestamp(&rendered)
-                .with_context(|| format!("invalid metadata.mod_timestamp value: {:?}", rendered))?;
-            anodize_core::util::set_file_mtime(&metadata_path, mtime)?;
-            anodize_core::util::set_file_mtime(&artifacts_path, mtime)?;
-            log.status(&format!(
-                "set mtime on metadata.json and artifacts.json to {}",
-                rendered
-            ));
-        }
-    }
+    // Write metadata.json and artifacts.json (GoReleaser writes these
+    // even in dry-run mode; applies metadata.mod_timestamp when set).
+    helpers::write_metadata_and_artifacts(ctx, config, log)?;
 
     // Run custom publishers
     if let Some(ref publishers) = config.publishers

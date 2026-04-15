@@ -455,10 +455,20 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .map(|t| ctx.render_template(t).unwrap_or_else(|_| t.to_string()));
 
     // Template-render Copyright, Summary, Description, ReleaseNotes
-    // (GoReleaser parity: chocolatey.go:218-227). All have access to
-    // standard template variables including ReleaseNotes (as "Changelog" equivalent).
+    // (GoReleaser parity: chocolatey.go:218-227). `Changelog` is injected
+    // as a per-render extra (matching GoReleaser WithExtraFields) so users
+    // migrating GoReleaser configs that use `{{ .Changelog }}` work.
+    let release_notes_var = ctx
+        .template_vars()
+        .get("ReleaseNotes")
+        .cloned()
+        .unwrap_or_default();
     let render = |s: Option<&str>| -> Option<String> {
-        s.map(|v| ctx.render_template(v).unwrap_or_else(|_| v.to_string()))
+        s.map(|v| {
+            let mut vars = ctx.template_vars().clone();
+            vars.set("Changelog", &release_notes_var);
+            anodize_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
+        })
     };
     let copyright_rendered = render(choco_cfg.copyright.as_deref());
     let summary_rendered = render(choco_cfg.summary.as_deref());

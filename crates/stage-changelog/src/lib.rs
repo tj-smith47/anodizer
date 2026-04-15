@@ -494,7 +494,10 @@ fn render_commit_line(
         }
     };
     let mut vars = TemplateVars::new();
-    vars.set("SHA", &commit.full_hash);
+    // GoReleaser parity (changelog.go:262): SHA respects the `abbrev` config.
+    // `short_sha` is already computed with abbrev applied above; use it here
+    // so templates referencing {{ .SHA }} honor the user's abbreviation.
+    vars.set("SHA", &short_sha);
     vars.set("ShortSHA", &short_sha);
     vars.set("Message", &commit.description);
     vars.set("AuthorName", &commit.author_name);
@@ -1747,12 +1750,11 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
-        // Default format is now `{{ SHA }} {{ Message }}` (full hash), so abbrev
-        // does not affect the output. The full SHA always appears.
+        // GoReleaser parity: `{{ .SHA }}` respects abbrev. abbrev=5 → "abc12".
         let md = render_changelog(&grouped, 5, None, "", "git", None, None);
         assert!(
-            md.contains("abc1234567890 test abbrev"),
-            "expected 'abc1234567890 test abbrev' in: {}",
+            md.contains("abc12 test abbrev"),
+            "expected 'abc12 test abbrev' in: {}",
             md
         );
     }
@@ -1781,11 +1783,11 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
-        // Default format is now `{{ SHA }} {{ Message }}` (full hash).
+        // GoReleaser parity: `{{ .SHA }}` respects abbrev (7) → short hash.
         let md = render_changelog(&grouped, 7, None, "", "git", None, None);
         assert!(
-            md.contains("abc1234def5678 default abbrev"),
-            "expected 'abc1234def5678 default abbrev' in: {}",
+            md.contains("abc1234 default abbrev"),
+            "expected 'abc1234 default abbrev' in: {}",
             md
         );
     }
@@ -2062,12 +2064,13 @@ abbrev: 10
             "ci commit should be filtered out"
         );
 
-        // Verify full hashes are present (default format: "{{ SHA }} {{ Message }}")
+        // GoReleaser parity: default format "{{ SHA }} {{ Message }}" uses the
+        // abbreviated SHA (abbrev=7 → 7-char prefixes).
         assert!(
-            md.contains("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 "),
-            "full hash should appear in output"
+            md.contains("a1b2c3d "),
+            "abbreviated hash should appear in output, got:\n{md}"
         );
-        assert!(md.contains("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3 "));
+        assert!(md.contains("b2c3d4e "));
 
         // Verify bullets
         let bullet_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("* ")).collect();
@@ -2458,19 +2461,19 @@ abbrev: 10
             subgroups: Vec::new(),
         }];
 
-        // Default format is now `{{ SHA }} {{ Message }}` (full hash), so abbrev
-        // does not affect the output — the full SHA always appears.
+        // GoReleaser parity (changelog.go:262): `{{ .SHA }}` respects the
+        // `abbrev` setting — short SHA when abbrev > 0, full when abbrev == 0.
         let md = render_changelog(&grouped, 3, None, "", "git", None, None);
         assert!(
-            md.contains("abcdef1234567890 test"),
-            "abbrev=3 expected full hash 'abcdef1234567890 test', got: {}",
+            md.contains("abc test"),
+            "abbrev=3 expected short hash 'abc test', got: {}",
             md
         );
 
         let md10 = render_changelog(&grouped, 10, None, "", "git", None, None);
         assert!(
-            md10.contains("abcdef1234567890 test"),
-            "abbrev=10 expected full hash 'abcdef1234567890 test', got: {}",
+            md10.contains("abcdef1234 test"),
+            "abbrev=10 expected short hash 'abcdef1234 test', got: {}",
             md10
         );
     }
@@ -2927,9 +2930,7 @@ abbrev: 10
             None,
         );
         assert!(
-            md.contains(
-                "abc1234567890abcdef1234567890abcdef123456 add auth (Alice <alice@example.com>)"
-            ),
+            md.contains("abc1234 add auth (Alice <alice@example.com>)"),
             "custom format should render all variables, got: {md}"
         );
     }
@@ -2951,11 +2952,12 @@ abbrev: 10
             }],
             subgroups: Vec::new(),
         }];
-        // Default format: "{{ SHA }} {{ Message }}" (full hash, matching GoReleaser)
+        // GoReleaser parity: default format "{{ SHA }} {{ Message }}" uses the
+        // abbreviated SHA. With abbrev=7 and hash="def5678", SHA == "def5678".
         let md = render_changelog(&grouped, 7, None, "", "git", None, None);
         assert!(
-            md.contains("* def5678abcdef bug"),
-            "default format should be 'SHA Message', got: {md}"
+            md.contains("* def5678 bug"),
+            "default format should be 'SHA Message' with abbrev-respecting SHA, got: {md}"
         );
     }
 

@@ -589,18 +589,40 @@ impl Context {
     /// - `id` — artifact ID from config, set by docker and build stages
     /// - `binary` — binary name, set by build stage
     pub fn refresh_artifacts_var(&mut self) {
+        // CSV metadata keys we expose as JSON arrays for template iteration.
+        // Storage remains HashMap<String,String> (flat); only the
+        // template-exposed view is expanded. Matches GoReleaser's
+        // ExtraBinaries / ExtraFiles list semantics.
+        const CSV_LIST_KEYS: &[&str] = &["extra_binaries", "extra_files"];
+
         let artifacts_value: Vec<serde_json::Value> = self
             .artifacts
             .all()
             .iter()
             .map(|a| {
+                // Rebuild metadata map converting known CSV keys into arrays.
+                let mut metadata_map = serde_json::Map::with_capacity(a.metadata.len());
+                for (k, v) in &a.metadata {
+                    if CSV_LIST_KEYS.contains(&k.as_str()) {
+                        let items: Vec<serde_json::Value> = if v.is_empty() {
+                            Vec::new()
+                        } else {
+                            v.split(',')
+                                .map(|s| serde_json::Value::String(s.to_string()))
+                                .collect()
+                        };
+                        metadata_map.insert(k.clone(), serde_json::Value::Array(items));
+                    } else {
+                        metadata_map.insert(k.clone(), serde_json::Value::String(v.clone()));
+                    }
+                }
                 serde_json::json!({
                     "name": a.name,
                     "path": a.path.to_string_lossy(),
                     "target": a.target.as_deref().unwrap_or(""),
                     "kind": a.kind.as_str(),
                     "crate_name": a.crate_name,
-                    "metadata": a.metadata,
+                    "metadata": serde_json::Value::Object(metadata_map),
                 })
             })
             .collect();

@@ -424,28 +424,30 @@ pub fn generate_nfpm_yaml(
             .and_then(|l| l.cshared.clone())
             .or_else(|| Some("/usr/lib".to_string()));
 
-        // GoReleaser parity (nfpm.go:263-265): rewrite all libdirs for termux.deb
+        // GoReleaser parity (nfpm.go:262-265 + termuxPrefixedDir 648-653):
+        // unconditionally prefix libdirs for termux.deb — the prefix is never
+        // guarded by /usr or /etc; any non-empty path is prefixed.
         let (header_dir, carchive_dir, cshared_dir) = if format == Some("termux.deb") {
             (
                 header_dir.map(|d| {
-                    if d.starts_with("/usr") || d.starts_with("/etc") {
-                        format!("/data/data/com.termux/files{d}")
-                    } else {
+                    if d.is_empty() {
                         d
+                    } else {
+                        format!("/data/data/com.termux/files{d}")
                     }
                 }),
                 carchive_dir.map(|d| {
-                    if d.starts_with("/usr") || d.starts_with("/etc") {
-                        format!("/data/data/com.termux/files{d}")
-                    } else {
+                    if d.is_empty() {
                         d
+                    } else {
+                        format!("/data/data/com.termux/files{d}")
                     }
                 }),
                 cshared_dir.map(|d| {
-                    if d.starts_with("/usr") || d.starts_with("/etc") {
-                        format!("/data/data/com.termux/files{d}")
-                    } else {
+                    if d.is_empty() {
                         d
+                    } else {
+                        format!("/data/data/com.termux/files{d}")
                     }
                 }),
             )
@@ -1239,8 +1241,20 @@ impl Stage for NfpmStage {
                             })?;
                         }
 
-                        // Determine package file name (template or default)
-                        let pkg_name = nfpm_cfg.package_name.as_deref().unwrap_or(&krate.name);
+                        // Determine package file name (template or default).
+                        // GoReleaser nfpm.go:68-70 — default is ProjectName
+                        // (not the crate/binary name). Fall back to crate name
+                        // only if project_name is empty. Copy into an owned
+                        // String so we can mutably reborrow ctx for template vars.
+                        let pkg_name_owned: String =
+                            if let Some(n) = nfpm_cfg.package_name.as_deref() {
+                                n.to_string()
+                            } else if !ctx.config.project_name.is_empty() {
+                                ctx.config.project_name.clone()
+                            } else {
+                                krate.name.clone()
+                            };
+                        let pkg_name: &str = pkg_name_owned.as_str();
                         let ext = format_extension(format);
 
                         // Set nfpm-specific template vars (Os, Arch, Format,
@@ -1337,6 +1351,37 @@ impl Stage for NfpmStage {
                                 )
                             })?;
                         log.check_output(output, "nfpm")?;
+
+                        // GoReleaser nfpm.go:577-581 — apply mtime to the
+                        // produced package file for reproducible builds.
+                        if let Some(ref raw_mtime) = nfpm_cfg.mtime {
+                            let rendered_mtime = ctx
+                                .render_template(raw_mtime)
+                                .unwrap_or_else(|_| raw_mtime.clone());
+                            match anodize_core::util::parse_mod_timestamp(&rendered_mtime) {
+                                Ok(mtime) => {
+                                    if let Err(e) =
+                                        anodize_core::util::set_file_mtime(&pkg_path, mtime)
+                                    {
+                                        log.warn(&format!(
+                                            "nfpm: failed to apply mtime to {}: {}",
+                                            pkg_path.display(),
+                                            e
+                                        ));
+                                    } else {
+                                        log.verbose(&format!(
+                                            "nfpm: applied mtime={rendered_mtime} to {}",
+                                            pkg_path.display()
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    log.warn(&format!(
+                                        "nfpm: invalid mtime '{rendered_mtime}': {e}"
+                                    ));
+                                }
+                            }
+                        }
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::LinuxPackage,

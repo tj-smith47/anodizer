@@ -28,6 +28,11 @@ pub mod webhook;
 const DEFAULT_MESSAGE_TEMPLATE: &str =
     "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}";
 
+/// GoReleaser parity (webhook.go:21): the webhook default payload wraps the
+/// message in a JSON envelope so the receiver always gets a valid JSON body.
+const WEBHOOK_DEFAULT_MESSAGE_TEMPLATE: &str =
+    r#"{"message":"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"}"#;
+
 /// Evaluate an `enabled` field (now `Option<StringOrBool>`) through the template
 /// engine.  Returns `true` only when the value is present and resolves to truthy.
 fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> bool {
@@ -307,7 +312,14 @@ impl Stage for AnnounceStage {
                         url
                     );
                 }
-                let message = render_message(ctx, cfg.message_template.as_deref())?;
+                // GoReleaser parity (webhook.go:21): webhook uses a JSON-envelope
+                // default distinct from the plain-text default used by other
+                // providers; receivers expect a parseable JSON body.
+                let message = ctx.render_template(
+                    cfg.message_template
+                        .as_deref()
+                        .unwrap_or(WEBHOOK_DEFAULT_MESSAGE_TEMPLATE),
+                )?;
 
                 let raw_headers = cfg.headers.clone().unwrap_or_default();
                 let mut headers = HashMap::new();

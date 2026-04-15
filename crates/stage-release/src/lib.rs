@@ -473,54 +473,59 @@ pub(crate) fn build_release_body(
 /// a `name_template`, the template is rendered using the provided `Context` and
 /// returned as the second element; the upload loop should use this as the
 /// upload filename instead of the filesystem name.
-/// Invalid glob patterns are silently skipped (callers log through StageLogger).
+/// GoReleaser parity (internal/extrafiles/extra_files.go): invalid glob patterns
+/// and patterns that match zero files are hard errors, not silent skips.
 pub(crate) fn collect_extra_files(
     specs: &[ExtraFileSpec],
     ctx: &Context,
-) -> Vec<(std::path::PathBuf, Option<String>)> {
+) -> anyhow::Result<Vec<(std::path::PathBuf, Option<String>)>> {
     let mut results = Vec::new();
     for spec in specs {
         match spec {
             ExtraFileSpec::Glob(pattern) => {
-                match glob::glob(pattern) {
-                    Ok(entries) => {
-                        for entry in entries.flatten() {
-                            if entry.is_file() {
-                                results.push((entry, None));
-                            }
-                        }
+                let entries = glob::glob(pattern).with_context(|| {
+                    format!("release: invalid extra_files glob pattern '{}'", pattern)
+                })?;
+                let before = results.len();
+                for entry in entries.flatten() {
+                    if entry.is_file() {
+                        results.push((entry, None));
                     }
-                    Err(_) => {
-                        // Invalid glob — skip silently; the release stage logs via StageLogger.
-                    }
+                }
+                if results.len() == before {
+                    anyhow::bail!("release: extra_files glob '{}' matched no files", pattern);
                 }
             }
             ExtraFileSpec::Detailed {
                 glob: pattern,
                 name_template,
             } => {
-                if let Ok(entries) = glob::glob(pattern) {
-                    for entry in entries.flatten() {
-                        if entry.is_file() {
-                            let name = name_template.as_ref().and_then(|tmpl| {
-                                let filename =
-                                    entry.file_name().unwrap_or_default().to_string_lossy();
-                                let mut vars = ctx.template_vars().clone();
-                                vars.set("ArtifactName", &filename);
-                                vars.set(
-                                    "ArtifactExt",
-                                    anodize_core::template::extract_artifact_ext(&filename),
-                                );
-                                anodize_core::template::render(tmpl, &vars).ok()
-                            });
-                            results.push((entry, name));
-                        }
+                let entries = glob::glob(pattern).with_context(|| {
+                    format!("release: invalid extra_files glob pattern '{}'", pattern)
+                })?;
+                let before = results.len();
+                for entry in entries.flatten() {
+                    if entry.is_file() {
+                        let name = name_template.as_ref().and_then(|tmpl| {
+                            let filename = entry.file_name().unwrap_or_default().to_string_lossy();
+                            let mut vars = ctx.template_vars().clone();
+                            vars.set("ArtifactName", &filename);
+                            vars.set(
+                                "ArtifactExt",
+                                anodize_core::template::extract_artifact_ext(&filename),
+                            );
+                            anodize_core::template::render(tmpl, &vars).ok()
+                        });
+                        results.push((entry, name));
                     }
+                }
+                if results.len() == before {
+                    anyhow::bail!("release: extra_files glob '{}' matched no files", pattern);
                 }
             }
         }
     }
-    results
+    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,9 +1203,14 @@ impl Stage for ReleaseStage {
                 ));
             }
 
+            // GoReleaser release.go:121 — refresh combined checksum files
+            // before upload so they include signatures/artifacts added after
+            // the checksum stage ran. Mirrors GoReleaser's ExtraRefresh hook.
+            anodize_stage_checksum::refresh_combined_checksums(ctx, dry_run)?;
+
             // Collect extra files from glob patterns (with optional name_template).
             if let Some(extra_specs) = &release_cfg.extra_files {
-                let extra = collect_extra_files(extra_specs, ctx);
+                let extra = collect_extra_files(extra_specs, ctx)?;
                 artifact_entries.extend(extra);
             }
 
@@ -2018,7 +2028,18 @@ impl Stage for ReleaseStage {
                             "/repos/{}/{}/releases/{}",
                             github.owner, github.name, existing.id
                         );
-                        octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
+                        // GoReleaser parity (github.go:541): preserve the existing
+                        // release's draft state on PATCH. Our default json_body is
+                        // built with `draft=true` for the create path; when updating
+                        // an existing release we must not flip it back to draft.
+                        let mut patch_body = json_body.clone();
+                        if let Some(obj) = patch_body.as_object_mut() {
+                            obj.insert(
+                                "draft".to_string(),
+                                serde_json::Value::Bool(existing.draft),
+                            );
+                        }
+                        octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&patch_body))
                             .await
                             .with_context(|| {
                                 format!(
@@ -2775,20 +2796,21 @@ mod tests {
     #[test]
     fn test_collect_extra_files_no_patterns() {
         let ctx = TestContextBuilder::new().build();
-        let result = collect_extra_files(&[], &ctx);
+        let result = collect_extra_files(&[], &ctx).unwrap();
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_collect_extra_files_no_matches() {
         let ctx = TestContextBuilder::new().build();
+        // GoReleaser parity: a glob that matches nothing is a hard error.
         let result = collect_extra_files(
             &[ExtraFileSpec::Glob(
                 "/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string(),
             )],
             &ctx,
         );
-        assert!(result.is_empty());
+        assert!(result.is_err());
     }
 
     #[test]
@@ -2801,7 +2823,7 @@ mod tests {
         std::fs::write(&test_file, "extra file content").unwrap();
 
         let pattern = dir.join("*.txt").to_string_lossy().into_owned();
-        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx);
+        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx).unwrap();
         assert!(
             result
                 .iter()
@@ -2822,7 +2844,7 @@ mod tests {
 
         // The glob "*" matches both files and directories; we only want files
         let pattern = dir.join("*").to_string_lossy().into_owned();
-        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx);
+        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx).unwrap();
         assert!(result.iter().all(|(p, _)| p.is_file()));
 
         // Cleanup
@@ -2844,7 +2866,8 @@ mod tests {
                 name_template: Some("{{ .ArtifactName }}.sig".to_string()),
             }],
             &ctx,
-        );
+        )
+        .unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].0.file_name().unwrap() == "artifact.sig");
         // name_template should have been rendered
@@ -2971,6 +2994,14 @@ mod tests {
 
     #[test]
     fn test_dry_run_with_extra_files() {
+        // GoReleaser parity: extra_files globs that match nothing are hard
+        // errors. Create a real file so the stage completes successfully.
+        let tmp = std::env::temp_dir().join("anodize_test_dry_extra_files");
+        let _ = std::fs::create_dir_all(&tmp);
+        let file = tmp.join("artifact.sig");
+        std::fs::write(&file, "sig").unwrap();
+        let pattern = tmp.join("*.sig").to_string_lossy().into_owned();
+
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
             .dry_run(true)
@@ -2979,9 +3010,7 @@ mod tests {
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    extra_files: Some(vec![ExtraFileSpec::Glob(
-                        "/tmp/anodize_test_nonexistent/*.sig".to_string(),
-                    )]),
+                    extra_files: Some(vec![ExtraFileSpec::Glob(pattern)]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -2989,6 +3018,8 @@ mod tests {
             .build();
         let stage = ReleaseStage;
         assert!(stage.run(&mut ctx).is_ok());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -3172,10 +3203,9 @@ mod tests {
     #[test]
     fn test_collect_extra_files_invalid_glob_pattern() {
         let ctx = TestContextBuilder::new().build();
-        // An invalid glob pattern should be handled gracefully
+        // GoReleaser parity: invalid glob patterns are hard errors, not silent skips.
         let result = collect_extra_files(&[ExtraFileSpec::Glob("[invalid-glob".to_string())], &ctx);
-        // collect_extra_files logs a warning and returns empty, does not panic
-        assert!(result.is_empty());
+        assert!(result.is_err());
     }
 
     // ---- MockGitHubClient integration test ----
@@ -3284,7 +3314,7 @@ mod tests {
 
         // Collect only .sig files
         let pattern = dir.join("*.sig").to_string_lossy().into_owned();
-        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx);
+        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx).unwrap();
         assert_eq!(result.len(), 2, "should find exactly 2 .sig files");
         assert!(result.iter().all(|(p, _)| p.extension().unwrap() == "sig"));
 
@@ -4640,6 +4670,13 @@ draft: true
 
     #[test]
     fn test_dry_run_with_all_new_fields() {
+        // GoReleaser parity: extra_files globs must match at least one file.
+        let tmp = std::env::temp_dir().join("anodize_test_dry_all_fields");
+        let _ = std::fs::create_dir_all(&tmp);
+        let file = tmp.join("extra.sig");
+        std::fs::write(&file, "sig").unwrap();
+        let pattern = tmp.join("*.sig").to_string_lossy().into_owned();
+
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
             .dry_run(true)
@@ -4650,7 +4687,7 @@ draft: true
                 release: Some(ReleaseConfig {
                     header: Some(ContentSource::Inline("# Header".to_string())),
                     footer: Some(ContentSource::Inline("Footer".to_string())),
-                    extra_files: Some(vec![ExtraFileSpec::Glob("*.sig".to_string())]),
+                    extra_files: Some(vec![ExtraFileSpec::Glob(pattern)]),
                     target_commitish: Some("release/v1".to_string()),
                     discussion_category_name: Some("Announcements".to_string()),
                     include_meta: Some(true),
@@ -4665,6 +4702,8 @@ draft: true
             .insert("testcrate".to_string(), "- changes".to_string());
         let stage = ReleaseStage;
         assert!(stage.run(&mut ctx).is_ok());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // ---- ContentSource from_file dry-run integration test ----

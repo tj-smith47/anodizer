@@ -151,7 +151,22 @@ impl Stage for MakeselfStage {
 
             let id = cfg.id.as_deref().unwrap_or("default");
             let name = cfg.name.as_deref().unwrap_or(&project_name);
-            let name_template = cfg.name_template.as_deref().unwrap_or("");
+            // GoReleaser makeself.go:31 default name_template:
+            //   {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+            //   {{ with .Arm }}v{{ . }}{{ end }}
+            //   {{ with .Mips }}_{{ . }}{{ end }}
+            //   {{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}.run
+            // Rendered here using the Tera-style syntax anodize exposes.
+            let default_name_template = concat!(
+                "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}",
+                "{% if Arm %}v{{ Arm }}{% endif %}",
+                "{% if Mips %}_{{ Mips }}{% endif %}",
+                "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.run",
+            );
+            let name_template = cfg
+                .name_template
+                .as_deref()
+                .unwrap_or(default_name_template);
 
             let script = cfg.script.as_deref().unwrap_or("");
             if script.is_empty() {
@@ -237,6 +252,32 @@ impl Stage for MakeselfStage {
                 ctx.template_vars_mut().set("Arch", &arch);
                 ctx.template_vars_mut()
                     .set("Target", primary.target.as_deref().unwrap_or(""));
+
+                // Per-target variant vars (mirror stage-build/src/lib.rs 1530-1537)
+                // so the default name_template can render v7/v8/v1/mips suffixes.
+                let first_component = primary
+                    .target
+                    .as_deref()
+                    .and_then(|t| t.split('-').next())
+                    .unwrap_or("");
+                // Clear previous values so each target starts clean.
+                ctx.template_vars_mut().set("Arm", "");
+                ctx.template_vars_mut().set("Arm64", "");
+                ctx.template_vars_mut().set("Amd64", "");
+                ctx.template_vars_mut().set("Mips", "");
+                ctx.template_vars_mut().set("I386", "");
+                match first_component {
+                    "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
+                    "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
+                    "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
+                    "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
+                    "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
+                    c if c.starts_with("mips") => {
+                        // Set Mips variant (mips, mipsel, mips64, mips64el)
+                        ctx.template_vars_mut().set("Mips", c);
+                    }
+                    _ => {}
+                }
 
                 let rendered_name = if cfg.name.is_some() {
                     ctx.render_template(name)?

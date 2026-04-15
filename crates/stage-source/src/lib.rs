@@ -196,7 +196,10 @@ fn create_source_archive(
                 let src = Path::new(&entry.src);
                 let do_strip = entry.strip_parent.unwrap_or(false);
 
-                // Compute destination name inside the prefix (same logic as strip_parent)
+                // Compute destination name inside the prefix.
+                // GoReleaser archivefiles.go:126 — when Destination is empty,
+                // the full (relative) path is used; strip_parent reduces to
+                // basename only.
                 let dest_rel: PathBuf = if let Some(ref dst) = entry.dst {
                     if do_strip {
                         let fname = src.file_name().ok_or_else(|| {
@@ -206,11 +209,28 @@ fn create_source_archive(
                     } else {
                         PathBuf::from(dst)
                     }
-                } else {
+                } else if do_strip {
                     let fname = src.file_name().ok_or_else(|| {
                         anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
                     })?;
                     PathBuf::from(fname)
+                } else {
+                    // Preserve the full (relative) path — strip any leading
+                    // "./" / root prefix so the tar entry is a clean relative
+                    // path inside the prefix directory.
+                    let src_path = Path::new(&entry.src);
+                    let rel = if src_path.is_absolute() {
+                        src_path
+                            .file_name()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|| PathBuf::from(&entry.src))
+                    } else {
+                        src_path
+                            .strip_prefix("./")
+                            .map(PathBuf::from)
+                            .unwrap_or_else(|_| src_path.to_path_buf())
+                    };
+                    rel
                 };
 
                 let archive_path = Path::new(prefix).join(&dest_rel);

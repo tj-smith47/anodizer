@@ -366,13 +366,26 @@ fn build_universal_binary(
         .artifacts
         .by_kind_and_crate(ArtifactKind::Binary, crate_name);
 
-    let filtered: Vec<_> = if let Some(ref ids) = ub.ids {
+    // GoReleaser universalbinary.go:42-44 — default `ids` to [ID] when unset.
+    // The universal binary's `id` (or the crate name as a last resort) is the
+    // implicit filter, so a bare `universal_binaries: [{ id: foo }]` selects
+    // only build outputs with that id.
+    let default_ids: Vec<String> = vec![ub.id.clone().unwrap_or_else(|| crate_name.to_string())];
+    let effective_ids = ub.ids.clone().unwrap_or(default_ids);
+
+    let filtered: Vec<_> = if !effective_ids.is_empty() {
         binaries
             .into_iter()
             .filter(|a| {
+                // Match on either "binary" (historical) or "id" (GoReleaser).
                 a.metadata
-                    .get("binary")
-                    .is_some_and(|name| ids.contains(name))
+                    .get("id")
+                    .map(|v| effective_ids.contains(v))
+                    .unwrap_or(false)
+                    || a.metadata
+                        .get("binary")
+                        .map(|v| effective_ids.contains(v))
+                        .unwrap_or(false)
             })
             .collect()
     } else {
@@ -512,17 +525,35 @@ fn build_universal_binary(
     // Set `replaces` metadata for OnlyReplacingUnibins publisher filter:
     // true = this universal binary supersedes per-arch variants in publishers.
     let replaces = ub.replace == Some(true);
+
+    // GoReleaser universalbinary.go:236-239 — preserve source binary Extras
+    // (copied from the first source binary) before setting universal-specific
+    // keys. Only forward the known-used keys to avoid leaking unrelated state.
+    let mut metadata: HashMap<String, String> = HashMap::new();
+    let first_source = arm64.or(x86_64);
+    if let Some(src) = first_source {
+        for key in &["dynamically_linked", "abi", "libc", "id"] {
+            if let Some(v) = src.metadata.get(*key) {
+                metadata.insert((*key).to_string(), v.clone());
+            }
+        }
+    }
+    // Universal-specific keys (override any copied values)
+    metadata.insert("binary".to_string(), binary_name);
+    metadata.insert("universal".to_string(), "true".to_string());
+    metadata.insert("replaces".to_string(), replaces.to_string());
+    // Universal binary's own id, if configured
+    if let Some(ref id) = ub.id {
+        metadata.insert("id".to_string(), id.clone());
+    }
+
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::UniversalBinary,
         name: String::new(),
         path: out_path,
         target: Some("darwin-universal".to_string()),
         crate_name: crate_name.to_string(),
-        metadata: HashMap::from([
-            ("binary".to_string(), binary_name),
-            ("universal".to_string(), "true".to_string()),
-            ("replaces".to_string(), replaces.to_string()),
-        ]),
+        metadata,
         size: None,
     });
 
@@ -2814,6 +2845,7 @@ crate_type = ["dylib"]
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             universal_binaries: Some(vec![UniversalBinaryConfig {
+                id: None,
                 name_template: None,
                 replace: None,
                 ids: None,
@@ -2846,6 +2878,7 @@ crate_type = ["dylib"]
         let result = build_universal_binary(
             "myapp",
             &UniversalBinaryConfig {
+                id: None,
                 name_template: None,
                 replace: None,
                 ids: None,
@@ -2903,6 +2936,7 @@ crate_type = ["dylib"]
         );
 
         let ub = UniversalBinaryConfig {
+            id: None,
             name_template: Some("{{ .ProjectName }}-universal".to_string()),
             replace: None,
             ids: None,
@@ -2952,6 +2986,7 @@ crate_type = ["dylib"]
         );
 
         let ub = UniversalBinaryConfig {
+            id: None,
             name_template: None,
             replace: None,
             ids: None,
@@ -3003,6 +3038,7 @@ crate_type = ["dylib"]
         );
 
         let ub = UniversalBinaryConfig {
+            id: None,
             name_template: None,
             replace: None,
             ids: None,
@@ -3053,6 +3089,7 @@ crate_type = ["dylib"]
         );
 
         let ub = UniversalBinaryConfig {
+            id: None,
             name_template: None,
             replace: None,
             ids: None,

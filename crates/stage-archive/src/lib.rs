@@ -502,6 +502,28 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                             strip_parent: false,
                         });
                     }
+                } else if dst.is_some() && do_strip {
+                    // GoReleaser archivefiles.go:117-118 — when both dst and
+                    // strip_parent are set, each file's destination is
+                    // dst/basename(path) so files don't collide at a single dst.
+                    let dst_prefix = dst.as_deref().unwrap_or("");
+                    for p in paths {
+                        let base = p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let dest = normalize_archive_path(
+                            std::path::PathBuf::from(dst_prefix).join(&base),
+                        )
+                        .to_string_lossy()
+                        .to_string();
+                        results.push(ResolvedExtraFile {
+                            src: p,
+                            dst: Some(dest),
+                            info: info.clone(),
+                            strip_parent: false,
+                        });
+                    }
                 } else {
                     for p in paths {
                         results.push(ResolvedExtraFile {
@@ -1174,14 +1196,14 @@ impl Stage for ArchiveStage {
                     };
 
                     // builds_info: permissions applied to binary entries.
-                    // Default binary permissions to 0o755 (executable) when no
-                    // explicit builds_info is configured, matching GoReleaser.
-                    let binary_info = archive_cfg.builds_info.clone().unwrap_or_else(|| {
-                        anodize_core::config::ArchiveFileInfo {
-                            mode: Some("0755".to_string()),
-                            ..Default::default()
-                        }
-                    });
+                    // GoReleaser archive.go:99 always forces BuildsInfo.Mode = 0o755
+                    // when unset. Clone user's builds_info (or create default) and
+                    // ensure mode defaults to "0755" when None, preserving other
+                    // user-supplied fields (owner, group, mtime, etc).
+                    let mut binary_info = archive_cfg.builds_info.clone().unwrap_or_default();
+                    if binary_info.mode.is_none() {
+                        binary_info.mode = Some("0755".to_string());
+                    }
                     let binary_info = render_file_info(&binary_info, ctx)?;
 
                     // Build ArchiveEntry items for binaries.
@@ -1467,18 +1489,16 @@ impl Stage for ArchiveStage {
                             "ArtifactExt",
                             anodize_core::template::extract_artifact_ext(&archive_filename),
                         );
-                        // Set ArtifactID from archive config id (Pro addition)
-                        tvars.set("ArtifactID", archive_cfg.id.as_deref().unwrap_or(""));
+                        // GoReleaser archive Default() sets ID="default" when empty.
+                        // Downstream `ids:` filters rely on this to match unlabeled archives.
+                        let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
+                        tvars.set("ArtifactID", archive_id);
 
                         let mut metadata = HashMap::from([
                             ("format".to_string(), format.clone()),
                             ("name".to_string(), archive_stem.clone()),
+                            ("id".to_string(), archive_id.to_string()),
                         ]);
-                        // Propagate archive config id to artifact metadata for
-                        // downstream stages (sign, release) to filter by archive ID
-                        if let Some(ref id) = archive_cfg.id {
-                            metadata.insert("id".to_string(), id.clone());
-                        }
                         if is_meta {
                             metadata.insert("meta".to_string(), "true".to_string());
                         }
@@ -1501,6 +1521,35 @@ impl Stage for ArchiveStage {
                             .collect();
                         if !bin_names.is_empty() {
                             metadata.insert("extra_binaries".to_string(), bin_names.join(","));
+                        }
+
+                        // GoReleaser parity (archive Default): propagate
+                        // Replaces + DynamicallyLinked from source binaries so
+                        // publishers (Homebrew, AUR, nfpm) can consume them.
+                        //   - Replaces: first non-empty value wins.
+                        //   - DynamicallyLinked (ndynlink): true if ANY source
+                        //     binary was dynamically linked.
+                        let mut replaces_val: Option<String> = None;
+                        let mut any_dynlink = false;
+                        for b in &selected_bins {
+                            if replaces_val.is_none() {
+                                if let Some(r) = b.metadata.get("replaces")
+                                    && !r.is_empty()
+                                {
+                                    replaces_val = Some(r.clone());
+                                }
+                            }
+                            if let Some(d) = b.metadata.get("dynamically_linked")
+                                && d == "true"
+                            {
+                                any_dynlink = true;
+                            }
+                        }
+                        if let Some(r) = replaces_val {
+                            metadata.insert("replaces".to_string(), r);
+                        }
+                        if any_dynlink {
+                            metadata.insert("ndynlink".to_string(), "true".to_string());
                         }
 
                         new_artifacts.push(Artifact {
@@ -3547,10 +3596,13 @@ crates:
 
         let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
         assert_eq!(archives.len(), 1);
+        // GoReleaser archive Default() sets id="default" when empty so
+        // downstream `ids:` filters can match unlabeled archives. The
+        // metadata reflects that effective id.
         assert_eq!(
-            archives[0].metadata.get("id"),
-            None,
-            "archive artifact should not have id in metadata when config id is None"
+            archives[0].metadata.get("id").map(String::as_str),
+            Some("default"),
+            "archive artifact metadata id should default to \"default\" when config id is None"
         );
     }
 
@@ -4732,10 +4784,17 @@ crates:
         let resolved = resolve_file_specs(&specs).unwrap();
         assert_eq!(resolved.len(), 2);
 
-        // When strip_parent is true, dst is passed through as-is (no LCP logic)
+        // GoReleaser archivefiles.go:117-118 — with both dst AND strip_parent,
+        // per-file dst becomes dst/basename(path). Each file gets its own
+        // basename appended so they do not collide at a single dst.
+        let dst_values: std::collections::HashSet<Option<String>> =
+            resolved.iter().map(|r| r.dst.clone()).collect();
+        assert!(dst_values.contains(&Some("mydocs/README.md".to_string())));
+        assert!(dst_values.contains(&Some("mydocs/intro.md".to_string())));
+        // strip_parent is collapsed into the computed dst, so the flag on the
+        // resolved entry is false (caller has no more work to do).
         for r in &resolved {
-            assert_eq!(r.dst.as_deref(), Some("mydocs"));
-            assert!(r.strip_parent);
+            assert!(!r.strip_parent);
         }
     }
 

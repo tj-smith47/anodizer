@@ -5,3 +5,6 @@
 .superpowers/
 .zig-cache/
 docs/site/public/
+CLAUDE.local.md
+.claude/local/
+.claude/scratch/

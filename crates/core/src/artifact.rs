@@ -409,6 +409,33 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
     ]
 }
 
+/// Artifact kinds eligible for release upload, matching GoReleaser's
+/// `ReleaseUploadableTypes` ordering from `internal/pipe/release/release.go`.
+/// This is the canonical list used by the GitHub release publisher and by
+/// blob storage when deciding which artifacts to include.
+///
+/// Kept intentionally narrower than [`uploadable_kinds`] — for example,
+/// [`ArtifactKind::PublishableSnapcraft`] appears in anodize's internal
+/// uploadable list but is not released to GitHub in GoReleaser.
+pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
+    &[
+        ArtifactKind::Archive,
+        ArtifactKind::UploadableBinary,
+        ArtifactKind::UploadableFile,
+        ArtifactKind::SourceArchive,
+        ArtifactKind::Makeself,
+        ArtifactKind::LinuxPackage,
+        ArtifactKind::Flatpak,
+        ArtifactKind::SourceRpm,
+        ArtifactKind::Sbom,
+        ArtifactKind::PyWheel,
+        ArtifactKind::PySdist,
+        ArtifactKind::Checksum,
+        ArtifactKind::Signature,
+        ArtifactKind::Certificate,
+    ]
+}
+
 /// Check if an artifact kind is uploadable.
 fn is_uploadable(kind: ArtifactKind) -> bool {
     uploadable_kinds().contains(&kind)

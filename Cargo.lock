@@ -333,6 +333,7 @@ name = "anodize-stage-release"
 version = "0.1.0"
 dependencies = [
  "anodize-core",
+ "anodize-stage-checksum",
  "anyhow",
  "glob",
  "http",

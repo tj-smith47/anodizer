@@ -21,18 +21,18 @@ pub struct MattermostOptions<'a> {
 // Payload builder
 // ---------------------------------------------------------------------------
 
-pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) -> String {
-    let use_attachments = opts.color.is_some() || opts.title.is_some();
+/// GoReleaser parity (mattermost.go:78-85): always emit an attachment with
+/// defaults — title template `{{ .ProjectName }} {{ .Tag }} is out!`, color
+/// `#2D313E`, text = message — and leave the top-level `text` as an empty
+/// string. Callers should pre-render the title template; this module only
+/// applies the `#2D313E` color default when `color` is None.
+pub(crate) const MATTERMOST_DEFAULT_COLOR: &str = "#2D313E";
 
-    // GoReleaser always includes top-level `text` (empty string when using
-    // attachments, because the Go struct serialises the zero-value without
-    // `omitempty`).  We match that behaviour: Mattermost treats absent and
-    // empty-string `text` identically, but strict JSON parity avoids surprises.
-    let mut payload = if use_attachments {
-        json!({ "text": "" })
-    } else {
-        json!({ "text": message })
-    };
+pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) -> String {
+    // Top-level `text` is always emitted as an empty string (GoReleaser zero-
+    // value serialises without `omitempty`). The rendered message lives on the
+    // attachment.
+    let mut payload = json!({ "text": "" });
 
     if let Some(ch) = opts.channel {
         payload["channel"] = json!(ch);
@@ -47,19 +47,17 @@ pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) ->
         payload["icon_emoji"] = json!(emoji);
     }
 
-    // Mattermost supports message attachments with optional color bar and title.
-    if use_attachments {
-        let mut attachment = json!({
-            "text": message,
-        });
-        if let Some(title) = opts.title {
-            attachment["title"] = json!(title);
-        }
-        if let Some(color) = opts.color {
-            attachment["color"] = json!(color);
-        }
-        payload["attachments"] = json!([attachment]);
+    // GoReleaser always attaches a single attachment block regardless of
+    // whether the user supplied color/title. Missing fields get documented
+    // defaults; callers render the title template before passing it in.
+    let mut attachment = json!({
+        "text": message,
+        "color": opts.color.unwrap_or(MATTERMOST_DEFAULT_COLOR),
+    });
+    if let Some(title) = opts.title {
+        attachment["title"] = json!(title);
     }
+    payload["attachments"] = json!([attachment]);
 
     payload.to_string()
 }
@@ -98,12 +96,16 @@ mod tests {
         };
         let payload = mattermost_payload("myapp v1.0.0 released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(json["text"], "myapp v1.0.0 released!");
+        // GoReleaser always emits an attachment; top-level text stays empty.
+        assert_eq!(json["text"], "");
         assert!(json.get("channel").is_none());
         assert!(json.get("username").is_none());
         assert!(json.get("icon_url").is_none());
         assert!(json.get("icon_emoji").is_none());
-        assert!(json.get("attachments").is_none());
+        let attachments = json["attachments"].as_array().unwrap();
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0]["text"], "myapp v1.0.0 released!");
+        assert_eq!(attachments[0]["color"], MATTERMOST_DEFAULT_COLOR);
     }
 
     #[test]
@@ -144,6 +146,9 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["channel"], "releases");
         assert!(json.get("username").is_none());
+        // Attachment is always present (GoReleaser parity).
+        let attachments = json["attachments"].as_array().unwrap();
+        assert_eq!(attachments[0]["text"], "released!");
     }
 
     #[test]

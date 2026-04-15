@@ -25,14 +25,17 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    let mut config =
-        pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
+    let config_path = pipeline::find_config(opts.config_override.as_deref())?;
+    let (mut config, deprecations) = pipeline::load_config_with_deprecations(&config_path)?;
 
     // Resolve workspace if specified
     if let Some(ref ws_name) = opts.workspace {
         let ws = super::release::resolve_workspace(&config, ws_name)?.clone();
         helpers::apply_workspace_overlay(&mut config, &ws);
     }
+
+    // Auto-infer project_name from Cargo.toml when not set in config.
+    helpers::infer_project_name(&mut config, &log);
 
     // Auto-detect GitHub owner/name from git remote
     helpers::auto_detect_github(&mut config, &log);
@@ -54,7 +57,22 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
+    for (prop, msg) in &deprecations {
+        ctx.deprecate(prop, msg);
+    }
     helpers::setup_context(&mut ctx, &config, &log)?;
+
+    // Run before-hooks (GoReleaser's BuildCmdPipeline includes before.Pipe).
+    // Respect --skip=before like the release pipeline.
+    if !ctx.should_skip("before")
+        && let Some(before) = &config.before
+        && let Some(ref hooks) = before.hooks
+    {
+        pipeline::run_hooks(hooks, "before", false, &log, Some(ctx.template_vars()))?;
+    }
+
+    // Dump effective (resolved) config to dist/config.yaml before the build runs.
+    helpers::write_effective_config(&config, &log)?;
 
     // Run build stage
     let build_stage = anodize_stage_build::BuildStage;
@@ -65,6 +83,13 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     let upx_stage = anodize_stage_upx::UpxStage;
     log.verbose("running upx stage");
     upx_stage.run(&mut ctx)?;
+
+    // Print artifact size table if configured
+    helpers::run_report_sizes(&mut ctx, &config, &log);
+
+    // Write metadata.json + artifacts.json (GoReleaser's BuildCmdPipeline
+    // includes metadata.Pipe).
+    helpers::write_metadata_and_artifacts(&mut ctx, &config, &log)?;
 
     // --output: copy the built binary to the specified path
     if let Some(ref output_path) = output_path {

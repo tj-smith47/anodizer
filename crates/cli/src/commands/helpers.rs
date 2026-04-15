@@ -490,6 +490,147 @@ pub fn setup_env(
     Ok(())
 }
 
+/// Write `dist/config.yaml` with the fully-resolved (effective) config.
+///
+/// GoReleaser always writes this, including in dry-run mode (effectiveconfig.go).
+/// Shared by `release` and `build` pipelines so both surface the same artifact.
+pub fn write_effective_config(config: &Config, log: &StageLogger) -> Result<()> {
+    let dist = &config.dist;
+    std::fs::create_dir_all(dist)
+        .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
+    let effective_path = dist.join("config.yaml");
+    let yaml = serde_yaml_ng::to_string(config).context("failed to serialize effective config")?;
+    std::fs::write(&effective_path, &yaml)
+        .with_context(|| format!("failed to write {}", effective_path.display()))?;
+    log.verbose(&format!(
+        "wrote effective config to {}",
+        effective_path.display()
+    ));
+    Ok(())
+}
+
+/// Print the artifact size report if `report_sizes` is enabled in config.
+pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
+    if config.report_sizes.unwrap_or(false) {
+        anodize_core::artifact::print_size_report(&mut ctx.artifacts, log);
+    }
+}
+
+/// Write `dist/metadata.json` and `dist/artifacts.json` and apply the
+/// configured `metadata.mod_timestamp` to both files.
+///
+/// Mirrors GoReleaser's metadata.Pipe + artifacts.Pipe. Registers
+/// `metadata.json` as an artifact so downstream stages can pick it up.
+pub fn write_metadata_and_artifacts(
+    ctx: &mut Context,
+    config: &Config,
+    log: &StageLogger,
+) -> Result<()> {
+    let dist = &config.dist;
+    std::fs::create_dir_all(dist)
+        .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
+
+    let metadata_path = dist.join("metadata.json");
+    let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
+    let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
+
+    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
+    let previous_tag = ctx
+        .template_vars()
+        .get("PreviousTag")
+        .cloned()
+        .unwrap_or_default();
+    let version = ctx.version();
+    let commit = ctx
+        .template_vars()
+        .get("FullCommit")
+        .cloned()
+        .unwrap_or_default();
+    let date = ctx.template_vars().get("Date").cloned().unwrap_or_default();
+
+    let project_metadata = serde_json::json!({
+        "project_name": config.project_name,
+        "tag": tag,
+        "previous_tag": previous_tag,
+        "version": version,
+        "commit": commit,
+        "date": date,
+        "runtime": {
+            "goos": goos,
+            "goarch": goarch,
+        }
+    });
+
+    let json_str = serde_json::to_string_pretty(&project_metadata)
+        .context("failed to serialize project metadata JSON")?;
+    std::fs::write(&metadata_path, &json_str)
+        .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+    log.status(&format!("wrote {}", metadata_path.display()));
+
+    ctx.artifacts.add(anodize_core::artifact::Artifact {
+        kind: ArtifactKind::Metadata,
+        name: "metadata.json".to_string(),
+        path: metadata_path.clone(),
+        target: None,
+        crate_name: config.project_name.clone(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let artifacts_path = dist.join("artifacts.json");
+    let artifacts_json = ctx
+        .artifacts
+        .to_artifacts_json()
+        .context("failed to serialize artifact list")?;
+    let json_str = serde_json::to_string_pretty(&artifacts_json)
+        .context("failed to serialize artifacts JSON")?;
+    std::fs::write(&artifacts_path, &json_str)
+        .with_context(|| format!("failed to write {}", artifacts_path.display()))?;
+    log.status(&format!("wrote {}", artifacts_path.display()));
+
+    if let Some(ref meta) = config.metadata
+        && let Some(ref ts_tmpl) = meta.mod_timestamp
+    {
+        let rendered = ctx
+            .render_template(ts_tmpl)
+            .context("failed to render metadata.mod_timestamp template")?;
+        if !rendered.is_empty() {
+            let mtime = anodize_core::util::parse_mod_timestamp(&rendered)
+                .with_context(|| format!("invalid metadata.mod_timestamp value: {:?}", rendered))?;
+            anodize_core::util::set_file_mtime(&metadata_path, mtime)?;
+            anodize_core::util::set_file_mtime(&artifacts_path, mtime)?;
+            log.status(&format!(
+                "set mtime on metadata.json and artifacts.json to {}",
+                rendered
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Auto-infer `project_name` from Cargo.toml when not set in config.
+///
+/// GoReleaser's project.go:22-43 infers the project name from Cargo.toml,
+/// go.mod, or the git remote. We mirror the Cargo.toml branch here so
+/// every pipeline command (release, build, check, continue) resolves the
+/// project name consistently.
+pub fn infer_project_name(config: &mut Config, log: &StageLogger) {
+    if !config.project_name.is_empty() {
+        return;
+    }
+    if let Ok(cargo_toml) = std::fs::read_to_string("Cargo.toml")
+        && let Ok(doc) = cargo_toml.parse::<toml_edit::DocumentMut>()
+        && let Some(name) = doc
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+    {
+        config.project_name = name.to_string();
+        log.verbose(&format!("inferred project_name '{}' from Cargo.toml", name));
+    }
+}
+
 /// Auto-detect the GitHub owner/name from the git remote and fill in any crate
 /// release configs that are missing the `github` section.
 pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {

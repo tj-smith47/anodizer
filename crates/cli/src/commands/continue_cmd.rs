@@ -25,8 +25,9 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    let mut config =
-        pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
+    let config_path = pipeline::find_config(opts.config_override.as_deref())?;
+    let (mut config, deprecations) = pipeline::load_config_with_deprecations(&config_path)?;
+    helpers::infer_project_name(&mut config, &log);
     helpers::auto_detect_github(&mut config, &log);
 
     let ctx_opts = ContextOptions {
@@ -40,6 +41,9 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
+    for (prop, msg) in &deprecations {
+        ctx.deprecate(prop, msg);
+    }
     helpers::setup_context(&mut ctx, &config, &log)?;
     ctx.populate_metadata_var();
 

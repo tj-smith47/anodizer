@@ -512,8 +512,10 @@ impl Stage for ChecksumStage {
                         crate_name: crate_name.clone(),
                         metadata: HashMap::from([
                             ("algorithm".to_string(), algorithm.clone()),
+                            // GoReleaser artifact.ExtraChecksumOf — the path
+                            // of the artifact this checksum is for.
                             (
-                                "source".to_string(),
+                                "ChecksumOf".to_string(),
                                 artifact.path.to_string_lossy().into_owned(),
                             ),
                         ]),
@@ -614,6 +616,90 @@ impl Stage for ChecksumStage {
 
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// refresh_combined_checksums — recompute and rewrite combined checksum files
+// ---------------------------------------------------------------------------
+
+/// Refresh any combined `checksums.txt` files in-place by recomputing hashes
+/// of all non-checksum, non-signature, non-certificate artifacts currently in
+/// the registry. This matches GoReleaser's `ExtraRefresh` closure pattern
+/// (release.go:121): after signing (which produces new signature artifacts),
+/// the checksum file is regenerated so signed artifacts that happen to be
+/// uploadable appear in the final sums.
+///
+/// Only combined checksum artifacts (metadata key `combined = "true"`) are
+/// rewritten — split sidecars are per-artifact and never need refresh.
+pub fn refresh_combined_checksums(ctx: &mut Context, dry_run: bool) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+
+    // Collect combined checksum artifacts (per crate).
+    let combined: Vec<(PathBuf, String, String)> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Checksum)
+        .into_iter()
+        .filter(|a| a.metadata.get("combined").map(|s| s.as_str()) == Some("true"))
+        .filter_map(|a| {
+            let algo = a.metadata.get("algorithm")?.clone();
+            Some((a.path.clone(), algo, a.crate_name.clone()))
+        })
+        .collect();
+
+    if combined.is_empty() {
+        return Ok(());
+    }
+
+    for (checksum_path, algorithm, crate_name) in combined {
+        // Kinds that are checksummed upstream; Signature/Certificate/Checksum
+        // are never hashed (they're the signing/checksum output themselves).
+        let skip_kinds = [
+            ArtifactKind::Checksum,
+            ArtifactKind::Signature,
+            ArtifactKind::Certificate,
+        ];
+
+        let mut lines: Vec<String> = Vec::new();
+        for artifact in ctx.artifacts.all() {
+            if artifact.crate_name != crate_name {
+                continue;
+            }
+            if skip_kinds.contains(&artifact.kind) {
+                continue;
+            }
+            if !artifact.path.exists() {
+                continue;
+            }
+            let hash = hash_file(&artifact.path, &algorithm)?;
+            let fname = artifact
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            lines.push(format_checksum_line(&hash, &fname));
+        }
+
+        // Deterministic order (match the original combined-writer).
+        lines.sort_by(|a, b| {
+            let na = a.split_once("  ").map(|(_, n)| n).unwrap_or(a);
+            let nb = b.split_once("  ").map(|(_, n)| n).unwrap_or(b);
+            na.cmp(nb)
+        });
+
+        let content: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        if let Some(parent) = checksum_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("refresh checksum: create parent {}", parent.display()))?;
+        }
+        let mut f = File::create(&checksum_path)
+            .with_context(|| format!("refresh checksum: create {}", checksum_path.display()))?;
+        write!(f, "{content}")
+            .with_context(|| format!("refresh checksum: write {}", checksum_path.display()))?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2471,8 +2557,8 @@ extra_files:
         assert_eq!(checksums.len(), 2, "split mode should produce 2 sidecars");
         for a in &checksums {
             assert!(
-                a.metadata.contains_key("source"),
-                "sidecar artifact should have source metadata"
+                a.metadata.contains_key("ChecksumOf"),
+                "sidecar artifact should have ChecksumOf metadata"
             );
             assert!(
                 !a.metadata.contains_key("combined"),

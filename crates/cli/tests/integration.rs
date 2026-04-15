@@ -242,13 +242,16 @@ fn test_timeout_kills_long_running_release() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    // Config with a before-hook that sleeps for 60 seconds (much longer than our timeout)
+    // Config with a before-hook that sleeps for 60 seconds (much longer than our timeout).
+    // GoReleaser's git.Pipe (including the dirty-repo gate) runs BEFORE before.Pipe,
+    // so the config file must be committed — otherwise the dirty-repo check aborts
+    // with exit 1 before the hook gets a chance to hit the timeout.
     create_config(
         tmp.path(),
         r#"
 project_name: test-project
 before:
-  pre:
+  hooks:
     - "sleep 60"
 crates:
   - name: test-project
@@ -256,6 +259,23 @@ crates:
     tag_template: "v{{ .Version }}"
 "#,
     );
+    // Commit the freshly-written config so the repo is clean.
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(tmp.path())
+        .status()
+        .ok();
+    std::process::Command::new("git")
+        .args(["commit", "--amend", "--no-edit"])
+        .current_dir(tmp.path())
+        .status()
+        .ok();
+    // Re-tag HEAD so tag_points_at_head still succeeds after amending.
+    std::process::Command::new("git")
+        .args(["tag", "-f", "v0.1.0"])
+        .current_dir(tmp.path())
+        .status()
+        .ok();
 
     let start = Instant::now();
 
@@ -3358,7 +3378,7 @@ fn test_e2e_before_hooks_execute() {
     let config = format!(
         r#"project_name: test-project
 before:
-  pre:
+  hooks:
     - "echo before-hook-executed > {marker}"
 crates:
   - name: test-project
@@ -3427,7 +3447,7 @@ fn test_e2e_before_hooks_dry_run() {
     let config = format!(
         r#"project_name: test-project
 before:
-  pre:
+  hooks:
     - "echo should-not-run > {marker}"
 crates:
   - name: test-project
