@@ -555,21 +555,14 @@ artifactories:
     target: "https://artifactory.example.com/generic-local/anodize/{{ Tag }}/"
     method: PUT
 
-# GemFury publisher
-fury:
-  - account: tj-smith47
-    disable: true  # disabled — no GemFury account
-
 # CloudSmith publisher
 cloudsmiths:
   - organization: tj-smith47
     repository: anodize
     disable: true  # disabled — no CloudSmith account
 
-# NPM publisher
-npms:
-  - name: "@tj-smith47/anodize"
-    disable: true  # disabled — Rust binary, not an npm package
+# Note: `fury:` and `npms:` publishers removed 2026-04-16 (see .claude/known-bugs.md);
+# users migrating should replace fury with cloudsmiths/artifactories and drop npms entirely.
 
 # Source RPM configuration
 srpm:

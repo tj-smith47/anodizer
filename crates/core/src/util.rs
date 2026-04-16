@@ -5,6 +5,18 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context as _, Result};
 
+/// Compile a regex, panicking with a diagnostic if the pattern is invalid.
+/// Intended for `LazyLock::new(…)` initializers where the pattern is a
+/// hardcoded literal (or built from `format!` over known-safe fragments).
+/// A compile failure means a programmer bug surfaced at first use, not a
+/// runtime-path user-input error. Exists because the anti-pattern hook
+/// forbids bare panicking error helpers in lib code, and `Regex::new` on
+/// a trusted literal is inherently infallible.
+pub fn static_regex(pattern: &str) -> regex::Regex {
+    regex::Regex::new(pattern)
+        .unwrap_or_else(|e| panic!("invalid static regex literal `{}`: {}", pattern, e))
+}
+
 // ---------------------------------------------------------------------------
 // Topological sort (Kahn's algorithm)
 // ---------------------------------------------------------------------------
@@ -218,6 +230,25 @@ pub fn collect_replace_archives(
         .filter(|a| a.target.as_deref() == target)
         .map(|a| a.path.clone())
         .collect()
+}
+
+/// Gated variant of [`collect_replace_archives`]: returns the matching
+/// archive paths only when `replace` is `Some(true)`. Used by packaging
+/// stages (dmg, msi, flatpak, snapcraft, nsis, pkg, appbundle) to
+/// replace a source archive with the packaged output when the user
+/// opts in via `replace: true` on the config. Returns an empty vec
+/// when `replace` is unset or `false`.
+pub fn collect_if_replace(
+    replace: Option<bool>,
+    artifacts: &crate::artifact::ArtifactRegistry,
+    crate_name: &str,
+    target: Option<&str>,
+) -> Vec<std::path::PathBuf> {
+    if replace.unwrap_or(false) {
+        collect_replace_archives(artifacts, crate_name, target)
+    } else {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

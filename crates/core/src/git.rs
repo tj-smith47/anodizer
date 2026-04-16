@@ -126,7 +126,7 @@ fn compare_prerelease(a: &str, b: &str) -> std::cmp::Ordering {
 /// Captures: 1=major, 2=minor, 3=patch, 4=prerelease (optional), 5=build metadata (optional).
 /// Prerelease is after `-` but before `+`. Build metadata is after `+`.
 static SEMVER_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+(.+))?$").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([^+]+))?(?:\+(.+))?$"));
 
 /// Parse a strict semver version from a string like "v1.2.3", "1.2.3", "v1.0.0-rc.1",
 /// "v1.0.0+build.42", or "v1.0.0-rc.1+build.42".
@@ -158,7 +158,7 @@ pub fn parse_semver_tag(tag: &str) -> Result<SemVer> {
     }
     // Find the version portion: look for `v?\d+.\d+.\d+` after a separator
     static PREFIX_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[-_/](v?\d+\.\d+\.\d+(?:-[^+]+)?(?:\+.+)?)$").unwrap());
+        LazyLock::new(|| crate::util::static_regex(r"[-_/](v?\d+\.\d+\.\d+(?:-[^+]+)?(?:\+.+)?)$"));
     if let Some(caps) = PREFIX_RE.captures(tag) {
         return parse_semver(&caps[1]);
     }
@@ -241,7 +241,42 @@ fn strip_url_credentials(url: &str) -> String {
 ///
 /// When `skip_validate` is true and the tag is not valid semver, a warning is
 /// logged and a default `SemVer { 0, 0, 0 }` is used instead of returning an error.
+///
+/// When `snapshot` is true and the working directory is not inside a git
+/// repository, a synthetic `GitInfo` is returned (commit/branch/etc. left
+/// empty) so users can run `anodize release --snapshot` from a fresh tarball
+/// or scratch directory without git ever having been initialized. Outside
+/// snapshot mode, the missing repo bubbles as an error.
 pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
+    if !is_git_repo() {
+        // Synthetic GitInfo for non-repo snapshot/scratch builds. Lets users
+        // run `anodize release --snapshot` from a fresh tarball or scratch
+        // directory without `git init` first. Caller is responsible for only
+        // accepting this in snapshot/dry-run mode.
+        return Ok(GitInfo {
+            tag: tag.to_string(),
+            commit: String::new(),
+            short_commit: String::new(),
+            branch: String::new(),
+            dirty: false,
+            semver: SemVer {
+                major: 0,
+                minor: 0,
+                patch: 0,
+                prerelease: None,
+                build_metadata: None,
+            },
+            commit_date: String::new(),
+            commit_timestamp: String::new(),
+            previous_tag: None,
+            remote_url: String::new(),
+            summary: String::new(),
+            tag_subject: String::new(),
+            tag_contents: String::new(),
+            tag_body: String::new(),
+            first_commit: None,
+        });
+    }
     let commit = git_output(&["rev-parse", "HEAD"])?;
     let short_commit = git_output(&["rev-parse", "--short", "HEAD"])?;
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
@@ -612,15 +647,37 @@ pub fn get_all_commits_paths(paths: &[String]) -> Result<Vec<Commit>> {
 }
 
 /// Collect semver tags from the output of the given `git` arguments, filtered
-/// by `prefix` and sorted descending by version.
-fn collect_semver_tags(git_args: &[&str], prefix: &str) -> Result<Vec<String>> {
+/// by `prefix` and sorted descending by version. When `git_config` is
+/// provided, applies `ignore_tags` (glob match) and `ignore_tag_prefixes`
+/// (starts_with) filters; both lists are template-rendered when
+/// `template_vars` is provided.
+fn collect_semver_tags(
+    git_args: &[&str],
+    prefix: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+) -> Result<Vec<String>> {
     let tags_output = git_output(git_args)?;
     if tags_output.is_empty() {
         return Ok(vec![]);
     }
+
+    let (rendered_ignore_tags, rendered_ignore_prefixes) =
+        render_ignore_patterns(git_config, template_vars);
+    let ignore_tag_globs: Vec<glob::Pattern> = rendered_ignore_tags
+        .iter()
+        .filter_map(|pat| glob::Pattern::new(pat).ok())
+        .collect();
+
     let mut matching: Vec<(SemVer, String)> = tags_output
         .lines()
         .filter(|t| t.starts_with(prefix))
+        .filter(|t| !ignore_tag_globs.iter().any(|g| g.matches(t)))
+        .filter(|t| {
+            !rendered_ignore_prefixes
+                .iter()
+                .any(|p| !p.is_empty() && t.starts_with(p))
+        })
         .filter_map(|t| parse_semver_tag(t).ok().map(|v| (v, t.to_string())))
         .collect();
     matching.sort_by(|a, b| b.0.cmp(&a.0));
@@ -629,14 +686,33 @@ fn collect_semver_tags(git_args: &[&str], prefix: &str) -> Result<Vec<String>> {
 
 /// Get all semver tags in the repo, sorted descending by version.
 /// Prerelease tags sort after release tags of the same major.minor.patch.
-pub fn get_all_semver_tags(prefix: &str) -> Result<Vec<String>> {
-    collect_semver_tags(&["tag", "--list"], prefix)
+///
+/// When `git_config` is provided, applies `ignore_tags` (glob match) and
+/// `ignore_tag_prefixes` (starts_with) filters. When `template_vars` is
+/// provided, both lists are template-rendered first.
+pub fn get_all_semver_tags(
+    prefix: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+) -> Result<Vec<String>> {
+    collect_semver_tags(&["tag", "--list"], prefix, git_config, template_vars)
 }
 
 /// Get semver tags reachable from HEAD, sorted descending by version.
 /// Prerelease tags sort after release tags of the same major.minor.patch.
-pub fn get_branch_semver_tags(prefix: &str) -> Result<Vec<String>> {
-    collect_semver_tags(&["tag", "--merged", "HEAD", "--list"], prefix)
+///
+/// Same filtering semantics as [`get_all_semver_tags`].
+pub fn get_branch_semver_tags(
+    prefix: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+) -> Result<Vec<String>> {
+    collect_semver_tags(
+        &["tag", "--merged", "HEAD", "--list"],
+        prefix,
+        git_config,
+        template_vars,
+    )
 }
 
 /// Create an annotated tag and push it if an `origin` remote exists.
@@ -1516,6 +1592,67 @@ mod tests {
 
         let result = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
         assert_eq!(result, Some("v2.0.0".to_string()));
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_all_semver_tags_ignore_tags() {
+        // The tag subcommand's find_previous_tag calls through to
+        // get_all_semver_tags; its ignore_tags wiring must exclude matching
+        // tags so an autotag pass doesn't regress onto a deliberately-ignored
+        // tag (e.g. a withdrawn release).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        let gc = crate::config::GitConfig {
+            ignore_tags: Some(vec!["v3.0.0".to_string()]),
+            ..Default::default()
+        };
+        let tags = get_all_semver_tags("v", Some(&gc), None).unwrap();
+        assert_eq!(tags, vec!["v2.0.0".to_string(), "v1.0.0".to_string()]);
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_all_semver_tags_ignore_tag_prefixes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "nightly-v3.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        let gc = crate::config::GitConfig {
+            ignore_tag_prefixes: Some(vec!["nightly-".to_string()]),
+            ..Default::default()
+        };
+        let tags = get_all_semver_tags("", Some(&gc), None).unwrap();
+        // "nightly-v3.0.0" is excluded by prefix; only v2, v1 survive, ordered desc.
+        assert_eq!(tags, vec!["v2.0.0".to_string(), "v1.0.0".to_string()]);
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_get_all_semver_tags_no_config_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(dir, &["v1.0.0", "v2.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        let tags = get_all_semver_tags("v", None, None).unwrap();
+        assert_eq!(tags, vec!["v2.0.0".to_string(), "v1.0.0".to_string()]);
 
         std::env::set_current_dir(orig).unwrap();
     }

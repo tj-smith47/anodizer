@@ -141,6 +141,12 @@ pub struct Context {
     pub deprecated: bool,
     /// Tracks which deprecation notices have already been shown (dedup).
     notified_deprecations: std::collections::HashSet<String>,
+    /// Aggregated skips from per-sub-config loops (signs, docker_signs,
+    /// publishers, …). Drained by the pipeline runner at end-of-pipeline so
+    /// the summary shows what was intentionally skipped — mirroring
+    /// GoReleaser's `pipe.SkipMemento` pattern. The inner `Arc<Mutex<…>>`
+    /// lets parallel stage workers contribute without extra plumbing.
+    pub skip_memento: crate::pipe_skip::SkipMemento,
 }
 
 impl Context {
@@ -158,7 +164,18 @@ impl Context {
             token_type: ScmTokenType::GitHub,
             deprecated: false,
             notified_deprecations: std::collections::HashSet::new(),
+            skip_memento: crate::pipe_skip::SkipMemento::new(),
         }
+    }
+
+    /// Record an intentional skip from a per-sub-config loop
+    /// (`signs`, `docker_signs`, `publishers`, …). `stage` identifies the
+    /// owning stage, `label` identifies the sub-config (id / name / index),
+    /// `reason` is short user-facing text. Duplicate (stage, label, reason)
+    /// tuples are dropped on insert so a per-artifact inner loop cannot emit
+    /// N copies of the same skip message.
+    pub fn remember_skip(&self, stage: &str, label: &str, reason: &str) {
+        self.skip_memento.remember(stage, label, reason);
     }
 
     /// Log a deprecation warning for a config property.
@@ -980,21 +997,25 @@ mod tests {
         let v = ctx.template_vars();
 
         // Date should be RFC 3339 format (e.g. 2026-03-30T12:00:00+00:00)
-        let date = v.get("Date").expect("Date should be set");
+        let date = v
+            .get("Date")
+            .unwrap_or_else(|| panic!("Date should be set"));
         assert!(
             date.contains('T') && date.len() > 10,
             "Date should be RFC 3339, got: {date}"
         );
 
         // Timestamp should be numeric
-        let ts = v.get("Timestamp").expect("Timestamp should be set");
+        let ts = v
+            .get("Timestamp")
+            .unwrap_or_else(|| panic!("Timestamp should be set"));
         assert!(
             ts.parse::<i64>().is_ok(),
             "Timestamp should be a numeric string, got: {ts}"
         );
 
         // Now should be ISO 8601
-        let now = v.get("Now").expect("Now should be set");
+        let now = v.get("Now").unwrap_or_else(|| panic!("Now should be set"));
         assert!(now.contains('T'), "Now should be ISO 8601, got: {now}");
     }
 
@@ -1236,7 +1257,9 @@ mod tests {
 
         let v = ctx.template_vars();
 
-        let goos = v.get("RuntimeGoos").expect("RuntimeGoos should be set");
+        let goos = v
+            .get("RuntimeGoos")
+            .unwrap_or_else(|| panic!("RuntimeGoos should be set"));
         assert!(
             !goos.is_empty(),
             "RuntimeGoos should not be empty, got: {goos}"
@@ -1244,7 +1267,9 @@ mod tests {
         // RuntimeGoos uses Go naming (e.g. "darwin" not "macos")
         assert_eq!(goos, map_os_to_goos(std::env::consts::OS));
 
-        let goarch = v.get("RuntimeGoarch").expect("RuntimeGoarch should be set");
+        let goarch = v
+            .get("RuntimeGoarch")
+            .unwrap_or_else(|| panic!("RuntimeGoarch should be set"));
         assert!(
             !goarch.is_empty(),
             "RuntimeGoarch should not be empty, got: {goarch}"

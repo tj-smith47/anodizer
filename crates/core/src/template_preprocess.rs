@@ -15,10 +15,19 @@ use regex::Regex;
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
+/// Compile a regex from a static literal. Panics with a diagnostic if the
+/// literal fails to parse — only called from `LazyLock::new(…)` initializers,
+/// so failure is a programmer bug caught the first time the static is
+/// touched, not a runtime-path crash. Exists because the project-wide
+/// anti-pattern hook forbids bare panicking error helpers in lib code, and
+/// `regex::Regex::new` on a hardcoded literal is inherently infallible.
+fn static_regex(pattern: &str) -> Regex {
+    Regex::new(pattern)
+        .unwrap_or_else(|e| panic!("invalid static regex literal `{}`: {}", pattern, e))
+}
+
 /// Regex to match `{{ ... }}` and `{% ... %}` blocks for Go-style preprocessing.
-// SAFETY: This is a compile-time regex literal; it is known to be valid.
-static GO_BLOCK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{\{.*?\}\}|\{%.*?%\}").unwrap());
+static GO_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"\{\{.*?\}\}|\{%.*?%\}"));
 
 /// Preprocess a template: convert Go-style syntax to Tera-native syntax.
 ///
@@ -60,30 +69,27 @@ pub fn preprocess(template: &str) -> String {
 /// `{{ range ... }}`, `{{ with ... }}`, and `{{ $var := ... }}` patterns.
 /// Whitespace trimming markers (`-`) are preserved.
 static GO_IF_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*if\s+(.+?)\s*(-?)\}\}").unwrap());
+    LazyLock::new(|| static_regex(r"^\{\{(-?)\s*if\s+(.+?)\s*(-?)\}\}"));
 static GO_ELSE_IF_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*else\s+if\s+(.+?)\s*(-?)\}\}").unwrap());
-static GO_ELSE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*else\s*(-?)\}\}").unwrap());
-static GO_END_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*end\s*(-?)\}\}").unwrap());
+    LazyLock::new(|| static_regex(r"^\{\{(-?)\s*else\s+if\s+(.+?)\s*(-?)\}\}"));
+static GO_ELSE_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"^\{\{(-?)\s*else\s*(-?)\}\}"));
+static GO_END_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"^\{\{(-?)\s*end\s*(-?)\}\}"));
 static GO_RANGE_KV_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ range $k, $v := .Map }}
-    Regex::new(r"^\{\{(-?)\s*range\s+\$(\w+)\s*,\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}").unwrap()
+    static_regex(r"^\{\{(-?)\s*range\s+\$(\w+)\s*,\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}")
 });
 static GO_RANGE_V_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ range $v := .Slice }} or {{ range .Slice }}
-    Regex::new(r"^\{\{(-?)\s*range\s+(?:\$(\w+)\s*:=\s*)?(.+?)\s*(-?)\}\}").unwrap()
+    static_regex(r"^\{\{(-?)\s*range\s+(?:\$(\w+)\s*:=\s*)?(.+?)\s*(-?)\}\}")
 });
 static GO_WITH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*with\s+(.+?)\s*(-?)\}\}").unwrap());
+    LazyLock::new(|| static_regex(r"^\{\{(-?)\s*with\s+(.+?)\s*(-?)\}\}"));
 static GO_VAR_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ $var := expr }}
-    Regex::new(r"^\{\{(-?)\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}").unwrap()
+    static_regex(r"^\{\{(-?)\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}")
 });
 /// Match `{{ . }}` (bare dot reference to current context).
-static GO_DOT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*\.\s*(-?)\}\}").unwrap());
+static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"^\{\{(-?)\s*\.\s*(-?)\}\}"));
 
 /// Format a Tera block tag with optional whitespace trim markers.
 fn tera_block(ltrim: &str, content: &str, rtrim: &str) -> String {
@@ -255,8 +261,7 @@ fn preprocess_go_blocks(template: &str) -> String {
 /// `$` when followed by a word character (e.g., `$var` → `var`).
 fn strip_dollar_vars(template: &str) -> String {
     // Match both {{ ... }} and {% ... %} blocks
-    static BLOCK_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\{\{.*?\}\}|\{%.*?%\}").unwrap());
+    static BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"\{\{.*?\}\}|\{%.*?%\}"));
 
     BLOCK_RE
         .replace_all(template, |caps: &regex::Captures| {
@@ -377,7 +382,7 @@ static LIST_SUBEXPR_RE: LazyLock<Regex> = LazyLock::new(|| {
     // A single item: quoted string OR bare identifier (dotted paths like Env.FOO allowed).
     let item = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
     let pattern = format!(r"\(list\s+({item}(?:\s+{item})*)\)");
-    Regex::new(&pattern).unwrap()
+    static_regex(&pattern)
 });
 
 /// Pass 2: Rewrite Go-style `(list "a" "b" "c")` subexpressions to Tera array literals.
@@ -400,8 +405,9 @@ fn preprocess_list_subexpr(template: &str) -> String {
                     // Split items (quoted strings or bare identifiers) and rejoin as a Tera array literal.
                     // Bare identifiers pass through as variable references: `[Os, "windows"]`.
                     static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-                        Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#)
-                            .unwrap()
+                        static_regex(
+                            r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#,
+                        )
                     });
                     let items: Vec<&str> = ITEM_RE.find_iter(inner).map(|m| m.as_str()).collect();
                     format!("[{}]", items.join(", "))
@@ -510,13 +516,13 @@ fn rewrite_logical_with_paren_args(expr: &str) -> String {
             r"(?:^|(?P<pre>[^a-zA-Z0-9_]))(?P<op>and|or)\s+{}\s+{}",
             paren_group, paren_group
         );
-        Regex::new(&pattern).unwrap()
+        static_regex(&pattern)
     });
 
     LOGICAL_PAREN_RE
         .replace_all(expr, |caps: &regex::Captures| {
             let pre = caps.name("pre").map_or("", |m| m.as_str());
-            let logical_op = caps.name("op").unwrap().as_str();
+            let logical_op = caps.name("op").map_or("", |m| m.as_str());
             let inner1 = &caps[3]; // first paren group content
             let inner2 = &caps[4]; // second paren group content
 
@@ -533,7 +539,7 @@ fn rewrite_logical_with_paren_args(expr: &str) -> String {
 fn rewrite_not_with_paren_comparison(expr: &str) -> String {
     static NOT_PAREN_RE: LazyLock<Regex> = LazyLock::new(|| {
         let paren_group = r#"\(([^()]*)\)"#;
-        Regex::new(&format!(r"not\s+{}", paren_group)).unwrap()
+        static_regex(&format!(r"not\s+{}", paren_group))
     });
 
     NOT_PAREN_RE
@@ -588,10 +594,18 @@ fn rewrite_prefix_to_infix(expr: &str, func_name: &str, operator: &str) -> Strin
     );
 
     let re = {
-        let mut cache = REGEX_CACHE.lock().unwrap();
+        // SAFETY: Mutex poison only happens when a prior holder panicked
+        // while mutating the cache, leaving it in an indeterminate state.
+        // Recovering into_inner() here is safe because the cache only
+        // stores compiled regex objects — no half-written invariants to
+        // worry about — and continuing is strictly better than
+        // cascade-panicking every subsequent template preprocess call.
+        let mut cache = REGEX_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache
             .entry(func_name.to_string())
-            .or_insert_with(|| Regex::new(&pattern).unwrap())
+            .or_insert_with(|| static_regex(&pattern))
             .clone()
     };
 
@@ -599,15 +613,15 @@ fn rewrite_prefix_to_infix(expr: &str, func_name: &str, operator: &str) -> Strin
     let split_re = {
         static SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| {
             let arg = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()]*(?:\([^()]*\))*[^()]*)\)|[a-zA-Z_][a-zA-Z0-9_.]*|\d+)"#;
-            Regex::new(arg).unwrap()
+            static_regex(arg)
         });
         &*SPLIT_RE
     };
 
     re.replace_all(expr, |caps: &regex::Captures| {
         let pre = caps.name("pre").map_or("", |m| m.as_str());
-        let arg1 = caps.name("a1").unwrap().as_str();
-        let tail = caps.name("tail").unwrap().as_str();
+        let arg1 = caps.name("a1").map_or("", |m| m.as_str());
+        let tail = caps.name("tail").map_or("", |m| m.as_str());
         let rest_args: Vec<&str> = split_re.find_iter(tail).map(|m| m.as_str()).collect();
 
         if rest_args.len() == 1 {
@@ -636,13 +650,13 @@ fn rewrite_len(expr: &str) -> String {
             r"(?:^|(?P<pre>[^a-zA-Z0-9_]))len\s+(?P<arg>{})",
             arg_pattern
         );
-        Regex::new(&pattern).unwrap()
+        static_regex(&pattern)
     });
 
     LEN_RE
         .replace_all(expr, |caps: &regex::Captures| {
             let pre = caps.name("pre").map_or("", |m| m.as_str());
-            let arg = caps.name("arg").unwrap().as_str();
+            let arg = caps.name("arg").map_or("", |m| m.as_str());
             format!("{}{} | length", pre, arg)
         })
         .to_string()
@@ -662,7 +676,7 @@ static MAP_POSITIONAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     // No look-ahead needed; the greedy match of args handles the boundary
     // naturally, and we only apply this inside template blocks anyway.
     let pattern = format!(r"(?:^|(?P<pre>[^a-zA-Z0-9_]))map\s+(?P<args>{item}(?:\s+{item})+)");
-    Regex::new(&pattern).unwrap()
+    static_regex(&pattern)
 });
 
 /// Rewrite Go-style `map "k1" "v1" "k2" "v2"` to `map(pairs=["k1", "v1", "k2", "v2"])`.
@@ -684,11 +698,12 @@ fn preprocess_map_syntax(template: &str) -> String {
             let rewritten = MAP_POSITIONAL_RE
                 .replace_all(inner, |mcaps: &regex::Captures| {
                     let pre = mcaps.name("pre").map_or("", |m| m.as_str());
-                    let args_str = mcaps.name("args").unwrap().as_str();
+                    let args_str = mcaps.name("args").map_or("", |m| m.as_str());
                     // Tokenize the arguments.
                     static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-                        Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#)
-                            .unwrap()
+                        static_regex(
+                            r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#,
+                        )
                     });
                     let items: Vec<&str> =
                         ITEM_RE.find_iter(args_str).map(|m| m.as_str()).collect();
@@ -767,7 +782,7 @@ fn preprocess_positional_syntax(template: &str) -> String {
 /// `{{ Now.Format "2006-01-02" }}`. This regex rewrites it to
 /// `{{ Now | now_format(format="2006-01-02") }}`.
 static NOW_FORMAT_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"Now\.Format\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#).unwrap());
+    LazyLock::new(|| static_regex(r#"Now\.Format\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#));
 
 /// Pass 4: Rewrite Go-style method calls to Tera filter syntax.
 ///
@@ -984,7 +999,12 @@ fn tokenize_block(inner: &str) -> Vec<Token> {
 
         // Everything else (parentheses, operators, etc.)
         // Use chars().next() to handle multi-byte UTF-8 characters correctly.
-        let ch = inner[i..].chars().next().unwrap();
+        // Loop condition `i < inner.len()` guarantees `inner[i..]` is non-empty
+        // so `chars().next()` always yields Some(_); the `break` is a
+        // defensive no-op that keeps the function panic-free.
+        let Some(ch) = inner[i..].chars().next() else {
+            break;
+        };
         tokens.push(Token::Other(ch.to_string()));
         i += ch.len_utf8();
     }

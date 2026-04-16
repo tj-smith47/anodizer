@@ -612,7 +612,11 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 1 => strs[0].clone(),
                 2 => format!("{} and {}", strs[0], strs[1]),
                 _ => {
-                    let (last, rest) = strs.split_last().unwrap();
+                    // Safe: match arm `_` only reachable when `strs.len() >= 3`
+                    // per the preceding 0/1/2 cases; split_last is always Some.
+                    let Some((last, rest)) = strs.split_last() else {
+                        return Ok(Value::String(String::new()));
+                    };
                     if oxford {
                         format!("{}, and {}", rest.join(", "), last)
                     } else {
@@ -642,7 +646,11 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 1 => strs[0].clone(),
                 2 => format!("{} and {}", strs[0], strs[1]),
                 _ => {
-                    let (last, rest) = strs.split_last().unwrap();
+                    // Safe: match arm `_` only reachable when `strs.len() >= 3`
+                    // per the preceding 0/1/2 cases; split_last is always Some.
+                    let Some((last, rest)) = strs.split_last() else {
+                        return Ok(Value::String(String::new()));
+                    };
                     if oxford {
                         format!("{}, and {}", rest.join(", "), last)
                     } else {
@@ -1279,6 +1287,29 @@ impl Default for TemplateVars {
     }
 }
 
+/// Clear per-target template variables (`Os`, `Arch`, `Target`, `Arm`,
+/// `Arm64`, `Amd64`, `Mips`, `I386`) so they don't leak to downstream
+/// stages after a packaging stage's per-target loop finishes.
+///
+/// Packaging stages (flatpak, snapcraft, nfpm, makeself, etc.) iterate
+/// over (config × target) tuples and set these vars once per iteration so
+/// user templates like `{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}`
+/// render correctly. Leaving a stale `Os=linux` value set when a later
+/// stage (announce, publish) renders its own templates causes subtle
+/// cross-stage leaks — the announcement for a multi-platform release gets
+/// tagged with whichever platform finished last.
+pub fn clear_per_target_vars(tv: &mut TemplateVars) {
+    for key in PER_TARGET_VARS {
+        tv.set(key, "");
+    }
+}
+
+/// The template-variable keys that per-target packaging loops populate
+/// and must clear on exit.
+pub const PER_TARGET_VARS: &[&str] = &[
+    "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386",
+];
+
 /// Known numeric template fields that should be inserted as integers into the
 /// Tera context so that numeric comparisons like `{% if Major == 1 %}` work
 /// correctly. Without this, they would be strings and `"1" != 1`.
@@ -1288,7 +1319,7 @@ const NUMERIC_FIELDS: &[&str] = &["Major", "Minor", "Patch", "Timestamp", "Commi
 /// Used to discover env var keys referenced by the template so they can be
 /// pre-populated with empty strings (GoReleaser returns "" for missing env vars).
 static ENV_REF_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"Env\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+    LazyLock::new(|| crate::util::static_regex(r"Env\.([A-Za-z_][A-Za-z0-9_]*)"));
 
 /// Build a `tera::Context` from `TemplateVars`, pre-populating missing env var
 /// keys referenced in the template with empty strings.
@@ -1483,7 +1514,7 @@ pub fn extract_artifact_ext(filename: &str) -> &str {
 /// Rejects: `prefix-{{ .Env.VAR }}`, `{{ .Env.VAR }}-suffix`, any literal text
 pub fn validate_single_env_only(template: &str) -> Result<()> {
     static ENV_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^\s*\{\{\s*\.?Env\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}\s*$").unwrap()
+        crate::util::static_regex(r"^\s*\{\{\s*\.?Env\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}\s*$")
     });
     if ENV_ONLY_RE.is_match(template) {
         Ok(())

@@ -126,13 +126,8 @@ pub struct Config {
     pub dockerhub: Option<Vec<DockerHubConfig>>,
     /// Artifactory upload configurations.
     pub artifactories: Option<Vec<ArtifactoryConfig>>,
-    /// GemFury publisher configurations.
-    #[serde(alias = "gemfury")]
-    pub fury: Option<Vec<FuryConfig>>,
     /// CloudSmith publisher configurations.
     pub cloudsmiths: Option<Vec<CloudSmithConfig>>,
-    /// NPM publisher configurations.
-    pub npms: Option<Vec<NpmConfig>>,
     /// Top-level Homebrew Cask configurations.
     /// GoReleaser parity: `homebrew_casks` is a top-level array with its own
     /// repository, commit_author, directory, skip_upload, hooks, dependencies,
@@ -252,9 +247,7 @@ impl Default for Config {
             publishers: None,
             dockerhub: None,
             artifactories: None,
-            fury: None,
             cloudsmiths: None,
-            npms: None,
             homebrew_casks: None,
             tag: None,
             git: None,
@@ -1952,10 +1945,12 @@ pub struct HomebrewConfig {
     pub cask: Option<HomebrewCaskConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    pub goamd64: Option<String>,
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<String>,
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
     /// variant are included.
-    pub goarm: Option<String>,
+    #[serde(alias = "goarm")]
+    pub arm_variant: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -2266,7 +2261,8 @@ pub struct ScoopConfig {
     pub use_artifact: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    pub goamd64: Option<String>,
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2356,7 +2352,8 @@ pub struct ChocolateyConfig {
     pub use_artifact: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    pub goamd64: Option<String>,
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<String>,
 }
 
 /// Chocolatey package dependency with optional version constraint.
@@ -2449,7 +2446,8 @@ pub struct WingetConfig {
     pub use_artifact: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    pub goamd64: Option<String>,
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<String>,
 }
 
 /// WinGet package dependency.
@@ -2537,7 +2535,8 @@ pub struct AurConfig {
     pub replaces: Option<Vec<String>>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    pub goamd64: Option<String>,
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2577,10 +2576,12 @@ pub struct KrewConfig {
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    pub goamd64: Option<String>,
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<String>,
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
     /// variant are included.
-    pub goarm: Option<String>,
+    #[serde(alias = "goarm")]
+    pub arm_variant: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -2634,7 +2635,8 @@ pub struct NixConfig {
     pub formatter: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    pub goamd64: Option<String>,
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<String>,
 }
 
 /// Nix package dependency with optional OS restriction.
@@ -3009,6 +3011,10 @@ pub struct NfpmDebConfig {
     pub fields: Option<HashMap<String, String>>,
     /// Deb-specific maintainer scripts (rules, templates, config).
     pub scripts: Option<NfpmDebScripts>,
+    /// amd64 microarchitecture variant propagated to nfpm's `deb.arch_variant`
+    /// (`v1`, `v2`, `v3`, `v4`). Auto-derived from artifact metadata's
+    /// `amd64_variant` when unset.
+    pub arch_variant: Option<String>,
 }
 
 /// Deb-specific maintainer scripts for package configuration and rules.
@@ -4445,6 +4451,10 @@ pub struct BlueskyAnnounce {
     pub username: Option<String>,
     /// Message template for the post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
+    /// Override the Bluesky PDS (Personal Data Server) URL. Defaults to
+    /// `https://bsky.social`. Set this to point at a self-hosted PDS or
+    /// alternative instance (e.g. `https://pds.example.com`).
+    pub pds_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -4848,28 +4858,6 @@ pub struct ArtifactoryConfig {
 }
 
 // ---------------------------------------------------------------------------
-// GemFury publisher
-// ---------------------------------------------------------------------------
-
-/// GemFury publisher configuration.
-/// Pushes packages to GemFury (fury.io) package hosting.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct FuryConfig {
-    /// GemFury account name.
-    pub account: Option<String>,
-    /// Disable this publisher. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
-    /// Environment variable name containing the GemFury push token.
-    pub secret_name: Option<String>,
-    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Package format filter: only publish artifacts matching these formats (e.g. "deb", "rpm").
-    pub formats: Option<Vec<String>>,
-}
-
-// ---------------------------------------------------------------------------
 // CloudSmith publisher
 // ---------------------------------------------------------------------------
 
@@ -4898,57 +4886,6 @@ pub struct CloudSmithConfig {
     /// When true, allow republishing over existing package versions.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub republish: Option<StringOrBool>,
-}
-
-// ---------------------------------------------------------------------------
-// NPM publisher
-// ---------------------------------------------------------------------------
-
-/// NPM publisher configuration.
-/// Publishes packages to NPM registries.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct NpmConfig {
-    /// Unique identifier for this NPM publisher (when multiple are configured).
-    pub id: Option<String>,
-    /// NPM package name (e.g. `@myorg/mypackage`).
-    pub name: Option<String>,
-    /// Package description.
-    pub description: Option<String>,
-    /// Package homepage URL.
-    pub homepage: Option<String>,
-    /// Package keywords for NPM search.
-    pub keywords: Option<Vec<String>>,
-    /// SPDX license identifier (e.g. "MIT", "Apache-2.0").
-    pub license: Option<String>,
-    /// Package author (e.g. `"Jane Doe <jane@example.com>"`).
-    pub author: Option<String>,
-    /// Repository URL for package.json.
-    pub repository: Option<String>,
-    /// Bug tracker URL for package.json.
-    pub bugs: Option<String>,
-    /// NPM access level: "public" or "restricted".
-    pub access: Option<String>,
-    /// NPM dist-tag (e.g. "latest", "next", "beta").
-    pub tag: Option<String>,
-    /// Package format: "tgz" (default) or other supported NPM formats.
-    pub format: Option<String>,
-    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Extra files to include in the NPM package.
-    pub extra_files: Option<Vec<ExtraFileSpec>>,
-    /// Extra files whose contents are rendered through the template engine before inclusion.
-    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
-    /// Disable this publisher. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
-    /// Custom URL template for package downloads.
-    pub url_template: Option<String>,
-    /// Template-conditional: only run this publisher if the condition evaluates to true.
-    #[serde(rename = "if")]
-    pub if_condition: Option<String>,
-    /// Additional package.json fields as key-value pairs.
-    pub extra: Option<HashMap<String, serde_json::Value>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5166,6 +5103,15 @@ pub struct TagConfig {
     pub git_api_tagging: Option<bool>,
     /// When true, print verbose tag calculation output.
     pub verbose: Option<bool>,
+    /// Commands to run before `anodize tag` creates the tag. Useful for updating
+    /// lockfiles or committing sibling changes that must be part of the tagged
+    /// commit. Env: `ANODIZE_CURRENT_TAG`, `ANODIZE_PREVIOUS_TAG` are set;
+    /// template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`,
+    /// `{{ .PrefixedTag }}` are available.
+    pub tag_pre_hooks: Option<Vec<HookEntry>>,
+    /// Commands to run after `anodize tag` successfully creates and pushes the
+    /// tag. Env and template vars same as `tag_pre_hooks`.
+    pub tag_post_hooks: Option<Vec<HookEntry>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -7208,7 +7154,8 @@ crates:
         // serde_yaml_ng treats empty input as `null`, which the default impl handles.
         let yaml = "";
         let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-        let config = result.expect("empty YAML should parse to Config defaults");
+        let config =
+            result.unwrap_or_else(|e| panic!("empty YAML should parse to Config defaults: {e}"));
         assert!(
             config.project_name.is_empty(),
             "default project_name should be empty"
@@ -8274,7 +8221,9 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env_files = config.env_files.unwrap();
-        let files = env_files.as_list().expect("expected List variant");
+        let files = env_files
+            .as_list()
+            .unwrap_or_else(|| panic!("expected List variant"));
         assert_eq!(files.len(), 2);
         assert_eq!(files[0], ".env");
         assert_eq!(files[1], ".release.env");
@@ -8293,7 +8242,7 @@ crates: []
         let env_files = config.env_files.unwrap();
         let tokens = env_files
             .as_token_files()
-            .expect("expected TokenFiles variant");
+            .unwrap_or_else(|| panic!("expected TokenFiles variant"));
         assert_eq!(
             tokens.github_token.as_deref(),
             Some("~/.config/goreleaser/github_token")
@@ -8314,7 +8263,7 @@ crates: []
         let env_files = config.env_files.unwrap();
         let tokens = env_files
             .as_token_files()
-            .expect("expected TokenFiles variant");
+            .unwrap_or_else(|| panic!("expected TokenFiles variant"));
         assert!(tokens.github_token.is_none());
         assert!(tokens.gitlab_token.is_none());
         assert_eq!(tokens.gitea_token.as_deref(), Some("/tmp/gitea"));
@@ -8592,7 +8541,10 @@ crates: []
         }
         let toml_str = r#"env_files = [".env", ".env.local"]"#;
         let wrapper: Wrapper = toml::from_str(toml_str).unwrap();
-        let files = wrapper.env_files.as_list().expect("expected List variant");
+        let files = wrapper
+            .env_files
+            .as_list()
+            .unwrap_or_else(|| panic!("expected List variant"));
         assert_eq!(files.len(), 2);
         assert_eq!(files[0], ".env");
         assert_eq!(files[1], ".env.local");
@@ -8615,7 +8567,7 @@ gitlab_token = "/etc/tokens/gitlab"
         let tokens = wrapper
             .env_files
             .as_token_files()
-            .expect("expected TokenFiles variant");
+            .unwrap_or_else(|| panic!("expected TokenFiles variant"));
         assert_eq!(
             tokens.github_token.as_deref(),
             Some("~/.config/goreleaser/github_token")
@@ -8949,7 +8901,9 @@ git:
   prerelease_suffix: "-rc"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let git = config.git.expect("git section should be present");
+        let git = config
+            .git
+            .unwrap_or_else(|| panic!("git section should be present"));
         assert_eq!(git.tag_sort.as_deref(), Some("-version:creatordate"));
         assert_eq!(
             git.ignore_tags.as_deref(),
@@ -8987,7 +8941,9 @@ git:
   tag_sort: "-version:refname"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let git = config.git.expect("git section should be present");
+        let git = config
+            .git
+            .unwrap_or_else(|| panic!("git section should be present"));
         assert_eq!(git.tag_sort.as_deref(), Some("-version:refname"));
         assert!(git.ignore_tags.is_none());
         assert!(git.ignore_tag_prefixes.is_none());
@@ -10140,41 +10096,6 @@ artifactories:
     }
 
     #[test]
-    fn test_fury_config_parse() {
-        let yaml = r#"
-project_name: test
-fury:
-  - account: myaccount
-    secret_name: FURY_TOKEN
-    ids:
-      - packages
-    formats:
-      - deb
-      - rpm
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let fury = &cfg.fury.unwrap()[0];
-        assert_eq!(fury.account.as_deref(), Some("myaccount"));
-        assert_eq!(fury.secret_name.as_deref(), Some("FURY_TOKEN"));
-        assert_eq!(fury.ids.as_ref().unwrap(), &["packages"]);
-        assert_eq!(fury.formats.as_ref().unwrap(), &["deb", "rpm"]);
-    }
-
-    #[test]
-    fn test_fury_gemfury_alias_parse() {
-        let yaml = r#"
-project_name: test
-gemfury:
-  - account: aliasaccount
-    secret_name: GF_TOKEN
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let fury = &cfg.fury.unwrap()[0];
-        assert_eq!(fury.account.as_deref(), Some("aliasaccount"));
-        assert_eq!(fury.secret_name.as_deref(), Some("GF_TOKEN"));
-    }
-
-    #[test]
     fn test_cloudsmith_config_parse() {
         let yaml = r#"
 project_name: test
@@ -10195,30 +10116,6 @@ cloudsmiths:
         assert_eq!(dists.get("deb").unwrap(), "ubuntu/focal");
     }
 
-    #[test]
-    fn test_npm_config_parse() {
-        let yaml = r#"
-project_name: test
-npms:
-  - name: "@myorg/mypackage"
-    description: "My CLI tool"
-    license: MIT
-    author: "Jane Doe <jane@example.com>"
-    access: public
-    tag: latest
-    if: "{{ .IsSnapshot }}"
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let npm = &cfg.npms.unwrap()[0];
-        assert_eq!(npm.name.as_deref(), Some("@myorg/mypackage"));
-        assert_eq!(npm.description.as_deref(), Some("My CLI tool"));
-        assert_eq!(npm.license.as_deref(), Some("MIT"));
-        assert_eq!(npm.author.as_deref(), Some("Jane Doe <jane@example.com>"));
-        assert_eq!(npm.access.as_deref(), Some("public"));
-        assert_eq!(npm.tag.as_deref(), Some("latest"));
-        assert_eq!(npm.if_condition.as_deref(), Some("{{ .IsSnapshot }}"));
-    }
-
     // -----------------------------------------------------------------------
     // deserialize_env_map tests — map, list-of-strings, null/missing
     // -----------------------------------------------------------------------
@@ -10235,7 +10132,10 @@ docker_signs:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let ds = &cfg.docker_signs.as_ref().unwrap()[0];
-        let env = ds.env.as_ref().expect("env should be Some");
+        let env = ds
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("COSIGN_PASSWORD").unwrap(), "hunter2");
         assert_eq!(env.get("COSIGN_KEY").unwrap(), "/path/to/key");
     }
@@ -10252,7 +10152,10 @@ docker_signs:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let ds = &cfg.docker_signs.as_ref().unwrap()[0];
-        let env = ds.env.as_ref().expect("env should be Some");
+        let env = ds
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("COSIGN_PASSWORD").unwrap(), "hunter2");
         assert_eq!(env.get("COSIGN_KEY").unwrap(), "/path/to/key");
     }
@@ -10268,7 +10171,10 @@ docker_signs:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let ds = &cfg.docker_signs.as_ref().unwrap()[0];
-        let env = ds.env.as_ref().expect("env should be Some");
+        let env = ds
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("FLAGS").unwrap(), "--key=val --other=stuff");
     }
 
@@ -10322,7 +10228,10 @@ signs:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.signs[0];
-        let env = s.env.as_ref().expect("env should be Some");
+        let env = s
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("GPG_KEY").unwrap(), "ABCDEF");
         assert_eq!(env.get("GPG_TTY").unwrap(), "/dev/pts/0");
     }
@@ -10339,7 +10248,10 @@ publishers:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let p = &cfg.publishers.as_ref().unwrap()[0];
-        let env = p.env.as_ref().expect("env should be Some");
+        let env = p
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("API_TOKEN").unwrap(), "secret123");
     }
 
@@ -10364,7 +10276,10 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let overrides = config.defaults.unwrap().overrides.unwrap();
-        let env = overrides[0].env.as_ref().expect("env should be Some");
+        let env = overrides[0]
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("CC").unwrap(), "gcc-12");
         assert_eq!(env.get("CFLAGS").unwrap(), "-O2 -Wall");
     }
@@ -10386,7 +10301,10 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let overrides = config.defaults.unwrap().overrides.unwrap();
-        let env = overrides[0].env.as_ref().expect("env should be Some");
+        let env = overrides[0]
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("CC").unwrap(), "gcc-12");
         assert_eq!(env.get("CFLAGS").unwrap(), "-O2 -Wall");
     }
@@ -10410,7 +10328,10 @@ before:
         let hooks = cfg.before.as_ref().unwrap().hooks.as_ref().unwrap();
         match &hooks[0] {
             HookEntry::Structured(h) => {
-                let env = h.env.as_ref().expect("env should be Some");
+                let env = h
+                    .env
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("env should be Some"));
                 assert_eq!(env.get("MY_VAR").unwrap(), "foo");
                 assert_eq!(env.get("OTHER").unwrap(), "bar=baz");
             }
@@ -10433,7 +10354,10 @@ before:
         let hooks = cfg.before.as_ref().unwrap().hooks.as_ref().unwrap();
         match &hooks[0] {
             HookEntry::Structured(h) => {
-                let env = h.env.as_ref().expect("env should be Some");
+                let env = h
+                    .env
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("env should be Some"));
                 assert_eq!(env.get("MY_VAR").unwrap(), "foo");
                 assert_eq!(env.get("OTHER").unwrap(), "bar=baz");
             }
@@ -10457,7 +10381,10 @@ signs:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.signs[0];
-        let env = s.env.as_ref().expect("env should be Some");
+        let env = s
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("GPG_KEY").unwrap(), "ABCDEF");
         assert_eq!(env.get("GPG_TTY").unwrap(), "/dev/pts/0");
     }
@@ -10479,7 +10406,10 @@ publishers:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let p = &cfg.publishers.as_ref().unwrap()[0];
-        let env = p.env.as_ref().expect("env should be Some");
+        let env = p
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(env.get("API_TOKEN").unwrap(), "secret123");
         assert_eq!(env.get("DEPLOY_ENV").unwrap(), "staging");
     }
@@ -10500,7 +10430,10 @@ sboms:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.sboms[0];
-        let env = s.env.as_ref().expect("env should be Some");
+        let env = s
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(
             env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(),
             "true"
@@ -10520,7 +10453,10 @@ sboms:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.sboms[0];
-        let env = s.env.as_ref().expect("env should be Some");
+        let env = s
+            .env
+            .as_ref()
+            .unwrap_or_else(|| panic!("env should be Some"));
         assert_eq!(
             env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(),
             "true"

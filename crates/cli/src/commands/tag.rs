@@ -1,6 +1,8 @@
-use anodize_core::config::TagConfig;
+use anodize_core::config::{GitConfig, TagConfig};
 use anodize_core::git;
+use anodize_core::hooks::run_hooks;
 use anodize_core::log::{StageLogger, Verbosity};
+use anodize_core::template::TemplateVars;
 use anyhow::{Result, bail};
 use regex::Regex;
 
@@ -91,6 +93,7 @@ impl ResolvedConfig {
 pub fn run(opts: TagOpts) -> Result<()> {
     // Load config if available, but don't fail if there's no config file
     let tag_config = load_tag_config(&opts);
+    let git_config = load_git_config(&opts);
 
     let mut cfg = ResolvedConfig::from_tag_config(&tag_config, &opts);
 
@@ -120,15 +123,51 @@ pub fn run(opts: TagOpts) -> Result<()> {
         if opts.dry_run { " (dry-run)" } else { "" }
     ));
 
-    // Helper closure to create a tag via the appropriate method.
+    // Helper closure to create a tag via the appropriate method, with
+    // tag_pre_hooks / tag_post_hooks wrapping. Hooks receive template vars
+    // `{{ .Tag }}`, `{{ .PrefixedTag }}`, `{{ .Version }}`, `{{ .PreviousTag }}`
+    // and process env `ANODIZE_CURRENT_TAG` / `ANODIZE_PREVIOUS_TAG`.
     let strict = opts.strict;
-    let create_tag = |tag: &str, message: &str, dry_run: bool| -> Result<()> {
+    let tag_prefix_for_hooks = cfg.tag_prefix.clone();
+    let pre_hooks = tag_config.tag_pre_hooks.clone().unwrap_or_default();
+    let post_hooks = tag_config.tag_post_hooks.clone().unwrap_or_default();
+    let create_tag = |tag: &str, message: &str, dry_run: bool, prev: Option<&str>| -> Result<()> {
+        let mut tv = TemplateVars::new();
+        tv.set("Tag", tag);
+        tv.set("PrefixedTag", tag);
+        let version = tag
+            .strip_prefix(tag_prefix_for_hooks.as_str())
+            .unwrap_or(tag);
+        tv.set("Version", version);
+        if let Some(p) = prev {
+            tv.set("PreviousTag", p);
+        }
+
+        // SAFETY: the tag subcommand runs single-threaded — no worker threads
+        // exist here, so mutating the process env is safe. Hooks read these
+        // via their subprocess environment.
+        unsafe {
+            std::env::set_var("ANODIZE_CURRENT_TAG", tag);
+            if let Some(p) = prev {
+                std::env::set_var("ANODIZE_PREVIOUS_TAG", p);
+            }
+        }
+
+        if !pre_hooks.is_empty() {
+            run_hooks(&pre_hooks, "tag-pre", dry_run, &log, Some(&tv))?;
+        }
+
         if cfg.git_api_tagging {
             log.verbose("using GitHub API for tagging (git_api_tagging=true)");
-            git::create_tag_via_github_api(tag, message, dry_run, &log, strict)
+            git::create_tag_via_github_api(tag, message, dry_run, &log, strict)?;
         } else {
-            git::create_and_push_tag(tag, message, dry_run, &log, strict)
+            git::create_and_push_tag(tag, message, dry_run, &log, strict)?;
         }
+
+        if !post_hooks.is_empty() {
+            run_hooks(&post_hooks, "tag-post", dry_run, &log, Some(&tv))?;
+        }
+        Ok(())
     };
 
     // If custom_tag is set, use it directly
@@ -139,7 +178,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
             format!("{}{}", cfg.tag_prefix, custom)
         };
         log.verbose(&format!("using custom tag: {}", new_tag));
-        create_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
+        let prev_for_custom = find_previous_tag(&cfg, git_config.as_ref()).ok().flatten();
+        create_tag(
+            &new_tag,
+            &format!("Release {}", new_tag),
+            opts.dry_run,
+            prev_for_custom.as_deref(),
+        )?;
         println!("new_tag={}", new_tag);
         println!("old_tag=");
         println!("part=custom");
@@ -151,7 +196,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     if !cfg.release_branches.is_empty() && !branch_matches(&current_branch, &cfg.release_branches) {
         // Non-release branch: produce a hash-postfixed version, don't tag
         let short_commit = git::get_short_commit()?;
-        let prev_tag = find_previous_tag(&cfg)?;
+        let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
         let base_version = match &prev_tag {
             Some(tag) => {
                 let sv = git::parse_semver_tag(tag)?;
@@ -171,7 +216,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     }
 
     // Find previous tag
-    let prev_tag = find_previous_tag(&cfg)?;
+    let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
 
     log.verbose(&format!(
         "previous tag: {}",
@@ -379,7 +424,17 @@ pub fn run(opts: TagOpts) -> Result<()> {
     }
 
     // Create and push tag
-    create_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
+    let prev_for_hook = if old_tag_str.is_empty() {
+        None
+    } else {
+        Some(old_tag_str)
+    };
+    create_tag(
+        &new_tag,
+        &format!("Release {}", new_tag),
+        opts.dry_run,
+        prev_for_hook,
+    )?;
 
     let part_str = match bump {
         BumpKind::Major => "major",
@@ -411,6 +466,12 @@ fn load_tag_config(opts: &TagOpts) -> TagConfig {
         return config.tag.unwrap_or_default();
     }
     TagConfig::default()
+}
+
+fn load_git_config(opts: &TagOpts) -> Option<GitConfig> {
+    let path = resolve_config_path(opts)?;
+    let config = crate::pipeline::load_config(&path).ok()?;
+    config.git
 }
 
 /// Info extracted from a crate's config for path-scoped tagging.
@@ -455,11 +516,13 @@ fn load_crate_tag_info(opts: &TagOpts, crate_name: &str) -> Option<CrateTagInfo>
     })
 }
 
-// TODO: Wire GitConfig (ignore_tags, ignore_tag_prefixes) into tag discovery
-fn find_previous_tag(cfg: &ResolvedConfig) -> Result<Option<String>> {
+fn find_previous_tag(
+    cfg: &ResolvedConfig,
+    git_config: Option<&GitConfig>,
+) -> Result<Option<String>> {
     let tags = match cfg.tag_context.as_str() {
-        "branch" => git::get_branch_semver_tags(&cfg.tag_prefix)?,
-        _ => git::get_all_semver_tags(&cfg.tag_prefix)?,
+        "branch" => git::get_branch_semver_tags(&cfg.tag_prefix, git_config, None)?,
+        _ => git::get_all_semver_tags(&cfg.tag_prefix, git_config, None)?,
     };
     Ok(tags.into_iter().next())
 }
@@ -1069,6 +1132,8 @@ mod tests {
             none_string_token: Some("skip".to_string()),
             git_api_tagging: Some(false),
             verbose: Some(false),
+            tag_pre_hooks: None,
+            tag_post_hooks: None,
         };
         let opts = TagOpts {
             dry_run: false,
@@ -1174,6 +1239,43 @@ tag:
         let tag = config.tag.unwrap();
         assert_eq!(tag.default_bump, Some("patch".to_string()));
         assert_eq!(tag.branch_history, Some("last".to_string()));
+    }
+
+    #[test]
+    fn test_tag_pre_post_hooks_yaml_roundtrip() {
+        // Both simple-string and structured hook forms must parse; the
+        // structured form carries `cmd` / `dir` / `env` so an update-lockfile
+        // hook can run inside a workspace subdirectory with its own env.
+        let yaml = r#"
+tag_pre_hooks:
+  - "cargo update --workspace"
+  - cmd: "scripts/pre-tag.sh {{ .Tag }}"
+    dir: "."
+tag_post_hooks:
+  - "git push --follow-tags"
+"#;
+        let cfg: TagConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let pre = cfg.tag_pre_hooks.as_ref().unwrap();
+        assert_eq!(pre.len(), 2);
+        assert!(matches!(
+            pre[0],
+            anodize_core::config::HookEntry::Simple(ref s) if s == "cargo update --workspace"
+        ));
+        let post = cfg.tag_post_hooks.as_ref().unwrap();
+        assert_eq!(post.len(), 1);
+        assert!(matches!(
+            post[0],
+            anodize_core::config::HookEntry::Simple(ref s) if s == "git push --follow-tags"
+        ));
+    }
+
+    #[test]
+    fn test_tag_hooks_default_none() {
+        // Absent in YAML means Option::None — the `create_tag` closure treats
+        // this as "no hooks" and skips invocation.
+        let cfg: TagConfig = serde_yaml_ng::from_str("default_bump: minor").unwrap();
+        assert!(cfg.tag_pre_hooks.is_none());
+        assert!(cfg.tag_post_hooks.is_none());
     }
 
     // ---- Integration-style bump logic tests ----
