@@ -90,7 +90,9 @@ impl Stage for PkgStage {
         let mut archive_paths_to_remove: Vec<PathBuf> = Vec::new();
 
         for krate in &crates {
-            let pkg_configs = krate.pkgs.as_ref().unwrap();
+            let Some(pkg_configs) = krate.pkgs.as_ref() else {
+                continue;
+            };
 
             // Collect macOS binary artifacts for this crate
             let darwin_binaries: Vec<_> = ctx
@@ -268,15 +270,12 @@ impl Stage for PkgStage {
                         });
 
                         // Track archives to remove if replace is true
-                        if pkg_cfg.replace.unwrap_or(false) {
-                            archive_paths_to_remove.extend(
-                                anodize_core::util::collect_replace_archives(
-                                    &ctx.artifacts,
-                                    &krate.name,
-                                    target.as_deref(),
-                                ),
-                            );
-                        }
+                        archive_paths_to_remove.extend(anodize_core::util::collect_if_replace(
+                            pkg_cfg.replace,
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
 
                         continue;
                     }
@@ -377,23 +376,17 @@ impl Stage for PkgStage {
                     });
 
                     // Track archives to remove if replace is true
-                    if pkg_cfg.replace.unwrap_or(false) {
-                        archive_paths_to_remove.extend(
-                            anodize_core::util::collect_replace_archives(
-                                &ctx.artifacts,
-                                &krate.name,
-                                target.as_deref(),
-                            ),
-                        );
-                    }
+                    archive_paths_to_remove.extend(anodize_core::util::collect_if_replace(
+                        pkg_cfg.replace,
+                        &ctx.artifacts,
+                        &krate.name,
+                        target.as_deref(),
+                    ));
                 }
             }
         }
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
+        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // Remove archive artifacts marked for replacement
         if !archive_paths_to_remove.is_empty() {

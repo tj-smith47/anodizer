@@ -143,7 +143,10 @@ impl Stage for DmgStage {
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
         for krate in &crates {
-            for dmg_cfg in krate.dmgs.as_ref().unwrap() {
+            let Some(dmgs) = krate.dmgs.as_ref() else {
+                continue;
+            };
+            for dmg_cfg in dmgs {
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = dmg_cfg.disable
                     && d.is_disabled(|s| ctx.render_template(s))
@@ -299,15 +302,12 @@ impl Stage for DmgStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        if dmg_cfg.replace.unwrap_or(false) {
-                            archives_to_remove.extend(
-                                anodize_core::util::collect_replace_archives(
-                                    &ctx.artifacts,
-                                    &krate.name,
-                                    target.as_deref(),
-                                ),
-                            );
-                        }
+                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                            dmg_cfg.replace,
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
 
                         continue;
                     }
@@ -421,21 +421,17 @@ impl Stage for DmgStage {
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
-                    if dmg_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
-                            &ctx.artifacts,
-                            &krate.name,
-                            target.as_deref(),
-                        ));
-                    }
+                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        dmg_cfg.replace,
+                        &ctx.artifacts,
+                        &krate.name,
+                        target.as_deref(),
+                    ));
                 }
             }
         }
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
+        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // Remove replaced archives
         if !archives_to_remove.is_empty() {

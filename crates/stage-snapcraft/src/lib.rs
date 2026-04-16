@@ -423,6 +423,20 @@ pub fn resolve_effective_channels(
 
 pub struct SnapcraftStage;
 
+/// A fully-staged snapcraft job ready for parallel `snapcraft pack`
+/// invocation. Phase 1 (serial, `&mut ctx`) stages the prime dir and
+/// renders templates; Phase 2 (parallel) runs the subprocess. `_tmp_dir`
+/// keeps the staging dir alive through Phase 2 — its `Drop` deletes the
+/// directory when the job's worker thread finishes.
+struct SnapcraftJob {
+    _tmp_dir: tempfile::TempDir,
+    snap_path: PathBuf,
+    cmd_args: Vec<String>,
+    target: Option<String>,
+    crate_name: String,
+    artifact_metadata: HashMap<String, String>,
+}
+
 impl Stage for SnapcraftStage {
     fn name(&self) -> &str {
         "snapcraft"
@@ -433,6 +447,7 @@ impl Stage for SnapcraftStage {
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
         let dist = ctx.config.dist.clone();
+        let parallelism = ctx.options.parallelism.max(1);
 
         // Collect crates that have snapcraft config
         let crates: Vec<_> = ctx
@@ -457,9 +472,12 @@ impl Stage for SnapcraftStage {
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
+        let mut jobs: Vec<SnapcraftJob> = Vec::new();
 
         for krate in &crates {
-            let snap_configs = krate.snapcrafts.as_ref().unwrap();
+            let Some(snap_configs) = krate.snapcrafts.as_ref() else {
+                continue;
+            };
 
             // Collect all Linux binary artifacts for this crate
             let linux_binaries: Vec<_> = ctx
@@ -638,15 +656,12 @@ impl Stage for SnapcraftStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        if snap_cfg.replace.unwrap_or(false) {
-                            archives_to_remove.extend(
-                                anodize_core::util::collect_replace_archives(
-                                    &ctx.artifacts,
-                                    &krate.name,
-                                    target.as_deref(),
-                                ),
-                            );
-                        }
+                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                            snap_cfg.replace,
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
 
                         continue;
                     }
@@ -814,51 +829,77 @@ impl Stage for SnapcraftStage {
                         anodize_core::util::apply_mod_timestamp(&prime_dir, ts, &log)?;
                     }
 
-                    // Run snapcraft pack prime_dir --output snap_file
+                    // Phase 1 done: compose subprocess args and hand the
+                    // staged work to the parallel worker pool.
                     let cmd_args = snapcraft_command(
                         &prime_dir.to_string_lossy(),
                         &snap_path.to_string_lossy(),
                     );
 
-                    log.status(&format!("running: {}", cmd_args.join(" ")));
+                    // If replace is set, mark archives for this crate+target
+                    // for removal — do it now while ctx.artifacts is accessible.
+                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        snap_cfg.replace,
+                        &ctx.artifacts,
+                        &krate.name,
+                        target.as_deref(),
+                    ));
 
-                    let output = Command::new(&cmd_args[0])
-                        .args(&cmd_args[1..])
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "execute snapcraft for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                    log.check_output(output, "snapcraft pack")?;
-
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::Snap,
-                        name: String::new(),
-                        path: snap_path,
+                    jobs.push(SnapcraftJob {
+                        _tmp_dir: tmp_dir,
+                        snap_path,
+                        cmd_args,
                         target: target.clone(),
                         crate_name: krate.name.clone(),
-                        metadata: artifact_metadata,
-                        size: None,
+                        artifact_metadata,
                     });
-
-                    // If replace is set, mark archives for this crate+target for removal
-                    if snap_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
-                            &ctx.artifacts,
-                            &krate.name,
-                            target.as_deref(),
-                        ));
-                    }
                 }
             }
         }
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
+        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+
+        // ----------------------------------------------------------------
+        // Phase 2 (parallel): run `snapcraft pack` per job. Bounded
+        // concurrency via chunks(parallelism). Each worker returns the
+        // populated Artifact; Phase 3 registers them serially.
+        // ----------------------------------------------------------------
+        if !jobs.is_empty() {
+            let run_job = |job: &SnapcraftJob| -> Result<Artifact> {
+                let thread_log = anodize_core::log::StageLogger::new("snapcraft", log.verbosity());
+
+                thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
+
+                let output = Command::new(&job.cmd_args[0])
+                    .args(&job.cmd_args[1..])
+                    .output()
+                    .with_context(|| {
+                        format!(
+                            "execute snapcraft for crate {} target {:?}",
+                            job.crate_name, job.target
+                        )
+                    })?;
+                thread_log.check_output(output, "snapcraft pack")?;
+
+                Ok(Artifact {
+                    kind: ArtifactKind::Snap,
+                    name: String::new(),
+                    path: job.snap_path.clone(),
+                    target: job.target.clone(),
+                    crate_name: job.crate_name.clone(),
+                    metadata: job.artifact_metadata.clone(),
+                    size: None,
+                })
+            };
+
+            let results = anodize_core::parallel::run_parallel_chunks(
+                &jobs,
+                parallelism,
+                "snapcraft",
+                run_job,
+            )?;
+            new_artifacts.extend(results);
+        }
 
         // Remove replaced archives
         if !archives_to_remove.is_empty() {
@@ -920,7 +961,9 @@ impl Stage for SnapcraftPublishStage {
         }
 
         for krate in &crates {
-            let snap_configs = krate.snapcrafts.as_ref().unwrap();
+            let Some(snap_configs) = krate.snapcrafts.as_ref() else {
+                continue;
+            };
 
             for snap_cfg in snap_configs {
                 // Only publish configs that opt in
@@ -1838,8 +1881,8 @@ crates:
         summary: A test snap
         confinement: strict
 "#;
-        let config: Config =
-            serde_yaml_ng::from_str(yaml).expect("failed to parse snapcraft config");
+        let config: Config = serde_yaml_ng::from_str(yaml)
+            .unwrap_or_else(|e| panic!("failed to parse snapcraft config: {e}"));
         assert_eq!(config.crates.len(), 1);
         let snaps = config.crates[0].snapcrafts.as_ref().unwrap();
         assert_eq!(snaps.len(), 1);
@@ -1901,8 +1944,8 @@ crates:
         replace: true
         mod_timestamp: "1704067200"
 "#;
-        let config: Config =
-            serde_yaml_ng::from_str(yaml).expect("failed to parse full snapcraft config");
+        let config: Config = serde_yaml_ng::from_str(yaml)
+            .unwrap_or_else(|e| panic!("failed to parse full snapcraft config: {e}"));
         let snaps = config.crates[0].snapcrafts.as_ref().unwrap();
         let snap = &snaps[0];
         assert_eq!(snap.id.as_deref(), Some("main"));
@@ -2772,8 +2815,8 @@ crates:
             destination: etc/app.conf
             mode: 420
 "#;
-        let config: Config =
-            serde_yaml_ng::from_str(yaml).expect("failed to parse config with new fields");
+        let config: Config = serde_yaml_ng::from_str(yaml)
+            .unwrap_or_else(|e| panic!("failed to parse config with new fields: {e}"));
         let snaps = config.crates[0].snapcrafts.as_ref().unwrap();
         let snap = &snaps[0];
 
@@ -2909,8 +2952,8 @@ crates:
             stop-timeout: 15s
             watchdog-timeout: 60s
 "#;
-        let config: Config =
-            serde_yaml_ng::from_str(yaml).expect("failed to parse kebab-case config");
+        let config: Config = serde_yaml_ng::from_str(yaml)
+            .unwrap_or_else(|e| panic!("failed to parse kebab-case config: {e}"));
         let snaps = config.crates[0].snapcrafts.as_ref().unwrap();
         let app = snaps[0].apps.as_ref().unwrap().get("myapp").unwrap();
         assert_eq!(app.stop_mode.as_deref(), Some("sigterm"));

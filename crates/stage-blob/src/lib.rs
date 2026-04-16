@@ -92,7 +92,7 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
             // awskms://key-id  or  awskms:///arn:aws:kms:region:account:key/id
             let key_id = kms_key
                 .strip_prefix("awskms://")
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("expected awskms:// scheme, got {kms_key}"))?
                 .trim_start_matches('/');
 
             let mut child = std::process::Command::new("aws")
@@ -115,7 +115,7 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
             child
                 .stdin
                 .take()
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("blobs: aws kms child has no stdin"))?
                 .write_all(data)
                 .context("blobs: failed to write plaintext to aws kms stdin")?;
 
@@ -143,7 +143,9 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
 
         KmsProvider::Gcp => {
             // gcpkms://projects/PROJECT/locations/LOC/keyRings/KR/cryptKeys/KEY
-            let resource = kms_key.strip_prefix("gcpkms://").unwrap();
+            let resource = kms_key
+                .strip_prefix("gcpkms://")
+                .ok_or_else(|| anyhow::anyhow!("expected gcpkms:// scheme, got {kms_key}"))?;
 
             let mut child = std::process::Command::new("gcloud")
                 .args([
@@ -165,7 +167,7 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
             child
                 .stdin
                 .take()
-                .unwrap()
+                .ok_or_else(|| anyhow::anyhow!("blobs: gcloud kms child has no stdin"))?
                 .write_all(data)
                 .context("blobs: failed to write plaintext to gcloud kms stdin")?;
 
@@ -186,7 +188,9 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
 
         KmsProvider::Azure => {
             // azurekeyvault://vault-name/keys/key-name[/version]
-            let path = kms_key.strip_prefix("azurekeyvault://").unwrap();
+            let path = kms_key.strip_prefix("azurekeyvault://").ok_or_else(|| {
+                anyhow::anyhow!("expected azurekeyvault:// scheme, got {kms_key}")
+            })?;
             let parts: Vec<&str> = path.splitn(3, '/').collect();
             let vault_name = parts
                 .first()
@@ -499,7 +503,7 @@ fn collect_artifacts<'a>(
     // GoReleaser parity (blob.go): blob upload uses the canonical
     // release-uploadable artifact list (ArtifactByType(Archive, UploadableBinary,
     // UploadableFile, SourceArchive, Makeself, LinuxPackage, Flatpak, SourceRpm,
-    // Sbom, PyWheel, PySdist, Checksum, Signature, Certificate)). When
+    // Sbom, Checksum, Signature, Certificate)). When
     // `include_meta` is true, append Metadata.
     let mut uploadable_kinds: Vec<ArtifactKind> = release_uploadable_kinds().to_vec();
     if config.include_meta.unwrap_or(false) {
@@ -535,34 +539,24 @@ fn collect_artifacts<'a>(
 // Upload execution
 // ---------------------------------------------------------------------------
 
-struct UploadParams<'a> {
+/// Upload a per-config batch of files with intra-config parallelism via
+/// tokio, given fully owned data. Phase 2 of `BlobStage::run` calls this
+/// on worker threads so `ctx` is never touched after Phase 1.
+fn upload_files_owned(
     store: Arc<dyn ObjectStore>,
-    items: &'a [(PathBuf, String)],
-    directory: &'a str,
-    config: &'a BlobConfig,
-    ctx: &'a Context,
-    /// When set, the KMS key URL and parsed provider for client-side encryption.
-    /// `None` means no client-side encryption is configured.
-    client_kms: Option<(&'a str, KmsProvider)>,
-}
-
-fn upload_files(params: &UploadParams<'_>) -> Result<()> {
-    // Use multi-threaded tokio runtime for actual parallel uploads
+    items: Vec<(PathBuf, String)>,
+    directory: String,
+    put_opts_per_item: Vec<PutOptions>,
+    parallelism: usize,
+    client_kms: Option<(String, KmsProvider)>,
+) -> Result<()> {
     let rt = tokio::runtime::Runtime::new().context("blobs: failed to create tokio runtime")?;
-
-    rt.block_on(async {
-        // Prefer blob-specific parallelism; fall back to global setting.
-        let parallelism = params
-            .config
-            .parallelism
-            .unwrap_or(params.ctx.options.parallelism)
-            .max(1);
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism));
-
+    rt.block_on(async move {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
         let mut handles = Vec::new();
 
-        for (local_path, remote_key) in params.items {
-            let dir_trimmed = params.directory.trim_matches('/');
+        for ((local_path, remote_key), put_opts) in items.into_iter().zip(put_opts_per_item) {
+            let dir_trimmed = directory.trim_matches('/');
             let object_key = if dir_trimmed.is_empty() {
                 remote_key.clone()
             } else {
@@ -570,28 +564,23 @@ fn upload_files(params: &UploadParams<'_>) -> Result<()> {
             };
 
             let object_path = ObjectPath::from(object_key.as_str());
-            let put_opts = build_put_options(params.config, remote_key, params.ctx)?;
 
-            let store = Arc::clone(&params.store);
+            let store = Arc::clone(&store);
             let sem = Arc::clone(&semaphore);
             let path_display = local_path.display().to_string();
-            let local = local_path.clone();
+            let local = local_path;
             let key_display = object_key.clone();
-            let client_kms = params.client_kms.map(|(k, p)| (k.to_string(), p));
+            let client_kms = client_kms.clone();
 
             handles.push(tokio::spawn(async move {
                 let _permit = sem
                     .acquire()
                     .await
                     .map_err(|e| anyhow::anyhow!("semaphore error: {}", e))?;
-                // Read file inside the spawned task to interleave I/O with uploads
                 let data = tokio::fs::read(&local).await.map_err(|e| {
                     anyhow::anyhow!("blobs: read file for upload: {}: {}", path_display, e)
                 })?;
 
-                // Client-side KMS encryption: encrypt the data before upload.
-                // This runs the CLI tool in a blocking spawn to avoid blocking
-                // the async runtime.
                 let upload_data = if let Some((kms_key, provider)) = client_kms {
                     tokio::task::spawn_blocking(move || encrypt_with_kms(&data, &kms_key, provider))
                         .await
@@ -678,6 +667,21 @@ fn handle_upload_error(
 
 pub struct BlobStage;
 
+/// A fully-prepared blob upload job. Phase 1 (serial, `&mut ctx`) renders
+/// templates, builds the ObjectStore, pre-renders per-item put options;
+/// Phase 2 (parallel) runs the per-config upload via `upload_files_owned`.
+/// Workers never touch `ctx`.
+struct BlobJob {
+    provider_display: &'static str,
+    rendered_bucket: String,
+    rendered_directory: String,
+    upload_items: Vec<(PathBuf, String)>,
+    store: Arc<dyn ObjectStore>,
+    put_opts_per_item: Vec<PutOptions>,
+    parallelism_inner: usize,
+    client_kms: Option<(String, KmsProvider)>,
+}
+
 impl Stage for BlobStage {
     fn name(&self) -> &str {
         "blob"
@@ -691,6 +695,7 @@ impl Stage for BlobStage {
 
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
+        let global_parallelism = ctx.options.parallelism.max(1);
 
         // Collect crates that have blob config
         let crates: Vec<_> = ctx
@@ -706,8 +711,17 @@ impl Stage for BlobStage {
             return Ok(());
         }
 
+        // Phase 1 (serial): render every config, build stores, collect jobs.
+        let mut jobs: Vec<BlobJob> = Vec::new();
+
         for krate in &crates {
-            let blob_configs = krate.blobs.as_ref().unwrap();
+            // SAFETY: `crates` was filtered to only include crates with
+            // `blobs.is_some()` above, so this Option is always Some here.
+            // `continue` defends against a future refactor that breaks the
+            // invariant rather than panicking on the now-impossible None.
+            let Some(blob_configs) = krate.blobs.as_ref() else {
+                continue;
+            };
 
             for blob_cfg in blob_configs {
                 // Evaluate disable (supports both bool and template string)
@@ -826,49 +840,87 @@ impl Stage for BlobStage {
                             remote,
                         ));
                     }
-                } else {
-                    // Log each file before upload
-                    for (local_path, remote_key) in &upload_items {
-                        let remote = format_remote_path(
-                            provider,
-                            &rendered_bucket,
-                            &rendered_directory,
-                            remote_key,
-                        );
-                        log.status(&format!("uploading {} -> {}", local_path.display(), remote,));
-                    }
-
-                    let store: Arc<dyn ObjectStore> =
-                        Arc::from(build_store(provider, blob_cfg, &rendered_bucket, ctx)?);
-
-                    // Determine if client-side KMS encryption is needed
-                    let client_kms = blob_cfg.kms_key.as_deref().and_then(|key| {
-                        let kms_provider = parse_kms_provider(key);
-                        match kms_provider {
-                            KmsProvider::ServerSide => None,
-                            _ => Some((key, kms_provider)),
-                        }
-                    });
-
-                    let params = UploadParams {
-                        store,
-                        items: &upload_items,
-                        directory: &rendered_directory,
-                        config: blob_cfg,
-                        ctx,
-                        client_kms,
-                    };
-                    upload_files(&params)?;
+                    continue;
                 }
 
-                log.status(&format!(
-                    "uploaded {} file(s) to {} {}/{}",
-                    upload_items.len(),
-                    provider.display_name(),
+                // Log each file before upload (serial stays in Phase 1 so
+                // the per-config announcement order remains deterministic,
+                // matching the pre-parallel behaviour).
+                for (local_path, remote_key) in &upload_items {
+                    let remote = format_remote_path(
+                        provider,
+                        &rendered_bucket,
+                        &rendered_directory,
+                        remote_key,
+                    );
+                    log.status(&format!("uploading {} -> {}", local_path.display(), remote));
+                }
+
+                let store: Arc<dyn ObjectStore> =
+                    Arc::from(build_store(provider, blob_cfg, &rendered_bucket, ctx)?);
+
+                // Pre-render put options per item while we still hold &ctx.
+                let put_opts_per_item: Vec<PutOptions> = upload_items
+                    .iter()
+                    .map(|(_, key)| build_put_options(blob_cfg, key, ctx))
+                    .collect::<Result<_>>()?;
+
+                // Determine if client-side KMS encryption is needed
+                let client_kms = blob_cfg.kms_key.as_deref().and_then(|key| {
+                    let kms_provider = parse_kms_provider(key);
+                    match kms_provider {
+                        KmsProvider::ServerSide => None,
+                        _ => Some((key.to_string(), kms_provider)),
+                    }
+                });
+
+                let parallelism_inner = blob_cfg
+                    .parallelism
+                    .unwrap_or(ctx.options.parallelism)
+                    .max(1);
+
+                jobs.push(BlobJob {
+                    provider_display: provider.display_name(),
                     rendered_bucket,
                     rendered_directory,
-                ));
+                    upload_items,
+                    store,
+                    put_opts_per_item,
+                    parallelism_inner,
+                    client_kms,
+                });
             }
+        }
+
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        // Phase 2 (parallel across configs): each worker runs its own
+        // upload loop (which itself has intra-config per-file concurrency
+        // via tokio). Bounded by the global parallelism so we don't fan
+        // out unbounded across both axes simultaneously.
+        let run_job = |job: &BlobJob| -> Result<()> {
+            upload_files_owned(
+                Arc::clone(&job.store),
+                job.upload_items.clone(),
+                job.rendered_directory.clone(),
+                job.put_opts_per_item.clone(),
+                job.parallelism_inner,
+                job.client_kms.clone(),
+            )
+        };
+
+        anodize_core::parallel::run_parallel_chunks(&jobs, global_parallelism, "blob", run_job)?;
+
+        for job in &jobs {
+            log.status(&format!(
+                "uploaded {} file(s) to {} {}/{}",
+                job.upload_items.len(),
+                job.provider_display,
+                job.rendered_bucket,
+                job.rendered_directory,
+            ));
         }
 
         Ok(())
@@ -982,7 +1034,7 @@ mod tests {
         let cc = opts
             .attributes
             .get(&object_store::Attribute::CacheControl)
-            .expect("cache_control should be set");
+            .unwrap_or_else(|| panic!("cache_control should be set"));
         assert_eq!(cc.as_ref(), "max-age=86400, public");
     }
 
@@ -996,7 +1048,7 @@ mod tests {
         let cc = opts
             .attributes
             .get(&object_store::Attribute::CacheControl)
-            .expect("should be set");
+            .unwrap_or_else(|| panic!("should be set"));
         assert_eq!(cc.as_ref(), "no-cache");
     }
 
@@ -1007,7 +1059,7 @@ mod tests {
         let cd = opts
             .attributes
             .get(&object_store::Attribute::ContentDisposition)
-            .expect("default content-disposition should be set");
+            .unwrap_or_else(|| panic!("default content-disposition should be set"));
         assert_eq!(cd.as_ref(), "attachment;filename=myapp-v1.tar.gz");
     }
 
@@ -1035,7 +1087,7 @@ mod tests {
         let cd = opts
             .attributes
             .get(&object_store::Attribute::ContentDisposition)
-            .expect("should be set");
+            .unwrap_or_else(|| panic!("should be set"));
         assert_eq!(cd.as_ref(), "inline");
     }
 
@@ -1896,15 +1948,18 @@ partial:
         let ctx = make_ctx();
         let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
 
-        let params = UploadParams {
-            store: Arc::clone(&store),
-            items: &upload_items,
-            directory: "myproject/v1.0.0",
-            config: &config,
-            ctx: &ctx,
-            client_kms: None,
-        };
-        let result = upload_files(&params);
+        let put_opts: Vec<PutOptions> = upload_items
+            .iter()
+            .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
+            .collect();
+        let result = upload_files_owned(
+            Arc::clone(&store),
+            upload_items.clone(),
+            "myproject/v1.0.0".to_string(),
+            put_opts,
+            1,
+            None,
+        );
         assert!(result.is_ok(), "upload failed: {:?}", result.err());
 
         // Verify files were uploaded to the store
@@ -1941,15 +1996,18 @@ partial:
         let ctx = make_ctx();
         let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
 
-        let params = UploadParams {
-            store: Arc::clone(&store),
-            items: &upload_items,
-            directory: "",
-            config: &config,
-            ctx: &ctx,
-            client_kms: None,
-        };
-        let result = upload_files(&params);
+        let put_opts: Vec<PutOptions> = upload_items
+            .iter()
+            .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
+            .collect();
+        let result = upload_files_owned(
+            Arc::clone(&store),
+            upload_items.clone(),
+            String::new(),
+            put_opts,
+            1,
+            None,
+        );
         assert!(result.is_ok());
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1980,15 +2038,18 @@ partial:
         let ctx = make_ctx();
         let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
 
-        let params = UploadParams {
+        let put_opts: Vec<PutOptions> = upload_items
+            .iter()
+            .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
+            .collect();
+        let result = upload_files_owned(
             store,
-            items: &upload_items,
-            directory: "dir",
-            config: &config,
-            ctx: &ctx,
-            client_kms: None,
-        };
-        let result = upload_files(&params);
+            upload_items.clone(),
+            "dir".to_string(),
+            put_opts,
+            1,
+            None,
+        );
         assert!(result.is_ok());
     }
 

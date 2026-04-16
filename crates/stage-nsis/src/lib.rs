@@ -98,7 +98,9 @@ impl Stage for NsisStage {
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
         for krate in &crates {
-            let nsis_configs = krate.nsis.as_ref().unwrap();
+            let Some(nsis_configs) = krate.nsis.as_ref() else {
+                continue;
+            };
 
             // Collect Windows binary artifacts for this crate
             let windows_binaries: Vec<_> = ctx
@@ -236,15 +238,12 @@ impl Stage for NsisStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        if nsis_cfg.replace.unwrap_or(false) {
-                            archives_to_remove.extend(
-                                anodize_core::util::collect_replace_archives(
-                                    &ctx.artifacts,
-                                    &krate.name,
-                                    target.as_deref(),
-                                ),
-                            );
-                        }
+                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                            nsis_cfg.replace,
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
 
                         continue;
                     }
@@ -405,21 +404,17 @@ impl Stage for NsisStage {
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
-                    if nsis_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
-                            &ctx.artifacts,
-                            &krate.name,
-                            target.as_deref(),
-                        ));
-                    }
+                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        nsis_cfg.replace,
+                        &ctx.artifacts,
+                        &krate.name,
+                        target.as_deref(),
+                    ));
                 }
             }
         }
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
+        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // Remove replaced archives
         if !archives_to_remove.is_empty() {

@@ -3,6 +3,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+mod filename;
+
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 
@@ -236,6 +238,8 @@ struct NfpmYamlDeb {
     fields: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scripts: Option<NfpmYamlDebScripts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arch_variant: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -609,7 +613,8 @@ pub fn generate_nfpm_yaml(
     // un-serialisable values (e.g. maps with non-string keys). NfpmYamlConfig
     // is composed entirely of Strings, Vecs, and Options thereof, so
     // serialisation is infallible in practice.
-    let yaml = serde_yaml_ng::to_string(&yaml_config).expect("failed to serialize nfpm YAML");
+    let yaml = serde_yaml_ng::to_string(&yaml_config)
+        .unwrap_or_else(|e| panic!("failed to serialize nfpm YAML: {e}"));
     // serde_yaml_ng emits a trailing newline; trim it for consistency
     yaml.trim_end().to_string()
 }
@@ -729,6 +734,7 @@ fn build_yaml_deb(
             templates: s.templates.clone(),
             config: s.config.clone(),
         }),
+        arch_variant: deb.arch_variant.clone(),
     }
 }
 
@@ -860,6 +866,25 @@ fn is_arch_supported_for_format(triple: &str, format: &str) -> bool {
 
 pub struct NfpmStage;
 
+/// A fully-staged nfpm job: config YAML written, filename decided,
+/// subprocess args composed. Phase 1 (serial, `&mut ctx`) renders all
+/// templates and writes the YAML into `_tmp_dir`; Phase 2 (parallel)
+/// runs `nfpm pkg --packager <format>`. `_tmp_dir` keeps the config
+/// file alive until the worker thread finishes.
+struct NfpmJob {
+    _tmp_dir: tempfile::TempDir,
+    pkg_path: std::path::PathBuf,
+    format: String,
+    cmd_args: Vec<String>,
+    /// Pre-parsed mtime for reproducible-build mtime stamping, or None
+    /// when the config leaves `mtime` unset.
+    mtime: Option<std::time::SystemTime>,
+    mtime_repr: Option<String>,
+    target: Option<String>,
+    crate_name: String,
+    pkg_metadata: std::collections::HashMap<String, String>,
+}
+
 impl Stage for NfpmStage {
     fn name(&self) -> &str {
         "nfpm"
@@ -870,6 +895,7 @@ impl Stage for NfpmStage {
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
         let dist = ctx.config.dist.clone();
+        let parallelism = ctx.options.parallelism.max(1);
 
         // Collect crates that have nfpm config
         let crates: Vec<_> = ctx
@@ -897,6 +923,7 @@ impl Stage for NfpmStage {
         let skip_sign = ctx.should_skip("sign");
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
+        let mut jobs: Vec<NfpmJob> = Vec::new();
 
         // Validate nfpm config ID uniqueness across all crates (GoReleaser parity)
         {
@@ -917,7 +944,9 @@ impl Stage for NfpmStage {
         }
 
         for krate in &crates {
-            let nfpm_configs = krate.nfpm.as_ref().unwrap();
+            let Some(nfpm_configs) = krate.nfpm.as_ref() else {
+                continue;
+            };
 
             // Collect all nfpm-eligible artifacts for this crate.
             // GoReleaser parity (nfpm.go:137-144): ByTypes(Binary, Header, CArchive, CShared)
@@ -1223,6 +1252,18 @@ impl Stage for NfpmStage {
                             }
                         }
 
+                        // Auto-derive deb.arch_variant from artifact metadata when unset.
+                        if let Some(ref mut deb) = rendered_cfg.deb
+                            && deb.arch_variant.is_none()
+                            && let Some(t) = target.as_deref()
+                        {
+                            let variant = linux_binaries
+                                .iter()
+                                .find(|b| b.target.as_deref() == Some(t))
+                                .and_then(|b| b.metadata.get("amd64_variant").cloned());
+                            deb.arch_variant = variant;
+                        }
+
                         // Generate YAML per format so format-specific deps are selected
                         let yaml_content = generate_nfpm_yaml(
                             &rendered_cfg,
@@ -1267,10 +1308,18 @@ impl Stage for NfpmStage {
                         ctx.template_vars_mut().set("Format", format);
                         ctx.template_vars_mut().set("PackageName", pkg_name);
                         ctx.template_vars_mut().set("ConventionalExtension", ext);
-                        ctx.template_vars_mut().set(
-                            "ConventionalFileName",
-                            &format!("{pkg_name}_{version}_{os}_{arch}{ext}"),
+                        // Per-packager ConventionalFileName (nfpm v2.44 parity):
+                        // deb / rpm / apk / archlinux / ipk each have
+                        // distinct filename conventions and arch
+                        // translations. Falls back to the hand-rolled
+                        // default for formats we don't recognise.
+                        let fn_info = filename::FileNameInfo::from_config(
+                            nfpm_cfg, pkg_name, &version, &arch, format,
                         );
+                        let conventional = filename::conventional_filename(format, &fn_info)
+                            .unwrap_or_else(|| format!("{pkg_name}_{version}_{os}_{arch}{ext}"));
+                        ctx.template_vars_mut()
+                            .set("ConventionalFileName", &conventional);
                         ctx.template_vars_mut()
                             .set("Release", nfpm_cfg.release.as_deref().unwrap_or(""));
                         ctx.template_vars_mut()
@@ -1339,74 +1388,110 @@ impl Stage for NfpmStage {
                             &pkg_path.to_string_lossy(),
                         );
 
-                        log.status(&format!("running: {}", cmd_args.join(" ")));
-
-                        let output = Command::new(&cmd_args[0])
-                            .args(&cmd_args[1..])
-                            .output()
-                            .with_context(|| {
-                                format!(
-                                    "execute nfpm for format {format} (crate {} target {:?})",
-                                    krate.name, target
-                                )
-                            })?;
-                        log.check_output(output, "nfpm")?;
-
-                        // GoReleaser nfpm.go:577-581 — apply mtime to the
-                        // produced package file for reproducible builds.
-                        if let Some(ref raw_mtime) = nfpm_cfg.mtime {
+                        // Render mtime once in Phase 1 so Phase 2 doesn't touch
+                        // ctx; pre-parse into SystemTime so workers can call
+                        // set_file_mtime directly.
+                        let (mtime, mtime_repr) = if let Some(ref raw_mtime) = nfpm_cfg.mtime {
                             let rendered_mtime = ctx
                                 .render_template(raw_mtime)
                                 .unwrap_or_else(|_| raw_mtime.clone());
                             match anodize_core::util::parse_mod_timestamp(&rendered_mtime) {
-                                Ok(mtime) => {
-                                    if let Err(e) =
-                                        anodize_core::util::set_file_mtime(&pkg_path, mtime)
-                                    {
-                                        log.warn(&format!(
-                                            "nfpm: failed to apply mtime to {}: {}",
-                                            pkg_path.display(),
-                                            e
-                                        ));
-                                    } else {
-                                        log.verbose(&format!(
-                                            "nfpm: applied mtime={rendered_mtime} to {}",
-                                            pkg_path.display()
-                                        ));
-                                    }
-                                }
+                                Ok(mt) => (Some(mt), Some(rendered_mtime)),
                                 Err(e) => {
                                     log.warn(&format!(
                                         "nfpm: invalid mtime '{rendered_mtime}': {e}"
                                     ));
+                                    (None, None)
                                 }
                             }
-                        }
+                        } else {
+                            (None, None)
+                        };
 
-                        new_artifacts.push(Artifact {
-                            kind: ArtifactKind::LinuxPackage,
-                            name: String::new(),
-                            path: pkg_path,
+                        jobs.push(NfpmJob {
+                            _tmp_dir: tmp_dir,
+                            pkg_path: pkg_path.clone(),
+                            format: format.clone(),
+                            cmd_args,
+                            mtime,
+                            mtime_repr,
                             target: target.clone(),
                             crate_name: krate.name.clone(),
-                            metadata: pkg_metadata,
-                            size: None,
+                            pkg_metadata,
                         });
                     }
                 }
             }
         }
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
-        ctx.template_vars_mut().set("Format", "");
-        ctx.template_vars_mut().set("PackageName", "");
-        ctx.template_vars_mut().set("ConventionalExtension", "");
-        ctx.template_vars_mut().set("ConventionalFileName", "");
-        ctx.template_vars_mut().set("Release", "");
-        ctx.template_vars_mut().set("Epoch", "");
+        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        // nfpm also uses its own per-format / per-packaging vars; clear
+        // them here so user-template state doesn't leak into downstream
+        // stages like announce or publish.
+        for extra in [
+            "Format",
+            "PackageName",
+            "ConventionalExtension",
+            "ConventionalFileName",
+            "Release",
+            "Epoch",
+        ] {
+            ctx.template_vars_mut().set(extra, "");
+        }
+
+        // ----------------------------------------------------------------
+        // Phase 2 (parallel): run `nfpm pkg --packager <format>` per job.
+        // Bounded concurrency via chunks(parallelism). Each worker returns
+        // the populated Artifact; Phase 3 registers them serially.
+        // ----------------------------------------------------------------
+        if !jobs.is_empty() {
+            let run_job = |job: &NfpmJob| -> Result<Artifact> {
+                let thread_log = anodize_core::log::StageLogger::new("nfpm", log.verbosity());
+
+                thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
+
+                let output = Command::new(&job.cmd_args[0])
+                    .args(&job.cmd_args[1..])
+                    .output()
+                    .with_context(|| {
+                        format!(
+                            "execute nfpm for format {} (crate {} target {:?})",
+                            job.format, job.crate_name, job.target
+                        )
+                    })?;
+                thread_log.check_output(output, "nfpm")?;
+
+                // Reproducible-build mtime — pre-parsed in Phase 1.
+                if let Some(mt) = job.mtime {
+                    if let Err(e) = anodize_core::util::set_file_mtime(&job.pkg_path, mt) {
+                        thread_log.warn(&format!(
+                            "nfpm: failed to apply mtime to {}: {}",
+                            job.pkg_path.display(),
+                            e
+                        ));
+                    } else if let Some(ref repr) = job.mtime_repr {
+                        thread_log.verbose(&format!(
+                            "nfpm: applied mtime={repr} to {}",
+                            job.pkg_path.display()
+                        ));
+                    }
+                }
+
+                Ok(Artifact {
+                    kind: ArtifactKind::LinuxPackage,
+                    name: String::new(),
+                    path: job.pkg_path.clone(),
+                    target: job.target.clone(),
+                    crate_name: job.crate_name.clone(),
+                    metadata: job.pkg_metadata.clone(),
+                    size: None,
+                })
+            };
+
+            let results =
+                anodize_core::parallel::run_parallel_chunks(&jobs, parallelism, "nfpm", run_job)?;
+            new_artifacts.extend(results);
+        }
 
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
@@ -4124,12 +4209,15 @@ crates:
         let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
         assert_eq!(pkgs.len(), 1);
         let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
-        // ConventionalFileName = "myapp_5.0.0_linux_amd64.rpm" (already includes ext).
-        // The code detects the rendered template already ends with the format
-        // extension and does NOT double-append it.
+        // Per-packager ConventionalFileName (nfpm v2.44 parity): for RPM,
+        // the shape is `{name}-{version}-{release}.{arch}.rpm` with the
+        // arch translated via archToRPM (amd64 → x86_64) and release
+        // defaulting to "1". The hand-rolled deb-shaped default
+        // ("myapp_5.0.0_linux_amd64.rpm") was the bug this filename
+        // module fixes.
         assert_eq!(
-            filename, "myapp_5.0.0_linux_amd64.rpm",
-            "ConventionalFileName should produce the full conventional name, got: {filename}"
+            filename, "myapp-5.0.0-1.x86_64.rpm",
+            "ConventionalFileName for rpm should follow upstream nfpm convention, got: {filename}"
         );
     }
 

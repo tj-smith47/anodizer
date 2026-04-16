@@ -177,115 +177,94 @@ impl Stage for UpxStage {
 
             // GoReleaser parity: compress artifacts in parallel using
             // semerrgroup-style bounded concurrency (upx.go uses
-            // semerrgroup.New(ctx.Parallelism)).
-            for chunk in matching_artifacts.chunks(parallelism) {
-                let results: Vec<Result<()>> = std::thread::scope(|s| {
-                    let handles: Vec<_> = chunk
-                        .iter()
-                        .map(|(artifact_path, target)| {
-                            let binary = binary.clone();
-                            let upx_cfg = &upx_cfg;
-                            let thread_log =
-                                anodize_core::log::StageLogger::new("upx", log.verbosity());
-                            s.spawn(move || -> Result<()> {
-                                let artifact_str = artifact_path.to_string_lossy();
-                                let id_label = upx_cfg.id.as_deref().unwrap_or("default");
-                                let target_label = target.as_deref().unwrap_or("unknown");
+            // semerrgroup.New(ctx.Parallelism)). Shared helper in
+            // anodize_core::parallel preserves bounded concurrency,
+            // submission-order results, fail-fast within a chunk, and
+            // attributable panic reporting.
+            let run_job = |job: &(std::path::PathBuf, Option<String>)| -> Result<()> {
+                let (artifact_path, target) = job;
+                let thread_log = anodize_core::log::StageLogger::new("upx", log.verbosity());
+                let artifact_str = artifact_path.to_string_lossy();
+                let id_label = upx_cfg.id.as_deref().unwrap_or("default");
+                let target_label = target.as_deref().unwrap_or("unknown");
 
-                                thread_log.status(&format!(
-                                    "[{}] compressing {} (target: {})",
-                                    id_label, artifact_str, target_label,
-                                ));
+                thread_log.status(&format!(
+                    "[{}] compressing {} (target: {})",
+                    id_label, artifact_str, target_label,
+                ));
 
-                                let size_before = std::fs::metadata(artifact_path)
-                                    .map(|m| m.len())
-                                    .unwrap_or(0);
+                let size_before = std::fs::metadata(artifact_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
 
-                                let mut cmd = Command::new(&binary);
-                                cmd.arg("--quiet");
-                                if let Some(ref level) = upx_cfg.compress {
-                                    if level == "best" {
-                                        cmd.arg("--best");
-                                    } else {
-                                        cmd.arg(format!("-{}", level));
-                                    }
-                                }
-                                if upx_cfg.lzma.unwrap_or(false) {
-                                    cmd.arg("--lzma");
-                                }
-                                if upx_cfg.brute.unwrap_or(false) {
-                                    cmd.arg("--brute");
-                                }
-                                cmd.args(&upx_cfg.args);
-                                cmd.arg(artifact_path);
-                                let output = cmd.output().with_context(|| {
-                                    format!(
-                                        "upx: failed to spawn '{}' for {}",
-                                        binary, artifact_str
-                                    )
-                                })?;
-
-                                if !output.status.success() {
-                                    let stderr = String::from_utf8_lossy(&output.stderr);
-                                    let stdout = String::from_utf8_lossy(&output.stdout);
-                                    let combined = format!("{}{}", stdout, stderr);
-
-                                    const KNOWN_EXCEPTIONS: &[&str] = &[
-                                        "CantPackException",
-                                        "AlreadyPackedException",
-                                        "NotCompressibleException",
-                                        "UnknownExecutableFormatException",
-                                        "IOException",
-                                    ];
-
-                                    if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
-                                        thread_log.warn(&format!(
-                                            "[{}] skipping {} (target: {}): {}",
-                                            id_label,
-                                            artifact_str,
-                                            target_label,
-                                            combined.trim(),
-                                        ));
-                                    } else {
-                                        thread_log.check_output(output, &binary)?;
-                                    }
-                                } else {
-                                    let size_after = std::fs::metadata(artifact_path)
-                                        .map(|m| m.len())
-                                        .unwrap_or(0);
-                                    let ratio = if size_before > 0 {
-                                        (size_after * 100) / size_before
-                                    } else {
-                                        100
-                                    };
-                                    thread_log.status(&format!(
-                                        "compressed {} ({} -> {}, {}%)",
-                                        artifact_path.display(),
-                                        format_size(size_before),
-                                        format_size(size_after),
-                                        ratio,
-                                    ));
-                                }
-
-                                Ok(())
-                            })
-                        })
-                        .collect();
-                    handles
-                        .into_iter()
-                        .map(|h| {
-                            h.join().unwrap_or_else(|_| {
-                                Err(anyhow::anyhow!("upx compression thread panicked"))
-                            })
-                        })
-                        .collect()
-                });
-
-                // Return first error from the chunk
-                for result in results {
-                    result?;
+                let mut cmd = Command::new(binary);
+                cmd.arg("--quiet");
+                if let Some(ref level) = upx_cfg.compress {
+                    if level == "best" {
+                        cmd.arg("--best");
+                    } else {
+                        cmd.arg(format!("-{}", level));
+                    }
                 }
-            }
+                if upx_cfg.lzma.unwrap_or(false) {
+                    cmd.arg("--lzma");
+                }
+                if upx_cfg.brute.unwrap_or(false) {
+                    cmd.arg("--brute");
+                }
+                cmd.args(&upx_cfg.args);
+                cmd.arg(artifact_path);
+                let output = cmd.output().with_context(|| {
+                    format!("upx: failed to spawn '{}' for {}", binary, artifact_str)
+                })?;
+
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let combined = format!("{}{}", stdout, stderr);
+
+                    const KNOWN_EXCEPTIONS: &[&str] = &[
+                        "CantPackException",
+                        "AlreadyPackedException",
+                        "NotCompressibleException",
+                        "UnknownExecutableFormatException",
+                        "IOException",
+                    ];
+
+                    if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
+                        thread_log.warn(&format!(
+                            "[{}] skipping {} (target: {}): {}",
+                            id_label,
+                            artifact_str,
+                            target_label,
+                            combined.trim(),
+                        ));
+                    } else {
+                        thread_log.check_output(output, binary)?;
+                    }
+                } else {
+                    let size_after = std::fs::metadata(artifact_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    let ratio = (size_after * 100).checked_div(size_before).unwrap_or(100);
+                    thread_log.status(&format!(
+                        "compressed {} ({} -> {}, {}%)",
+                        artifact_path.display(),
+                        format_size(size_before),
+                        format_size(size_after),
+                        ratio,
+                    ));
+                }
+
+                Ok(())
+            };
+
+            anodize_core::parallel::run_parallel_chunks(
+                &matching_artifacts,
+                parallelism,
+                "upx",
+                run_job,
+            )?;
         }
 
         Ok(())

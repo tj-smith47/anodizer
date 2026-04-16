@@ -79,6 +79,28 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()))
 }
 
+/// A fully-staged flatpak job. Phase 1 (serial, `&mut ctx`) stages the
+/// work directory, writes the manifest, and applies mod_timestamp to the
+/// work dir; Phase 2 (parallel, `std::thread::scope`) runs the two
+/// `flatpak-builder` / `flatpak build-bundle` subprocesses and applies
+/// mod_timestamp to the output file.
+struct FlatpakJob {
+    work_dir: PathBuf,
+    output_name: String,
+    output_path: PathBuf,
+    builder_args: Vec<String>,
+    bundle_args: Vec<String>,
+    /// Pre-parsed mtime to stamp the output `.flatpak` with; when set,
+    /// Phase 2 also calls `set_file_mtime`. Phase 1 already stamped the
+    /// work dir.
+    output_mtime: Option<std::time::SystemTime>,
+    /// Rendered mod_timestamp string for logging (Phase 2).
+    output_mtime_repr: Option<String>,
+    target: Option<String>,
+    crate_name: String,
+    cfg_id: Option<String>,
+}
+
 impl Stage for FlatpakStage {
     fn name(&self) -> &str {
         "flatpak"
@@ -89,6 +111,7 @@ impl Stage for FlatpakStage {
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
         let dist = ctx.config.dist.clone();
+        let parallelism = ctx.options.parallelism.max(1);
 
         // Collect crates that have flatpaks config
         let crates: Vec<_> = ctx
@@ -146,9 +169,12 @@ impl Stage for FlatpakStage {
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
+        let mut jobs: Vec<FlatpakJob> = Vec::new();
 
         for krate in &crates {
-            let flatpak_configs = krate.flatpaks.as_ref().unwrap();
+            let Some(flatpak_configs) = krate.flatpaks.as_ref() else {
+                continue;
+            };
 
             // Collect Linux binary artifacts for this crate
             let linux_binaries: Vec<_> = ctx
@@ -412,15 +438,12 @@ impl Stage for FlatpakStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        if flatpak_cfg.replace.unwrap_or(false) {
-                            archives_to_remove.extend(
-                                anodize_core::util::collect_replace_archives(
-                                    &ctx.artifacts,
-                                    &krate.name,
-                                    target.as_deref(),
-                                ),
-                            );
-                        }
+                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                            flatpak_cfg.replace,
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
 
                         continue;
                     }
@@ -502,16 +525,23 @@ impl Stage for FlatpakStage {
                         format!("flatpak: write manifest to {}", manifest_path.display())
                     })?;
 
-                    // Apply mod_timestamp if set (template-rendered, to work dir contents)
-                    if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp {
-                        let ts = ctx
-                            .render_template(ts_tmpl)
-                            .with_context(|| "flatpak: render mod_timestamp template")?;
-                        anodize_core::util::apply_mod_timestamp(&work_dir, &ts, &log)?;
-                    }
+                    // Render mod_timestamp once in Phase 1 and pre-parse the
+                    // mtime so Phase 2 (parallel) doesn't touch ctx.
+                    let (output_mtime, output_mtime_repr) =
+                        if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp {
+                            let ts = ctx
+                                .render_template(ts_tmpl)
+                                .with_context(|| "flatpak: render mod_timestamp template")?;
+                            anodize_core::util::apply_mod_timestamp(&work_dir, &ts, &log)?;
+                            let mtime = anodize_core::util::parse_mod_timestamp(&ts)?;
+                            (Some(mtime), Some(ts))
+                        } else {
+                            (None, None)
+                        };
 
-                    // Run flatpak-builder
-                    let builder_args = [
+                    // Pre-compute the two subprocess arg vectors so Phase 2
+                    // can just run them without re-deriving from cfg.
+                    let builder_args = vec![
                         "flatpak-builder".to_string(),
                         "--force-clean".to_string(),
                         format!("--arch={flatpak_arch}"),
@@ -520,100 +550,117 @@ impl Stage for FlatpakStage {
                         "build".to_string(),
                         format!("{app_id}.json"),
                     ];
-
-                    log.status(&format!("running: {}", builder_args.join(" ")));
-
-                    let output = Command::new(&builder_args[0])
-                        .args(&builder_args[1..])
-                        .current_dir(&work_dir)
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "execute flatpak-builder for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                    log.check_output(output, "flatpak-builder")?;
-
-                    // Run flatpak build-bundle — output to the clean output dir
-                    let output_path_str = output_path.to_string_lossy().into_owned();
-                    let bundle_args = [
+                    let bundle_args = vec![
                         "flatpak".to_string(),
                         "build-bundle".to_string(),
                         format!("--arch={flatpak_arch}"),
                         "repo".to_string(),
-                        output_path_str,
+                        output_path.to_string_lossy().into_owned(),
                         app_id.to_string(),
                         version.clone(),
                     ];
 
-                    log.status(&format!("running: {}", bundle_args.join(" ")));
-
-                    let output = Command::new(&bundle_args[0])
-                        .args(&bundle_args[1..])
-                        .current_dir(&work_dir)
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "execute flatpak build-bundle for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                    log.check_output(output, "flatpak build-bundle")?;
-
-                    // Apply mod_timestamp to the output .flatpak if set
-                    if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp
-                        && output_path.exists()
-                    {
-                        let ts = ctx
-                            .render_template(ts_tmpl)
-                            .with_context(|| "flatpak: render mod_timestamp template for output")?;
-                        let mtime = anodize_core::util::parse_mod_timestamp(&ts)?;
-                        anodize_core::util::set_file_mtime(&output_path, mtime)?;
-                        log.status(&format!(
-                            "applied mod_timestamp={ts} to {}",
-                            output_path.display()
-                        ));
-                    }
-
-                    log.status(&format!(
-                        "created Flatpak bundle {} for crate {} target {:?}",
-                        output_name, krate.name, target
+                    // If replace is set, mark archives for this crate+target
+                    // for removal — do it now while ctx.artifacts is
+                    // accessible. Phase 2 workers never touch ctx.
+                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        flatpak_cfg.replace,
+                        &ctx.artifacts,
+                        &krate.name,
+                        target.as_deref(),
                     ));
 
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::Flatpak,
-                        name: String::new(),
-                        path: output_path,
+                    jobs.push(FlatpakJob {
+                        work_dir,
+                        output_name: output_name.clone(),
+                        output_path: output_path.clone(),
+                        builder_args,
+                        bundle_args,
+                        output_mtime,
+                        output_mtime_repr,
                         target: target.clone(),
                         crate_name: krate.name.clone(),
-                        metadata: {
-                            let mut m =
-                                HashMap::from([("format".to_string(), "flatpak".to_string())]);
-                            if let Some(id) = &flatpak_cfg.id {
-                                m.insert("id".to_string(), id.clone());
-                            }
-                            m
-                        },
-                        size: None,
+                        cfg_id: flatpak_cfg.id.clone(),
                     });
-
-                    // If replace is set, mark archives for this crate+target for removal
-                    if flatpak_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
-                            &ctx.artifacts,
-                            &krate.name,
-                            target.as_deref(),
-                        ));
-                    }
                 }
             }
         }
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
+        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+
+        // ----------------------------------------------------------------
+        // Phase 2 (parallel): run flatpak-builder + flatpak build-bundle
+        // for each job. Bounded concurrency via chunks(parallelism).
+        // ----------------------------------------------------------------
+        if !jobs.is_empty() {
+            let run_job = |job: &FlatpakJob| -> Result<Artifact> {
+                let thread_log = anodize_core::log::StageLogger::new("flatpak", log.verbosity());
+
+                thread_log.status(&format!("running: {}", job.builder_args.join(" ")));
+                let output = Command::new(&job.builder_args[0])
+                    .args(&job.builder_args[1..])
+                    .current_dir(&job.work_dir)
+                    .output()
+                    .with_context(|| {
+                        format!(
+                            "execute flatpak-builder for crate {} target {:?}",
+                            job.crate_name, job.target
+                        )
+                    })?;
+                thread_log.check_output(output, "flatpak-builder")?;
+
+                thread_log.status(&format!("running: {}", job.bundle_args.join(" ")));
+                let output = Command::new(&job.bundle_args[0])
+                    .args(&job.bundle_args[1..])
+                    .current_dir(&job.work_dir)
+                    .output()
+                    .with_context(|| {
+                        format!(
+                            "execute flatpak build-bundle for crate {} target {:?}",
+                            job.crate_name, job.target
+                        )
+                    })?;
+                thread_log.check_output(output, "flatpak build-bundle")?;
+
+                if let (Some(mtime), Some(repr)) =
+                    (job.output_mtime, job.output_mtime_repr.as_deref())
+                    && job.output_path.exists()
+                {
+                    anodize_core::util::set_file_mtime(&job.output_path, mtime)?;
+                    thread_log.status(&format!(
+                        "applied mod_timestamp={repr} to {}",
+                        job.output_path.display()
+                    ));
+                }
+
+                thread_log.status(&format!(
+                    "created Flatpak bundle {} for crate {} target {:?}",
+                    job.output_name, job.crate_name, job.target
+                ));
+
+                let mut metadata = HashMap::from([("format".to_string(), "flatpak".to_string())]);
+                if let Some(id) = &job.cfg_id {
+                    metadata.insert("id".to_string(), id.clone());
+                }
+                Ok(Artifact {
+                    kind: ArtifactKind::Flatpak,
+                    name: String::new(),
+                    path: job.output_path.clone(),
+                    target: job.target.clone(),
+                    crate_name: job.crate_name.clone(),
+                    metadata,
+                    size: None,
+                })
+            };
+
+            let results = anodize_core::parallel::run_parallel_chunks(
+                &jobs,
+                parallelism,
+                "flatpak",
+                run_job,
+            )?;
+            new_artifacts.extend(results);
+        }
 
         // Remove replaced archives
         if !archives_to_remove.is_empty() {

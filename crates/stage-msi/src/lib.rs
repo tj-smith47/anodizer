@@ -205,13 +205,12 @@ fn make_msi_artifact(
     }
 
     // Handle replace option — collect matching archives for removal
-    if msi_cfg.replace.unwrap_or(false) {
-        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
-            &ctx.artifacts,
-            crate_name,
-            target.as_deref(),
-        ));
-    }
+    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+        msi_cfg.replace,
+        &ctx.artifacts,
+        crate_name,
+        target.as_deref(),
+    ));
 
     Artifact {
         kind: ArtifactKind::Installer,
@@ -266,7 +265,9 @@ impl Stage for MsiStage {
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
         for krate in &crates {
-            let msi_configs = krate.msis.as_ref().unwrap();
+            let Some(msi_configs) = krate.msis.as_ref() else {
+                continue;
+            };
 
             // Collect all Windows binary artifacts for this crate
             let windows_binaries: Vec<_> = ctx

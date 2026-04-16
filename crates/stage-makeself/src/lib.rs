@@ -108,6 +108,32 @@ fn group_by_platform(artifacts: &[Artifact]) -> HashMap<String, Vec<&Artifact>> 
 
 pub struct MakeselfStage;
 
+/// A fully-prepared makeself job ready for parallel execution. Phase 1
+/// (serial, requires `&mut ctx` for template rendering) populates this;
+/// Phase 2 (parallel, `std::thread::scope`) consumes it — filesystem
+/// preparation + `makeself` subprocess only. Struct carries only owned data
+/// so worker threads never touch `ctx`.
+struct MakeselfJob {
+    id: String,
+    filename: String,
+    work_dir: std::path::PathBuf,
+    output_path: std::path::PathBuf,
+    rendered_name: String,
+    script_src: std::path::PathBuf,
+    script_basename: String,
+    rendered_compression: Option<String>,
+    extra_args: Vec<String>,
+    lsm_text: String,
+    /// (source_path, name_in_archive) pairs for each binary to copy in.
+    binaries: Vec<(std::path::PathBuf, String)>,
+    /// (source_path, destination_relative_to_work_dir) pairs for extra files.
+    extra_files: Vec<(std::path::PathBuf, String)>,
+    /// Fields needed to register the resulting artifact.
+    primary_target: Option<String>,
+    primary_crate_name: String,
+    primary_replaces: Option<String>,
+}
+
 impl Stage for MakeselfStage {
     fn name(&self) -> &str {
         "makeself"
@@ -123,6 +149,7 @@ impl Stage for MakeselfStage {
 
         let dist = ctx.config.dist.clone();
         let dry_run = ctx.options.dry_run;
+        let parallelism = ctx.options.parallelism.max(1);
 
         // Validate IDs are unique
         let mut seen_ids = std::collections::HashSet::new();
@@ -139,6 +166,12 @@ impl Stage for MakeselfStage {
             .cloned()
             .unwrap_or_else(|| "0.0.0".to_string());
         let project_name = ctx.config.project_name.clone();
+
+        // ----------------------------------------------------------------
+        // Phase 1 (serial): render every template, collect MakeselfJob
+        // structs containing fully-owned data ready for parallel exec.
+        // ----------------------------------------------------------------
+        let mut jobs: Vec<MakeselfJob> = Vec::new();
 
         for cfg in &configs {
             // Check disable
@@ -293,7 +326,32 @@ impl Stage for MakeselfStage {
                         format!("{}.run", rendered)
                     }
                 } else {
-                    format!("{}_{}_{}_{}.run", project_name, version, os, arch)
+                    // Include the per-arch variant suffix so multi-target ARM /
+                    // MIPS / x86 builds for the same project don't collide on
+                    // disk. Mirrors the suffix logic in the archive default
+                    // template (`stage-archive/src/lib.rs`).
+                    let arm = ctx.template_vars().get("Arm").cloned().unwrap_or_default();
+                    let mips = ctx.template_vars().get("Mips").cloned().unwrap_or_default();
+                    let amd64 = ctx
+                        .template_vars()
+                        .get("Amd64")
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut suffix = String::new();
+                    if !arm.is_empty() {
+                        // ARM v6/v7 → `_arm` already; append the variant.
+                        suffix.push('v');
+                        suffix.push_str(&arm);
+                    }
+                    if !mips.is_empty() {
+                        suffix.push('_');
+                        suffix.push_str(&mips);
+                    }
+                    if !amd64.is_empty() && amd64 != "v1" {
+                        // Only append non-default amd64 variants (v2/v3/v4).
+                        suffix.push_str(&amd64);
+                    }
+                    format!("{}_{}_{}_{}{}.run", project_name, version, os, arch, suffix)
                 };
 
                 let rendered_description = cfg
@@ -366,137 +424,198 @@ impl Stage for MakeselfStage {
                     continue;
                 }
 
-                fs::create_dir_all(&work_dir)
-                    .with_context(|| format!("makeself: create dir {}", work_dir.display()))?;
+                // Collect binary (src, name_in_archive) pairs so Phase 2 can
+                // copy them without borrowing ctx.artifacts.
+                let job_binaries: Vec<(std::path::PathBuf, String)> = binaries
+                    .iter()
+                    .map(|b| (b.path.clone(), b.name.clone()))
+                    .collect();
 
-                // Copy binaries
-                for binary in binaries {
-                    let dst = work_dir.join(&binary.name);
-                    if let Some(parent) = dst.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    fs::copy(&binary.path, &dst).with_context(|| {
-                        format!(
-                            "makeself: copy binary {} -> {}",
-                            binary.path.display(),
-                            dst.display()
-                        )
-                    })?;
-                }
+                // Resolve extra-file (src, dest-relative) pairs now — the
+                // decision depends on strip_parent / destination which are
+                // cheap to pre-compute.
+                let job_extra_files: Vec<(std::path::PathBuf, String)> =
+                    if let Some(ref files) = cfg.files {
+                        files
+                            .iter()
+                            .map(|f| {
+                                let src = Path::new(&f.source);
+                                let dest_name = if let Some(ref dst) = f.destination {
+                                    dst.clone()
+                                } else if f.strip_parent.unwrap_or(false) {
+                                    src.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or(&f.source)
+                                        .to_string()
+                                } else {
+                                    f.source.clone()
+                                };
+                                (src.to_path_buf(), dest_name)
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
 
-                // Copy extra files
-                if let Some(ref files) = cfg.files {
-                    for f in files {
-                        let src = Path::new(&f.source);
-                        let dest_name = if let Some(ref dst) = f.destination {
-                            dst.as_str()
-                        } else if f.strip_parent.unwrap_or(false) {
-                            // strip_parent: use only the filename, dropping parent dirs
-                            src.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(&f.source)
-                        } else {
-                            // default: preserve the relative path as-is
-                            &f.source
-                        };
-                        let dst = work_dir.join(dest_name);
-                        if let Some(parent) = dst.parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        fs::copy(src, &dst).with_context(|| {
-                            format!("makeself: copy file {} -> {}", src.display(), dst.display())
-                        })?;
-                    }
-                }
-
-                // Copy startup script
-                let script_path = Path::new(&rendered_script);
+                let script_path = Path::new(&rendered_script).to_path_buf();
                 let script_basename = script_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("setup.sh");
-                fs::copy(script_path, work_dir.join(script_basename))
-                    .with_context(|| format!("makeself: copy script {}", script_path.display()))?;
+                    .unwrap_or("setup.sh")
+                    .to_string();
 
-                // Write LSM file
-                fs::write(work_dir.join("package.lsm"), lsm.render()).with_context(|| {
-                    format!("makeself: write LSM file in {}", work_dir.display())
-                })?;
-
-                // Build makeself command
-                let args = make_args(
-                    &rendered_name,
-                    &filename,
-                    rendered_compression.as_deref(),
-                    &format!("./{}", script_basename),
-                    &extra_args,
-                );
-
-                log.status(&format!("creating makeself package: {}", filename));
-
-                let output = Command::new("makeself")
-                    .args(&args)
-                    .current_dir(&work_dir)
-                    .output()
-                    .with_context(|| {
-                        format!(
-                            "makeself: failed to spawn 'makeself {}' in {}",
-                            args.join(" "),
-                            work_dir.display()
-                        )
-                    })?;
-
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    anyhow::bail!(
-                        "makeself command failed for '{}' (id={}): {}{}",
-                        filename,
-                        id,
-                        stdout,
-                        stderr
-                    );
-                }
-
-                // Move the generated archive from the work dir to the dist root
-                let built_path = work_dir.join(&filename);
                 let output_path = dist.join(&filename);
-                fs::rename(&built_path, &output_path)
-                    .or_else(|_| {
-                        // rename fails across filesystems; fall back to copy+remove
-                        fs::copy(&built_path, &output_path)?;
-                        fs::remove_file(&built_path)
-                    })
-                    .with_context(|| {
-                        format!(
-                            "makeself: move {} -> {}",
-                            built_path.display(),
-                            output_path.display()
-                        )
-                    })?;
+                let lsm_text = lsm.render();
 
-                // Register artifact
-                let mut metadata = HashMap::new();
-                metadata.insert("id".to_string(), id.to_string());
-                metadata.insert("format".to_string(), "makeself".to_string());
-
-                // GoReleaser parity: copy ExtraReplaces ("replaces") metadata
-                // from the source binary artifact to the makeself artifact.
-                if let Some(replaces) = primary.metadata.get("replaces") {
-                    metadata.insert("replaces".to_string(), replaces.clone());
-                }
-
-                ctx.artifacts.add(Artifact {
-                    kind: ArtifactKind::Makeself,
-                    name: filename.clone(),
-                    path: output_path,
-                    target: primary.target.clone(),
-                    crate_name: primary.crate_name.clone(),
-                    metadata,
-                    size: None,
+                jobs.push(MakeselfJob {
+                    id: id.to_string(),
+                    filename: filename.clone(),
+                    work_dir,
+                    output_path,
+                    rendered_name,
+                    script_src: script_path,
+                    script_basename,
+                    rendered_compression,
+                    extra_args,
+                    lsm_text,
+                    binaries: job_binaries,
+                    extra_files: job_extra_files,
+                    primary_target: primary.target.clone(),
+                    primary_crate_name: primary.crate_name.clone(),
+                    primary_replaces: primary.metadata.get("replaces").cloned(),
                 });
             }
         }
+
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        // ----------------------------------------------------------------
+        // Phase 2 (parallel): each job = one `makeself` subprocess invocation
+        // with its own work dir. Bounded concurrency via chunks(parallelism).
+        // Workers return the fully-populated `Artifact` so Phase 3 can
+        // register them serially in ctx.artifacts.
+        // ----------------------------------------------------------------
+        let run_job = |job: &MakeselfJob| -> Result<Artifact> {
+            let thread_log = anodize_core::log::StageLogger::new("makeself", log.verbosity());
+
+            fs::create_dir_all(&job.work_dir)
+                .with_context(|| format!("makeself: create dir {}", job.work_dir.display()))?;
+
+            for (src, name) in &job.binaries {
+                let dst = job.work_dir.join(name);
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(src, &dst).with_context(|| {
+                    format!(
+                        "makeself: copy binary {} -> {}",
+                        src.display(),
+                        dst.display()
+                    )
+                })?;
+            }
+
+            for (src, dest_rel) in &job.extra_files {
+                let dst = job.work_dir.join(dest_rel);
+                if let Some(parent) = dst.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(src, &dst).with_context(|| {
+                    format!("makeself: copy file {} -> {}", src.display(), dst.display())
+                })?;
+            }
+
+            fs::copy(&job.script_src, job.work_dir.join(&job.script_basename))
+                .with_context(|| format!("makeself: copy script {}", job.script_src.display()))?;
+
+            fs::write(job.work_dir.join("package.lsm"), &job.lsm_text).with_context(|| {
+                format!("makeself: write LSM file in {}", job.work_dir.display())
+            })?;
+
+            let args = make_args(
+                &job.rendered_name,
+                &job.filename,
+                job.rendered_compression.as_deref(),
+                &format!("./{}", job.script_basename),
+                &job.extra_args,
+            );
+
+            thread_log.status(&format!("creating makeself package: {}", job.filename));
+
+            let output = Command::new("makeself")
+                .args(&args)
+                .current_dir(&job.work_dir)
+                .output()
+                .with_context(|| {
+                    format!(
+                        "makeself: failed to spawn 'makeself {}' in {}",
+                        args.join(" "),
+                        job.work_dir.display()
+                    )
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                anyhow::bail!(
+                    "makeself command failed for '{}' (id={}): {}{}",
+                    job.filename,
+                    job.id,
+                    stdout,
+                    stderr
+                );
+            }
+
+            let built_path = job.work_dir.join(&job.filename);
+            fs::rename(&built_path, &job.output_path)
+                .or_else(|_| {
+                    fs::copy(&built_path, &job.output_path)?;
+                    fs::remove_file(&built_path)
+                })
+                .with_context(|| {
+                    format!(
+                        "makeself: move {} -> {}",
+                        built_path.display(),
+                        job.output_path.display()
+                    )
+                })?;
+
+            let mut metadata = HashMap::new();
+            metadata.insert("id".to_string(), job.id.clone());
+            metadata.insert("format".to_string(), "makeself".to_string());
+            if let Some(replaces) = &job.primary_replaces {
+                metadata.insert("replaces".to_string(), replaces.clone());
+            }
+
+            Ok(Artifact {
+                kind: ArtifactKind::Makeself,
+                name: job.filename.clone(),
+                path: job.output_path.clone(),
+                target: job.primary_target.clone(),
+                crate_name: job.primary_crate_name.clone(),
+                metadata,
+                size: None,
+            })
+        };
+
+        let built_artifacts =
+            anodize_core::parallel::run_parallel_chunks(&jobs, parallelism, "makeself", run_job)?;
+
+        // ----------------------------------------------------------------
+        // Phase 3 (serial): register artifacts in ctx. Serial because
+        // ArtifactRegistry takes &mut self.
+        // ----------------------------------------------------------------
+        for artifact in built_artifacts {
+            ctx.artifacts.add(artifact);
+        }
+
+        // Match flatpak/snapcraft/nfpm: clear per-target template vars so
+        // downstream stages (announce, publish) don't render with a stale
+        // `Os=linux` / `Arch=arm64` left over from the last packaging
+        // iteration.
+        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         Ok(())
     }
