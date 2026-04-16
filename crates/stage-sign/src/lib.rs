@@ -68,35 +68,18 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
     }
 }
 
-/// Returns `true` if the given artifact kind is a release-uploadable type that
-/// GoReleaser's "all" sign filter includes.
+/// Returns `true` if the given artifact kind is in the shared release-uploadable
+/// list — i.e. the kinds that GoReleaser's `artifacts: all` sign filter selects.
 ///
-/// This excludes internal/metadata types (Signature, Certificate, DockerImage,
-/// DockerManifest, BrewFormula, etc.) that are never meant to be signed by the
-/// generic sign stage.
+/// Delegates to `anodize_core::artifact::release_uploadable_kinds()` so the
+/// stage-sign and stage-release paths stay in lockstep and match GoReleaser's
+/// `internal/pipe/sign/sign.go:103-104` (`ByTypes(ReleaseUploadableTypes()...)`).
+/// Kinds not in that list (Snap, Installer, DiskImage, MacOsPackage, Header,
+/// CArchive, CShared, Binary, UniversalBinary) must be selected with their
+/// dedicated filter value (`installer`, `diskimage`, `snap`, `macos_package`,
+/// `binary`) instead of `all`.
 fn is_release_uploadable(kind: ArtifactKind) -> bool {
-    matches!(
-        kind,
-        ArtifactKind::Archive
-            | ArtifactKind::Binary
-            | ArtifactKind::UploadableBinary
-            | ArtifactKind::UniversalBinary
-            | ArtifactKind::LinuxPackage
-            | ArtifactKind::SourceArchive
-            | ArtifactKind::Makeself
-            | ArtifactKind::Flatpak
-            | ArtifactKind::SourceRpm
-            | ArtifactKind::Sbom
-            | ArtifactKind::Snap
-            | ArtifactKind::MacOsPackage
-            | ArtifactKind::Installer
-            | ArtifactKind::DiskImage
-            | ArtifactKind::Checksum
-            | ArtifactKind::UploadableFile
-            | ArtifactKind::Header
-            | ArtifactKind::CArchive
-            | ArtifactKind::CShared
-    )
+    anodize_core::artifact::release_uploadable_kinds().contains(&kind)
 }
 
 /// Resolve the signature output path from a `SignConfig::signature` template
@@ -401,7 +384,15 @@ fn process_sign_configs(
             .unwrap_or(4),
     );
 
-    for sign_cfg in sign_configs {
+    for (sign_idx, sign_cfg) in sign_configs.iter().enumerate() {
+        // Short sub-config label for end-of-pipeline skip summaries. Prefer
+        // the user-configured id; fall back to `<label>[N]` so operators
+        // can match the summary line to the config entry.
+        let sub_label = sign_cfg
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("{}[{}]", label, sign_idx));
+
         // Evaluate the `if` conditional template — skip when rendered
         // result is "false" or empty/whitespace-only.
         //
@@ -415,18 +406,22 @@ fn process_sign_configs(
                 Ok(result) => {
                     let trimmed = result.trim();
                     if trimmed.is_empty() || trimmed == "false" {
+                        let reason = format!("if condition evaluated to '{}'", trimmed);
                         log.verbose(&format!(
-                            "skipping {} config: if condition evaluated to '{}'",
-                            label, trimmed
+                            "skipping {} config '{}': {}",
+                            label, sub_label, reason
                         ));
+                        ctx.remember_skip(label, &sub_label, &reason);
                         continue;
                     }
                 }
                 Err(e) => {
+                    let reason = format!("if condition render failed: {}", e);
                     log.warn(&format!(
-                        "if condition render failed ({}), skipping: {}",
-                        condition, e
+                        "{} '{}': {} ({}), skipping",
+                        label, sub_label, reason, condition
                     ));
+                    ctx.remember_skip(label, &sub_label, &reason);
                     continue;
                 }
             }
@@ -450,6 +445,11 @@ fn process_sign_configs(
         // For the normal `signs` path, respect the artifacts filter.
         // For `binary_signs`, skip if the config explicitly says "none".
         if config_filter == "none" {
+            log.verbose(&format!(
+                "skipping {} config '{}': artifacts: none",
+                label, sub_label
+            ));
+            ctx.remember_skip(label, &sub_label, "artifacts: none");
             continue;
         }
 
@@ -824,7 +824,7 @@ fn process_sign_configs(
                     .collect();
                 handles
                     .into_iter()
-                    .map(|h| h.join().expect("sign thread panicked"))
+                    .map(|h| h.join().unwrap_or_else(|_| panic!("sign thread panicked")))
                     .collect()
             });
 
@@ -881,6 +881,41 @@ fn label_to_static(label: &str) -> &'static str {
 /// GoReleaser's `ctx.Artifacts.Refresh()`. This ensures newly-added signature
 /// and certificate artifacts are visible to downstream stages.
 pub struct SignStage;
+
+/// Binary-only signing stage used by `anodize build`. Mirrors GoReleaser's
+/// `sign.BinaryPipe` — runs the `binary_signs` loop but skips the generic
+/// `signs` loop, which at build-time would see only binaries anyway but
+/// with the wrong semantics (a user with `signs: [{artifacts: all}]`
+/// doesn't expect signing to happen during `anodize build`).
+pub struct BinarySignStage;
+
+impl Stage for BinarySignStage {
+    fn name(&self) -> &str {
+        "binary-sign"
+    }
+
+    fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("binary-sign");
+        // Validate binary_signs IDs unique — same check SignStage does.
+        let mut seen = std::collections::HashSet::new();
+        for cfg in &ctx.config.binary_signs {
+            let id = cfg.id.as_deref().unwrap_or("default");
+            if !seen.insert(id.to_string()) {
+                anyhow::bail!("found 2 binary_signs with the ID '{}'", id);
+            }
+        }
+        let binary_sign_configs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &binary_sign_configs,
+            ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )?;
+        ctx.refresh_artifacts_var();
+        Ok(())
+    }
+}
 
 impl Stage for SignStage {
     fn name(&self) -> &str {
@@ -974,18 +1009,22 @@ impl Stage for DockerSignStage {
                         Ok(result) => {
                             let trimmed = result.trim();
                             if trimmed.is_empty() || trimmed == "false" {
+                                let reason = format!("if condition evaluated to '{}'", trimmed);
                                 log.verbose(&format!(
-                                    "skipping docker-sign config '{}': if condition evaluated to '{}'",
-                                    sign_id, trimmed
+                                    "skipping docker-sign config '{}': {}",
+                                    sign_id, reason
                                 ));
+                                ctx.remember_skip("docker-sign", sign_id, &reason);
                                 continue;
                             }
                         }
                         Err(e) => {
+                            let reason = format!("if condition render failed: {}", e);
                             log.warn(&format!(
-                                "docker-sign '{}' if condition render failed ({}), skipping: {}",
-                                sign_id, condition, e
+                                "docker-sign '{}' {} ({}), skipping",
+                                sign_id, reason, condition
                             ));
+                            ctx.remember_skip("docker-sign", sign_id, &reason);
                             continue;
                         }
                     }
@@ -1009,6 +1048,11 @@ impl Stage for DockerSignStage {
                 let docker_filter = docker_sign_cfg.artifacts.as_deref().unwrap_or("");
 
                 if docker_filter == "none" {
+                    log.verbose(&format!(
+                        "skipping docker-sign config '{}': artifacts: none",
+                        sign_id
+                    ));
+                    ctx.remember_skip("docker-sign", sign_id, "artifacts: none");
                     continue;
                 }
 
@@ -1336,23 +1380,34 @@ mod tests {
 
     #[test]
     fn test_filter_artifacts_all() {
-        // "all" matches release-uploadable types
+        // "all" matches anodize_core::artifact::release_uploadable_kinds()
+        // which mirrors GoReleaser ReleaseUploadableTypes (sign.go:103-104).
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::SourceArchive, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Makeself, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Flatpak, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::SourceRpm, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
 
-        // "all" does NOT match internal/metadata types
-        assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+        // GoReleaser includes Signature + Certificate in the "all" list — anodize
+        // matches that for parity. (On a fresh run there are no prior Signature /
+        // Certificate artifacts, so this does not cause recursive signing.)
+        assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+
+        // Kinds not in ReleaseUploadableTypes — users must opt in via dedicated
+        // filters (`installer`, `diskimage`, `snap`, `macos_package`, `binary`).
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+
+        // Internal / metadata types — never signed.
         assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::DockerManifest, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::BrewFormula, "all").unwrap());
@@ -1363,8 +1418,9 @@ mod tests {
     fn test_filter_artifacts_any_alias() {
         // "any" is an alias for "all"
         assert!(should_sign_artifact(ArtifactKind::Archive, "any").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Binary, "any").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::Signature, "any").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "any").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Signature, "any").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "any").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::DockerImage, "any").unwrap());
     }
 
@@ -1534,20 +1590,23 @@ mod tests {
 
     #[test]
     fn test_artifacts_filter_selects_correct_kinds() {
-        // "all" matches release-uploadable types
+        // "all" = release_uploadable_kinds() (GoReleaser sign.go:103-104)
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+
+        // Kinds outside ReleaseUploadableTypes — use dedicated filters.
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
 
         // "all" does NOT match internal/non-uploadable types
-        assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::DockerManifest, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::BrewFormula, "all").unwrap());
@@ -1862,6 +1921,78 @@ mod tests {
         let stage = SignStage;
         // "none" filter should skip without executing any command
         assert!(stage.run(&mut ctx).is_ok());
+
+        // SkipMemento should record the (sign, skip, "artifacts: none") tuple
+        // so the end-of-pipeline summary can surface it.
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1, "expected one recorded skip");
+        assert_eq!(events[0].stage, "sign");
+        assert_eq!(events[0].label, "skip");
+        assert_eq!(events[0].reason, "artifacts: none");
+    }
+
+    #[test]
+    fn test_sign_if_false_records_skip_memento() {
+        // A sign config with `if: "false"` must not execute AND must leave a
+        // memento entry so operators can tell an intentionally-disabled sign
+        // config apart from a misconfigured one in the pipeline summary.
+        let signs = vec![SignConfig {
+            id: Some("gated".to_string()),
+            cmd: Some("false".to_string()),
+            args: None,
+            artifacts: Some("archive".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: Some("false".to_string()),
+        }];
+
+        let mut ctx = TestContextBuilder::new().signs(signs).build();
+        let stage = SignStage;
+        assert!(stage.run(&mut ctx).is_ok());
+
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].stage, "sign");
+        assert_eq!(events[0].label, "gated");
+        assert!(
+            events[0].reason.contains("if condition evaluated to"),
+            "unexpected reason: {}",
+            events[0].reason
+        );
+    }
+
+    #[test]
+    fn test_sign_positional_label_when_id_missing() {
+        // A sign config without an id should get a positional label of the
+        // form `<stage-label>[N]` in the skip summary so users can still
+        // find it in their config.
+        let signs = vec![SignConfig {
+            id: None,
+            cmd: Some("false".to_string()),
+            args: None,
+            artifacts: Some("none".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().signs(signs).build();
+        let stage = SignStage;
+        assert!(stage.run(&mut ctx).is_ok());
+
+        let events = ctx.skip_memento.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].label, "sign[0]");
     }
 
     // ---- Error path tests (Task 4D) ----
@@ -2134,8 +2265,9 @@ stdin_file: "/path/to/password"
         );
 
         // Verify the env var was actually passed to the child process
-        let env_output = std::fs::read_to_string(&marker_path)
-            .expect("marker file should exist — env var was written by signing command");
+        let env_output = std::fs::read_to_string(&marker_path).unwrap_or_else(|e| {
+            panic!("marker file should exist — env var was written by signing command: {e}")
+        });
         assert_eq!(
             env_output.trim(),
             "hello_from_sign",
@@ -3438,8 +3570,6 @@ crates: []
     #[test]
     fn test_all_filter_excludes_internal_types() {
         // Internal types that should NOT be signed by the "all" filter
-        assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::DockerImageV2, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::DockerManifest, "all").unwrap());
@@ -3456,23 +3586,32 @@ crates: []
 
     #[test]
     fn test_all_filter_includes_release_uploadable_types() {
-        // Release-uploadable types that SHOULD be signed by the "all" filter
+        // "all" = anodize_core::artifact::release_uploadable_kinds(), which
+        // mirrors GoReleaser's ReleaseUploadableTypes list exactly
+        // (sign.go:103-104). Narrower than the full set of uploadable kinds:
+        // Binary, UniversalBinary, Snap, Installer, DiskImage, MacOsPackage,
+        // Header, CArchive, CShared are NOT in this list — opt in via dedicated
+        // filter values instead.
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::UniversalBinary, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::SourceArchive, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Makeself, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Flatpak, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::SourceRpm, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
-        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+
+        // These are NOT in release_uploadable_kinds() — use dedicated filters.
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::UniversalBinary, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
     }
 
     // -----------------------------------------------------------------------

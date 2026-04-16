@@ -71,7 +71,8 @@ fn merge_yaml(base: &mut serde_yaml_ng::Value, overlay: &serde_yaml_ng::Value) {
 /// Returns `(property, message)` pairs. Only detects aliases whose renamed
 /// form actually exists in the current `Config` schema.
 ///
-/// Parity with GoReleaser `internal/deprecate/deprecate.go` notices.
+/// Parity with GoReleaser `internal/deprecate/deprecate.go` notices plus
+/// anodize-specific renames (e.g. `goamd64`→`amd64_variant`).
 pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = Vec::new();
 
@@ -80,18 +81,33 @@ pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, Str
         _ => return found,
     };
 
-    // top-level `gemfury:` -> `fury:`
-    if map.contains_key(serde_yaml_ng::Value::String("gemfury".to_string())) {
-        found.push((
-            "gemfury".to_string(),
-            "`gemfury:` is deprecated, use `fury:`".to_string(),
-        ));
+    let k = |s: &str| serde_yaml_ng::Value::String(s.to_string());
+
+    // top-level `gemfury:` / `fury:` / `npms:` — removed publishers.
+    // Emit a deprecation message so users porting GoReleaser configs see why
+    // their configs stopped working instead of a silent "unknown field" error.
+    for (key, msg) in &[
+        (
+            "gemfury",
+            "`gemfury:` publisher was removed (Ruby/Python gem hosting does not fit a Rust release tool). Use `fury:` → also removed. For deb/rpm hosting, use `cloudsmiths:` or `artifactories:`.",
+        ),
+        (
+            "fury",
+            "`fury:` publisher was removed (no first-class Rust use case). Use `cloudsmiths:` or `artifactories:` for deb/rpm hosting.",
+        ),
+        (
+            "npms",
+            "`npms:` publisher was removed (NPM targets JavaScript packages). Publish Rust binaries through `homebrew:`, `scoop:`, `chocolatey:`, `winget:`, `aur:`, or `docker:` instead.",
+        ),
+    ] {
+        if map.contains_key(k(key)) {
+            found.push(((*key).to_string(), (*msg).to_string()));
+        }
     }
 
     // `snapshot.name_template:` -> `snapshot.version_template:`
-    if let Some(snapshot) = map.get(serde_yaml_ng::Value::String("snapshot".to_string()))
-        && let serde_yaml_ng::Value::Mapping(snapshot_map) = snapshot
-        && snapshot_map.contains_key(serde_yaml_ng::Value::String("name_template".to_string()))
+    if let Some(serde_yaml_ng::Value::Mapping(sm)) = map.get(k("snapshot"))
+        && sm.contains_key(k("name_template"))
     {
         found.push((
             "snapshot.name_template".to_string(),
@@ -99,48 +115,184 @@ pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, Str
         ));
     }
 
-    // `nfpms[].builds` -> `nfpms[].ids`, `snapcrafts[].builds` -> `snapcrafts[].ids`.
-    // Both live per-crate under `crates[]`.
-    let mut check_builds_alias = |seq_val: &serde_yaml_ng::Value, property: &str, msg: &str| {
-        if let serde_yaml_ng::Value::Sequence(seq) = seq_val {
-            for entry in seq {
-                if let serde_yaml_ng::Value::Mapping(m) = entry
-                    && m.contains_key(serde_yaml_ng::Value::String("builds".to_string()))
-                {
-                    found.push((property.to_string(), msg.to_string()));
-                    break;
+    // `announce.email.body_template:` -> `announce.email.message_template:`
+    if let Some(serde_yaml_ng::Value::Mapping(am)) = map.get(k("announce"))
+        && let Some(serde_yaml_ng::Value::Mapping(em)) = am.get(k("email"))
+        && em.contains_key(k("body_template"))
+    {
+        found.push((
+            "announce.email.body_template".to_string(),
+            "`announce.email.body_template` is deprecated, use `announce.email.message_template`"
+                .to_string(),
+        ));
+    }
+
+    // Top-level `homebrew_casks[].goamd64:` -> `amd64_variant:`
+    if let Some(serde_yaml_ng::Value::Sequence(cs)) = map.get(k("homebrew_casks")) {
+        check_variant_renames_in_seq(cs, "homebrew_casks", &mut found);
+    }
+
+    // Per-crate walks: archives, nfpm, snapcrafts, publisher blocks.
+    if let Some(serde_yaml_ng::Value::Sequence(crates_seq)) = map.get(k("crates")) {
+        for crate_entry in crates_seq {
+            let crate_map = match crate_entry {
+                serde_yaml_ng::Value::Mapping(m) => m,
+                _ => continue,
+            };
+
+            // `archives[].format:` -> `archives[].formats:` (GoReleaser deprecation).
+            // Plus nested `format_overrides[].format:` -> `formats:`.
+            if let Some(serde_yaml_ng::Value::Sequence(archs)) = crate_map.get(k("archives")) {
+                for arch in archs {
+                    let am = match arch {
+                        serde_yaml_ng::Value::Mapping(m) => m,
+                        _ => continue,
+                    };
+                    if am.contains_key(k("format")) {
+                        found.push((
+                            "archives.format".to_string(),
+                            "`archives[].format` is deprecated, use `archives[].formats` (plural array)".to_string(),
+                        ));
+                    }
+                    if let Some(serde_yaml_ng::Value::Sequence(overrides)) =
+                        am.get(k("format_overrides"))
+                    {
+                        for ov in overrides {
+                            if let serde_yaml_ng::Value::Mapping(om) = ov
+                                && om.contains_key(k("format"))
+                            {
+                                found.push((
+                                    "archives.format_overrides.format".to_string(),
+                                    "`archives[].format_overrides[].format` is deprecated, use `formats` (plural array)".to_string(),
+                                ));
+                                break;
+                            }
+                        }
+                    }
                 }
             }
-        }
-    };
-    if let Some(crates) = map.get(serde_yaml_ng::Value::String("crates".to_string()))
-        && let serde_yaml_ng::Value::Sequence(crates_seq) = crates
-    {
-        for crate_entry in crates_seq {
-            if let serde_yaml_ng::Value::Mapping(crate_map) = crate_entry {
-                if let Some(nfpms) =
-                    crate_map.get(serde_yaml_ng::Value::String("nfpms".to_string()))
-                {
-                    check_builds_alias(
-                        nfpms,
-                        "nfpms.builds",
-                        "`nfpms[].builds` is deprecated, use `nfpms[].ids`",
-                    );
+
+            // `nfpm[].builds:` -> `nfpm[].ids:` (note: field is `nfpm`, not `nfpms`).
+            // Also: missing `maintainer` is deprecated in GoReleaser (always-set).
+            if let Some(serde_yaml_ng::Value::Sequence(nfpm_seq)) = crate_map.get(k("nfpm")) {
+                let mut builds_seen = false;
+                let mut maintainer_missing = false;
+                for entry in nfpm_seq {
+                    if let serde_yaml_ng::Value::Mapping(m) = entry {
+                        if !builds_seen && m.contains_key(k("builds")) {
+                            builds_seen = true;
+                        }
+                        let m_val = m.get(k("maintainer"));
+                        let is_empty = match m_val {
+                            None => true,
+                            Some(serde_yaml_ng::Value::String(s)) => s.trim().is_empty(),
+                            Some(serde_yaml_ng::Value::Null) => true,
+                            _ => false,
+                        };
+                        if is_empty {
+                            maintainer_missing = true;
+                        }
+                    }
                 }
-                if let Some(snaps) =
-                    crate_map.get(serde_yaml_ng::Value::String("snapcrafts".to_string()))
-                {
-                    check_builds_alias(
-                        snaps,
-                        "snapcrafts.builds",
-                        "`snapcrafts[].builds` is deprecated, use `snapcrafts[].ids`",
-                    );
+                if builds_seen {
+                    found.push((
+                        "nfpm.builds".to_string(),
+                        "`nfpm[].builds` is deprecated, use `nfpm[].ids`".to_string(),
+                    ));
+                }
+                if maintainer_missing {
+                    found.push((
+                        "nfpm.maintainer".to_string(),
+                        "`nfpm[].maintainer` should always be set; a future release will require it"
+                            .to_string(),
+                    ));
+                }
+            }
+
+            // `snapcrafts[].builds:` -> `snapcrafts[].ids:`.
+            if let Some(serde_yaml_ng::Value::Sequence(snap_seq)) = crate_map.get(k("snapcrafts")) {
+                for entry in snap_seq {
+                    if let serde_yaml_ng::Value::Mapping(m) = entry
+                        && m.contains_key(k("builds"))
+                    {
+                        found.push((
+                            "snapcrafts.builds".to_string(),
+                            "`snapcrafts[].builds` is deprecated, use `snapcrafts[].ids`"
+                                .to_string(),
+                        ));
+                        break;
+                    }
+                }
+            }
+
+            // Publisher blocks (scalar, not vec) with `goamd64` / `goarm` aliases.
+            for publisher in &[
+                "homebrew",
+                "scoop",
+                "chocolatey",
+                "winget",
+                "aur",
+                "aur_source",
+                "nix",
+            ] {
+                if let Some(serde_yaml_ng::Value::Mapping(pm)) = crate_map.get(k(publisher)) {
+                    if pm.contains_key(k("goamd64")) {
+                        found.push((
+                            format!("crates.{publisher}.goamd64"),
+                            format!(
+                                "`{publisher}.goamd64` is deprecated, use `{publisher}.amd64_variant`"
+                            ),
+                        ));
+                    }
+                    if pm.contains_key(k("goarm")) {
+                        found.push((
+                            format!("crates.{publisher}.goarm"),
+                            format!(
+                                "`{publisher}.goarm` is deprecated, use `{publisher}.arm_variant`"
+                            ),
+                        ));
+                    }
                 }
             }
         }
     }
 
     found
+}
+
+/// Helper: for a sequence of mappings, emit `<ctx>.goamd64`/`.goarm` deprecation
+/// entries into `found` when an entry contains those keys. Used for top-level
+/// vec-shaped publisher configs (e.g. `homebrew_casks[]`).
+fn check_variant_renames_in_seq(
+    seq: &[serde_yaml_ng::Value],
+    ctx: &str,
+    found: &mut Vec<(String, String)>,
+) {
+    let k = |s: &str| serde_yaml_ng::Value::String(s.to_string());
+    let mut amd_seen = false;
+    let mut arm_seen = false;
+    for entry in seq {
+        if let serde_yaml_ng::Value::Mapping(m) = entry {
+            if !amd_seen && m.contains_key(k("goamd64")) {
+                amd_seen = true;
+            }
+            if !arm_seen && m.contains_key(k("goarm")) {
+                arm_seen = true;
+            }
+        }
+    }
+    if amd_seen {
+        found.push((
+            format!("{ctx}.goamd64"),
+            format!("`{ctx}[].goamd64` is deprecated, use `{ctx}[].amd64_variant`"),
+        ));
+    }
+    if arm_seen {
+        found.push((
+            format!("{ctx}.goarm"),
+            format!("`{ctx}[].goarm` is deprecated, use `{ctx}[].arm_variant`"),
+        ));
+    }
 }
 
 /// Load a config file and return both the `Config` and any deprecation
@@ -701,6 +853,29 @@ impl Pipeline {
                 }
             }
         }
+
+        // End-of-pipeline skip summary. Stages (sign, docker-sign, publisher)
+        // record intentional per-sub-config skips via
+        // `ctx.remember_skip(...)`; before this hook the skips were emitted
+        // at verbose level and lost in the final "✓ done" output.
+        let skips = ctx.skip_memento.drain();
+        if !skips.is_empty() {
+            let noun = if skips.len() == 1 {
+                "intentional skip"
+            } else {
+                "intentional skips"
+            };
+            log.status(&format!("{} {}:", skips.len(), noun.yellow()));
+            for ev in &skips {
+                log.status(&format!(
+                    "  {} [{}] {} — {}",
+                    "\u{21b3}".yellow(),
+                    ev.stage.bold(),
+                    ev.label,
+                    ev.reason
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -1179,7 +1354,9 @@ mod tests {
         .unwrap();
         let config = load_config(&cfg_path).unwrap();
         let env_files = config.env_files.unwrap();
-        let files = env_files.as_list().expect("expected List variant");
+        let files = env_files
+            .as_list()
+            .unwrap_or_else(|| panic!("expected List variant"));
         assert_eq!(files, &[".env", ".release.env"]);
     }
 
@@ -1196,7 +1373,7 @@ mod tests {
         let env_files = config.env_files.unwrap();
         let tokens = env_files
             .as_token_files()
-            .expect("expected TokenFiles variant");
+            .unwrap_or_else(|| panic!("expected TokenFiles variant"));
         assert_eq!(tokens.github_token.as_deref(), Some("/tmp/gh_token"));
         assert_eq!(tokens.gitlab_token.as_deref(), Some("/tmp/gl_token"));
         assert!(tokens.gitea_token.is_none());
@@ -1635,5 +1812,147 @@ url = "https://example.com/config.yaml"
             result, "end${",
             "unclosed empty brace should preserve literal text"
         );
+    }
+
+    // ---- detect_deprecated_aliases ----
+
+    fn yaml(s: &str) -> serde_yaml_ng::Value {
+        serde_yaml_ng::from_str(s).unwrap_or_else(|e| panic!("valid yaml in test: {e}"))
+    }
+
+    fn keys(found: &[(String, String)]) -> Vec<&str> {
+        found.iter().map(|(k, _)| k.as_str()).collect()
+    }
+
+    #[test]
+    fn detect_removed_top_level_publishers() {
+        let got = detect_deprecated_aliases(&yaml("gemfury: {}\nfury: []\nnpms: []\n"));
+        let ks = keys(&got);
+        assert!(ks.contains(&"gemfury"), "got: {:?}", ks);
+        assert!(ks.contains(&"fury"), "got: {:?}", ks);
+        assert!(ks.contains(&"npms"), "got: {:?}", ks);
+    }
+
+    #[test]
+    fn detect_snapshot_name_template() {
+        let got = detect_deprecated_aliases(&yaml("snapshot:\n  name_template: 'x'\n"));
+        assert_eq!(keys(&got), vec!["snapshot.name_template"]);
+    }
+
+    #[test]
+    fn detect_snapshot_version_template_is_current_name() {
+        let got = detect_deprecated_aliases(&yaml("snapshot:\n  version_template: 'x'\n"));
+        assert!(keys(&got).is_empty(), "version_template must not warn");
+    }
+
+    #[test]
+    fn detect_announce_email_body_template() {
+        let got =
+            detect_deprecated_aliases(&yaml("announce:\n  email:\n    body_template: 'hi'\n"));
+        assert_eq!(keys(&got), vec!["announce.email.body_template"]);
+    }
+
+    #[test]
+    fn detect_announce_email_message_template_is_current_name() {
+        let got =
+            detect_deprecated_aliases(&yaml("announce:\n  email:\n    message_template: 'hi'\n"));
+        assert!(keys(&got).is_empty());
+    }
+
+    #[test]
+    fn detect_nfpm_builds_under_crates() {
+        // The previous implementation checked `nfpms` but the real field is
+        // `nfpm`. Regression guard.
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    nfpm:\n      - builds: [a, b]\n",
+        ));
+        assert!(keys(&got).contains(&"nfpm.builds"), "got: {:?}", keys(&got));
+    }
+
+    #[test]
+    fn detect_nfpm_missing_maintainer() {
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    nfpm:\n      - id: pkg\n",
+        ));
+        assert!(
+            keys(&got).contains(&"nfpm.maintainer"),
+            "got: {:?}",
+            keys(&got)
+        );
+    }
+
+    #[test]
+    fn detect_nfpm_maintainer_present_does_not_warn() {
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    nfpm:\n      - id: pkg\n        maintainer: 'me <a@b>'\n",
+        ));
+        assert!(!keys(&got).contains(&"nfpm.maintainer"));
+    }
+
+    #[test]
+    fn detect_snapcrafts_builds_under_crates() {
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    snapcrafts:\n      - builds: [a]\n",
+        ));
+        assert_eq!(keys(&got), vec!["snapcrafts.builds"]);
+    }
+
+    #[test]
+    fn detect_archive_format_singular() {
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    archives:\n      - format: tar.gz\n",
+        ));
+        assert_eq!(keys(&got), vec!["archives.format"]);
+    }
+
+    #[test]
+    fn detect_archive_format_overrides_format() {
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    archives:\n      - formats: [tar.gz]\n        format_overrides:\n          - goos: windows\n            format: zip\n",
+        ));
+        assert!(
+            keys(&got).contains(&"archives.format_overrides.format"),
+            "got: {:?}",
+            keys(&got)
+        );
+    }
+
+    #[test]
+    fn detect_publisher_goamd64_rename() {
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    homebrew:\n      goamd64: v2\n    scoop:\n      goamd64: v3\n",
+        ));
+        let ks = keys(&got);
+        assert!(ks.contains(&"crates.homebrew.goamd64"), "got: {:?}", ks);
+        assert!(ks.contains(&"crates.scoop.goamd64"), "got: {:?}", ks);
+    }
+
+    #[test]
+    fn detect_publisher_goarm_rename() {
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    aur:\n      goarm: '7'\n",
+        ));
+        assert_eq!(keys(&got), vec!["crates.aur.goarm"]);
+    }
+
+    #[test]
+    fn detect_homebrew_casks_goamd64() {
+        let got = detect_deprecated_aliases(&yaml("homebrew_casks:\n  - goamd64: v2\n"));
+        assert_eq!(keys(&got), vec!["homebrew_casks.goamd64"]);
+    }
+
+    #[test]
+    fn detect_new_names_are_silent() {
+        // Canonical new names must not produce deprecation noise.
+        let got = detect_deprecated_aliases(&yaml(
+            "crates:\n  - name: foo\n    archives:\n      - formats: [tar.gz]\n    nfpm:\n      - id: p\n        maintainer: 'me'\n        ids: [build1]\n    homebrew:\n      amd64_variant: v2\n      arm_variant: '7'\n",
+        ));
+        assert!(keys(&got).is_empty(), "unexpected warnings: {:?}", got);
+    }
+
+    #[test]
+    fn non_mapping_root_returns_empty() {
+        let got = detect_deprecated_aliases(&serde_yaml_ng::Value::Null);
+        assert!(got.is_empty());
     }
 }

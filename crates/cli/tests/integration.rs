@@ -3605,3 +3605,115 @@ crates:
         stderr
     );
 }
+
+/// `anodize build` must produce the same per-stage outputs as
+/// GoReleaser's `BuildCmdPipeline`: before-hook marker file,
+/// effective `dist/config.yaml`, `dist/metadata.json`,
+/// `dist/artifacts.json`, and a size-report line when
+/// `report_sizes: true`. Before this test, the build command was
+/// missing several of these outputs and the known-bugs entry asked
+/// for parity with GoReleaser's BuildCmdPipeline.
+#[test]
+fn test_e2e_build_command_matches_goreleaser_pipeline_outputs() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    // Use a before-hook that touches a sentinel file; `anodize build`
+    // must execute the hook (GoReleaser BuildCmdPipeline includes
+    // before.Pipe).
+    let before_marker = tmp.path().join("before-ran");
+    let before_marker_str = before_marker.to_string_lossy().replace('\\', "\\\\");
+
+    let config = format!(
+        r#"project_name: test-project
+report_sizes: true
+before:
+  hooks:
+    - "touch {marker}"
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: test-project
+        targets:
+          - {host}
+"#,
+        host = host,
+        marker = before_marker_str,
+    );
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["build", "--timeout", "5m"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "anodize build should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // 1. before hooks ran
+    assert!(
+        before_marker.exists(),
+        "before hooks should have run and created marker file\nstderr:\n{}",
+        stderr
+    );
+
+    let dist = tmp.path().join("dist");
+
+    // 2. effectiveconfig.yaml (anodize writes it as config.yaml)
+    assert!(
+        dist.join("config.yaml").exists(),
+        "dist/config.yaml should exist after build (effective config dump)"
+    );
+
+    // 3. metadata.json
+    let metadata = dist.join("metadata.json");
+    assert!(
+        metadata.exists(),
+        "dist/metadata.json should exist after build"
+    );
+    let metadata_text = fs::read_to_string(&metadata).unwrap();
+    // Project name must round-trip through the metadata file.
+    assert!(
+        metadata_text.contains("test-project"),
+        "metadata.json should contain project_name, got: {}",
+        metadata_text
+    );
+
+    // 4. artifacts.json
+    let artifacts = dist.join("artifacts.json");
+    assert!(
+        artifacts.exists(),
+        "dist/artifacts.json should exist after build"
+    );
+    let artifacts_text = fs::read_to_string(&artifacts).unwrap();
+    // Must list at least one binary artifact for the built crate.
+    // anodize serializes ArtifactKind as lowercase snake_case.
+    assert!(
+        artifacts_text.contains("\"binary\""),
+        "artifacts.json should contain the built binary, got: {}",
+        artifacts_text
+    );
+
+    // 5. reportsizes — size report line emitted to stderr
+    let has_size_info = stderr.contains("bytes")
+        || stderr.contains(" B")
+        || stderr.contains("KB")
+        || stderr.contains("MB")
+        || stderr.contains("size")
+        || stderr.contains("Size");
+    assert!(
+        has_size_info,
+        "build should print size report when report_sizes is true, got:\n{}",
+        stderr
+    );
+}

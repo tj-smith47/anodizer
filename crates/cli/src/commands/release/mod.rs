@@ -478,6 +478,7 @@ fn run_post_pipeline(
             dry_run,
             log,
             ctx.options.parallelism,
+            Some(&ctx.skip_memento),
         )?;
     }
 

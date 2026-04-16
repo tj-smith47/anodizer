@@ -4,6 +4,7 @@ use std::process::Command;
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::PublisherConfig;
 use anodize_core::log::StageLogger;
+use anodize_core::pipe_skip::SkipMemento;
 use anodize_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 
@@ -46,6 +47,11 @@ fn split_shellwords(s: &str) -> Vec<String> {
 /// then render and execute the command for each matching artifact.
 /// Artifacts within a single publisher are processed in parallel up to `parallelism`.
 /// In dry-run mode, the command is logged but not executed.
+///
+/// When `skip_memento` is `Some`, intentional per-publisher skips (template
+/// disable, empty `cmd`, no matching artifacts) are recorded so the
+/// end-of-pipeline summary can report them. Pass `None` from tests or
+/// standalone callers that don't care.
 pub fn run_publishers(
     publishers: &[PublisherConfig],
     artifacts: &[Artifact],
@@ -53,6 +59,7 @@ pub fn run_publishers(
     dry_run: bool,
     log: &StageLogger,
     parallelism: usize,
+    skip_memento: Option<&SkipMemento>,
 ) -> Result<()> {
     let parallelism = parallelism.max(1);
     for (i, publisher) in publishers.iter().enumerate() {
@@ -67,11 +74,17 @@ pub fn run_publishers(
                 "[publisher] skipping {} -- disabled by template",
                 label
             ));
+            if let Some(sm) = skip_memento {
+                sm.remember("publisher", label, "disabled by template");
+            }
             continue;
         }
 
         if publisher.cmd.is_empty() {
             log.verbose(&format!("[publisher] skipping {} -- empty cmd", label));
+            if let Some(sm) = skip_memento {
+                sm.remember("publisher", label, "empty cmd");
+            }
             continue;
         }
 
@@ -167,6 +180,9 @@ pub fn run_publishers(
 
         if matching.is_empty() {
             log.verbose(&format!("[publisher] {} -- no matching artifacts", label));
+            if let Some(sm) = skip_memento {
+                sm.remember("publisher", label, "no matching artifacts");
+            }
             continue;
         }
 
@@ -252,19 +268,30 @@ pub fn run_publishers(
                     for artifact in chunk {
                         s.spawn(|| {
                             if let Err(e) = run_for_artifact(artifact) {
-                                errors.lock().unwrap().push(e);
+                                // Mutex poison only happens if a prior holder
+                                // panicked; recover into_inner and keep going
+                                // so one panic doesn't cascade-lose every
+                                // subsequent error.
+                                errors
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .push(e);
                             }
                         });
                     }
                 });
                 // Check for errors after each chunk
-                let errs = errors.lock().unwrap();
+                let errs = errors
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if !errs.is_empty() {
                     break;
                 }
             }
 
-            let mut errs = errors.into_inner().unwrap();
+            let mut errs = errors
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !errs.is_empty() {
                 // Return first error, log the rest
                 for e in errs.iter().skip(1) {
@@ -283,18 +310,13 @@ pub fn run_publishers(
 /// - If `ids` is set, the artifact's metadata `"id"` value must be in the list.
 /// - If `artifact_types` is set, the artifact's kind (as snake_case string)
 ///   must be in the list.
-/// - Checksum artifacts are excluded unless `publisher.checksum` is `true`.
-/// - Signature artifacts (metadata `"type"` == `"Signature"`) are excluded
-///   unless `publisher.signature` is `true`.
-/// - If neither filter is set, all non-metadata artifacts match (subject to
-///   checksum/signature rules above).
+/// - Otherwise, the artifact's kind must be in the curated default list:
+///   Archive, UploadableFile, LinuxPackage, UploadableBinary, DockerImage,
+///   DockerManifest, DockerImageV2, SourceArchive, Sbom.
+/// - Checksum / Metadata / Signature / Certificate kinds are opt-in via the
+///   `checksum` / `meta` / `signature` publisher flags.
 pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig) -> bool {
-    // Metadata artifacts excluded by default unless meta=true
-    if artifact.kind == ArtifactKind::Metadata && !publisher.meta.unwrap_or(false) {
-        return false;
-    }
-
-    // Check ids filter
+    // Check ids filter first — orthogonal to type filtering.
     if let Some(ref ids) = publisher.ids {
         let artifact_id = artifact.metadata.get("id");
         match artifact_id {
@@ -303,32 +325,47 @@ pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig
         }
     }
 
-    // Check artifact_types filter
+    // Explicit artifact_types filter takes full control — if the user listed
+    // "checksum" or signature kinds, they pass regardless of the boolean flags.
     if let Some(ref types) = publisher.artifact_types {
-        // Explicit artifact_types list takes full control — if "checksum" or
-        // signature kinds are listed, they pass regardless of the boolean flags.
         return types.iter().any(|t| t == artifact.kind.as_str());
     }
 
-    // When no artifact_types filter is set, apply the checksum/signature toggles.
-    // By default, checksums and signatures are excluded (GoReleaser parity).
-    if artifact.kind == ArtifactKind::Checksum && !publisher.checksum.unwrap_or(false) {
-        return false;
+    // Default curated list — matches GoReleaser's `filterArtifacts` exactly.
+    // Kinds not on this list (raw Binary, UniversalBinary, Snap, Installer,
+    // DiskImage, MacOsPackage, Makeself, Flatpak, Header, CArchive, CShared,
+    // SourceRpm, etc.) must be opted in via an explicit `artifact_types`.
+    let in_default_set = matches!(
+        artifact.kind,
+        ArtifactKind::Archive
+            | ArtifactKind::UploadableFile
+            | ArtifactKind::LinuxPackage
+            | ArtifactKind::UploadableBinary
+            | ArtifactKind::DockerImage
+            | ArtifactKind::DockerManifest
+            | ArtifactKind::DockerImageV2
+            | ArtifactKind::SourceArchive
+            | ArtifactKind::Sbom
+    );
+    if in_default_set {
+        return true;
     }
 
-    let is_signature = artifact
-        .metadata
-        .get("type")
-        .is_some_and(|t| t == "Signature")
-        || artifact
-            .path
-            .extension()
-            .is_some_and(|ext| ext == "sig" || ext == "asc" || ext == "pem");
-    if is_signature && !publisher.signature.unwrap_or(false) {
-        return false;
+    // Opt-ins for the other canonical kinds.
+    if artifact.kind == ArtifactKind::Checksum {
+        return publisher.checksum.unwrap_or(false);
+    }
+    if artifact.kind == ArtifactKind::Metadata {
+        return publisher.meta.unwrap_or(false);
+    }
+    if matches!(
+        artifact.kind,
+        ArtifactKind::Signature | ArtifactKind::Certificate
+    ) {
+        return publisher.signature.unwrap_or(false);
     }
 
-    true
+    false
 }
 
 /// Render the publisher command and args by substituting template variables
@@ -478,25 +515,45 @@ mod tests {
     // --- Artifact filtering tests ---
 
     #[test]
-    fn test_filter_matches_all_non_metadata_when_no_filters() {
+    fn test_filter_matches_default_curated_list() {
+        // Default filter: curated list includes Archive / UploadableBinary /
+        // LinuxPackage / UploadableFile / DockerImage / DockerManifest /
+        // DockerImageV2 / SourceArchive / Sbom. Raw `Binary` and other kinds
+        // outside the list must opt in via explicit `artifact_types`.
         let publisher = make_publisher("echo", None, None);
 
         let binary = make_artifact(ArtifactKind::Binary, "dist/myapp", None);
+        let uploadable_binary = make_artifact(
+            ArtifactKind::UploadableBinary,
+            "dist/myapp-linux-amd64",
+            None,
+        );
         let archive = make_artifact(ArtifactKind::Archive, "dist/myapp.tar.gz", None);
         let checksum = make_artifact(ArtifactKind::Checksum, "dist/checksums.sha256", None);
         let metadata = make_artifact(ArtifactKind::Metadata, "dist/metadata.json", None);
+        let signature = make_artifact(ArtifactKind::Signature, "dist/myapp.tar.gz.sig", None);
 
-        assert!(matches_publisher_filter(&binary, &publisher));
+        // In the default list.
         assert!(matches_publisher_filter(&archive, &publisher));
-        // Checksums excluded by default (GoReleaser parity) unless checksum=true
+        assert!(matches_publisher_filter(&uploadable_binary, &publisher));
+
+        // Not in the default list — raw Binary is separate from UploadableBinary.
+        assert!(
+            !matches_publisher_filter(&binary, &publisher),
+            "raw Binary kind is not in the default curated list"
+        );
+        // Opt-in kinds excluded by default.
         assert!(
             !matches_publisher_filter(&checksum, &publisher),
             "checksums excluded by default"
         );
-        // Metadata excluded by default unless meta=true
         assert!(
             !matches_publisher_filter(&metadata, &publisher),
             "metadata artifacts excluded by default"
+        );
+        assert!(
+            !matches_publisher_filter(&signature, &publisher),
+            "signatures excluded by default"
         );
 
         // Opt in to checksums
@@ -508,6 +565,11 @@ mod tests {
         let mut pub_with_meta = make_publisher("echo", None, None);
         pub_with_meta.meta = Some(true);
         assert!(matches_publisher_filter(&metadata, &pub_with_meta));
+
+        // Opt in to signatures (also matches Certificate).
+        let mut pub_with_sig = make_publisher("echo", None, None);
+        pub_with_sig.signature = Some(true);
+        assert!(matches_publisher_filter(&signature, &pub_with_sig));
     }
 
     #[test]
@@ -658,7 +720,15 @@ mod tests {
 
         // In dry-run mode, the command is never executed, so a non-existent
         // command should not cause an error.
-        let result = run_publishers(&publishers, &artifacts, &vars, true, &test_logger(), 1);
+        let result = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true,
+            &test_logger(),
+            1,
+            None,
+        );
         assert!(
             result.is_ok(),
             "dry-run should not execute commands: {:?}",
@@ -673,7 +743,7 @@ mod tests {
         let vars = base_vars();
         let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
 
-        let result = run_publishers(&[], &artifacts, &vars, false, &test_logger(), 1);
+        let result = run_publishers(&[], &artifacts, &vars, false, &test_logger(), 1, None);
         assert!(result.is_ok());
     }
 
@@ -699,8 +769,97 @@ mod tests {
             templated_extra_files: None,
         }];
 
-        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger(), 1);
+        let result = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            false,
+            &test_logger(),
+            1,
+            None,
+        );
         assert!(result.is_ok());
+    }
+
+    // --- SkipMemento integration ---
+
+    #[test]
+    fn test_publisher_empty_cmd_records_skip_memento() {
+        // A publisher with an empty cmd must skip AND record the skip, so the
+        // end-of-pipeline summary shows it. Otherwise a typo'd publisher cmd
+        // looks identical to a real skipped publisher in the logs.
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
+        let publishers = vec![PublisherConfig {
+            name: Some("noisy".to_string()),
+            cmd: String::new(),
+            args: None,
+            ids: None,
+            artifact_types: None,
+            env: None,
+            dir: None,
+            disable: None,
+            checksum: None,
+            signature: None,
+            meta: None,
+            extra_files: None,
+            templated_extra_files: None,
+        }];
+
+        let memento = anodize_core::pipe_skip::SkipMemento::new();
+        let result = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            false,
+            &test_logger(),
+            1,
+            Some(&memento),
+        );
+        assert!(result.is_ok());
+        let events = memento.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].stage, "publisher");
+        assert_eq!(events[0].label, "noisy");
+        assert_eq!(events[0].reason, "empty cmd");
+    }
+
+    #[test]
+    fn test_publisher_no_matching_artifacts_records_skip_memento() {
+        // A publisher whose `ids` filter eliminates every artifact should
+        // skip cleanly and record the event.
+        let vars = base_vars();
+        let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
+        let publishers = vec![PublisherConfig {
+            name: Some("filtered".to_string()),
+            cmd: "true".to_string(),
+            args: None,
+            ids: Some(vec!["does-not-exist".to_string()]),
+            artifact_types: None,
+            env: None,
+            dir: None,
+            disable: None,
+            checksum: None,
+            signature: None,
+            meta: None,
+            extra_files: None,
+            templated_extra_files: None,
+        }];
+
+        let memento = anodize_core::pipe_skip::SkipMemento::new();
+        let result = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true, // dry-run so the "true" command isn't actually invoked
+            &test_logger(),
+            1,
+            Some(&memento),
+        );
+        assert!(result.is_ok());
+        let events = memento.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].reason, "no matching artifacts");
     }
 
     // --- format_command_line tests ---
@@ -887,7 +1046,15 @@ crates:
         }];
 
         // Publisher with disable="true" should be skipped entirely
-        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger(), 1);
+        let result = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            false,
+            &test_logger(),
+            1,
+            None,
+        );
         assert!(
             result.is_ok(),
             "disabled publisher should be skipped without error: {:?}",
@@ -922,7 +1089,15 @@ crates:
         }];
 
         // When IsSnapshot is "true", the disable template renders to "true" and publisher is skipped
-        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger(), 1);
+        let result = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            false,
+            &test_logger(),
+            1,
+            None,
+        );
         assert!(
             result.is_ok(),
             "conditionally disabled publisher should be skipped: {:?}",
@@ -996,7 +1171,15 @@ crates:
         let publishers = vec![make_publisher("echo {{ ArtifactPath }}", None, None)];
 
         // Even with parallelism > 1, dry_run should use sequential path
-        let result = run_publishers(&publishers, &artifacts, &vars, true, &test_logger(), 4);
+        let result = run_publishers(
+            &publishers,
+            &artifacts,
+            &vars,
+            true,
+            &test_logger(),
+            4,
+            None,
+        );
         assert!(result.is_ok());
     }
 }

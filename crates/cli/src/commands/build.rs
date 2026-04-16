@@ -84,6 +84,24 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     log.verbose("running upx stage");
     upx_stage.run(&mut ctx)?;
 
+    // Binary-only signing (GoReleaser BuildCmdPipeline: sign.BinaryPipe).
+    // Mirrors the full release pipeline but skips the generic `signs`
+    // loop — at build time only binaries exist, and running `signs` would
+    // break user expectations (`signs: [{artifacts: all}]` means "sign
+    // everything at release time", not "sign binaries at build time").
+    if !ctx.should_skip("sign") {
+        let binary_sign_stage = anodize_stage_sign::BinarySignStage;
+        log.verbose("running binary-sign stage");
+        binary_sign_stage.run(&mut ctx)?;
+    }
+
+    // macOS notarization (GoReleaser BuildCmdPipeline: notary.MacOS).
+    if !ctx.should_skip("notarize") {
+        let notarize_stage = anodize_stage_notarize::NotarizeStage;
+        log.verbose("running notarize stage");
+        notarize_stage.run(&mut ctx)?;
+    }
+
     // Print artifact size table if configured
     helpers::run_report_sizes(&mut ctx, &config, &log);
 
