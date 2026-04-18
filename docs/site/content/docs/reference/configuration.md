@@ -37,7 +37,7 @@ Values are rendered through the template engine before being set, so expressions
 | `gitea_urls` | GiteaUrlsConfig | — | Custom Gitea API/download URLs for self-hosted Gitea installations. |
 | `github_urls` | GitHubUrlsConfig | — | Custom GitHub API/upload/download URLs for GitHub Enterprise installations. |
 | `gitlab_urls` | GitLabUrlsConfig | — | Custom GitLab API/download URLs for self-hosted GitLab installations. |
-| `homebrew_casks` | list of TopLevelHomebrewCaskConfig | — | Top-level Homebrew Cask configurations. GoReleaser parity: `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
+| `homebrew_casks` | list of TopLevelHomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
 | `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
@@ -228,6 +228,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `snapcrafts` | list of SnapcraftConfig | — | Snapcraft package configurations for this crate. |
 | `tag_template` | string | — | Git tag template used to tag and identify releases (supports templates). |
 | `universal_binaries` | list of UniversalBinaryConfig | — | macOS universal binary (fat binary) configurations for this crate. |
+| `version` | string | — | Pinned semver version. When set, `anodize bump --strict` refuses to edit this crate's `Cargo.toml` to anything other than this value; without `--strict`, the bump proceeds with a warning. Lets a release captain freeze a crate's version while still running broad `--workspace` bumps. |
 | `version_sync` | VersionSyncConfig | — | Automatic version number synchronization configuration for this crate. |
 
 ## `defaults`
@@ -361,7 +362,9 @@ Top-level Homebrew Cask configuration. GoReleaser has `homebrew_casks` as a top-
 ## `metadata`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `commit_author` | CommitAuthorConfig | — | Commit author identity for Pro commit workflows (GoReleaser Pro v2.12+). Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ .Metadata.CommitAuthor.Name }}` / `{{ .Metadata.CommitAuthor.Email }}`. |
 | `description` | string | — | Human-readable project description (exposed as `{{ .Metadata.Description }}`). |
+| `full_description` | ContentSource | — | Long-form project description (GoReleaser Pro v2.1+). Supports inline string, `from_file`, or `from_url`. Exposed as `{{ .Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path. |
 | `homepage` | string | — | Project homepage URL (exposed as `{{ .Metadata.Homepage }}`). |
 | `license` | string | — | Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ .Metadata.License }}`). |
 | `maintainers` | list of string | — | List of project maintainers (exposed as `{{ .Metadata.Maintainers }}`). |
@@ -421,7 +424,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `dir` | string | — | Working directory for the publisher command. |
 | `disable` | StringOrBool | — | Template-conditional disable: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). |
 | `env` | map | — | Environment variables passed to the publish command. |
-| `extra_files` | list of ExtraFile | — | Extra files to include in publishing (glob patterns with optional name override). |
+| `extra_files` | list of ExtraFileSpec | — | Extra files to include in publishing (glob patterns with optional name override). |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
 | `meta` | bool | — | Include metadata artifacts in published artifacts. |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
@@ -566,7 +569,7 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `custom_artifact_name` | bool | — | When true, use the artifact name as-is (don't append to target URL). |
 | `custom_headers` | map | — | Custom HTTP headers (each value is template-expanded). |
 | `disable` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
-| `extra_files` | list of ExtraFile | — | Extra files to include in uploading. |
+| `extra_files` | list of ExtraFileSpec | — | Extra files to include in uploading. |
 | `extra_files_only` | bool | — | Upload only extra files, skip normal artifacts. |
 | `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |
 | `ids` | list of string | — | Build IDs filter: only upload artifacts whose `id` is in this list. |

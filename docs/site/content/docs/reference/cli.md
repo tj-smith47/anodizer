@@ -54,6 +54,7 @@ Run the full release pipeline
 | `--fail-fast` | — | — | Abort immediately on first error during publishing |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
+| `--prepare` | — | — | Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. |
 
 
 ### `anodize build`
@@ -181,6 +182,28 @@ Run only the publish stages (release, publish, blob) from a completed dist/
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--dist` | — | — | Custom dist directory (overrides config) |
+
+
+### `anodize bump`
+
+Bump crate versions (Conventional Commits → semver level)
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `<level_or_version>` | — | — | patch | minor | major | <version> | release (omit to infer) |
+| `--package` | `-p` | — | Bump a specific crate (repeatable) |
+| `--workspace` | — | — | Bump every workspace member (excluding publish=false) |
+| `--exclude` | — | — | Exclude a crate from --workspace (repeatable) |
+| `--pre` | — | — | Append a prerelease identifier (e.g. rc.1) |
+| `--exact` | — | — | Do not rewrite dependents' [dependencies] version specs |
+| `--allow-dirty` | — | — | Proceed even if the working tree has uncommitted changes |
+| `--yes` | `-y` | — | Skip confirmation prompt |
+| `--dry-run` | — | — | Print the plan without editing any files |
+| `--commit` | — | — | Stage edits and create a single commit |
+| `--sign` | — | — | GPG-sign the commit (requires --commit) |
+| `--commit-message` | — | — | Override the default commit message template |
+| `--output` | — | `text` | Output format: text | json (json requires --dry-run) |
 
 
 ### `anodize announce`
