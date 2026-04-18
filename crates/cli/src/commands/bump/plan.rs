@@ -95,6 +95,21 @@ fn parse_positional(arg: &Option<String>) -> Result<Positional> {
 pub fn build_plan(workspace_root: &Path, opts: &BumpOpts) -> Result<Vec<PlanRow>> {
     let ws = cargo_edit::load_workspace(workspace_root)?;
     let positional = parse_positional(&opts.level_or_version)?;
+    // Optional `.anodize.yaml` lookup so per-crate `tag_template` overrides
+    // bump's `<crate-name>-v` fallback. Without this, crates whose tag is
+    // bare `v{{ Version }}` (e.g. cfgd's primary crate) match no tag and
+    // inference scans all-of-history instead of the just-released range.
+    let anodize_cfg: Option<anodize_core::config::Config> = {
+        let cfg_path = match opts.config_override.as_deref() {
+            Some(p) => p.to_path_buf(),
+            None => workspace_root.join(".anodize.yaml"),
+        };
+        if cfg_path.is_file() {
+            crate::pipeline::load_config(&cfg_path).ok()
+        } else {
+            None
+        }
+    };
 
     // Filter set of crates to consider.
     let mut targets: Vec<&cargo_edit::MemberInfo> = Vec::new();
@@ -154,7 +169,12 @@ pub fn build_plan(workspace_root: &Path, opts: &BumpOpts) -> Result<Vec<PlanRow>
                 (*lv, next, r)
             }
             Positional::Infer => {
-                let inferred = inference::infer_for_crate(workspace_root, m)?;
+                let tag_prefix = anodize_cfg
+                    .as_ref()
+                    .and_then(|cfg| find_crate_in_config(cfg, &m.name))
+                    .and_then(|c| anodize_core::git::extract_tag_prefix(&c.tag_template));
+                let inferred =
+                    inference::infer_for_crate(workspace_root, m, tag_prefix.as_deref())?;
                 match inferred.level {
                     BumpLevel::Skip => (BumpLevel::Skip, current.clone(), inferred.reason),
                     other => (
@@ -200,6 +220,23 @@ pub fn build_plan(workspace_root: &Path, opts: &BumpOpts) -> Result<Vec<PlanRow>
     }
 
     Ok(rows)
+}
+
+/// Find a crate's config across both top-level `crates:` and any
+/// `workspaces[*].crates`. cfgd-style monorepos put their crates under
+/// `workspaces:` rather than at the root.
+fn find_crate_in_config<'a>(
+    cfg: &'a anodize_core::config::Config,
+    name: &str,
+) -> Option<&'a anodize_core::config::CrateConfig> {
+    if let Some(c) = cfg.crates.iter().find(|c| c.name == name) {
+        return Some(c);
+    }
+    cfg.workspaces
+        .as_ref()?
+        .iter()
+        .flat_map(|w| w.crates.iter())
+        .find(|c| c.name == name)
 }
 
 fn resolve_member_version(

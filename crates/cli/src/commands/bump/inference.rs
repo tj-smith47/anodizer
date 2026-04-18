@@ -21,11 +21,19 @@ pub struct InferenceResult {
 }
 
 /// Infer the per-crate bump level from commits since the crate's last tag.
+///
+/// `tag_prefix_override` is the prefix to scan for tags (typically derived
+/// from the crate's `.anodize.yaml` `tag_template`). When `None`, the
+/// fallback `<crate-name>-v` convention is used — handy for workspaces
+/// that have no `.anodize.yaml` at all.
 pub fn infer_for_crate(
     workspace_root: &std::path::Path,
     m: &MemberInfo,
+    tag_prefix_override: Option<&str>,
 ) -> Result<InferenceResult> {
-    let tag_prefix = format!("{}-v", m.name);
+    let tag_prefix = tag_prefix_override
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("{}-v", m.name));
     let last_tag = find_last_tag_for_prefix(workspace_root, &tag_prefix)?;
 
     let rel_crate_dir = m

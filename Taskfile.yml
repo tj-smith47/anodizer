@@ -100,10 +100,15 @@ tasks:
       - task: package
 
   commit:
-    desc: "Lint, then commit. Usage: task commit -- -m 'my message'"
+    desc: "Lint (regenerates docs), restage tracked changes, then commit. Usage: task commit -- -m 'my message'"
     preconditions:
       - sh: git diff --cached --quiet || test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with git add before running task commit."
     cmds:
       - task: lint
+      # Lint can regenerate tracked files (docs, fmt). Re-stage them so the
+      # commit snapshot includes the fresh content; otherwise the working
+      # tree ends dirty after `task commit` and the user has to commit a
+      # follow-up. Mirrors cfgd's Taskfile.yml::commit.
+      - git add -u
       - git commit {{.CLI_ARGS}}

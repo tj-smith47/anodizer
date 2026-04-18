@@ -714,6 +714,95 @@ changelog:
 }
 
 // ---------------------------------------------------------------------------
+// Inference must honor each crate's `tag_template` (cfgd-style monorepos
+// have crates whose tag is bare `v{{ Version }}` — not `<name>-v…`).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inference_respects_tag_template_from_anodize_yaml() {
+    let tmp = TempDir::new().unwrap();
+    two_crate_workspace(tmp.path());
+    // .anodize.yaml gives `core` a custom `core-v` prefix and `cli` the bare
+    // `v` prefix (the cfgd top-crate convention). Without the tag-template
+    // wiring, bump's inference would fall back to `core-v` and `cli-v` and
+    // miss the actual tags below.
+    fs::write(
+        tmp.path().join(".anodize.yaml"),
+        r#"version: 2
+project_name: tag-template-fixture
+crates:
+  - name: core
+    path: crates/core
+    tag_template: "core-v{{ Version }}"
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ Version }}"
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    // Tag with the templates' actual prefixes — `core-v` and bare `v`.
+    run_git(tmp.path(), &["tag", "core-v0.1.0"]);
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+    // After-tag commits: core gets a feat (→ minor), cli gets a chore (→ skip).
+    git_commit_empty_on_path(
+        tmp.path(),
+        "crates/core/feature.rs",
+        "pub fn f() {}",
+        "feat(core): add feature",
+    );
+    git_commit_empty_on_path(
+        tmp.path(),
+        "crates/cli/notes.rs",
+        "// notes",
+        "chore(cli): housekeeping",
+    );
+
+    let out = anodize()
+        .current_dir(tmp.path())
+        .args(["bump", "--workspace", "--dry-run", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "infer dry-run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let by_name: std::collections::HashMap<&str, &serde_json::Value> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["crate"].as_str().unwrap(), r))
+        .collect();
+    // `cli`'s tag prefix is bare `v` per .anodize.yaml; the v0.1.0 tag must
+    // be discovered and the only post-tag commit is a chore → skip. With
+    // the fallback `<name>-v` prefix this row would scan all-of-history,
+    // see the chore, classify it as skip ANYWAY, but the reason string would
+    // mention "no commits since cli-v" instead of `since v0.1.0`. Pin to
+    // the reason text so the regression cannot hide.
+    assert_eq!(
+        by_name["cli"]["level"], "skip",
+        "cli should skip — no feat/fix since v0.1.0"
+    );
+    let cli_reason = by_name["cli"]["reason"].as_str().unwrap();
+    assert!(
+        cli_reason.contains("since v0.1.0"),
+        "cli reason must reference the actual v0.1.0 tag, not <name>-v fallback: {cli_reason}"
+    );
+    // core uses `core-v` template; the post-tag feat → minor, reason cites
+    // core-v0.1.0 specifically.
+    assert_eq!(by_name["core"]["level"], "minor");
+    assert_eq!(by_name["core"]["next"], "0.2.0");
+    let core_reason = by_name["core"]["reason"].as_str().unwrap();
+    assert!(
+        core_reason.contains("since core-v0.1.0"),
+        "core reason must reference core-v0.1.0: {core_reason}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Strict-mode version-pin enforcement
 // ---------------------------------------------------------------------------
 
