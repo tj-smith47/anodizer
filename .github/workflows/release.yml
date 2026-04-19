@@ -84,6 +84,8 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: dtolnay/rust-toolchain@stable
+
       # Download all split artifacts into dist/ before running the action
       # (the action's `args: release --merge` step will operate on them).
       - name: Download split artifacts

@@ -59,13 +59,17 @@ pub fn parse_cargo_lock(content: &str) -> Result<Vec<CargoPackage>> {
 }
 
 /// Generate a CycloneDX 1.5 SBOM in JSON format.
+///
+/// `timestamp` is embedded in `metadata.timestamp` and must be supplied by the
+/// caller so that repeated pipeline runs (e.g. anodizer-action retries) emit
+/// byte-identical output. Callers should derive it from `ctx.template_vars()`
+/// (`CommitDate`) so the value is tied to the release tag, not wall-clock.
 pub fn generate_cyclonedx(
     project_name: &str,
     version: &str,
+    timestamp: &str,
     packages: &[CargoPackage],
 ) -> Result<serde_json::Value> {
-    let timestamp = chrono::Utc::now().to_rfc3339();
-
     let components: Vec<serde_json::Value> = packages
         .iter()
         .map(|pkg| {
@@ -119,13 +123,20 @@ pub fn generate_cyclonedx(
 }
 
 /// Generate an SPDX 2.3 SBOM in JSON format.
+///
+/// `timestamp` populates `creationInfo.created`; `namespace_uuid` populates the
+/// trailing segment of `documentNamespace`. Both are caller-supplied so the
+/// output is byte-identical across repeated pipeline runs (release asset
+/// uploads are non-idempotent when the file bytes differ from a prior
+/// upload — GitHub's ReleaseAsset API rejects re-uploads with `already_exists`
+/// when sizes diverge).
 pub fn generate_spdx(
     project_name: &str,
     version: &str,
+    timestamp: &str,
+    namespace_uuid: &str,
     packages: &[CargoPackage],
 ) -> Result<serde_json::Value> {
-    let timestamp = chrono::Utc::now().to_rfc3339();
-
     let root_package = serde_json::json!({
         "SPDXID": "SPDXRef-Package",
         "name": project_name,
@@ -185,9 +196,7 @@ pub fn generate_spdx(
         "name": format!("{}-{}", project_name, version),
         "documentNamespace": format!(
             "https://spdx.org/spdxdocs/{}-{}-{}",
-            project_name,
-            version,
-            uuid_v4_simple()
+            project_name, version, namespace_uuid,
         ),
         "creationInfo": {
             "created": timestamp,
@@ -200,29 +209,24 @@ pub fn generate_spdx(
     Ok(sbom)
 }
 
-/// Simple UUID v4-shaped generation without pulling in a uuid crate.
-fn uuid_v4_simple() -> String {
+/// Deterministic UUID v4-shaped identifier derived from `seed`.
+///
+/// Same seed always produces the same UUID. Not cryptographic — the value is
+/// only used as the trailing component of an SPDX `documentNamespace`, where
+/// the purpose is per-document uniqueness within a project, not secrecy.
+pub fn deterministic_uuid_from(seed: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::SystemTime;
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut h1 = DefaultHasher::new();
+    seed.hash(&mut h1);
+    "anodizer-sbom-ns-v1".hash(&mut h1);
+    let h1 = h1.finish();
 
-    let mut hasher = DefaultHasher::new();
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    COUNTER.fetch_add(1, Ordering::Relaxed).hash(&mut hasher);
-    let h1 = hasher.finish();
-
-    let mut hasher2 = DefaultHasher::new();
-    h1.hash(&mut hasher2);
-    42u64.hash(&mut hasher2);
-    let h2 = hasher2.finish();
+    let mut h2 = DefaultHasher::new();
+    seed.hash(&mut h2);
+    "anodizer-sbom-ns-v2".hash(&mut h2);
+    let h2 = h2.finish();
 
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
@@ -712,13 +716,29 @@ fn run_sbom_builtin(
         packages.len()
     ));
 
+    // Deterministic inputs: the same release tag must produce byte-identical
+    // SBOM output across pipeline retries, otherwise GitHub ReleaseAsset
+    // rejects the re-upload with `already_exists` (size mismatch).
+    let timestamp = ctx
+        .template_vars()
+        .get("CommitDate")
+        .cloned()
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));
+
     let (sbom_json, extension) = match format {
         "cyclonedx" => (
-            generate_cyclonedx(project_name, version, &packages)?,
+            generate_cyclonedx(project_name, version, &timestamp, &packages)?,
             "cdx.json",
         ),
         "spdx" => (
-            generate_spdx(project_name, version, &packages)?,
+            generate_spdx(
+                project_name,
+                version,
+                &timestamp,
+                &namespace_uuid,
+                &packages,
+            )?,
             "spdx.json",
         ),
         _ => bail!(

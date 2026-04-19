@@ -391,13 +391,17 @@ pub fn parse_cargo_lock(content: &str) -> Result<Vec<CargoPackage>> {
 }
 
 /// Generate a CycloneDX 1.5 SBOM in JSON format.
+///
+/// `timestamp` is embedded in `metadata.timestamp` and must be supplied by the
+/// caller so that repeated pipeline runs (e.g. anodizer-action retries) emit
+/// byte-identical output. Callers should derive it from `ctx.template_vars()`
+/// (`CommitDate`) so the value is tied to the release tag, not wall-clock.
 pub fn generate_cyclonedx(
     project_name: &str,
     version: &str,
+    timestamp: &str,
     packages: &[CargoPackage],
 ) -> Result<serde_json::Value> {
-    let timestamp = chrono::Utc::now().to_rfc3339();
-
     let components: Vec<serde_json::Value> = packages
         .iter()
         .map(|pkg| {
@@ -451,13 +455,20 @@ pub fn generate_cyclonedx(
 }
 
 /// Generate an SPDX 2.3 SBOM in JSON format.
+///
+/// `timestamp` populates `creationInfo.created`; `namespace_uuid` populates the
+/// trailing segment of `documentNamespace`. Both are caller-supplied so the
+/// output is byte-identical across repeated pipeline runs (release asset
+/// uploads are non-idempotent when the file bytes differ from a prior
+/// upload — GitHub's ReleaseAsset API rejects re-uploads with `already_exists`
+/// when sizes diverge).
 pub fn generate_spdx(
     project_name: &str,
     version: &str,
+    timestamp: &str,
+    namespace_uuid: &str,
     packages: &[CargoPackage],
 ) -> Result<serde_json::Value> {
-    let timestamp = chrono::Utc::now().to_rfc3339();
-
     // The root package
     let root_package = serde_json::json!({
         "SPDXID": "SPDXRef-Package",
@@ -518,9 +529,7 @@ pub fn generate_spdx(
         "name": format!("{}-{}", project_name, version),
         "documentNamespace": format!(
             "https://spdx.org/spdxdocs/{}-{}-{}",
-            project_name,
-            version,
-            uuid_v4_simple()
+            project_name, version, namespace_uuid,
         ),
         "creationInfo": {
             "created": timestamp,
@@ -533,40 +542,29 @@ pub fn generate_spdx(
     Ok(sbom)
 }
 
-/// Simple UUID v4-shaped generation without pulling in a uuid crate.
+/// Deterministic UUID v4-shaped identifier derived from `seed`.
 ///
-/// Produces a deterministic hash-based identifier derived from the current
-/// timestamp, process ID, and a monotonic counter. The counter ensures that
-/// consecutive calls within the same nanosecond produce different values.
-/// **Not cryptographically random** — suitable only for document namespaces.
+/// Same seed always produces the same UUID. Not cryptographic — the value is
+/// only used as the trailing component of an SPDX `documentNamespace`, where
+/// the purpose is per-document uniqueness within a project, not secrecy.
 ///
 /// Note: `DefaultHasher` output is not stable across Rust versions, so the
-/// same inputs may produce different UUIDs when compiled with different Rust
-/// toolchains. This is acceptable here because these identifiers are only
-/// used for SPDX document namespace uniqueness, not for reproducibility.
-fn uuid_v4_simple() -> String {
+/// same `seed` may produce different UUIDs when compiled with different Rust
+/// toolchains. Determinism is only guaranteed within a single toolchain, which
+/// is all the release-pipeline idempotency path needs.
+pub fn deterministic_uuid_from(seed: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::SystemTime;
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut h1 = DefaultHasher::new();
+    seed.hash(&mut h1);
+    "anodizer-sbom-ns-v1".hash(&mut h1);
+    let h1 = h1.finish();
 
-    let mut hasher = DefaultHasher::new();
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        .hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    COUNTER.fetch_add(1, Ordering::Relaxed).hash(&mut hasher);
-    let h1 = hasher.finish();
-
-    // Hash again with a different seed for more bits
-    let mut hasher2 = DefaultHasher::new();
-    h1.hash(&mut hasher2);
-    42u64.hash(&mut hasher2);
-    let h2 = hasher2.finish();
+    let mut h2 = DefaultHasher::new();
+    seed.hash(&mut h2);
+    "anodizer-sbom-ns-v2".hash(&mut h2);
+    let h2 = h2.finish();
 
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
@@ -1113,13 +1111,29 @@ impl SourceStage {
             packages.len()
         ));
 
+        // Deterministic inputs: the same release tag must produce byte-identical
+        // SBOM output across pipeline retries, otherwise GitHub ReleaseAsset
+        // rejects the re-upload with `already_exists` (size mismatch).
+        let timestamp = ctx
+            .template_vars()
+            .get("CommitDate")
+            .cloned()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));
+
         let (sbom_json, extension) = match format {
             "cyclonedx" => {
-                let sbom = generate_cyclonedx(project_name, version, &packages)?;
+                let sbom = generate_cyclonedx(project_name, version, &timestamp, &packages)?;
                 (sbom, "cdx.json")
             }
             "spdx" => {
-                let sbom = generate_spdx(project_name, version, &packages)?;
+                let sbom = generate_spdx(
+                    project_name,
+                    version,
+                    &timestamp,
+                    &namespace_uuid,
+                    &packages,
+                )?;
                 (sbom, "spdx.json")
             }
             _ => bail!(
@@ -1289,7 +1303,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             },
         ];
 
-        let sbom = generate_cyclonedx("my-project", "1.0.0", &packages).unwrap();
+        let sbom =
+            generate_cyclonedx("my-project", "1.0.0", "2024-01-01T00:00:00Z", &packages).unwrap();
 
         // Check top-level structure
         assert_eq!(sbom["bomFormat"], "CycloneDX");
@@ -1321,7 +1336,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     #[test]
     fn test_generate_cyclonedx_empty_packages() {
-        let sbom = generate_cyclonedx("empty-project", "0.0.1", &[]).unwrap();
+        let sbom =
+            generate_cyclonedx("empty-project", "0.0.1", "2024-01-01T00:00:00Z", &[]).unwrap();
         assert_eq!(sbom["bomFormat"], "CycloneDX");
         let components = sbom["components"].as_array().unwrap();
         assert!(components.is_empty());
@@ -1335,7 +1351,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
         }];
 
-        let sbom = generate_cyclonedx("test", "1.0.0", &packages).unwrap();
+        let sbom = generate_cyclonedx("test", "1.0.0", "2024-01-01T00:00:00Z", &packages).unwrap();
         let components = sbom["components"].as_array().unwrap();
         assert_eq!(components[0]["purl"], "pkg:cargo/tokio@1.37.0");
     }
@@ -1359,7 +1375,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             },
         ];
 
-        let sbom = generate_spdx("my-app", "2.0.0", &packages).unwrap();
+        let sbom = generate_spdx(
+            "my-app",
+            "2.0.0",
+            "2024-01-01T00:00:00Z",
+            "deadbeef-0000-4000-8000-000000000001",
+            &packages,
+        )
+        .unwrap();
 
         // Check top-level structure
         assert_eq!(sbom["spdxVersion"], "SPDX-2.3");
@@ -1409,7 +1432,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     #[test]
     fn test_generate_spdx_empty_packages() {
-        let sbom = generate_spdx("empty", "0.0.1", &[]).unwrap();
+        let sbom = generate_spdx(
+            "empty",
+            "0.0.1",
+            "2024-01-01T00:00:00Z",
+            "deadbeef-0000-4000-8000-000000000001",
+            &[],
+        )
+        .unwrap();
         assert_eq!(sbom["spdxVersion"], "SPDX-2.3");
         let spdx_packages = sbom["packages"].as_array().unwrap();
         // Only root package
@@ -1427,7 +1457,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
         }];
 
-        let sbom = generate_spdx("test", "1.0.0", &packages).unwrap();
+        let sbom = generate_spdx(
+            "test",
+            "1.0.0",
+            "2024-01-01T00:00:00Z",
+            "deadbeef-0000-4000-8000-000000000001",
+            &packages,
+        )
+        .unwrap();
         let spdx_packages = sbom["packages"].as_array().unwrap();
         let dep = &spdx_packages[1];
         let ext_refs = dep["externalRefs"].as_array().unwrap();
@@ -1627,14 +1664,21 @@ dependencies = [
         assert_eq!(packages.len(), 3);
 
         // Test CycloneDX generation from these packages
-        let cdx = generate_cyclonedx("my-app", "0.1.0", &packages).unwrap();
+        let cdx = generate_cyclonedx("my-app", "0.1.0", "2024-01-01T00:00:00Z", &packages).unwrap();
         let cdx_str = serde_json::to_string_pretty(&cdx).unwrap();
         assert!(cdx_str.contains("CycloneDX"));
         assert!(cdx_str.contains("anyhow"));
         assert!(cdx_str.contains("serde"));
 
         // Test SPDX generation from these packages
-        let spdx = generate_spdx("my-app", "0.1.0", &packages).unwrap();
+        let spdx = generate_spdx(
+            "my-app",
+            "0.1.0",
+            "2024-01-01T00:00:00Z",
+            "deadbeef-0000-4000-8000-000000000001",
+            &packages,
+        )
+        .unwrap();
         let spdx_str = serde_json::to_string_pretty(&spdx).unwrap();
         assert!(spdx_str.contains("SPDX-2.3"));
         assert!(spdx_str.contains("anyhow"));
@@ -1654,7 +1698,7 @@ dependencies = [
         }];
 
         // CycloneDX
-        let cdx = generate_cyclonedx("my-app", "1.0.0", &packages).unwrap();
+        let cdx = generate_cyclonedx("my-app", "1.0.0", "2024-01-01T00:00:00Z", &packages).unwrap();
         let cdx_path = dist.join("my-app-1.0.0.cdx.json");
         let json_str = serde_json::to_string_pretty(&cdx).unwrap();
         std::fs::write(&cdx_path, &json_str).unwrap();
@@ -1666,7 +1710,14 @@ dependencies = [
         assert_eq!(read_back["bomFormat"], "CycloneDX");
 
         // SPDX
-        let spdx = generate_spdx("my-app", "1.0.0", &packages).unwrap();
+        let spdx = generate_spdx(
+            "my-app",
+            "1.0.0",
+            "2024-01-01T00:00:00Z",
+            "deadbeef-0000-4000-8000-000000000001",
+            &packages,
+        )
+        .unwrap();
         let spdx_path = dist.join("my-app-1.0.0.spdx.json");
         let json_str = serde_json::to_string_pretty(&spdx).unwrap();
         std::fs::write(&spdx_path, &json_str).unwrap();
@@ -1772,8 +1823,8 @@ dependencies = [
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_uuid_v4_simple_format() {
-        let uuid = uuid_v4_simple();
+    fn test_deterministic_uuid_from_format_and_stability() {
+        let uuid = deterministic_uuid_from("proj-1.0.0");
         // Should be in format: 8-4-4-4-12 hex chars
         let parts: Vec<&str> = uuid.split('-').collect();
         assert_eq!(parts.len(), 5, "UUID should have 5 parts: {}", uuid);
@@ -1789,6 +1840,48 @@ dependencies = [
             "UUID version nibble should be 4: {}",
             uuid
         );
+
+        // Same seed → identical output (load-bearing for release-asset idempotency)
+        assert_eq!(uuid, deterministic_uuid_from("proj-1.0.0"));
+        // Different seed → different output (avoids namespace collisions)
+        assert_ne!(uuid, deterministic_uuid_from("proj-1.0.1"));
+    }
+
+    #[test]
+    fn test_sbom_byte_identical_across_runs() {
+        // Load-bearing for release-asset idempotency: anodizer-action's outer
+        // retry wrapper may regenerate the SBOM between `release` uploads; if
+        // the bytes differ, GitHub's ReleaseAsset API rejects the re-upload
+        // with `already_exists` (size mismatch).
+        let packages = vec![
+            CargoPackage {
+                name: "serde".to_string(),
+                version: "1.0.200".to_string(),
+                source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
+            },
+            CargoPackage {
+                name: "local".to_string(),
+                version: "0.1.0".to_string(),
+                source: None,
+            },
+        ];
+
+        let ts = "2024-06-01T12:34:56+00:00";
+        let ns = deterministic_uuid_from("sample-app-0.2.0");
+
+        let a = generate_cyclonedx("sample-app", "0.2.0", ts, &packages).unwrap();
+        let b = generate_cyclonedx("sample-app", "0.2.0", ts, &packages).unwrap();
+        assert_eq!(
+            serde_json::to_string_pretty(&a).unwrap(),
+            serde_json::to_string_pretty(&b).unwrap(),
+        );
+
+        let a = generate_spdx("sample-app", "0.2.0", ts, &ns, &packages).unwrap();
+        let b = generate_spdx("sample-app", "0.2.0", ts, &ns, &packages).unwrap();
+        assert_eq!(
+            serde_json::to_string_pretty(&a).unwrap(),
+            serde_json::to_string_pretty(&b).unwrap(),
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1803,7 +1896,7 @@ dependencies = [
             source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
         }];
 
-        let sbom = generate_cyclonedx("proj", "1.0.0", &packages).unwrap();
+        let sbom = generate_cyclonedx("proj", "1.0.0", "2024-01-01T00:00:00Z", &packages).unwrap();
 
         // Required CycloneDX 1.5 fields
         assert!(sbom.get("bomFormat").is_some(), "missing bomFormat");
@@ -1834,7 +1927,14 @@ dependencies = [
             source: Some("registry+https://github.com/rust-lang/crates.io-index".to_string()),
         }];
 
-        let sbom = generate_spdx("proj", "1.0.0", &packages).unwrap();
+        let sbom = generate_spdx(
+            "proj",
+            "1.0.0",
+            "2024-01-01T00:00:00Z",
+            "deadbeef-0000-4000-8000-000000000001",
+            &packages,
+        )
+        .unwrap();
 
         // Required SPDX 2.3 fields
         assert!(sbom.get("spdxVersion").is_some(), "missing spdxVersion");
