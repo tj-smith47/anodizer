@@ -26,7 +26,7 @@ pub fn send_discourse(
         .header("Api-Key", api_key)
         .header("Api-Username", username)
         .header("Content-Type", "application/json")
-        .header("User-Agent", concat!("anodize/", env!("CARGO_PKG_VERSION")))
+        .header("User-Agent", anodize_core::http::USER_AGENT)
         .body(body.to_string())
         .send()?;
 

@@ -10,43 +10,26 @@
 
 use std::path::Path;
 
+use anodize_core::url::percent_encode_path_segment;
 use anyhow::{Context as _, Result, bail};
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::Client;
 
 use crate::compose_body_for_mode;
 
 // ---------------------------------------------------------------------------
-// URL-encoding helpers
+// URL-encoding aliases — consolidated onto `anodize_core::url::percent_encode_path_segment`.
+// GitLab, Gitea and GitHub all use the same strict segment set so a tag like
+// `v1.0.0+build.1` produces identical URLs across backends.
 // ---------------------------------------------------------------------------
 
-/// Characters that must be percent-encoded in a GitLab project path segment.
-/// GitLab requires the full project path (e.g. `group/project`) to be encoded
-/// so that `/` becomes `%2F`.
-const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.');
-
-/// Characters safe in a single URL path segment (no `/`).
-/// Used for tag names, package names, versions, and file names in URLs.
-const SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.');
-
-/// Percent-encode a GitLab project ID path segment.
-///
-/// `owner/name` becomes `owner%2Fname`.
-fn encode_project_id(project_id: &str) -> String {
-    utf8_percent_encode(project_id, PATH_ENCODE_SET).to_string()
+fn encode_project_id(s: &str) -> String {
+    percent_encode_path_segment(s)
 }
-
-/// Percent-encode a tag for use in URL path segments.
-///
-/// Tags may contain `+`, `#`, `?`, spaces, or other characters that break URLs.
-/// e.g. `v1.0.0+build.1` becomes `v1.0.0%2Bbuild.1`.
-fn encode_tag(tag: &str) -> String {
-    utf8_percent_encode(tag, SEGMENT_ENCODE_SET).to_string()
+fn encode_tag(s: &str) -> String {
+    percent_encode_path_segment(s)
 }
-
-/// Percent-encode a single URL path component (package name, version, filename).
-fn encode_path_segment(segment: &str) -> String {
-    utf8_percent_encode(segment, SEGMENT_ENCODE_SET).to_string()
+fn encode_path_segment(s: &str) -> String {
+    percent_encode_path_segment(s)
 }
 
 // ---------------------------------------------------------------------------

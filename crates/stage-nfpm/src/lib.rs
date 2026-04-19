@@ -339,6 +339,36 @@ pub fn generate_nfpm_yaml(
     skip_sign: bool,
     library_paths: &NfpmLibraryPaths,
 ) -> String {
+    // Default env map: empty. The passphrase resolver falls back to process
+    // env for unknown keys, so behavior is preserved for callers that don't
+    // pass a ctx env map. `generate_nfpm_yaml_with_env` is the production
+    // entrypoint that passes the real anodize ctx env map.
+    let empty_env = std::collections::HashMap::new();
+    generate_nfpm_yaml_with_env(
+        config,
+        version,
+        binary_paths,
+        format,
+        skip_sign,
+        library_paths,
+        &empty_env,
+    )
+}
+
+/// Generate nfpm YAML using the anodize ctx env map (project `env:` +
+/// `env_files:` + process env) for passphrase resolution. Matches
+/// GoReleaser internal/pipe/nfpm/nfpm.go:640 which reads from `ctx.Env`
+/// rather than `os.Getenv`, so `NFPM_PASSPHRASE` defined in project YAML
+/// is visible to the signer.
+pub fn generate_nfpm_yaml_with_env(
+    config: &NfpmConfig,
+    version: &str,
+    binary_paths: &[String],
+    format: Option<&str>,
+    skip_sign: bool,
+    library_paths: &NfpmLibraryPaths,
+    env_map: &std::collections::HashMap<String, String>,
+) -> String {
     let is_meta = config.meta == Some(true);
 
     // Build binary content entries for ALL binaries on this platform (skip for meta packages)
@@ -553,17 +583,17 @@ pub fn generate_nfpm_yaml(
         .rpm
         .as_ref()
         .filter(|r| !r.is_empty())
-        .map(|r| build_yaml_rpm(r, nfpm_id, format, skip_sign));
+        .map(|r| build_yaml_rpm(r, nfpm_id, format, skip_sign, env_map));
     let deb = config
         .deb
         .as_ref()
         .filter(|d| !d.is_empty())
-        .map(|d| build_yaml_deb(d, nfpm_id, format, skip_sign));
+        .map(|d| build_yaml_deb(d, nfpm_id, format, skip_sign, env_map));
     let apk = config
         .apk
         .as_ref()
         .filter(|a| !a.is_empty())
-        .map(|a| build_yaml_apk(a, nfpm_id, format, skip_sign));
+        .map(|a| build_yaml_apk(a, nfpm_id, format, skip_sign, env_map));
     let archlinux = config
         .archlinux
         .as_ref()
@@ -624,48 +654,54 @@ pub fn generate_nfpm_yaml(
 // ---------------------------------------------------------------------------
 
 /// Resolve the signing passphrase using GoReleaser's 3-level env var fallback:
-///   1. NFPM_{ID}_{FORMAT}_PASSPHRASE
+///   1. NFPM_{ID}_{format}_PASSPHRASE  (format preserved as-is, e.g. `deb`/`rpm`)
 ///   2. NFPM_{ID}_PASSPHRASE
 ///   3. NFPM_PASSPHRASE
 ///
-/// Returns `None` if no env var is set either.
-fn resolve_passphrase_from_env(nfpm_id: &str, format: Option<&str>) -> Option<String> {
+/// `env_map` is the anodize ctx env map (process env + project `env:` +
+/// `env_files:`). Looking up here — instead of `std::env::var` directly —
+/// means values defined in `.anodize.yaml` `env:` are visible to the signer,
+/// matching GoReleaser internal/pipe/nfpm/nfpm.go:640 which reads from
+/// `ctx.Env` rather than `os.Getenv`.
+///
+/// Returns `None` if no env var is set at any level.
+fn resolve_passphrase_from_env(
+    env_map: &std::collections::HashMap<String, String>,
+    nfpm_id: &str,
+    format: Option<&str>,
+) -> Option<String> {
+    let lookup = |name: &str| -> Option<String> {
+        env_map
+            .get(name)
+            .cloned()
+            .or_else(|| std::env::var(name).ok())
+            .filter(|v| !v.is_empty())
+    };
     let id_upper = nfpm_id.to_uppercase();
-    // Level 1: NFPM_{ID}_{FORMAT}_PASSPHRASE (only when format is known)
-    if let Some(fmt) = format {
-        let fmt_upper = fmt.to_uppercase();
-        let var = format!("NFPM_{id_upper}_{fmt_upper}_PASSPHRASE");
-        if let Ok(val) = std::env::var(&var)
-            && !val.is_empty()
-        {
-            return Some(val);
-        }
+    // Level 1: NFPM_{ID}_{format}_PASSPHRASE (format preserved as-is, per GoReleaser)
+    if let Some(fmt) = format
+        && let Some(val) = lookup(&format!("NFPM_{id_upper}_{fmt}_PASSPHRASE"))
+    {
+        return Some(val);
     }
     // Level 2: NFPM_{ID}_PASSPHRASE
-    let var = format!("NFPM_{id_upper}_PASSPHRASE");
-    if let Ok(val) = std::env::var(&var)
-        && !val.is_empty()
-    {
+    if let Some(val) = lookup(&format!("NFPM_{id_upper}_PASSPHRASE")) {
         return Some(val);
     }
     // Level 3: NFPM_PASSPHRASE
-    if let Ok(val) = std::env::var("NFPM_PASSPHRASE")
-        && !val.is_empty()
-    {
-        return Some(val);
-    }
-    None
+    lookup("NFPM_PASSPHRASE")
 }
 
 fn build_yaml_signature(
     sig: &NfpmSignatureConfig,
     nfpm_id: &str,
     format: Option<&str>,
+    env_map: &std::collections::HashMap<String, String>,
 ) -> NfpmYamlSignature {
     let key_passphrase = sig
         .key_passphrase
         .clone()
-        .or_else(|| resolve_passphrase_from_env(nfpm_id, format));
+        .or_else(|| resolve_passphrase_from_env(env_map, nfpm_id, format));
     NfpmYamlSignature {
         key_file: sig.key_file.clone(),
         key_id: sig.key_id.clone(),
@@ -680,6 +716,7 @@ fn build_yaml_rpm(
     nfpm_id: &str,
     format: Option<&str>,
     skip_sign: bool,
+    env_map: &std::collections::HashMap<String, String>,
 ) -> NfpmYamlRpm {
     NfpmYamlRpm {
         summary: rpm.summary.clone(),
@@ -692,7 +729,7 @@ fn build_yaml_rpm(
         } else {
             rpm.signature
                 .as_ref()
-                .map(|s| build_yaml_signature(s, nfpm_id, format))
+                .map(|s| build_yaml_signature(s, nfpm_id, format, env_map))
         },
         scripts: rpm.scripts.as_ref().map(|s| NfpmYamlRpmScripts {
             pretrans: s.pretrans.clone(),
@@ -707,6 +744,7 @@ fn build_yaml_deb(
     nfpm_id: &str,
     format: Option<&str>,
     skip_sign: bool,
+    env_map: &std::collections::HashMap<String, String>,
 ) -> NfpmYamlDeb {
     NfpmYamlDeb {
         compression: deb.compression.clone(),
@@ -726,7 +764,7 @@ fn build_yaml_deb(
         } else {
             deb.signature
                 .as_ref()
-                .map(|s| build_yaml_signature(s, nfpm_id, format))
+                .map(|s| build_yaml_signature(s, nfpm_id, format, env_map))
         },
         fields: deb.fields.clone(),
         scripts: deb.scripts.as_ref().map(|s| NfpmYamlDebScripts {
@@ -743,6 +781,7 @@ fn build_yaml_apk(
     nfpm_id: &str,
     format: Option<&str>,
     skip_sign: bool,
+    env_map: &std::collections::HashMap<String, String>,
 ) -> NfpmYamlApk {
     NfpmYamlApk {
         signature: if skip_sign {
@@ -750,7 +789,7 @@ fn build_yaml_apk(
         } else {
             apk.signature
                 .as_ref()
-                .map(|s| build_yaml_signature(s, nfpm_id, format))
+                .map(|s| build_yaml_signature(s, nfpm_id, format, env_map))
         },
         scripts: apk.scripts.as_ref().map(|s| NfpmYamlApkScripts {
             preupgrade: s.preupgrade.clone(),
@@ -1447,14 +1486,17 @@ impl Stage for NfpmStage {
                             deb.arch_variant = variant;
                         }
 
-                        // Generate YAML per format so format-specific deps are selected
-                        let yaml_content = generate_nfpm_yaml(
+                        // Generate YAML per format so format-specific deps are selected.
+                        // Pass the anodize ctx env map so passphrase lookups
+                        // see project `env:` / `env_files:` values (W6 fix).
+                        let yaml_content = generate_nfpm_yaml_with_env(
                             &rendered_cfg,
                             &version,
                             binary_paths,
                             Some(format),
                             skip_sign,
                             lib_paths,
+                            ctx.template_vars().all_env(),
                         );
 
                         // Ensure output directory exists

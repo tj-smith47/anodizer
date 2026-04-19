@@ -86,9 +86,7 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<bool> {
     use std::time::Duration;
 
     let url = sparse_index_url(crate_name);
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
+    let client = anodize_core::http::blocking_client(Duration::from_secs(10))
         .context("publish: build HTTP client for index check")?;
 
     let resp = client
@@ -138,9 +136,7 @@ fn poll_crates_io_index(
     let deadline = Duration::from_secs(timeout_secs);
     let url = sparse_index_url(crate_name);
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
+    let client = anodize_core::http::blocking_client(Duration::from_secs(10))
         .context("publish: build HTTP client for index polling")?;
 
     let mut backoff = INITIAL_POLL_DELAY;

@@ -214,6 +214,19 @@ pub fn set_file_mtime(path: &Path, mtime: SystemTime) -> Result<()> {
     Ok(())
 }
 
+/// Set the modification time on a single file from a Unix epoch (seconds).
+///
+/// Thin wrapper over `set_file_mtime` that accepts `SOURCE_DATE_EPOCH`-style
+/// `i64` seconds (signed to permit pre-1970 values per the spec).
+pub fn set_file_mtime_epoch(path: &Path, epoch_secs: i64) -> Result<()> {
+    let mtime = if epoch_secs >= 0 {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(epoch_secs as u64)
+    } else {
+        SystemTime::UNIX_EPOCH - Duration::from_secs((-epoch_secs) as u64)
+    };
+    set_file_mtime(path, mtime)
+}
+
 // ---------------------------------------------------------------------------
 // collect_replace_archives
 // ---------------------------------------------------------------------------

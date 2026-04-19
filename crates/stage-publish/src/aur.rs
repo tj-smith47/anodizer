@@ -1,7 +1,6 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
-use tera::Tera;
 
 use crate::util;
 
@@ -113,12 +112,9 @@ package() {
 "#;
 
 /// Generate an Arch Linux PKGBUILD file string.
-pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
-    let mut tera = Tera::default();
-    tera.autoescape_on(vec![]); // PKGBUILD is shell, not HTML
-    // SAFETY: PKGBUILD_TEMPLATE is a compile-time constant; parse cannot fail.
-    tera.add_raw_template("pkgbuild", PKGBUILD_TEMPLATE)
-        .unwrap_or_else(|e| panic!("aur: invalid PKGBUILD template: {e}"));
+pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
+    let tera = anodize_core::template::parse_static("pkgbuild", PKGBUILD_TEMPLATE)
+        .context("aur: parse PKGBUILD template")?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -195,9 +191,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     };
     ctx.insert("install_line", &install_line);
 
-    // SAFETY: All context variables are inserted above; rendering is infallible.
-    tera.render("pkgbuild", &ctx)
-        .unwrap_or_else(|e| panic!("aur: failed to render PKGBUILD template: {e}"))
+    anodize_core::template::render_static(&tera, "pkgbuild", &ctx, "aur")
 }
 
 // ---------------------------------------------------------------------------
@@ -224,11 +218,9 @@ pkgname = {{ name }}
 "#;
 
 /// Generate an AUR `.SRCINFO` file string from a Tera template.
-pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
-    let mut tera = Tera::default();
-    tera.autoescape_on(vec![]);
-    tera.add_raw_template("srcinfo", SRCINFO_TEMPLATE)
-        .unwrap_or_else(|e| panic!("aur: invalid .SRCINFO template: {e}"));
+pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
+    let tera = anodize_core::template::parse_static("srcinfo", SRCINFO_TEMPLATE)
+        .context("aur: parse .SRCINFO template")?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -275,8 +267,7 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
         .collect();
     ctx.insert("sources", &sources);
 
-    tera.render("srcinfo", &ctx)
-        .unwrap_or_else(|e| panic!("aur: failed to render .SRCINFO template: {e}"))
+    anodize_core::template::render_static(&tera, "srcinfo", &ctx, "aur")
 }
 
 // ---------------------------------------------------------------------------
@@ -380,12 +371,18 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let contributors = aur_cfg.contributors.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
-    // Default conflicts/provides use the raw project name (without -bin suffix),
-    // following AUR convention where the -bin package provides the base package.
-    let base_name = package_name
-        .strip_suffix("-bin")
-        .unwrap_or(&package_name)
-        .to_string();
+    // Default conflicts/provides use `ctx.config.project_name` verbatim,
+    // matching GoReleaser aur.go:58-63. The prior `-bin`-stripping heuristic
+    // diverges in the edge case `package_name="foo-bin"` + `project_name="foo-cli"`.
+    let project_name = ctx.config.project_name.as_str();
+    let base_name = if project_name.is_empty() {
+        package_name
+            .strip_suffix("-bin")
+            .unwrap_or(&package_name)
+            .to_string()
+    } else {
+        project_name.to_string()
+    };
     let conflicts = if aur_cfg.conflicts.as_ref().is_none_or(|v| v.is_empty()) {
         vec![base_name.clone()]
     } else {
@@ -501,7 +498,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         install_template: aur_cfg.package.as_deref(),
         install_file: install_file_ref,
     };
-    let pkgbuild = generate_pkgbuild(&pkgbuild_params);
+    let pkgbuild = generate_pkgbuild(&pkgbuild_params)?;
 
     // Clone AUR repo, write PKGBUILD, commit, push.
     let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
@@ -554,7 +551,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     // Generate .SRCINFO from a Tera template (no makepkg dependency).
-    let srcinfo = generate_srcinfo(&pkgbuild_params);
+    let srcinfo = generate_srcinfo(&pkgbuild_params)?;
     let srcinfo_path = output_dir.join(".SRCINFO");
     std::fs::write(&srcinfo_path, &srcinfo)
         .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
@@ -626,7 +623,8 @@ mod tests {
             binary_name: "mytool",
             install_template: None,
             install_file: None,
-        });
+        })
+        .unwrap();
 
         assert!(pkgbuild.contains("# Maintainer: Jane Doe <jane@example.com>"));
         assert!(pkgbuild.contains("pkgname='mytool'"));
@@ -677,7 +675,8 @@ mod tests {
             binary_name: "mytool",
             install_template: None,
             install_file: None,
-        });
+        })
+        .unwrap();
 
         assert!(pkgbuild.contains("arch=('aarch64' 'x86_64')"));
         assert!(pkgbuild.contains("source_x86_64="));
@@ -711,7 +710,8 @@ mod tests {
             binary_name: "mytool",
             install_template: None,
             install_file: None,
-        });
+        })
+        .unwrap();
 
         assert!(pkgbuild.contains("depends=('glibc' 'openssl')"));
         assert!(pkgbuild.contains("optdepends=('git: for VCS support')"));
@@ -746,7 +746,8 @@ mod tests {
             binary_name: "tool",
             install_template: None,
             install_file: None,
-        });
+        })
+        .unwrap();
 
         assert!(!pkgbuild.contains("# Maintainer:"));
         assert!(pkgbuild.starts_with("pkgname="));
@@ -784,7 +785,7 @@ mod tests {
             binary_name: "anodize",
             install_template: None,
             install_file: None,
-        });
+        }).unwrap();
 
         // Starts with maintainer comment
         assert!(pkgbuild.starts_with("# Maintainer: TJ Smith <tj@example.com>"));
@@ -829,7 +830,8 @@ mod tests {
                 r#"install -Dm755 "$srcdir/mytool-${pkgver}/mytool" "$pkgdir/usr/bin/mytool""#,
             ),
             install_file: None,
-        });
+        })
+        .unwrap();
 
         assert!(pkgbuild.contains("package() {"));
         assert!(pkgbuild.contains(
@@ -905,7 +907,7 @@ mod tests {
             binary_name: "mytool",
             install_template: None,
             install_file: None,
-        });
+        }).unwrap();
 
         // pkgbase line
         assert!(srcinfo.contains("pkgbase = mytool-bin"), "missing pkgbase");
@@ -1021,7 +1023,8 @@ mod tests {
             binary_name: "simple",
             install_template: None,
             install_file: None,
-        });
+        })
+        .unwrap();
 
         // Should not contain optdepends line when empty
         assert!(

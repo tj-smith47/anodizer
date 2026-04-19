@@ -298,13 +298,9 @@ pub struct NixParams<'a> {
 // ---------------------------------------------------------------------------
 
 /// Generate a Nix derivation expression string.
-pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
-    let mut tera = tera::Tera::default();
-    // NIX_TEMPLATE is a hardcoded const; a parse error means a programmer
-    // bug in this file, so panic with diagnostic context.
-    tera.add_raw_template("nix", NIX_TEMPLATE)
-        .unwrap_or_else(|e| panic!("nix: parse template (programmer bug): {}", e));
-    tera.autoescape_on(vec![]);
+pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
+    let tera =
+        anodize_core::template::parse_static("nix", NIX_TEMPLATE).context("nix: parse template")?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -352,10 +348,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
     ctx.insert("has_post_install", &!params.post_install_lines.is_empty());
     ctx.insert("post_install_lines", &params.post_install_lines);
 
-    // Same rationale as parse: rendering failure means the template has
-    // an undeclared variable that's a programmer bug, not user input.
-    tera.render("nix", &ctx)
-        .unwrap_or_else(|e| panic!("nix: render expression (programmer bug): {}", e))
+    anodize_core::template::render_static(&tera, "nix", &ctx, "nix")
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,7 +1027,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         source_root: source_root.as_deref(),
         source_root_map: source_root_map.as_deref(),
         dynamically_linked,
-    });
+    })?;
 
     // Optionally format with alejandra or nixfmt
     // (only if the formatter binary is available)
@@ -1211,7 +1204,8 @@ mod tests {
             source_root: Some("."),
             source_root_map: None,
             dynamically_linked: false,
-        });
+        })
+        .unwrap();
 
         assert!(expr.contains("pname = \"mytool\""));
         assert!(expr.contains("version = \"1.0.0\""));
@@ -1249,7 +1243,8 @@ mod tests {
             source_root: Some("."),
             source_root_map: None,
             dynamically_linked: false,
-        });
+        })
+        .unwrap();
 
         assert!(expr.contains(", unzip"));
     }
@@ -1279,7 +1274,8 @@ mod tests {
             source_root: Some("."),
             source_root_map: None,
             dynamically_linked: false,
-        });
+        })
+        .unwrap();
 
         assert!(expr.contains("postInstall"));
         assert!(expr.contains("installShellCompletion"));
@@ -1326,7 +1322,8 @@ mod tests {
             source_root: Some("."),
             source_root_map: None,
             dynamically_linked: false,
-        });
+        })
+        .unwrap();
 
         // Verify lib.makeBinPath pattern is used (not lib.getBin)
         assert!(
@@ -1366,7 +1363,8 @@ mod tests {
             source_root: Some("."),
             source_root_map: None,
             dynamically_linked: false,
-        });
+        })
+        .unwrap();
 
         // Verify dep_args appear in nativeBuildInputs
         assert!(
@@ -1416,7 +1414,8 @@ mod tests {
             source_root: Some("."),
             source_root_map: None,
             dynamically_linked: false,
-        });
+        })
+        .unwrap();
 
         assert!(
             !expr.contains("mkDerivation rec"),

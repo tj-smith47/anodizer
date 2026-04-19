@@ -1,5 +1,6 @@
 use anodize_core::config::{Config, IncludeSpec};
 use anodize_core::context::Context;
+use anodize_core::env_expand::expand_env as expand_env_vars;
 pub use anodize_core::hooks::run_hooks;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
@@ -357,12 +358,79 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodize_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
     // Validate git.tag_sort if present
     anodize_core::config::validate_tag_sort(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Validate archives[].format_overrides[].goos
+    anodize_core::config::validate_format_overrides(&config)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Validate release block does not configure multiple SCM backends.
+    anodize_core::config::validate_release_backends(&config)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Apply monorepo defaults: when monorepo.dir is set and a crate's path
     // is empty or ".", default it to monorepo.dir.
     apply_monorepo_defaults(&mut config);
 
+    // Normalize commit_author defaults on every publisher config that carries
+    // one (matches GoReleaser's `Default()` pipe). Fills in anodize defaults
+    // for empty name/email so error messages referencing author identity at
+    // config-validation time see non-empty strings.
+    normalize_commit_author_defaults(&mut config);
+
     Ok(config)
+}
+
+/// Walk the loaded config and fill in commit_author defaults on every
+/// publisher that has one (homebrew formula + cask, scoop, chocolatey, winget,
+/// nix, aur, krew). GoReleaser does this in its per-publisher `Default()`
+/// pass; anodize centralises here so the normalization runs once at load.
+fn normalize_commit_author_defaults(config: &mut anodize_core::config::Config) {
+    for crate_cfg in &mut config.crates {
+        normalize_crate_commit_author(crate_cfg);
+    }
+    if let Some(ws_list) = config.workspaces.as_mut() {
+        for ws in ws_list {
+            for crate_cfg in &mut ws.crates {
+                normalize_crate_commit_author(crate_cfg);
+            }
+        }
+    }
+}
+
+fn normalize_crate_commit_author(crate_cfg: &mut anodize_core::config::CrateConfig) {
+    let Some(ref mut pub_cfg) = crate_cfg.publish else {
+        return;
+    };
+    if let Some(ref mut e) = pub_cfg.homebrew
+        && let Some(ref mut ca) = e.commit_author
+    {
+        ca.normalize_defaults();
+    }
+    if let Some(ref mut e) = pub_cfg.scoop
+        && let Some(ref mut ca) = e.commit_author
+    {
+        ca.normalize_defaults();
+    }
+    // Chocolatey has no commit_author (upstream publishes directly to Chocolatey's
+    // feed API — no tap/repo commit happens).
+    if let Some(ref mut e) = pub_cfg.winget
+        && let Some(ref mut ca) = e.commit_author
+    {
+        ca.normalize_defaults();
+    }
+    if let Some(ref mut e) = pub_cfg.nix
+        && let Some(ref mut ca) = e.commit_author
+    {
+        ca.normalize_defaults();
+    }
+    if let Some(ref mut e) = pub_cfg.aur
+        && let Some(ref mut ca) = e.commit_author
+    {
+        ca.normalize_defaults();
+    }
+    if let Some(ref mut e) = pub_cfg.krew
+        && let Some(ref mut ca) = e.commit_author
+    {
+        ca.normalize_defaults();
+    }
 }
 
 /// Apply monorepo configuration defaults to crate configs.
@@ -469,69 +537,6 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
         .with_context(|| format!("failed to deserialize config: {}", path.display()))
 }
 
-/// Expand environment variable references in a string.
-///
-/// Supports `${VAR_NAME}` and `$VAR_NAME` syntax. Unset variables are replaced
-/// with an empty string (matching GoReleaser behavior).
-fn expand_env_vars(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '$' {
-            if chars.peek() == Some(&'{') {
-                // ${VAR_NAME} form
-                chars.next(); // consume '{'
-                let mut var_name = String::new();
-                let mut found_close = false;
-                for ch in chars.by_ref() {
-                    if ch == '}' {
-                        found_close = true;
-                        break;
-                    }
-                    var_name.push(ch);
-                }
-                if !found_close {
-                    // No closing '}' — preserve the literal '${' and consumed text
-                    result.push_str("${");
-                    result.push_str(&var_name);
-                } else if let Ok(val) = std::env::var(&var_name) {
-                    result.push_str(&val);
-                }
-            } else {
-                // $VAR_NAME form: variable names must start with a letter or
-                // underscore (like shell rules). Digits after '$' are kept
-                // literal (e.g. "$5" stays "$5").
-                let starts_valid = chars
-                    .peek()
-                    .map(|&ch| ch.is_ascii_alphabetic() || ch == '_')
-                    .unwrap_or(false);
-                if !starts_valid {
-                    // Not a variable reference — keep the literal '$'
-                    result.push('$');
-                } else {
-                    let mut var_name = String::new();
-                    while let Some(&ch) = chars.peek() {
-                        if ch.is_alphanumeric() || ch == '_' {
-                            var_name.push(ch);
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                    if let Ok(val) = std::env::var(&var_name) {
-                        result.push_str(&val);
-                    }
-                }
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
-}
-
 /// Normalize a URL for include fetching.
 ///
 /// If the URL does not start with `http://` or `https://`, prepend
@@ -559,9 +564,7 @@ fn fetch_url_as_yaml(
     headers: Option<&std::collections::HashMap<String, String>>,
     config_path: &Path,
 ) -> Result<serde_yaml_ng::Value> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
+    let client = anodize_core::http::blocking_client(Duration::from_secs(30))
         .with_context(|| "failed to build HTTP client for include URL fetch")?;
 
     let mut request = client.get(url);
@@ -1555,60 +1558,6 @@ crates: []
     }
 
     // -----------------------------------------------------------------------
-    // expand_env_vars tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    #[serial]
-    fn test_expand_env_vars_braced() {
-        unsafe { std::env::set_var("ANODIZE_TEST_TOKEN_1", "secret123") };
-        let result = expand_env_vars("Bearer ${ANODIZE_TEST_TOKEN_1}");
-        assert_eq!(result, "Bearer secret123");
-        unsafe { std::env::remove_var("ANODIZE_TEST_TOKEN_1") };
-    }
-
-    #[test]
-    #[serial]
-    fn test_expand_env_vars_unbraced() {
-        unsafe { std::env::set_var("ANODIZE_TEST_TOKEN_2", "val2") };
-        let result = expand_env_vars("prefix-$ANODIZE_TEST_TOKEN_2-suffix");
-        assert_eq!(result, "prefix-val2-suffix");
-        unsafe { std::env::remove_var("ANODIZE_TEST_TOKEN_2") };
-    }
-
-    #[test]
-    #[serial]
-    fn test_expand_env_vars_missing_var_becomes_empty() {
-        // Unset variable → empty string (GoReleaser behavior)
-        unsafe { std::env::remove_var("ANODIZE_NONEXISTENT_VAR_XYZ") };
-        let result = expand_env_vars("token=${ANODIZE_NONEXISTENT_VAR_XYZ}!");
-        assert_eq!(result, "token=!");
-    }
-
-    #[test]
-    fn test_expand_env_vars_no_vars() {
-        let result = expand_env_vars("no variables here");
-        assert_eq!(result, "no variables here");
-    }
-
-    #[test]
-    fn test_expand_env_vars_lone_dollar() {
-        let result = expand_env_vars("price is $5");
-        assert_eq!(result, "price is $5");
-    }
-
-    #[test]
-    #[serial]
-    fn test_expand_env_vars_multiple() {
-        unsafe { std::env::set_var("ANODIZE_TEST_A", "aaa") };
-        unsafe { std::env::set_var("ANODIZE_TEST_B", "bbb") };
-        let result = expand_env_vars("${ANODIZE_TEST_A}/$ANODIZE_TEST_B");
-        assert_eq!(result, "aaa/bbb");
-        unsafe { std::env::remove_var("ANODIZE_TEST_A") };
-        unsafe { std::env::remove_var("ANODIZE_TEST_B") };
-    }
-
-    // -----------------------------------------------------------------------
     // normalize_include_url tests
     // -----------------------------------------------------------------------
 
@@ -1750,19 +1699,6 @@ path = "shared.yaml"
     }
 
     // -----------------------------------------------------------------------
-    // Fix #9: trailing $ at end of string
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_expand_env_vars_trailing_dollar() {
-        let result = expand_env_vars("price$");
-        assert_eq!(
-            result, "price$",
-            "trailing dollar should be preserved literally"
-        );
-    }
-
-    // -----------------------------------------------------------------------
     // Fix #10: TOML from_url structured form in TOML config
     // -----------------------------------------------------------------------
 
@@ -1805,27 +1741,6 @@ url = "https://example.com/config.yaml"
     }
 
     // -----------------------------------------------------------------------
-    // Fix #11: unclosed brace preserves literal text
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_expand_env_vars_unclosed_brace() {
-        let result = expand_env_vars("token=${UNCLOSED");
-        assert_eq!(
-            result, "token=${UNCLOSED",
-            "unclosed brace should preserve literal text"
-        );
-    }
-
-    #[test]
-    fn test_expand_env_vars_unclosed_brace_empty() {
-        let result = expand_env_vars("end${");
-        assert_eq!(
-            result, "end${",
-            "unclosed empty brace should preserve literal text"
-        );
-    }
-
     // ---- detect_deprecated_aliases ----
 
     fn yaml(s: &str) -> serde_yaml_ng::Value {

@@ -131,7 +131,7 @@ Install-ChocolateyZipPackage @packageArgs
 // generate_nuspec
 // ---------------------------------------------------------------------------
 
-pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
+pub fn generate_nuspec(params: &NuspecParams<'_>) -> Result<String> {
     let tags_str = if params.tags.is_empty() {
         params.name.to_string()
     } else {
@@ -143,10 +143,8 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     };
     let title = params.title.unwrap_or(params.name);
 
-    let mut tera = tera::Tera::default();
-    tera.add_raw_template("nuspec", NUSPEC_TEMPLATE)
-        .unwrap_or_else(|e| panic!("chocolatey: parse nuspec template: {e}"));
-    tera.autoescape_on(vec![]);
+    let tera = anodize_core::template::parse_static("nuspec", NUSPEC_TEMPLATE)
+        .context("chocolatey: parse nuspec template")?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", &escape_xml(params.name));
@@ -202,8 +200,7 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     ctx.insert("has_dependencies", &!dep_entries.is_empty());
     ctx.insert("dependencies", &dep_entries);
 
-    tera.render("nuspec", &ctx)
-        .unwrap_or_else(|e| panic!("chocolatey: render nuspec template: {e}"))
+    anodize_core::template::render_static(&tera, "nuspec", &ctx, "chocolatey")
 }
 
 // ---------------------------------------------------------------------------
@@ -220,38 +217,37 @@ pub struct InstallScriptDual<'a> {
 }
 
 /// Generate a single-arch install script.
-pub fn generate_install_script(name: &str, url: &str, hash: &str, is_32bit: bool) -> String {
+pub fn generate_install_script(
+    name: &str,
+    url: &str,
+    hash: &str,
+    is_32bit: bool,
+) -> Result<String> {
     let template = if is_32bit {
         INSTALL_SCRIPT_TEMPLATE_32
     } else {
         INSTALL_SCRIPT_TEMPLATE_64
     };
-    let mut tera = tera::Tera::default();
-    tera.add_raw_template("install", template)
-        .unwrap_or_else(|e| panic!("chocolatey: parse install script template: {e}"));
-    tera.autoescape_on(vec![]);
+    let tera = anodize_core::template::parse_static("install", template)
+        .context("chocolatey: parse install script template")?;
     let mut ctx = tera::Context::new();
     ctx.insert("name", name);
     ctx.insert("url", url);
     ctx.insert("hash", hash);
-    tera.render("install", &ctx)
-        .unwrap_or_else(|e| panic!("chocolatey: render install script template: {e}"))
+    anodize_core::template::render_static(&tera, "install", &ctx, "chocolatey")
 }
 
 /// Generate a dual-arch install script with both 32-bit and 64-bit URLs.
-pub fn generate_install_script_dual(params: &InstallScriptDual<'_>) -> String {
-    let mut tera = tera::Tera::default();
-    tera.add_raw_template("install", INSTALL_SCRIPT_TEMPLATE_DUAL)
-        .unwrap_or_else(|e| panic!("chocolatey: parse dual install script template: {e}"));
-    tera.autoescape_on(vec![]);
+pub fn generate_install_script_dual(params: &InstallScriptDual<'_>) -> Result<String> {
+    let tera = anodize_core::template::parse_static("install", INSTALL_SCRIPT_TEMPLATE_DUAL)
+        .context("chocolatey: parse dual install script template")?;
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
     ctx.insert("url32", params.url32);
     ctx.insert("hash32", params.hash32);
     ctx.insert("url64", params.url64);
     ctx.insert("hash64", params.hash64);
-    tera.render("install", &ctx)
-        .unwrap_or_else(|e| panic!("chocolatey: render dual install script template: {e}"))
+    anodize_core::template::render_static(&tera, "install", &ctx, "chocolatey")
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +501,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         summary: summary_rendered.as_deref(),
         release_notes: release_notes_rendered.as_deref(),
         dependencies: choco_cfg.dependencies.as_deref().unwrap_or(&[]),
-    });
+    })?;
     let install_script = match &install_mode {
         InstallMode::Dual {
             url32,
@@ -518,12 +514,12 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
             hash32,
             url64,
             hash64,
-        }),
+        })?,
         InstallMode::Single {
             url,
             hash,
             is_32bit,
-        } => generate_install_script(pkg_name, url, hash, *is_32bit),
+        } => generate_install_script(pkg_name, url, hash, *is_32bit)?,
     };
 
     let tmp_dir = tempfile::tempdir().context("chocolatey: create temp dir")?;
@@ -740,10 +736,7 @@ fn package_exists(push_source: &str, name: &str, version: &str) -> bool {
         query_base, name, version
     );
 
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-    {
+    let client = match anodize_core::http::blocking_client(std::time::Duration::from_secs(30)) {
         Ok(c) => c,
         Err(_) => return false,
     };
@@ -873,7 +866,8 @@ mod tests {
             icon_url: "https://example.com/icon.png",
             tags: &tags,
             ..default_nuspec_params()
-        });
+        })
+        .unwrap();
         assert!(nuspec.contains("<?xml version=\"1.0\""));
         assert!(nuspec.contains("<id>mytool</id>"));
         assert!(nuspec.contains("<version>1.0.0</version>"));
@@ -888,13 +882,13 @@ mod tests {
 
     #[test]
     fn test_generate_nuspec_no_icon() {
-        let nuspec = generate_nuspec(&default_nuspec_params());
+        let nuspec = generate_nuspec(&default_nuspec_params()).unwrap();
         assert!(!nuspec.contains("<iconUrl>"));
     }
 
     #[test]
     fn test_generate_nuspec_empty_tags_uses_name() {
-        let nuspec = generate_nuspec(&default_nuspec_params());
+        let nuspec = generate_nuspec(&default_nuspec_params()).unwrap();
         assert!(nuspec.contains("<tags>mytool</tags>"));
     }
 
@@ -904,7 +898,8 @@ mod tests {
             name: "my-tool",
             description: "A tool for <things> & \"stuff\"",
             ..default_nuspec_params()
-        });
+        })
+        .unwrap();
         assert!(nuspec.contains("&lt;things&gt;"));
         assert!(nuspec.contains("&amp;"));
         assert!(nuspec.contains("&quot;stuff&quot;"));
@@ -917,7 +912,8 @@ mod tests {
             authors: "O'Brien & Associates",
             description: "Tool for <things> & 'stuff'",
             ..default_nuspec_params()
-        });
+        })
+        .unwrap();
         assert!(nuspec.contains("<authors>O&apos;Brien &amp; Associates</authors>"));
         assert!(nuspec.contains("&apos;stuff&apos;"));
     }
@@ -930,7 +926,8 @@ mod tests {
             title: Some("My \"Special\" Tool"),
             tags: &tags,
             ..default_nuspec_params()
-        });
+        })
+        .unwrap();
         assert!(nuspec.contains("<title>My &quot;Special&quot; Tool</title>"));
         assert!(nuspec.contains("<tags>c++ &amp; c#</tags>"));
     }
@@ -942,7 +939,8 @@ mod tests {
             version: "2.0.0",
             license: "Apache-2.0",
             ..default_nuspec_params()
-        });
+        })
+        .unwrap();
         assert!(
             nuspec.contains("<licenseUrl>https://opensource.org/licenses/Apache-2.0</licenseUrl>")
         );
@@ -956,7 +954,8 @@ mod tests {
             license: "Proprietary",
             license_url: Some("https://example.com/license"),
             ..default_nuspec_params()
-        });
+        })
+        .unwrap();
         assert!(nuspec.contains("<licenseUrl>https://example.com/license</licenseUrl>"));
         assert!(!nuspec.contains("opensource.org"));
     }
@@ -977,7 +976,8 @@ mod tests {
             icon_url: "https://example.com/icon.png",
             tags: &tags,
             ..default_nuspec_params()
-        });
+        })
+        .unwrap();
         assert!(nuspec.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
         assert!(nuspec.ends_with("</package>\n"));
         assert!(nuspec.contains("<metadata>"));
@@ -993,7 +993,8 @@ mod tests {
             "https://example.com/mytool-1.0.0-windows-amd64.zip",
             "deadbeef",
             false,
-        );
+        )
+        .unwrap();
         assert!(script.contains("$ErrorActionPreference = 'Stop'"));
         assert!(script.contains("packageName    = 'mytool'"));
         assert!(
@@ -1012,7 +1013,8 @@ mod tests {
             "https://example.com/mytool-1.0.0-windows-x86.zip",
             "deadbeef",
             true,
-        );
+        )
+        .unwrap();
         assert!(script.contains("packageName   = 'mytool'"));
         assert!(
             script.contains("url           = 'https://example.com/mytool-1.0.0-windows-x86.zip'")
@@ -1024,7 +1026,8 @@ mod tests {
 
     #[test]
     fn test_generate_install_script_has_unzip_location() {
-        let script = generate_install_script("tool", "https://example.com/tool.zip", "abc", false);
+        let script =
+            generate_install_script("tool", "https://example.com/tool.zip", "abc", false).unwrap();
         assert!(script.contains("unzipLocation"));
         assert!(script.contains("Split-Path"));
     }
@@ -1032,7 +1035,8 @@ mod tests {
     #[test]
     fn test_generate_install_script_structure() {
         let script =
-            generate_install_script("my-app", "https://example.com/my-app.zip", "hash123", false);
+            generate_install_script("my-app", "https://example.com/my-app.zip", "hash123", false)
+                .unwrap();
         let lines: Vec<&str> = script.lines().collect();
         assert_eq!(lines[0], "$ErrorActionPreference = 'Stop'");
         assert_eq!(lines[1], "");
@@ -1052,7 +1056,8 @@ mod tests {
             hash32: "hash32abc",
             url64: "https://example.com/mytool-1.0.0-windows-amd64.zip",
             hash64: "hash64def",
-        });
+        })
+        .unwrap();
         assert!(script.contains("$ErrorActionPreference = 'Stop'"));
         assert!(script.contains("$packageName = 'mytool'"));
         assert!(script.contains("$url = 'https://example.com/mytool-1.0.0-windows-386.zip'"));
@@ -1192,7 +1197,8 @@ mod tests {
             summary: Some("CLI devops tool"),
             release_notes: Some("Added new features"),
             dependencies: &deps,
-        });
+        })
+        .unwrap();
         assert!(nuspec.contains(
             "<packageSourceUrl>https://github.com/org/choco-packages</packageSourceUrl>"
         ));
@@ -1273,7 +1279,7 @@ crates:
         let pkg_dir = tmp.path();
 
         // Write nuspec
-        let nuspec = generate_nuspec(&default_nuspec_params());
+        let nuspec = generate_nuspec(&default_nuspec_params()).unwrap();
         let nuspec_path = pkg_dir.join("mytool.nuspec");
         std::fs::write(&nuspec_path, &nuspec).unwrap();
 
@@ -1281,7 +1287,8 @@ crates:
         let tools_dir = pkg_dir.join("tools");
         std::fs::create_dir_all(&tools_dir).unwrap();
         let script =
-            generate_install_script("mytool", "https://example.com/dl.zip", "abc123", false);
+            generate_install_script("mytool", "https://example.com/dl.zip", "abc123", false)
+                .unwrap();
         std::fs::write(tools_dir.join("chocolateyinstall.ps1"), &script).unwrap();
 
         // Create nupkg

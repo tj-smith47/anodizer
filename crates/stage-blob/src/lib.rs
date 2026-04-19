@@ -315,7 +315,9 @@ fn build_s3_store(
     // We set it as a default header on the client — since each blob config
     // gets its own ObjectStore client, this is per-config ACL.
     if let Some(ref acl) = config.acl {
-        // Validate against the S3 canned ACL enum.
+        // Validate against the S3 canned ACL enum. Matches GoReleaser
+        // internal/pipe/blob/upload.go:113-119 exactly — `log-delivery-write`
+        // (a valid AWS S3 canned ACL) is omitted to match upstream.
         const VALID_S3_ACLS: &[&str] = &[
             "private",
             "public-read",
@@ -324,7 +326,6 @@ fn build_s3_store(
             "aws-exec-read",
             "bucket-owner-read",
             "bucket-owner-full-control",
-            "log-delivery-write",
         ];
         if !VALID_S3_ACLS.contains(&acl.as_str()) {
             anyhow::bail!(
@@ -403,14 +404,15 @@ fn build_put_options(config: &BlobConfig, filename: &str, ctx: &Context) -> Resu
         attrs.insert(Attribute::CacheControl, cc.join(", ").into());
     }
 
-    // Content-Disposition: template-rendered with {{Filename}} variable.
-    // Default: "attachment;filename={{Filename}}". Set to "-" to disable.
-    let disp_template = config
-        .content_disposition
-        .as_deref()
-        .unwrap_or("attachment;filename={{Filename}}");
-
-    if disp_template != "-" {
+    // Content-Disposition: only set when user provides a non-empty value.
+    // GoReleaser never force-defaults `attachment;filename=...` — letting the
+    // backend default preserves in-browser preview for images/PDFs/HTML.
+    // Sentinel `"-"` disables the header explicitly (kept for parity with users
+    // migrating from earlier anodize configs).
+    if let Some(disp_template) = config.content_disposition.as_deref()
+        && !disp_template.is_empty()
+        && disp_template != "-"
+    {
         // Render the template with the Filename variable added
         let mut vars = ctx.template_vars().clone();
         vars.set("Filename", filename);
@@ -1034,14 +1036,18 @@ mod tests {
     }
 
     #[test]
-    fn test_put_options_content_disposition_default() {
+    fn test_put_options_content_disposition_default_unset() {
+        // B3 fix: GoReleaser does NOT default content-disposition; anodize
+        // must not either, so in-browser preview (images/PDFs/HTML) keeps
+        // working when users don't opt into attachment behavior.
         let config = BlobConfig::default();
         let opts = build_put_options(&config, "myapp-v1.tar.gz", &make_ctx()).unwrap();
-        let cd = opts
-            .attributes
-            .get(&object_store::Attribute::ContentDisposition)
-            .unwrap_or_else(|| panic!("default content-disposition should be set"));
-        assert_eq!(cd.as_ref(), "attachment;filename=myapp-v1.tar.gz");
+        assert!(
+            opts.attributes
+                .get(&object_store::Attribute::ContentDisposition)
+                .is_none(),
+            "default content-disposition must be unset (matches GoReleaser)"
+        );
     }
 
     #[test]

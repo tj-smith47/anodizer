@@ -27,6 +27,27 @@ name_template: "{{ ProjectName }}-{{ Version }}"       # Tera-style (native)
 
 You can freely mix both styles in the same config file. The leading dot is stripped before the template is rendered.
 
+### Common GoReleaser idiom → Tera mapping
+
+Anodize preprocesses most Go-template constructs into their Tera equivalents, but a handful of idioms copied verbatim from a `.goreleaser.yaml` will produce confusing errors. Use this table when migrating.
+
+| GoReleaser idiom | Tera equivalent | Notes |
+|---|---|---|
+| `{{ if .IsRelease }}X{{ end }}` | `{% if IsRelease %}X{% endif %}` | Statement tags use `{% %}`, not `{{ }}` |
+| `{{ if .IsRelease }}X{{ else }}Y{{ end }}` | `{% if IsRelease %}X{% else %}Y{% endif %}` | `{% else %}` |
+| `{{ range .Tags }}...{{ end }}` | `{% for t in Tags %}...{% endfor %}` | Tera names the loop variable explicitly |
+| `{{ range $k, $v := .Env }}...{{ end }}` | `{% for k, v in Env %}...{% endfor %}` | Key/value loop |
+| `{{ with .Arm }}v{{ . }}{{ end }}` | `{% if Arm %}v{{ Arm }}{% endif %}` | Tera has no `with`; reference the field by name |
+| `{{ tolower .Os }}` | `{{ Os \| lower }}` — or `{{ Os \| tolower }}` | Filters use `\|`; `tolower`/`toupper` aliases provided for parity |
+| `{{ replace .Tag "v" "" }}` | `{{ Tag \| replace(from="v", to="") }}` | Tera filters take named args |
+| `{{ trimprefix .Tag "v" }}` | `{{ Tag \| trimprefix(prefix="v") }}` | Alias filter registered for parity |
+| `{{ .Env.FOO }}` | `{{ Env.FOO }}` — or `{{ .Env.FOO }}` | Dot-prefix form is preprocessed away |
+| `{{ default "x" .Tag }}` | `{{ Tag \| default(value="x") }}` | Tera pipes the value through a filter |
+| `{{ eq .Os "linux" }}` | `{% if Os == "linux" %}...{% endif %}` | Equality is a normal operator, not a function |
+| `{{ printf "%s-%s" .Os .Arch }}` | `{{ Os }}-{{ Arch }}` | Most `printf` formats can be inlined; use filters for padding/number formatting |
+
+If you hit a construct not covered here, open an issue with the failing template and the intended output.
+
 ## Template variables
 
 ### Project and version

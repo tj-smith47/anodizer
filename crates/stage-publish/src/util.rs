@@ -506,12 +506,17 @@ fn create_pr_via_api(
     let payload = serde_json::json!({
         "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,
     });
-    let client = reqwest::blocking::Client::new();
+    let client = match anodize_core::http::blocking_client(std::time::Duration::from_secs(30)) {
+        Ok(c) => c,
+        Err(e) => {
+            log.warn(&format!("{label}: build HTTP client: {e}"));
+            return;
+        }
+    };
     let result = client
         .post(&url)
         .header("Authorization", format!("token {}", token))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "anodize")
         .json(&payload)
         .send();
     match result {
@@ -668,11 +673,11 @@ pub(crate) fn resolve_repo_owner_name(
 }
 
 /// Default commit author name used when no author is configured.
-/// Mirrors GoReleaser's default of "goreleaser".
+/// Mirrors GoReleaser's default of "goreleaserbot" (internal/commitauthor/author.go:11).
 const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodize";
 
 /// Default commit author email used when no author is configured.
-/// Mirrors GoReleaser's default of "goreleaser@carlosbecker.com".
+/// Mirrors GoReleaser's default of "bot@goreleaser.com" (internal/commitauthor/author.go:12).
 const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodize.dev";
 
 /// Resolve commit author name/email from a CommitAuthorConfig, falling back
@@ -877,10 +882,16 @@ pub(crate) fn commit_and_push_with_opts(
             sign_program_cfg = format!("gpg.program={}", program);
             commit_args.extend_from_slice(&["-c", &sign_program_cfg]);
         }
-        if let Some(fmt) = opts.signing.and_then(|s| s.format.as_deref()) {
-            sign_format_cfg = format!("gpg.format={}", fmt);
-            commit_args.extend_from_slice(&["-c", &sign_format_cfg]);
-        }
+        // GoReleaser commitauthor/author.go:49-52 defaults signing.format to
+        // "openpgp" when signing is enabled but format is unset — otherwise
+        // users inherit the system's `gpg.format` (ssh/x509) which isn't what
+        // they asked for.
+        let fmt = opts
+            .signing
+            .and_then(|s| s.format.as_deref())
+            .unwrap_or("openpgp");
+        sign_format_cfg = format!("gpg.format={}", fmt);
+        commit_args.extend_from_slice(&["-c", &sign_format_cfg]);
     }
     commit_args.extend_from_slice(&["commit", "-m", message]);
 
@@ -991,12 +1002,9 @@ pub(crate) fn submit_pr_via_gh(
 /// failure) so the caller can fall back to a sensible default.
 fn fetch_default_branch(owner: &str, name: &str, token: Option<&str>) -> Option<String> {
     let url = format!("https://api.github.com/repos/{}/{}", owner, name);
-    let mut req = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
+    let mut req = anodize_core::http::blocking_client(std::time::Duration::from_secs(10))
         .ok()?
         .get(&url)
-        .header("User-Agent", "anodize")
         .header("Accept", "application/vnd.github+json");
     if let Some(tok) = token {
         req = req.bearer_auth(tok);

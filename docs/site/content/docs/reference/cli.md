@@ -30,7 +30,7 @@ Run the full release pipeline
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--crate` | — | — | Release a specific crate (repeatable) |
+| `--crate` | — | — | Release a specific crate (repeatable; --id is accepted as a GoReleaser-compat alias) |
 | `--all` | — | — | Release all crates with unreleased changes |
 | `--force` | — | — | Force release even without unreleased changes |
 | `--snapshot` | — | — | Build without publishing (snapshot mode) |

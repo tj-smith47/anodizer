@@ -32,7 +32,7 @@ pub struct Cli {
 pub enum Commands {
     /// Run the full release pipeline
     Release {
-        #[arg(long = "crate", action = clap::ArgAction::Append, help = "Release a specific crate (repeatable)")]
+        #[arg(long = "crate", visible_alias = "id", action = clap::ArgAction::Append, help = "Release a specific crate (repeatable; --id is accepted as a GoReleaser-compat alias)")]
         crate_names: Vec<String>,
         #[arg(long, help = "Release all crates with unreleased changes")]
         all: bool,

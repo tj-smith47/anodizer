@@ -1086,7 +1086,7 @@ impl Stage for ArchiveStage {
                 let pre_label = format!("pre-archive[{archive_id}]");
                 let post_label = format!("post-archive[{archive_id}]");
 
-                if let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()) {
+                if let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.before.as_ref()) {
                     run_hooks(pre, &pre_label, dry_run, &log, Some(&hook_vars))?;
                 }
 
@@ -1597,19 +1597,54 @@ impl Stage for ArchiveStage {
                             metadata.insert("ndynlink".to_string(), "true".to_string());
                         }
 
-                        new_artifacts.push(Artifact {
-                            kind: ArtifactKind::Archive,
-                            name: String::new(),
-                            path: archive_path,
-                            target: Some(target.clone()),
-                            crate_name: crate_name.clone(),
-                            metadata,
-                            size: None,
-                        });
+                        if format == "binary" {
+                            // GoReleaser archive.go:143-145,296-336: `format=binary`
+                            // emits one UploadableBinary artifact per source
+                            // binary, not a single Archive. Registering an Archive
+                            // with the "parent" archive_path would point downstream
+                            // stages (checksum/sign/release/blob) at a file that is
+                            // never created on disk.
+                            let out_dir = archive_path.parent().unwrap_or(Path::new("."));
+                            for bin in &selected_bins {
+                                let file_name = bin
+                                    .path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| bin.path.to_string_lossy().to_string());
+                                let dest = if path_refs.len() == 1 {
+                                    archive_path.clone()
+                                } else {
+                                    out_dir.join(&file_name)
+                                };
+                                let mut per_bin_meta = metadata.clone();
+                                if let Some(bin_name) = bin.metadata.get("binary") {
+                                    per_bin_meta.insert("binary".to_string(), bin_name.clone());
+                                }
+                                new_artifacts.push(Artifact {
+                                    kind: ArtifactKind::UploadableBinary,
+                                    name: file_name,
+                                    path: dest,
+                                    target: Some(target.clone()),
+                                    crate_name: crate_name.clone(),
+                                    metadata: per_bin_meta,
+                                    size: None,
+                                });
+                            }
+                        } else {
+                            new_artifacts.push(Artifact {
+                                kind: ArtifactKind::Archive,
+                                name: String::new(),
+                                path: archive_path,
+                                target: Some(target.clone()),
+                                crate_name: crate_name.clone(),
+                                metadata,
+                                size: None,
+                            });
+                        }
                     }
                 }
 
-                if let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()) {
+                if let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.after.as_ref()) {
                     run_hooks(post, &post_label, dry_run, &log, Some(&hook_vars))?;
                 }
             }
@@ -2310,15 +2345,16 @@ crates:
         let stage = ArchiveStage;
         stage.run(&mut ctx).unwrap();
 
-        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
-        assert_eq!(archives.len(), 1);
-        // Binary format should have no extension
-        let name = archives[0].path.file_name().unwrap().to_str().unwrap();
+        // `format: binary` registers UploadableBinary artifacts, one per source binary
+        // (matches GoReleaser archive.go:143-145,296-336).
+        let bins = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
+        assert_eq!(bins.len(), 1);
+        let name = bins[0].path.file_name().unwrap().to_str().unwrap();
         assert!(!name.contains(".tar"));
         assert!(!name.contains(".zip"));
         assert!(!name.contains(".gz"));
-        assert!(archives[0].path.exists());
-        assert_eq!(fs::read(&archives[0].path).unwrap(), b"raw binary content");
+        assert!(bins[0].path.exists());
+        assert_eq!(fs::read(&bins[0].path).unwrap(), b"raw binary content");
     }
 
     // -----------------------------------------------------------------------
@@ -4371,10 +4407,10 @@ crates:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
             let hooks = cfgs[0].hooks.as_ref().unwrap();
-            let pre = hooks.pre.as_ref().unwrap();
+            let pre = hooks.before.as_ref().unwrap();
             assert_eq!(pre.len(), 1);
             assert_eq!(pre[0], "echo pre-archive");
-            let post = hooks.post.as_ref().unwrap();
+            let post = hooks.after.as_ref().unwrap();
             assert_eq!(post.len(), 1);
             assert_eq!(post[0], "echo post-archive");
         } else {
@@ -4406,15 +4442,15 @@ crates:
         if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
             let hooks = cfgs[0].hooks.as_ref().unwrap();
             let pre = hooks
-                .pre
+                .before
                 .as_ref()
-                .expect("`before:` yaml should populate `pre` via serde alias");
+                .expect("`before:` yaml should populate `before` via serde alias");
             assert_eq!(pre.len(), 1);
             assert_eq!(pre[0], "echo pre-archive-goreleaser-spelling");
             let post = hooks
-                .post
+                .after
                 .as_ref()
-                .expect("`after:` yaml should populate `post` via serde alias");
+                .expect("`after:` yaml should populate `after` via serde alias");
             assert_eq!(post.len(), 1);
             assert_eq!(post[0], "echo post-archive-goreleaser-spelling");
         } else {
@@ -5405,14 +5441,14 @@ crates:
 
         ArchiveStage.run(&mut ctx).unwrap();
 
-        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
-        assert_eq!(archives.len(), 1);
-        let name = archives[0].path.file_name().unwrap().to_string_lossy();
+        let bins = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
+        assert_eq!(bins.len(), 1);
+        let name = bins[0].path.file_name().unwrap().to_string_lossy();
         assert!(
             name.ends_with(".exe"),
-            "Windows binary-format archive must end with .exe, got: {name}"
+            "Windows binary-format upload must end with .exe, got: {name}"
         );
-        assert!(archives[0].path.exists());
+        assert!(bins[0].path.exists());
     }
 
     #[test]
@@ -5501,12 +5537,12 @@ crates:
             size: None,
         });
         ArchiveStage.run(&mut ctx).unwrap();
-        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
-        assert_eq!(archives.len(), 1);
-        let name = archives[0].path.file_name().unwrap().to_string_lossy();
+        let bins = ctx.artifacts.by_kind(ArtifactKind::UploadableBinary);
+        assert_eq!(bins.len(), 1);
+        let name = bins[0].path.file_name().unwrap().to_string_lossy();
         assert!(
             !name.ends_with(".exe"),
-            "Linux binary-format archive should not get .exe, got: {name}"
+            "Linux binary-format upload should not get .exe, got: {name}"
         );
     }
 }

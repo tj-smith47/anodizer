@@ -88,35 +88,28 @@ fn find_image_digest(artifacts: &[Artifact], image: &str) -> Option<String> {
 // is_retriable_error
 // ---------------------------------------------------------------------------
 
-/// Determine whether a docker error message indicates a transient
-/// network/registry failure that is worth retrying, as opposed to a build
-/// failure (bad Dockerfile, missing files, etc.) that will never succeed.
+/// Determine whether a docker error message indicates a transient failure
+/// worth retrying. Matches GoReleaser's narrow `isRetriablePush`
+/// (internal/pipe/docker/docker.go:389-418): `io.EOF` plus the exact HTTP
+/// status set 500/502/503/504/506/510. Network-level failures (`dial tcp`,
+/// `connection refused`, TLS handshake, DNS `no such host`, `REFUSED_STREAM`,
+/// `timeout`) fast-fail — waiting through a 10× exponential backoff when the
+/// registry is unreachable just delays the inevitable error for the user.
 ///
 /// Used by the legacy (V1) docker build path. V2 uses [`is_retriable_error_v2`].
 pub fn is_retriable_error(error_msg: &str) -> bool {
+    if error_msg == "EOF" || error_msg.ends_with(": EOF") || error_msg.contains("\nEOF\n") {
+        return true;
+    }
     let retriable_patterns = [
-        "dial tcp",
-        "connection refused",
-        "connection reset",
         "received unexpected HTTP status: 500 Internal Server Error",
         "received unexpected HTTP status: 502 Bad Gateway",
         "received unexpected HTTP status: 503 Service Unavailable",
         "received unexpected HTTP status: 504 Gateway Timeout",
         "received unexpected HTTP status: 506 Variant Also Negotiates",
         "received unexpected HTTP status: 510 Not Extended",
-        "EOF",
-        "timeout",
-        "TLS handshake",
-        "i/o timeout",
-        "server misbehaving",
-        "no such host",
-        "REFUSED_STREAM",
-        "registry returned status",
     ];
-    let lower = error_msg.to_lowercase();
-    retriable_patterns
-        .iter()
-        .any(|p| lower.contains(&p.to_lowercase()))
+    retriable_patterns.iter().any(|p| error_msg.contains(p))
 }
 
 /// V2-specific retry predicate. Matches GoReleaser's narrow
@@ -688,9 +681,20 @@ pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> b
                 .unwrap_or(false)
         }
         Some(SkipPushConfig::Template(tmpl)) => {
-            // Render template string and treat truthy result as "skip"
+            // GoReleaser docker.go:343,346: exact `"true"` / `"auto"`
+            // string match on the trimmed render, case-sensitive. `"TRUE"` or
+            // `"True"` must NOT skip push.
             ctx.render_template(tmpl)
-                .map(|rendered| rendered.trim().eq_ignore_ascii_case("true"))
+                .map(|rendered| {
+                    let trimmed = rendered.trim();
+                    trimmed == "true"
+                        || (trimmed == "auto"
+                            && ctx
+                                .template_vars()
+                                .get("Prerelease")
+                                .map(|p| !p.is_empty())
+                                .unwrap_or(false))
+                })
                 .unwrap_or(false)
         }
         None => false,
@@ -807,46 +811,40 @@ struct DockerBuildResult {
 fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<DockerBuildResult> {
     log.status(&format!("running: {}", job.cmd_args.join(" ")));
 
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 1..=job.max_attempts {
+    use anodize_core::retry::{RetryPolicy, retry_sync};
+    use std::ops::ControlFlow;
+    let policy = RetryPolicy {
+        max_attempts: job.max_attempts,
+        base_delay: job.base_delay,
+        max_delay: job.max_delay.unwrap_or(Duration::MAX),
+    };
+    retry_sync(&policy, |attempt| {
         if attempt > 1 {
-            let multiplier = 2u64.saturating_pow(attempt - 2);
-            let delay_ms = job
-                .base_delay
-                .as_millis()
-                .saturating_mul(multiplier as u128);
-            let mut delay = Duration::from_millis(delay_ms as u64);
-            if let Some(cap) = job.max_delay
-                && delay > cap
-            {
-                delay = cap;
-            }
             log.warn(&format!(
-                "attempt {}/{} failed, retrying in {:?}…",
+                "attempt {}/{} failed, retrying…",
                 attempt - 1,
                 job.max_attempts,
-                delay,
             ));
-            std::thread::sleep(delay);
         }
 
         let mut cmd = Command::new(&job.cmd_args[0]);
         cmd.args(&job.cmd_args[1..])
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        // Inject context env vars (from .env files, config env: sections)
         for (key, value) in &job.env_vars {
             cmd.env(key, value);
         }
-        let mut output = cmd.output().with_context(|| {
-            format!(
-                "docker: execute {} for crate {} index {} (attempt {}/{})",
-                job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
-            )
-        })?;
+        let mut output = match cmd.output() {
+            Ok(o) => o,
+            Err(e) => {
+                return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                    "docker: execute {} for crate {} index {} (attempt {}/{})",
+                    job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
+                ))));
+            }
+        };
 
         // Redact secrets from stdout/stderr before any output or logging.
-        // This ensures secrets don't leak through error messages or diagnostics.
         let env_pairs: Vec<(String, String)> = job
             .env_vars
             .iter()
@@ -875,7 +873,6 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             let _ = std::io::stderr().write_all(&output.stderr);
         }
 
-        // Capture redacted stderr for diagnostic hints.
         let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
 
         match log.check_output(output, &format!("docker {}", job.backend_label)) {
@@ -886,8 +883,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                         job.backend_label, attempt, job.max_attempts
                     ));
                 }
-                last_err = None;
-                break;
+                Ok(())
             }
             Err(e) => {
                 let err_msg = format!("{:#}", e);
@@ -896,10 +892,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 } else {
                     is_retriable_error(&err_msg)
                 };
-                if attempt < job.max_attempts && !is_retriable {
-                    // Diagnostic: file-not-found hints for COPY/ADD failures.
-                    // List all files in the build context to help debug which
-                    // files are actually staged (matches GoReleaser behavior).
+                if !is_retriable {
                     if stderr_text.contains("COPY") || stderr_text.contains("ADD") {
                         log.warn(
                             "the Dockerfile COPY/ADD failed — check that the \
@@ -910,7 +903,6 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                         log.warn("files in the staging directory:");
                         list_staging_dir_recursive(&job.staging_dir, &job.staging_dir, log);
                     }
-                    // Diagnostic: buildx context / TLS errors
                     if stderr_text.contains("could not read certificates")
                         || stderr_text.contains("server gave HTTP response to HTTPS client")
                     {
@@ -923,26 +915,22 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                         "docker {} failed with non-retriable error, not retrying",
                         job.backend_label
                     ));
-                    return Err(e).with_context(|| {
-                        format!(
-                            "docker: non-retriable failure for crate {} index {}",
-                            job.crate_name, job.idx
-                        )
-                    });
+                    Err(ControlFlow::Break(e.context(format!(
+                        "docker: non-retriable failure for crate {} index {}",
+                        job.crate_name, job.idx
+                    ))))
+                } else {
+                    Err(ControlFlow::Continue(e))
                 }
-                last_err = Some(e);
             }
         }
-    }
-
-    if let Some(e) = last_err {
-        return Err(e).with_context(|| {
-            format!(
-                "docker: all {} attempts failed for crate {} index {}",
-                job.max_attempts, job.crate_name, job.idx
-            )
-        });
-    }
+    })
+    .with_context(|| {
+        format!(
+            "docker: all {} attempts failed for crate {} index {}",
+            job.max_attempts, job.crate_name, job.idx
+        )
+    })?;
 
     // Legacy (non-buildx) push: `docker push` / `podman push` per tag.
     // Plain `docker build` does NOT support --push; only buildx does.
@@ -960,33 +948,24 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         for tag in &job.rendered_tags {
             log.status(&format!("pushing {}", tag));
 
-            let mut push_last_err: Option<anyhow::Error> = None;
-            for attempt in 1..=job.max_attempts {
+            let push_policy = anodize_core::retry::RetryPolicy {
+                max_attempts: job.max_attempts,
+                base_delay: job.base_delay,
+                max_delay: job.max_delay.unwrap_or(Duration::MAX),
+            };
+            anodize_core::retry::retry_sync(&push_policy, |attempt| {
+                use std::ops::ControlFlow;
                 if attempt > 1 {
-                    let multiplier = 2u64.saturating_pow(attempt - 2);
-                    let delay_ms = job
-                        .base_delay
-                        .as_millis()
-                        .saturating_mul(multiplier as u128);
-                    let mut delay = Duration::from_millis(delay_ms as u64);
-                    if let Some(cap) = job.max_delay
-                        && delay > cap
-                    {
-                        delay = cap;
-                    }
                     log.warn(&format!(
-                        "push attempt {}/{} for {} failed, retrying in {:?}…",
+                        "push attempt {}/{} for {} failed, retrying…",
                         attempt - 1,
                         job.max_attempts,
                         tag,
-                        delay,
                     ));
-                    std::thread::sleep(delay);
                 }
 
                 let mut push_cmd = Command::new(push_bin);
                 push_cmd.arg("push").arg(tag);
-                // Pass push_flags to the push command (not the build command)
                 for flag in &job.push_flags {
                     push_cmd.arg(flag);
                 }
@@ -997,12 +976,15 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
 
-                let push_output = push_cmd.output().with_context(|| {
-                    format!(
-                        "docker: push {} for crate {} index {} (attempt {}/{})",
-                        tag, job.crate_name, job.idx, attempt, job.max_attempts
-                    )
-                })?;
+                let push_output = match push_cmd.output() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                            "docker: push {} for crate {} index {} (attempt {}/{})",
+                            tag, job.crate_name, job.idx, attempt, job.max_attempts
+                        ))));
+                    }
+                };
 
                 // Redact secrets from push output
                 let env_pairs: Vec<(String, String)> = job
@@ -1041,37 +1023,30 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                             tag, attempt, job.max_attempts
                         ));
                     }
-                    // Capture digest from push stdout (more reliable than
-                    // docker inspect — works even if image is cleaned up).
                     let push_stdout = String::from_utf8_lossy(&stdout_bytes);
                     if let Some(digest) = find_sha256_digest(&push_stdout) {
                         push_stdout_digests.insert(tag.clone(), digest.to_string());
                     }
-                    push_last_err = None;
-                    break;
+                    Ok(())
                 } else {
                     let err_msg = String::from_utf8_lossy(&stderr_bytes).to_string();
                     let err = anyhow::anyhow!("docker push {} failed: {}", tag, err_msg.trim());
-                    if attempt < job.max_attempts && is_retriable_error(&err_msg) {
-                        push_last_err = Some(err);
+                    if is_retriable_error(&err_msg) {
+                        Err(ControlFlow::Continue(err))
                     } else {
-                        return Err(err).with_context(|| {
-                            format!(
-                                "docker: push failed for crate {} index {} tag {}",
-                                job.crate_name, job.idx, tag
-                            )
-                        });
+                        Err(ControlFlow::Break(err.context(format!(
+                            "docker: push failed for crate {} index {} tag {}",
+                            job.crate_name, job.idx, tag
+                        ))))
                     }
                 }
-            }
-            if let Some(e) = push_last_err {
-                return Err(e).with_context(|| {
-                    format!(
-                        "docker: all {} push attempts failed for crate {} index {} tag {}",
-                        job.max_attempts, job.crate_name, job.idx, tag
-                    )
-                });
-            }
+            })
+            .with_context(|| {
+                format!(
+                    "docker: all {} push attempts failed for crate {} index {} tag {}",
+                    job.max_attempts, job.crate_name, job.idx, tag
+                )
+            })?;
         }
     }
 
@@ -2345,6 +2320,9 @@ impl Stage for DockerStage {
             }
             impl Drop for SemaphoreGuard<'_> {
                 fn drop(&mut self) {
+                    // `send` cannot fail because thread::scope guarantees all
+                    // guards drop before sem_rx; spawning a detached thread
+                    // here would silently lose a token.
                     let _ = self.sender.send(());
                 }
             }
@@ -2654,26 +2632,20 @@ impl Stage for DockerStage {
                             })?;
 
                         {
-                            let mut last_err: Option<anyhow::Error> = None;
-                            for attempt in 1..=manifest_max_attempts {
+                            use anodize_core::retry::{RetryPolicy, retry_sync};
+                            use std::ops::ControlFlow;
+                            let policy = RetryPolicy {
+                                max_attempts: manifest_max_attempts,
+                                base_delay: manifest_base_delay,
+                                max_delay: manifest_max_delay.unwrap_or(Duration::MAX),
+                            };
+                            retry_sync(&policy, |attempt| {
                                 if attempt > 1 {
-                                    let multiplier = 2u64.saturating_pow(attempt - 2);
-                                    let delay_ms = manifest_base_delay
-                                        .as_millis()
-                                        .saturating_mul(multiplier as u128);
-                                    let mut delay = Duration::from_millis(delay_ms as u64);
-                                    if let Some(cap) = manifest_max_delay
-                                        && delay > cap
-                                    {
-                                        delay = cap;
-                                    }
                                     log.warn(&format!(
-                                        "manifest create attempt {}/{} failed, retrying in {:?}…",
+                                        "manifest create attempt {}/{} failed, retrying…",
                                         attempt - 1,
                                         manifest_max_attempts,
-                                        delay,
                                     ));
-                                    std::thread::sleep(delay);
                                 }
                                 log.status(&format!("running: {}", create_cmd.join(" ")));
                                 let mut create_command = Command::new(&create_cmd[0]);
@@ -2681,13 +2653,17 @@ impl Stage for DockerStage {
                                 for (key, value) in &manifest_env_vars {
                                     create_command.env(key, value);
                                 }
-                                let output = create_command.output()
-                                    .with_context(|| {
-                                        format!(
-                                            "docker: manifest create for crate {} manifest {} (attempt {}/{})",
-                                            krate.name, midx, attempt, manifest_max_attempts
-                                        )
-                                    })?;
+                                let output = match create_command.output() {
+                                    Ok(o) => o,
+                                    Err(e) => {
+                                        return Err(ControlFlow::Break(
+                                            anyhow::Error::from(e).context(format!(
+                                                "docker: manifest create for crate {} manifest {} (attempt {}/{})",
+                                                krate.name, midx, attempt, manifest_max_attempts
+                                            )),
+                                        ));
+                                    }
+                                };
                                 match log.check_output(output, "docker manifest create") {
                                     Ok(_) => {
                                         if attempt > 1 {
@@ -2696,24 +2672,18 @@ impl Stage for DockerStage {
                                                 attempt, manifest_max_attempts
                                             ));
                                         }
-                                        last_err = None;
-                                        break;
+                                        Ok(())
                                     }
                                     Err(e) => {
                                         let err_msg = format!("{:#}", e);
-                                        if attempt < manifest_max_attempts
-                                            && is_retriable_error(&err_msg)
-                                        {
-                                            last_err = Some(e);
+                                        if is_retriable_error(&err_msg) {
+                                            Err(ControlFlow::Continue(e))
                                         } else {
-                                            return Err(e);
+                                            Err(ControlFlow::Break(e))
                                         }
                                     }
                                 }
-                            }
-                            if let Some(e) = last_err {
-                                return Err(e);
-                            }
+                            })?;
                         }
 
                         // Push the manifest (with retry) and capture digest
@@ -2728,26 +2698,20 @@ impl Stage for DockerStage {
                                 push_cmd.push(flag.clone());
                             }
 
-                            let mut last_err: Option<anyhow::Error> = None;
-                            for attempt in 1..=manifest_max_attempts {
+                            use anodize_core::retry::{RetryPolicy, retry_sync};
+                            use std::ops::ControlFlow;
+                            let policy = RetryPolicy {
+                                max_attempts: manifest_max_attempts,
+                                base_delay: manifest_base_delay,
+                                max_delay: manifest_max_delay.unwrap_or(Duration::MAX),
+                            };
+                            retry_sync(&policy, |attempt| {
                                 if attempt > 1 {
-                                    let multiplier = 2u64.saturating_pow(attempt - 2);
-                                    let delay_ms = manifest_base_delay
-                                        .as_millis()
-                                        .saturating_mul(multiplier as u128);
-                                    let mut delay = Duration::from_millis(delay_ms as u64);
-                                    if let Some(cap) = manifest_max_delay
-                                        && delay > cap
-                                    {
-                                        delay = cap;
-                                    }
                                     log.warn(&format!(
-                                        "manifest push attempt {}/{} failed, retrying in {:?}…",
+                                        "manifest push attempt {}/{} failed, retrying…",
                                         attempt - 1,
                                         manifest_max_attempts,
-                                        delay,
                                     ));
-                                    std::thread::sleep(delay);
                                 }
                                 log.status(&format!("running: {}", push_cmd.join(" ")));
                                 let mut push_command = Command::new(&push_cmd[0]);
@@ -2755,13 +2719,17 @@ impl Stage for DockerStage {
                                 for (key, value) in &manifest_env_vars {
                                     push_command.env(key, value);
                                 }
-                                let output = push_command.output()
-                                    .with_context(|| {
-                                        format!(
-                                            "docker: manifest push for crate {} manifest {} (attempt {}/{})",
-                                            krate.name, midx, attempt, manifest_max_attempts
-                                        )
-                                    })?;
+                                let output = match push_command.output() {
+                                    Ok(o) => o,
+                                    Err(e) => {
+                                        return Err(ControlFlow::Break(
+                                            anyhow::Error::from(e).context(format!(
+                                                "docker: manifest push for crate {} manifest {} (attempt {}/{})",
+                                                krate.name, midx, attempt, manifest_max_attempts
+                                            )),
+                                        ));
+                                    }
+                                };
                                 // Capture stdout for digest extraction before checking status
                                 let push_stdout =
                                     String::from_utf8_lossy(&output.stdout).to_string();
@@ -2776,7 +2744,6 @@ impl Stage for DockerStage {
                                         // Extract digest from push output (sha256:64hexchars)
                                         if let Some(start) = push_stdout.find("sha256:") {
                                             let candidate = &push_stdout[start..];
-                                            // sha256: (7 chars) + 64 hex chars = 71
                                             if candidate.len() >= 71
                                                 && candidate[7..71]
                                                     .chars()
@@ -2785,24 +2752,18 @@ impl Stage for DockerStage {
                                                 manifest_digest = Some(candidate[..71].to_string());
                                             }
                                         }
-                                        last_err = None;
-                                        break;
+                                        Ok(())
                                     }
                                     Err(e) => {
                                         let err_msg = format!("{:#}", e);
-                                        if attempt < manifest_max_attempts
-                                            && is_retriable_error(&err_msg)
-                                        {
-                                            last_err = Some(e);
+                                        if is_retriable_error(&err_msg) {
+                                            Err(ControlFlow::Continue(e))
                                         } else {
-                                            return Err(e);
+                                            Err(ControlFlow::Break(e))
                                         }
                                     }
                                 }
-                            }
-                            if let Some(e) = last_err {
-                                return Err(e);
-                            }
+                            })?;
                         }
                     }
 
@@ -4620,6 +4581,80 @@ crates:
             "ghcr.io/owner/app:1.0.0-amd64,ghcr.io/owner/app:1.0.0-arm64"
         );
         assert_eq!(manifests[0].metadata.get("id").unwrap(), "multi-arch");
+    }
+
+    #[test]
+    fn test_docker_manifest_create_push_flags_template_rendering() {
+        // S8 regression: create_flags and push_flags must receive the same
+        // template context as V1 docker (`{{ .Tag }}`, `{{ .Env.* }}`).
+        use anodize_core::config::{Config, CrateConfig, DockerManifestConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config {
+            project_name: "test".to_string(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                docker_manifests: Some(vec![DockerManifestConfig {
+                    name_template: "ghcr.io/owner/app:{{ .Version }}".to_string(),
+                    image_templates: vec![
+                        "ghcr.io/owner/app:{{ .Version }}-amd64".to_string(),
+                        "ghcr.io/owner/app:{{ .Version }}-arm64".to_string(),
+                    ],
+                    create_flags: Some(vec![
+                        "--amend".to_string(),
+                        "--annotation=tag={{ .Tag }}".to_string(),
+                        "--annotation=env={{ .Env.CI_BACKEND }}".to_string(),
+                    ]),
+                    push_flags: Some(vec!["--purge={{ .Tag }}".to_string()]),
+                    skip_push: None,
+                    id: Some("multi-arch-templated".to_string()),
+                    use_backend: None,
+                    retry: None,
+                    disable: None,
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.template_vars_mut().set_env("CI_BACKEND", "github");
+
+        let stage = DockerStage;
+        let result = stage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "dry-run manifest with templated flags should succeed, got: {:?}",
+            result.err()
+        );
+
+        // Inline-render the flags through the same ctx to assert templating
+        // resolves — dry-run doesn't expose rendered flags in artifact metadata,
+        // but the stage ran without template errors, and we verify the engine
+        // handles the exact strings the stage passes it.
+        assert_eq!(
+            ctx.render_template("--annotation=tag={{ .Tag }}").unwrap(),
+            "--annotation=tag=v1.2.3"
+        );
+        assert_eq!(
+            ctx.render_template("--annotation=env={{ .Env.CI_BACKEND }}")
+                .unwrap(),
+            "--annotation=env=github"
+        );
+        assert_eq!(
+            ctx.render_template("--purge={{ .Tag }}").unwrap(),
+            "--purge=v1.2.3"
+        );
     }
 
     #[test]

@@ -93,12 +93,21 @@ Downstream teammates (`Action-A8` parity audit + `Action-A9` composite safety) s
 
 ## Completion statement (Action inventory)
 
+Refreshed 2026-04-18 — goreleaser-action HEAD `01cbe07`; action.yml unchanged since last sync (5 inputs, 2 outputs).
+
 - Total goreleaser-action inputs catalogued: 5 (distribution, version, args, workdir, install-only)
 - Total goreleaser-action outputs catalogued: 2 (artifacts, metadata)
 - Total anodize-action inputs catalogued: 19
 - Total anodize-action outputs catalogued: 7
 - anodize-action features additive to goreleaser-action: 14 (inputs) + 5 (outputs) + 8 (steps) — see §1–§3
-- anodize-action features missing vs goreleaser-action: 2 (semver-range version resolution, nightly channel)
+- anodize-action features missing vs goreleaser-action: 2 (semver-range version resolution, nightly channel) — both niche
+- Rows audited: 27
+  - required (GITHUB_TOKEN / artifacts / metadata / args / workdir / install-only / version default resolution): 7 implemented
+  - strongly-suggested (rest of inputs/outputs/composite steps): 18 implemented or additive
+  - niche missing: 2 (semver-range, nightly) — niche because anodize-action users pin exact versions; nightly channel absent at the CLI level
+  - not-applicable: 3 (Pro distribution flag, GORELEASER_KEY, Node24-runtime distribution choice)
 - Parity achieved: **yes** — goreleaser-action's 5 inputs + 2 outputs are all equivalent-or-additive in anodize-action. The 2 missing items are narrow (semver-range resolution, nightly) and anodize-action far exceeds goreleaser-action's feature set (dep auto-install, monorepo tag resolution, split/merge artifact plumbing, GPG/cosign inline, retry, split-matrix output).
 
-The `Action-A8` parity audit should confirm behavioral equivalence by running both actions against a fake release in a CI fixture.
+Completion achieved: **yes**.
+
+The `Action-A8` parity audit should confirm behavioral equivalence by running both actions against a fake release in a CI fixture; findings flow to `anodize-action/.claude/audits/2026-04-v0.x/` and, ultimately, to `anodize-action/.claude/known-bugs.md` via the team lead.

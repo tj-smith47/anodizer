@@ -298,11 +298,9 @@ pub struct CaskParams<'a> {
 }
 
 /// Generate a Homebrew Cask Ruby file string from the given parameters.
-pub fn generate_cask(params: &CaskParams<'_>) -> String {
-    let mut tera = tera::Tera::default();
-    tera.add_raw_template("cask", CASK_TEMPLATE)
-        .unwrap_or_else(|e| panic!("homebrew: parse cask template: {e}"));
-    tera.autoescape_on(vec![]);
+pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
+    let tera = anodize_core::template::parse_static("cask", CASK_TEMPLATE)
+        .context("homebrew: parse cask template")?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -385,8 +383,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> String {
         params.uninstall_postflight.unwrap_or(""),
     );
 
-    tera.render("cask", &ctx)
-        .unwrap_or_else(|e| panic!("homebrew: render cask template: {e}"))
+    anodize_core::template::render_static(&tera, "cask", &ctx, "homebrew")
 }
 
 // ---------------------------------------------------------------------------
@@ -678,7 +675,7 @@ fn generate_cask_from_context(
     };
 
     Ok(CaskGenResult {
-        content: generate_cask(&params),
+        content: generate_cask(&params)?,
         cask_name: cask_name.to_string(),
     })
 }
@@ -872,7 +869,7 @@ pub fn generate_formula(
     license: &str,
     install: &str,
     test: &str,
-) -> String {
+) -> Result<String> {
     generate_formula_with_opts(
         name,
         version,
@@ -896,7 +893,7 @@ pub fn generate_formula_with_opts(
     install: &str,
     test: &str,
     opts: &FormulaOptions<'_>,
-) -> String {
+) -> Result<String> {
     // Ruby class name: GoReleaser-compatible conversion.
     //
     // Rules (from GoReleaser's formulaNameFor):
@@ -943,13 +940,8 @@ pub fn generate_formula_with_opts(
             .join("")
     };
 
-    let mut tera = tera::Tera::default();
-    // SAFETY: FORMULA_TEMPLATE is a compile-time constant; parse cannot fail.
-    tera.add_raw_template("formula", FORMULA_TEMPLATE)
-        .unwrap_or_else(|e| panic!("homebrew: parse formula template: {e}"));
-
-    // Disable autoescaping (we're generating Ruby, not HTML)
-    tera.autoescape_on(vec![]);
+    let tera = anodize_core::template::parse_static("formula", FORMULA_TEMPLATE)
+        .context("homebrew: parse formula template")?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("class_name", &class_name);
@@ -1215,9 +1207,7 @@ pub fn generate_formula_with_opts(
     ctx.insert("has_service", &has_service);
     ctx.insert("service", &opts.service.unwrap_or(""));
 
-    // SAFETY: All context variables are inserted above; rendering is infallible.
-    tera.render("formula", &ctx)
-        .unwrap_or_else(|e| panic!("homebrew: render formula template: {e}"))
+    anodize_core::template::render_static(&tera, "formula", &ctx, "homebrew")
 }
 
 // ---------------------------------------------------------------------------
@@ -1582,7 +1572,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         &install,
         &test_block,
         &opts,
-    );
+    )?;
 
     // Clone tap repo, write formula, commit, push.
     let tmp_dir = tempfile::tempdir().context("homebrew: create temp dir")?;
@@ -1913,7 +1903,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             platforms: Vec::new(), // Top-level cask uses single artifact
         };
 
-        let content = generate_cask(&params);
+        let content = generate_cask(&params)?;
 
         // Clone tap repo, write cask, commit, push.
         let tmp_dir = tempfile::tempdir().context("homebrew_casks: create temp dir")?;
@@ -2129,7 +2119,8 @@ mod tests {
             "MIT",
             "bin.install \"cfgd\"",
             "system \"#{bin}/cfgd\", \"--version\"",
-        );
+        )
+        .unwrap();
         assert!(formula.contains("class Cfgd < Formula"));
         assert!(formula.contains("version \"1.0.0\""));
         assert!(formula.contains("sha256abc"));
@@ -2157,7 +2148,8 @@ mod tests {
             "Apache-2.0",
             "bin.install \"my-tool\"",
             "system \"#{bin}/my-tool\", \"--version\"",
-        );
+        )
+        .unwrap();
         assert!(formula.contains("class MyTool < Formula"));
         assert!(formula.contains("on_macos"));
         assert!(formula.contains("on_linux"));
@@ -2175,7 +2167,8 @@ mod tests {
             "MIT",
             "bin.install \"cfgd-core\"",
             "system \"#{bin}/cfgd-core\", \"--version\"",
-        );
+        )
+        .unwrap();
         assert!(formula.contains("class CfgdCore < Formula"));
     }
 
@@ -2207,7 +2200,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\", \"--version\"",
-        );
+        )
+        .unwrap();
         // There must be exactly one on_macos block wrapping both arches.
         let macos_count = formula.matches("on_macos do").count();
         assert_eq!(macos_count, 1, "expected exactly one on_macos do block");
@@ -2238,7 +2232,7 @@ mod tests {
             "Apache-2.0",
             "bin.install \"anodize\"",
             "system \"#{bin}/anodize\", \"--version\"",
-        );
+        ).unwrap();
 
         // Verify class declaration (after header comments)
         assert!(
@@ -2316,7 +2310,8 @@ mod tests {
             "MIT",
             "bin.install \"my-cli\"",
             "system \"#{bin}/my-cli\", \"--version\"",
-        );
+        )
+        .unwrap();
 
         // Verify class name transforms hyphen to PascalCase
         assert!(formula.contains("class MyCli < Formula"));
@@ -2390,7 +2385,8 @@ mod tests {
             "MIT",
             "bin.install \"empty-tool\"",
             "system \"#{bin}/empty-tool\", \"--help\"",
-        );
+        )
+        .unwrap();
 
         assert!(formula.contains("class EmptyTool < Formula"));
         assert!(formula.contains("  version \"0.1.0\""));
@@ -2502,7 +2498,7 @@ mod tests {
             "MIT",
             "bin.install \"complex-app\"\nman1.install \"complex-app.1\"",
             "system \"#{bin}/complex-app\", \"--version\"\nassert_match \"complex-app\", shell_output(\"#{bin}/complex-app --help\")",
-        );
+        ).unwrap();
 
         // Verify multi-line install block with proper indentation
         assert!(formula.contains("    bin.install \"complex-app\"\n"));
@@ -2539,7 +2535,8 @@ mod tests {
             "MIT",
             "bin.install \"myapp\"",
             "system \"#{bin}/myapp\", \"--version\"",
-        );
+        )
+        .unwrap();
 
         assert_eq!(formula.matches("on_macos do").count(), 1);
         assert!(formula.contains("on_intel do"));
@@ -2561,7 +2558,8 @@ mod tests {
             "MIT",
             "bin.install \"simple\"",
             "system \"#{bin}/simple\"",
-        );
+        )
+        .unwrap();
 
         assert!(!formula.contains("on_macos"));
         assert!(!formula.contains("on_linux"));
@@ -2579,7 +2577,8 @@ mod tests {
             "MIT",
             "bin.install \"my-cool-tool\"",
             "system \"#{bin}/my-cool-tool\"",
-        );
+        )
+        .unwrap();
         assert!(formula.contains("class MyCoolTool < Formula"));
     }
 
@@ -2593,7 +2592,8 @@ mod tests {
             "MIT",
             "bin.install \"node\"",
             "system \"#{bin}/node\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("class NodeAT20 < Formula"),
             "@ should become AT in class name"
@@ -2610,7 +2610,8 @@ mod tests {
             "MIT",
             "bin.install \"cppcheck\"",
             "system \"#{bin}/cppcheck\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("class Cxxcheck < Formula"),
             "+ should become x in class name"
@@ -2627,7 +2628,8 @@ mod tests {
             "MIT",
             "bin.install \"my.tool.app\"",
             "system \"#{bin}/my.tool.app\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("class MyToolApp < Formula"),
             ". should act as word separator"
@@ -2653,7 +2655,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(formula.contains("homepage \"https://example.com/mytool\""));
         assert!(!formula.contains("https://github.com/mytool"));
     }
@@ -2669,7 +2672,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(formula.contains("homepage \"\""));
     }
 
@@ -2689,7 +2693,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(formula.contains("homepage \"https://github.com/myorg/mytool\""));
     }
 
@@ -2723,7 +2728,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(formula.contains("depends_on \"openssl\""));
         assert!(!formula.contains("\"openssl\" => :optional"));
         assert!(formula.contains("depends_on \"libgit2\" => :optional"));
@@ -2759,7 +2765,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         // macos dep wrapped in on_macos block
         assert!(formula.contains("on_macos do\n    depends_on \"macos-dep\""));
         // linux dep wrapped in on_linux block
@@ -2803,7 +2810,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         let autoconf_pos = formula
             .find("depends_on \"autoconf\"")
             .unwrap_or_else(|| panic!("autoconf present"));
@@ -2842,7 +2850,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(formula.contains("conflicts_with \"old-tool\""));
         assert!(
             formula
@@ -2865,7 +2874,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(formula.contains("def caveats"));
         assert!(formula.contains("Run `mytool init` after installing."));
         assert!(formula.contains("<<~EOS"));
@@ -2882,7 +2892,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(!formula.contains("def caveats"));
     }
 
@@ -2913,7 +2924,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(formula.contains("homepage \"https://example.com\""));
         assert!(formula.contains("depends_on \"openssl\""));
         assert!(formula.contains("conflicts_with \"old-tool\""));
@@ -3104,7 +3116,8 @@ mod tests {
             "MIT",
             "bin.install \"my-custom-name\"",
             "system \"#{bin}/my-custom-name\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("class MyCustomName < Formula"),
             "formula class name should derive from the name override"
@@ -3173,7 +3186,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         // Versioned dependency should use => "version" syntax
         assert!(
             formula.contains("depends_on \"openssl@3\" => \">= 3.0\""),
@@ -3210,7 +3224,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("depends_on \"curl\" => \"7.80\""),
             "version constraint should take precedence over :optional"
@@ -3235,7 +3250,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.starts_with("# This file was generated by anodize. DO NOT EDIT.\n"),
             "formula should start with generation comment"
@@ -3261,7 +3277,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("require_relative \"custom_download_strategy\""),
             "should use require_relative, not require"
@@ -3308,7 +3325,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains(", using: GitHubPrivateRepositoryReleaseDownloadStrategy"),
             "formula should contain download_strategy after url, got:\n{}",
@@ -3326,7 +3344,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             !formula.contains(", using:"),
             "formula should not contain download_strategy when not set"
@@ -3352,7 +3371,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("headers: ["),
             "formula should use headers: [] syntax, got:\n{}",
@@ -3382,7 +3402,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             !formula.contains("headers:"),
             "formula should not contain headers block when not set"
@@ -3404,7 +3425,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("def something"),
             "formula should contain custom_block content"
@@ -3430,7 +3452,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("    bash_completion.install \"completions/mytool.bash\""),
             "formula should contain extra_install lines in install block, got:\n{}",
@@ -3460,7 +3483,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("def post_install"),
             "formula should contain post_install method"
@@ -3487,7 +3511,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("plist_options startup: true"),
             "formula should contain plist_options"
@@ -3518,7 +3543,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("service do"),
             "formula should contain service block"
@@ -3539,7 +3565,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             !formula.contains("plist_options"),
             "no plist_options when plist not set"
@@ -3582,7 +3609,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         // Both download_strategy and headers should appear together
         assert!(
             formula.contains(", using: CustomStrategy"),
@@ -3632,7 +3660,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         assert!(
             cask.starts_with("# This file was generated by anodize. DO NOT EDIT.\n"),
@@ -3683,7 +3711,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         assert!(cask.contains("caveats <<~EOS"));
         assert!(cask.contains("You must grant accessibility permissions."));
@@ -3724,7 +3752,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         assert!(cask.contains("zap trash: ["));
         assert!(cask.contains("\"~/Library/Preferences/com.example.MyApp.plist\""));
@@ -3765,7 +3793,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         assert!(
             cask.contains("uninstall quit: \"com.example.MyApp\""),
@@ -3808,7 +3836,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         assert!(cask.contains("  name \"My App\"\n"));
         assert!(cask.contains("  name \"My Application\"\n"));
@@ -3849,7 +3877,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         assert!(cask.contains("  binary \"MyApp.app/Contents/MacOS/my-cli\"\n"));
         assert!(cask.contains("  binary \"MyApp.app/Contents/MacOS/my-tool\"\n"));
@@ -3885,7 +3913,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         assert!(cask.contains("cask \"minimal\" do\n"));
         assert!(cask.contains("  version \"0.1.0\"\n"));
@@ -3934,7 +3962,7 @@ mod tests {
             uninstall_postflight: None,
             platforms: Vec::new(),
         };
-        let cask = generate_cask(&params);
+        let cask = generate_cask(&params).unwrap();
 
         // Verify overall structure
         assert!(cask.starts_with("# This file was generated by anodize. DO NOT EDIT.\n"));
@@ -4017,7 +4045,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert_eq!(
             formula.matches("def install").count(),
             2,
@@ -4041,7 +4070,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("\n  def install\n"),
             "single-archive should have top-level def install, got:\n{}",
@@ -4060,7 +4090,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("\n  def install\n"),
             "no-archive should have top-level def install, got:\n{}",
@@ -4081,7 +4112,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("  depends_on :macos\n"),
             "only macOS packages should have depends_on :macos, got:\n{}",
@@ -4103,7 +4135,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("  depends_on :linux\n"),
             "only Linux packages should have depends_on :linux, got:\n{}",
@@ -4125,7 +4158,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(!formula.contains("depends_on :macos"));
         assert!(!formula.contains("depends_on :linux"));
     }
@@ -4143,7 +4177,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("if Hardware::CPU.arm?"),
             "should have ARM CPU check for Rosetta caveat, got:\n{}",
@@ -4169,7 +4204,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             !formula.contains("darwin_arm64 architecture is not supported"),
             "should NOT have Rosetta caveat when arm64 available"
@@ -4190,7 +4226,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("if Hardware::CPU.intel? && Hardware::CPU.is_64_bit?"),
             "linux amd64 guard, got:\n{}",
@@ -4227,7 +4264,8 @@ mod tests {
             "MIT",
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
-        );
+        )
+        .unwrap();
         assert!(
             formula.contains("if Hardware::CPU.arm? && !Hardware::CPU.is_64_bit?"),
             "linux armv7 should use arm+!64bit guard, got:\n{}",
@@ -4253,7 +4291,8 @@ mod tests {
             "bin.install \"mytool\"",
             "system \"#{bin}/mytool\"",
             &opts,
-        );
+        )
+        .unwrap();
         assert_eq!(
             formula.matches("bash_completion.install").count(),
             2,

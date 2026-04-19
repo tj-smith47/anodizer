@@ -195,9 +195,7 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("anodize/1.0")
-            .build()
+        let client = anodize_core::http::blocking_client(std::time::Duration::from_secs(60))
             .context("cloudsmith: failed to build HTTP client")?;
 
         log.status(&format!(

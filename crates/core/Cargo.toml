@@ -37,3 +37,5 @@ blake3.workspace = true
 crc32fast.workspace = true
 md-5.workspace = true
 percent-encoding.workspace = true
+reqwest.workspace = true
+tokio.workspace = true

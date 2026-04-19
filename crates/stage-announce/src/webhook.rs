@@ -56,6 +56,7 @@ pub fn send_webhook(
     };
 
     let client = reqwest::blocking::Client::builder()
+        .user_agent(anodize_core::http::USER_AGENT)
         .danger_accept_invalid_certs(skip_tls_verify)
         .build()?;
 

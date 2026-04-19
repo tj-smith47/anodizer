@@ -20,11 +20,10 @@ Evidence files (one per feature group) live in [`.claude/audits/2026-04-v0.x/`](
 
 ## Summary
 
-| Bucket | ✅ tested | ⚠ partial | ❌ untested |
+| Bucket | ✅ tested | ⚠ partial | informational |
 |---|---|---|---|
-| Feature groups (evidence files) | 19 | 9 | 1 |
-| Live-release proof (anodize v0.2.5 + cfgd v0.3.5) | 18 | 11 | — |
-| Parity inventory rows (required + strongly-suggested) | parity matrix in the [inventory](https://github.com/tj-smith47/anodize/blob/master/.claude/specs/goreleaser-complete-feature-inventory.md) | — | — |
+| Evidence file clusters (19 files) | 11 | 7 | 1 |
+| Parity inventory rows covered | 217 OSS+Pro rows + 27 anodize-action rows | — | — |
 
 Per-feature-group counts match the [evidence index](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-INDEX.md).
 
@@ -44,7 +43,7 @@ Reused across rows below:
 
 ## Build
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-build.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-builds.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -65,7 +64,7 @@ Reused across rows below:
 
 ## Archive
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-archive.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-archives.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -87,7 +86,7 @@ Reused across rows below:
 
 ## Checksum
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-checksum.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-checksums.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -140,7 +139,7 @@ Reused across rows below:
 
 ## Signing
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-sign.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-signing.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -200,7 +199,7 @@ Reused across rows below:
 
 ## SBOM + source archive
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-source.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -212,7 +211,7 @@ Reused across rows below:
 
 ## Snapcraft / Flatpak / Makeself
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-snap-flatpak-makeself.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -222,7 +221,7 @@ Reused across rows below:
 
 ## Pro installers (DMG / MSI / PKG / NSIS / app bundles)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-installers-pro.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -236,7 +235,7 @@ Reused across rows below:
 
 ## Notarize
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-notarize.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -245,7 +244,7 @@ Reused across rows below:
 
 ## Homebrew
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-homebrew.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-homebrew-cask.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -262,7 +261,7 @@ Reused across rows below:
 
 ## Windows publishers (Scoop / Chocolatey / Winget)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-windows-publishers.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-scoop-chocolatey-winget.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -283,7 +282,7 @@ Reused across rows below:
 
 ## Publishers (custom / cloud / blob / registry)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-publishers-misc.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-publish-misc-blob.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -298,7 +297,7 @@ Reused across rows below:
 
 ## Announcers (13 channels)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-announcers.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-announce.md)
 
 Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remaining 11 have passing unit tests only — no workflow has posted a release announcement to them.
 
@@ -321,7 +320,7 @@ Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remainin
 
 ## Project / metadata / env / snapshot / nightly
 
-[Evidence](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-metadata-project.md) · [env tokens](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-env-tokens.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md) · [env tokens](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-artifacts-metadata-auth.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -338,7 +337,7 @@ Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remainin
 
 ## Hooks (before / after / build / tag)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-hooks.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -349,7 +348,7 @@ Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remainin
 
 ## Partial builds (split / merge)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-partial-builds.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -363,7 +362,7 @@ Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remainin
 
 ## Git + monorepo + workspaces
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-git-monorepo.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -377,7 +376,7 @@ Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remainin
 
 ## CLI
 
-[Commands evidence](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-cli-commands.md) · [Flags evidence](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-cli-flags.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -410,7 +409,7 @@ Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remainin
 
 ## Pipeline outputs + tokens
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-artifacts-json.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-artifacts-metadata-auth.md)
 
 | Feature | Status | Tier | Evidence |
 |---|---|---|---|
@@ -423,7 +422,7 @@ Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remainin
 
 ## Rust-additive (features beyond GoReleaser)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-rust-additive.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-artifacts-metadata-auth.md)
 
 These features have no GoReleaser analogue — they exist because Rust's toolchain and packaging ecosystem differ. Twelve tracked in inventory §3.
 
@@ -444,7 +443,7 @@ These features have no GoReleaser analogue — they exist because Rust's toolcha
 
 ## anodize-action
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-anodize-action.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-action-inputs-outputs.md)
 
 The GitHub Action wrapping anodize — [source repo](https://github.com/tj-smith47/anodize-action).
 
@@ -459,7 +458,7 @@ The GitHub Action wrapping anodize — [source repo](https://github.com/tj-smith
 
 ## Missing / niche (not dogfooded)
 
-[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-missing-niche.md)
+[Evidence file](https://github.com/tj-smith47/anodize/blob/master/.claude/audits/2026-04-v0.x/evidence-negative-space.md)
 
 | Feature | Status | Tier | Notes |
 |---|---|---|---|

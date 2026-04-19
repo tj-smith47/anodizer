@@ -11,6 +11,11 @@ use anodize_core::config::SnapcraftConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
+// GoReleaser's defaultNameTemplate (internal/pipe/snapcraft/snapcraft.go:103)
+// — preserves Os, Arm/Mips/Amd64 variant suffixes so multi-arch builds don't
+// collapse to the same filename.
+const DEFAULT_SNAP_NAME_TEMPLATE: &str = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 \"v1\") }}{{ .Amd64 }}{{ end }}";
+
 // ---------------------------------------------------------------------------
 // Serde-serializable snapcraft YAML model
 // ---------------------------------------------------------------------------
@@ -605,27 +610,51 @@ impl Stage for SnapcraftStage {
                         })?;
                     }
 
-                    // Determine output filename from name_template or default
+                    // Determine output filename from name_template or default.
+                    // Matches GoReleaser's defaultNameTemplate (snapcraft.go:103):
+                    //   {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}
                     let snap_name = snap_cfg.name.as_deref().unwrap_or(&krate.name);
-                    let snap_filename = if let Some(tmpl) = &snap_cfg.name_template {
-                        // Set Os/Arch/Target in template vars temporarily
-                        ctx.template_vars_mut().set("Os", &os);
-                        ctx.template_vars_mut().set("Arch", &arch);
-                        ctx.template_vars_mut()
-                            .set("Target", target.as_deref().unwrap_or(""));
-                        let rendered = ctx.render_template(tmpl).with_context(|| {
-                            format!(
-                                "snapcraft: render name_template for crate {} target {:?}",
-                                krate.name, target
-                            )
-                        })?;
-                        if rendered.to_lowercase().ends_with(".snap") {
-                            rendered
-                        } else {
-                            format!("{rendered}.snap")
-                        }
+                    // Save ProjectName to restore after render — we override it with
+                    // snap_name so per-crate default filenames don't collide.
+                    let saved_project_name = ctx
+                        .template_vars()
+                        .get("ProjectName")
+                        .cloned()
+                        .unwrap_or_default();
+                    ctx.template_vars_mut().set("ProjectName", snap_name);
+                    ctx.template_vars_mut().set("Os", &os);
+                    // For ARM targets, split Arch="arm" and Arm="6"/"7" so the
+                    // default template (concatenating `{{ .Arch }}v{{ .Arm }}`)
+                    // produces "armv6" rather than "armv6v6".
+                    if let Some(version) = arch.strip_prefix("armv") {
+                        ctx.template_vars_mut().set("Arch", "arm");
+                        ctx.template_vars_mut().set("Arm", version);
                     } else {
-                        format!("{snap_name}_{version}_{arch}.snap")
+                        ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut().set("Arm", "");
+                    }
+                    ctx.template_vars_mut()
+                        .set("Amd64", if arch == "amd64" { "v1" } else { "" });
+                    ctx.template_vars_mut().set("Mips", "");
+                    ctx.template_vars_mut()
+                        .set("Target", target.as_deref().unwrap_or(""));
+                    let tmpl = snap_cfg
+                        .name_template
+                        .as_deref()
+                        .unwrap_or(DEFAULT_SNAP_NAME_TEMPLATE);
+                    let render_result = ctx.render_template(tmpl).with_context(|| {
+                        format!(
+                            "snapcraft: render name_template for crate {} target {:?}",
+                            krate.name, target
+                        )
+                    });
+                    ctx.template_vars_mut()
+                        .set("ProjectName", &saved_project_name);
+                    let rendered = render_result?;
+                    let snap_filename = if rendered.to_lowercase().ends_with(".snap") {
+                        rendered
+                    } else {
+                        format!("{rendered}.snap")
                     };
                     let snap_path = output_dir.join(&snap_filename);
 
@@ -1536,10 +1565,11 @@ mod tests {
         assert_eq!(snaps.len(), 1);
         assert_eq!(snaps[0].crate_name, "myapp");
 
-        // Default filename: {name}_{version}_{arch}.snap
+        // Default filename (B2 fix): {name}_{version}_{os}_{arch}.snap —
+        // matches GoReleaser snapcraft.go:103,120-122.
         let path_str = snaps[0].path.to_string_lossy();
         assert!(
-            path_str.ends_with("mysnap_1.0.0_amd64.snap"),
+            path_str.ends_with("mysnap_1.0.0_linux_amd64.snap"),
             "unexpected path: {path_str}"
         );
     }
@@ -1595,7 +1625,7 @@ mod tests {
 
         let path_str = snaps[0].path.to_string_lossy();
         assert!(
-            path_str.ends_with("myapp_2.0.0_linux_amd64.snap"),
+            path_str.ends_with("mysnap_2.0.0_linux_amd64.snap"),
             "unexpected path: {path_str}"
         );
     }

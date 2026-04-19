@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
@@ -64,34 +64,18 @@ pub fn sha3_512_file(path: &Path) -> Result<String> {
 }
 
 pub fn blake3_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("blake3: open {}", path.display()))?;
     let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("blake3: read {}", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
+    anodize_core::hashing::hash_file_streaming(path, "blake3", |chunk| {
+        hasher.update(chunk);
+    })?;
     Ok(hasher.finalize().to_hex().to_string())
 }
 
 pub fn crc32_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).with_context(|| format!("crc32: open {}", path.display()))?;
     let mut hasher = crc32fast::Hasher::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("crc32: read {}", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
+    anodize_core::hashing::hash_file_streaming(path, "crc32", |chunk| {
+        hasher.update(chunk);
+    })?;
     Ok(format!("{:08x}", hasher.finalize()))
 }
 
@@ -278,6 +262,7 @@ impl Stage for ChecksumStage {
                 ArtifactKind::Archive,
                 ArtifactKind::LinuxPackage,
                 ArtifactKind::Binary,
+                ArtifactKind::UploadableBinary,
                 ArtifactKind::SourceArchive,
                 ArtifactKind::Sbom,
                 ArtifactKind::Snap,

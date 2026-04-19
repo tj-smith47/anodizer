@@ -51,6 +51,12 @@ pub struct ReleaseOpts {
 /// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
 /// but skips anything that reaches upstream (release + publish + announce).
 /// Idempotent — won't duplicate stages already present in `skip`.
+///
+/// Composition with `--snapshot`: well-defined — `--prepare --snapshot` emits
+/// snapshot-prefixed artifacts (`Version`/`Tag` derived from
+/// `<version>-SNAPSHOT-<shortcommit>`, no tag required) without publishing.
+/// Useful for generating pre-release archives in PR CI without needing a real
+/// tag or release. `--prepare` without `--snapshot` requires a real tag.
 pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
     for stage in ["release", "publish", "announce"] {
         if !skip.iter().any(|s| s == stage) {
@@ -1042,6 +1048,26 @@ mod tests {
                 && skip.contains(&"publish".to_string())
                 && skip.contains(&"announce".to_string()),
             "--prepare adds release/publish/announce alongside user skips"
+        );
+    }
+
+    #[test]
+    fn test_apply_prepare_mode_to_skip_composes_with_snapshot_marker() {
+        // A5-S6: `--prepare --snapshot` must produce a skip list that still
+        // includes release/publish/announce, independent of any snapshot-only
+        // entries a caller may have pre-added. The augmentation is purely
+        // additive — snapshot semantics remain owned by the snapshot flag.
+        let mut skip = vec!["sign".to_string()];
+        apply_prepare_mode_to_skip(&mut skip);
+        for stage in ["release", "publish", "announce"] {
+            assert!(
+                skip.iter().any(|s| s == stage),
+                "--prepare must add {stage} regardless of snapshot composition"
+            );
+        }
+        assert!(
+            skip.iter().any(|s| s == "sign"),
+            "user-specified skip survives composition"
         );
     }
 

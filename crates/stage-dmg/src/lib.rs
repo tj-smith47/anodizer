@@ -262,12 +262,20 @@ impl Stage for DmgStage {
                     continue;
                 }
 
-                let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
-                    .iter()
-                    .map(|b| (b.target.clone(), b.path.clone()))
-                    .collect();
+                // Group binaries by target so a multi-binary crate (e.g. CLI
+                // with several `bin = ` entries) produces ONE DMG per target
+                // containing all binaries — matching GoReleaser's per-target
+                // DMG layout, not per-binary.
+                let mut by_target: std::collections::BTreeMap<Option<String>, Vec<PathBuf>> =
+                    std::collections::BTreeMap::new();
+                for b in &filtered {
+                    by_target
+                        .entry(b.target.clone())
+                        .or_default()
+                        .push(b.path.clone());
+                }
 
-                for (target, binary_path) in &effective_binaries {
+                for (target, binary_paths) in &by_target {
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = os_arch_from_target(target.as_deref());
 
@@ -352,15 +360,17 @@ impl Stage for DmgStage {
                         tempfile::tempdir().context("create temp dir for dmg staging")?;
                     let staging_dir = staging_tmp.path();
 
-                    // Copy binary into staging dir
-                    let binary_name = binary_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&krate.name);
-                    let staged_binary = staging_dir.join(binary_name);
-                    fs::copy(binary_path, &staged_binary).with_context(|| {
-                        format!("copy binary {} to staging dir", binary_path.display())
-                    })?;
+                    // Copy every binary for this target into the staging dir.
+                    for binary_path in binary_paths {
+                        let binary_name = binary_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&krate.name);
+                        let staged_binary = staging_dir.join(binary_name);
+                        fs::copy(binary_path, &staged_binary).with_context(|| {
+                            format!("copy binary {} to staging dir", binary_path.display())
+                        })?;
+                    }
 
                     // Copy extra files into staging dir
                     if let Some(extra_files) = &dmg_cfg.extra_files {

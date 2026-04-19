@@ -9,28 +9,11 @@
 
 use std::path::Path;
 
+use anodize_core::url::percent_encode_path_segment as encode_segment;
 use anyhow::{Context as _, Result, bail};
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use reqwest::Client;
 
 use crate::compose_body_for_mode;
-
-// ---------------------------------------------------------------------------
-// URL-encoding helpers
-// ---------------------------------------------------------------------------
-
-/// Characters safe in a single URL path segment (no `/`).
-/// Used for owner, repo, tag names, and file names in URLs.
-const SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.');
-
-/// Percent-encode a single URL path component.
-///
-/// Tags, owner names, repo names, and file names may contain `+`, `#`, `?`,
-/// spaces, or other characters that break URLs. e.g. `v1.0.0+build.1` becomes
-/// `v1.0.0%2Bbuild.1`.
-fn encode_segment(segment: &str) -> String {
-    utf8_percent_encode(segment, SEGMENT_ENCODE_SET).to_string()
-}
 
 // ---------------------------------------------------------------------------
 // Public helpers

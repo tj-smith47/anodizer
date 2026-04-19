@@ -7,6 +7,7 @@ use anyhow::{Context as _, Result};
 use anodize_core::artifact::ArtifactKind;
 use anodize_core::config::SignConfig;
 use anodize_core::context::Context;
+use anodize_core::env_expand::expand_with_preserve;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
@@ -92,9 +93,9 @@ fn resolve_signature_path(
     sign_cfg: &SignConfig,
     artifact_path: &str,
     ctx: &Context,
-    log: &StageLogger,
+    _log: &StageLogger,
     default_template: Option<&str>,
-) -> String {
+) -> Result<String> {
     let template = sign_cfg.signature.as_deref().or(default_template);
 
     if let Some(sig_template) = template {
@@ -104,15 +105,14 @@ fn resolve_signature_path(
         let preprocessed = sig_template
             .replace("{{ .Artifact }}", artifact_path)
             .replace("{{ Artifact }}", artifact_path);
-        ctx.render_template(&preprocessed).unwrap_or_else(|e| {
-            log.warn(&format!(
-                "failed to render signature template '{}': {}, falling back to {}.sig",
-                sig_template, e, artifact_path
-            ));
-            format!("{}.sig", artifact_path)
+        ctx.render_template(&preprocessed).with_context(|| {
+            format!(
+                "sign: render signature template '{}' for artifact {}",
+                sig_template, artifact_path
+            )
         })
     } else {
-        format!("{}.sig", artifact_path)
+        Ok(format!("{}.sig", artifact_path))
     }
 }
 
@@ -152,58 +152,15 @@ fn default_sign_cmd() -> String {
     "gpg".to_string()
 }
 
-/// Expand shell-style variable references (`$var` and `${var}`) in a string.
+/// Expand shell-style variable references (`$var` and `${var}`) in a string
+/// against the signing-arg variable map.
 ///
-/// GoReleaser supports both Go template syntax and shell variable syntax in
-/// signing args, signature paths, and certificate paths.
-///
-/// Uses single-pass replacement to prevent double-substitution: if `$artifact`
-/// expands to a value containing `$signature`, the `$signature` in the expanded
-/// value is NOT re-expanded.
+/// Delegates to `anodize_core::env_expand::expand_with_preserve` for
+/// consistent `$VAR`/`${VAR}` parsing (shell-identifier rules). Unmatched
+/// names are preserved literally so paths containing unrelated `$TOKEN`
+/// values survive this pass unchanged.
 fn expand_shell_vars(s: &str, vars: &HashMap<&str, &str>) -> String {
-    let mut result = String::with_capacity(s.len());
-    let chars: Vec<char> = s.chars().collect();
-    let len = chars.len();
-    let mut i = 0;
-
-    while i < len {
-        if chars[i] == '$' {
-            // Try `${var}` syntax first.
-            if i + 1 < len
-                && chars[i + 1] == '{'
-                && let Some(close) = chars[i + 2..].iter().position(|&c| c == '}')
-            {
-                let var_name: String = chars[i + 2..i + 2 + close].iter().collect();
-                if let Some(&val) = vars.get(var_name.as_str()) {
-                    result.push_str(val);
-                    i += 2 + close + 1; // skip past '}'
-                    continue;
-                }
-            }
-            // Try `$var` syntax: match the longest variable name at this position.
-            // Sort candidates longest-first to prefer `$artifactName` over `$artifact`.
-            let remaining: String = chars[i + 1..].iter().collect();
-            let mut matched = false;
-            let mut candidates: Vec<&&str> = vars.keys().collect();
-            candidates.sort_by_key(|b| std::cmp::Reverse(b.len()));
-            for key in candidates {
-                if remaining.starts_with(*key) {
-                    result.push_str(vars[key]);
-                    i += 1 + key.len();
-                    matched = true;
-                    break;
-                }
-            }
-            if !matched {
-                result.push(chars[i]);
-                i += 1;
-            }
-        } else {
-            result.push(chars[i]);
-            i += 1;
-        }
-    }
-    result
+    expand_with_preserve(s, |name| vars.get(name).map(|v| (*v).to_string()))
 }
 
 /// Replace `{{ .Artifact }}`, `{{ .Signature }}`, and `{{ .Certificate }}`
@@ -598,21 +555,27 @@ fn process_sign_configs(
             }
 
             let signature_str =
-                resolve_signature_path(sign_cfg, &artifact_str, ctx, log, default_sig_template);
+                resolve_signature_path(sign_cfg, &artifact_str, ctx, log, default_sig_template)?;
 
             // Resolve the certificate path from template if configured.
-            let certificate_str = sign_cfg.certificate.as_ref().map(|tmpl| {
-                let preprocessed = tmpl
-                    .replace("{{ .Artifact }}", &artifact_str)
-                    .replace("{{ Artifact }}", &artifact_str);
-                ctx.render_template(&preprocessed).unwrap_or_else(|e| {
-                    log.warn(&format!(
-                        "failed to render certificate template '{}': {}, using raw value",
-                        tmpl, e
-                    ));
-                    preprocessed
+            // Hard-bail on render error (matches `if_condition` policy) so a
+            // typo like `{{ .Teg }}` surfaces loudly instead of silently
+            // shadowing the intended path.
+            let certificate_str = sign_cfg
+                .certificate
+                .as_ref()
+                .map(|tmpl| {
+                    let preprocessed = tmpl
+                        .replace("{{ .Artifact }}", &artifact_str)
+                        .replace("{{ Artifact }}", &artifact_str);
+                    ctx.render_template(&preprocessed).with_context(|| {
+                        format!(
+                            "sign: render certificate template '{}' for artifact {}",
+                            tmpl, artifact_str
+                        )
+                    })
                 })
-            });
+                .transpose()?;
 
             // Build shell variable map for $artifact / ${artifact} expansion.
             // GoReleaser supports both Go template syntax and shell variable syntax.
@@ -643,21 +606,18 @@ fn process_sign_configs(
                 certificate_str.as_deref(),
             );
 
-            // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
+            // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }}).
+            // Hard-bail on render error — a typo in a sign-arg template would
+            // otherwise silently invoke the signer with the unresolved placeholder.
             let fully_resolved: Vec<String> = resolved
                 .iter()
-                .map(|arg| {
-                    let rendered = ctx.render_template(arg).unwrap_or_else(|e| {
-                        log.warn(&format!(
-                            "failed to render {} arg '{}': {}, using raw value",
-                            label, arg, e
-                        ));
-                        arg.clone()
-                    });
-                    // Apply shell-style variable expansion after template rendering.
-                    expand_shell_vars(&rendered, &shell_vars)
+                .map(|arg| -> Result<String> {
+                    let rendered = ctx
+                        .render_template(arg)
+                        .with_context(|| format!("sign: render {} arg '{}'", label, arg))?;
+                    Ok(expand_shell_vars(&rendered, &shell_vars))
                 })
-                .collect();
+                .collect::<Result<Vec<_>>>()?;
 
             // Build artifact registrations (signature + optional certificate).
             // These are registered regardless of dry-run mode so downstream
@@ -3195,7 +3155,8 @@ crates: []
             &ctx,
             &log,
             Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "/dist/myapp_linux_amd64");
     }
 
@@ -3230,7 +3191,8 @@ crates: []
             &ctx,
             &log,
             Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "/dist/myapp_linux_armv6");
     }
 
@@ -3264,7 +3226,8 @@ crates: []
             &ctx,
             &log,
             Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "/dist/myapp_linux_amd64v2");
     }
 
@@ -3287,7 +3250,8 @@ crates: []
         };
         let log = ctx.logger("test");
         // Normal signs (None default) should use simple {artifact}.sig
-        let result = resolve_signature_path(&sign_cfg, "/dist/myapp.tar.gz", &ctx, &log, None);
+        let result =
+            resolve_signature_path(&sign_cfg, "/dist/myapp.tar.gz", &ctx, &log, None).unwrap();
         assert_eq!(result, "/dist/myapp.tar.gz.sig");
     }
 

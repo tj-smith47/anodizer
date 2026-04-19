@@ -322,6 +322,13 @@ fn run_cross_platform(
         .collect();
 
     if darwin_artifacts.is_empty() {
+        // Surface the filter contents so misconfigured `ids:` is visible
+        // instead of producing a silent no-op.
+        log.warn(&format!(
+            "notarize: macos[{idx}] ids={:?} matched no darwin binaries \
+             (check for typos or unbuilt darwin targets)",
+            ids
+        ));
         ctx.strict_guard(
             log,
             &format!("notarize: macos[{idx}] no matching darwin binaries found"),
@@ -642,7 +649,11 @@ fn run_native_dmg(
     if app_bundles.is_empty() && dmg_artifacts.is_empty() {
         ctx.strict_guard(
             log,
-            &format!("notarize: macos_native[{idx}] (dmg) no matching app bundles or DMGs found"),
+            &format!(
+                "notarize: macos_native[{idx}] (dmg) no matching app bundles or DMGs found \
+                 (ids={:?})",
+                params.ids
+            ),
         )?;
         return Ok(());
     }
@@ -766,7 +777,10 @@ fn run_native_pkg(
     if pkg_artifacts.is_empty() {
         ctx.strict_guard(
             log,
-            &format!("notarize: macos_native[{idx}] (pkg) no matching PKG artifacts found"),
+            &format!(
+                "notarize: macos_native[{idx}] (pkg) no matching PKG artifacts found (ids={:?})",
+                params.ids
+            ),
         )?;
         return Ok(());
     }

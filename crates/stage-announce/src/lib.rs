@@ -338,7 +338,7 @@ impl Stage for AnnounceStage {
 
                 headers
                     .entry("User-Agent".to_string())
-                    .or_insert_with(|| concat!("anodize/", env!("CARGO_PKG_VERSION")).to_string());
+                    .or_insert_with(|| anodize_core::http::USER_AGENT.to_string());
 
                 // GoReleaser defaults to "application/json; charset=utf-8".
                 let content_type = cfg
@@ -499,6 +499,13 @@ impl Stage for AnnounceStage {
                 let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
                 // Default color to "#2D313E" (GoReleaser default).
+                // DELIBERATE UPSTREAM-BUG FIX: we read `cfg.color` from the
+                // `MattermostAnnounce` config. GoReleaser's
+                // mattermost.go:48-49,82 mistakenly reads `TeamsAnnounce.Color`
+                // — a cross-pipe read that ignores user-supplied
+                // `mattermost.color`. This is intentional in anodize; do NOT
+                // "correct" it to read from a Teams config during a future
+                // parity audit.
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
                 // Default title to "{{ ProjectName }} {{ Tag }} is out!" (GoReleaser default).
                 let title_template = cfg
@@ -800,11 +807,11 @@ impl Stage for AnnounceStage {
                             "announce.email: SMTP_PASSWORD env var is required for SMTP transport"
                         )
                     })?;
-                    let port = smtp_port.ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "announce.email: SMTP port is required — set `announce.email.port` or the `SMTP_PORT` env var (465 for SMTPS, 587 for STARTTLS, 25 for plaintext)"
-                        )
-                    })?;
+                    // Default to 587 (STARTTLS) to match the doc comment on
+                    // `announce.email.port` and GoReleaser's SMTP default.
+                    // Users on SMTPS or plain-SMTP setups must set the port
+                    // explicitly.
+                    let port = smtp_port.unwrap_or(587);
                     let insecure = cfg.insecure_skip_verify.unwrap_or(false);
 
                     let smtp_params = email::SmtpParams {

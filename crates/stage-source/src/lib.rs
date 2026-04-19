@@ -61,8 +61,10 @@ fn create_source_archive(
     cmd.arg("archive").arg("--format").arg(initial_format);
 
     // Only pass --prefix when prefix is non-empty; GoReleaser omits it when unset.
+    // Pass the user's prefix verbatim — GoReleaser does not force-append `/`.
+    // Users who want directory semantics supply the trailing slash themselves.
     if !prefix.is_empty() {
-        cmd.arg(format!("--prefix={}/", prefix));
+        cmd.arg(format!("--prefix={}", prefix));
     }
 
     cmd.arg("--output").arg(&initial_path);

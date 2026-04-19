@@ -18,10 +18,9 @@ use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
 mod gitea;
 mod gitlab;
 
-/// Percent-encode a URL path segment (matching Go's `url.PathEscape`).
-/// Encodes everything except unreserved characters and common path-safe chars.
-fn percent_encode_path(s: &str) -> String {
-    // PATH_SEGMENT set: encode everything except unreserved + sub-delims + ':'/'@'
+/// Percent-encode a URL query value (for `?q=...` search parameters).
+fn percent_encode_query(s: &str) -> String {
+    // Encode everything except unreserved + sub-delims + ':'/'@'
     // which matches RFC 3986 pchar = unreserved / pct-encoded / sub-delims / ":" / "@"
     const PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::CONTROLS
         .add(b' ')
@@ -51,7 +50,7 @@ async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshol
         .get(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "anodize")
+        .header("User-Agent", anodize_core::http::USER_AGENT)
         .send()
         .await
     {
@@ -115,7 +114,7 @@ async fn check_github_search_rate_limit(
         .get(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "anodize")
+        .header("User-Agent", anodize_core::http::USER_AGENT)
         .send()
         .await
     {
@@ -198,7 +197,10 @@ async fn resolve_github_username(
     }
 
     let query = format!("{}+in:email", email);
-    let route = format!("/search/users?q={}&per_page=1", percent_encode_path(&query));
+    let route = format!(
+        "/search/users?q={}&per_page=1",
+        percent_encode_query(&query)
+    );
 
     let result: Option<String> = match octocrab
         .get::<serde_json::Value, _, _>(route, None::<&()>)
@@ -340,36 +342,27 @@ async fn find_release_asset_size(
 // ---------------------------------------------------------------------------
 
 /// Retry an async upload operation with exponential backoff.
-/// Matches GoReleaser: 10 attempts, 50ms initial delay.
-/// Retries on transient errors (5xx, timeouts, connection errors).
+/// Matches GoReleaser: 10 attempts, 50ms initial delay, 30s cap.
+/// Retries on every failure (GoReleaser wraps all upload errors as
+/// `RetriableError`).
 async fn retry_upload<F, Fut>(operation_name: &str, mut f: F) -> Result<()>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    const MAX_ATTEMPTS: u32 = 10;
-    const INITIAL_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
-    const MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
-
-    // GoReleaser wraps ALL upload errors in RetriableError and retries all of
-    // them. We match that: retry every failure, not just specific HTTP codes.
-    let mut last_err: Option<anyhow::Error> = None;
-    for attempt in 1..=MAX_ATTEMPTS {
-        match f().await {
-            Ok(()) => return Ok(()),
-            Err(err) => {
-                last_err = Some(err);
-                if attempt < MAX_ATTEMPTS {
-                    let delay = std::cmp::min(INITIAL_DELAY * 2u32.pow(attempt - 1), MAX_DELAY);
-                    tokio::time::sleep(delay).await;
-                }
+    use anodize_core::retry::{RetryPolicy, retry_async};
+    use std::ops::ControlFlow;
+    retry_async(&RetryPolicy::UPLOAD, |_attempt| {
+        let fut = f();
+        async move {
+            match fut.await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(ControlFlow::Continue(e)),
             }
         }
-    }
-
-    Err(last_err.unwrap_or_else(|| {
-        anyhow::anyhow!("{}: failed after {} attempts", operation_name, MAX_ATTEMPTS)
-    }))
+    })
+    .await
+    .with_context(|| format!("{operation_name}: retry exhausted"))
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +383,7 @@ fn populate_artifact_download_urls(
     tag: &str,
 ) {
     let dl_base = download_base.trim_end_matches('/');
-    let url_tag = percent_encode_path(tag);
+    let url_tag = anodize_core::url::percent_encode_path_segment(tag);
     let url_prefix = match token_type {
         ScmTokenType::GitLab => {
             if owner.is_empty() {
@@ -405,7 +398,7 @@ fn populate_artifact_download_urls(
     };
     for artifact in ctx.artifacts.all_mut() {
         if artifact.crate_name == crate_name && !artifact.name.is_empty() {
-            let encoded_name = percent_encode_path(&artifact.name);
+            let encoded_name = anodize_core::url::percent_encode_path_segment(&artifact.name);
             artifact
                 .metadata
                 .insert("url".to_string(), format!("{url_prefix}/{encoded_name}"));
@@ -634,29 +627,46 @@ pub(crate) fn resolve_content_source(
                 .with_context(|| format!("render from_url: {}", from_url))?;
 
             // Render header values (keys are literal per GoReleaser docs).
+            // Reject `\r`/`\n` anywhere in a rendered value — a template
+            // interpolating user-tainted data could otherwise inject a new
+            // header line (CRLF injection). Also reject in literal keys as
+            // defense-in-depth.
             let mut rendered_headers: Vec<(String, String)> = Vec::new();
             if let Some(map) = headers {
                 for (k, v) in map {
+                    if k.contains('\r') || k.contains('\n') {
+                        anyhow::bail!(
+                            "release from_url header key contains CR/LF (possible injection): {:?}",
+                            k
+                        );
+                    }
                     let rendered_v = ctx.render_template(v).with_context(|| {
                         format!("render header value for '{}' at URL {}", k, rendered_url)
                     })?;
+                    if rendered_v.contains('\r') || rendered_v.contains('\n') {
+                        anyhow::bail!(
+                            "release from_url header '{}' rendered to a value containing \
+                             CR/LF (possible injection): {:?}",
+                            k,
+                            rendered_v
+                        );
+                    }
                     rendered_headers.push((k.clone(), rendered_v));
                 }
             }
 
-            let client = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?;
+            let client = anodize_core::http::blocking_client(std::time::Duration::from_secs(30))?;
 
-            // Retry loop: 3 attempts total, exponential backoff 500ms/1s/2s.
-            // Retry on request errors + 5xx; bail immediately on 4xx.
-            const MAX_ATTEMPTS: u32 = 3;
-            let mut last_err: Option<anyhow::Error> = None;
-            for attempt in 0..MAX_ATTEMPTS {
-                if attempt > 0 {
-                    let backoff_ms = 500u64 * (1u64 << (attempt - 1));
-                    std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
-                }
+            // Retry: 3 attempts, 500ms base, 2s cap. Retry on request errors +
+            // 5xx; bail immediately on 4xx via ControlFlow::Break.
+            use anodize_core::retry::{RetryPolicy, retry_sync};
+            use std::ops::ControlFlow;
+            const POLICY: RetryPolicy = RetryPolicy {
+                max_attempts: 3,
+                base_delay: std::time::Duration::from_millis(500),
+                max_delay: std::time::Duration::from_secs(2),
+            };
+            retry_sync(&POLICY, |attempt| {
                 let mut req = client.get(&rendered_url);
                 for (k, v) in &rendered_headers {
                     req = req.header(k.as_str(), v.as_str());
@@ -665,35 +675,53 @@ pub(crate) fn resolve_content_source(
                     Ok(response) => {
                         let status = response.status();
                         if status.is_success() {
-                            return Ok(response.text()?);
-                        }
-                        if status.is_client_error() {
-                            bail!(
+                            // Enforce a 256 KiB body cap on from_url responses
+                            // so a runaway server can't exhaust memory — release
+                            // header/footer bodies are small markdown snippets.
+                            const MAX_BODY: usize = 256 * 1024;
+                            match response.bytes() {
+                                Ok(bytes) => {
+                                    if bytes.len() > MAX_BODY {
+                                        return Err(ControlFlow::Break(anyhow::anyhow!(
+                                            "from_url {} body is {} bytes, exceeds \
+                                             {} KiB limit",
+                                            rendered_url,
+                                            bytes.len(),
+                                            MAX_BODY / 1024,
+                                        )));
+                                    }
+                                    match String::from_utf8(bytes.to_vec()) {
+                                        Ok(text) => Ok(text),
+                                        Err(e) => Err(ControlFlow::Break(anyhow::anyhow!(e))),
+                                    }
+                                }
+                                Err(e) => Err(ControlFlow::Break(anyhow::anyhow!(e))),
+                            }
+                        } else if status.is_client_error() {
+                            Err(ControlFlow::Break(anyhow::anyhow!(
                                 "content URL {} returned HTTP {} (no retry on 4xx)",
                                 rendered_url,
                                 status
-                            );
+                            )))
+                        } else {
+                            Err(ControlFlow::Continue(anyhow::anyhow!(
+                                "content URL {} returned HTTP {} (attempt {}/{})",
+                                rendered_url,
+                                status,
+                                attempt,
+                                POLICY.max_attempts
+                            )))
                         }
-                        last_err = Some(anyhow::anyhow!(
-                            "content URL {} returned HTTP {} (attempt {}/{})",
-                            rendered_url,
-                            status,
-                            attempt + 1,
-                            MAX_ATTEMPTS
-                        ));
                     }
-                    Err(e) => {
-                        last_err = Some(anyhow::anyhow!(
-                            "fetch {} failed (attempt {}/{}): {}",
-                            rendered_url,
-                            attempt + 1,
-                            MAX_ATTEMPTS,
-                            e
-                        ));
-                    }
+                    Err(e) => Err(ControlFlow::Continue(anyhow::anyhow!(
+                        "fetch {} failed (attempt {}/{}): {}",
+                        rendered_url,
+                        attempt,
+                        POLICY.max_attempts,
+                        e
+                    ))),
                 }
-            }
-            Err(last_err.unwrap_or_else(|| anyhow::anyhow!("fetch failed without captured error")))
+            })
         }
     }
 }
@@ -1080,22 +1108,39 @@ impl Stage for ReleaseStage {
             let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
 
             // Populate the {{ Checksums }} template variable from checksum artifacts.
-            // GoReleaser's describeBody reads all checksum files and injects their
-            // contents so header/footer templates can reference {{ .Checksums }}.
-            let checksums_text = {
+            // GoReleaser's describeBody (release/body.go:24-44):
+            //   - 0 artifacts: leave unset
+            //   - 1 artifact:  string (file contents)
+            //   - ≥2 artifacts (e.g. split=true): map[ChecksumOf]contents so
+            //     templates can do `{{ range $name, $content := .Checksums }}`.
+            {
                 let checksum_artifacts = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-                let mut parts = Vec::new();
-                for artifact in &checksum_artifacts {
-                    if let Ok(content) = std::fs::read_to_string(&artifact.path) {
-                        let trimmed = content.trim();
-                        if !trimmed.is_empty() {
-                            parts.push(trimmed.to_string());
+                match checksum_artifacts.len() {
+                    0 => {
+                        ctx.template_vars_mut().set("Checksums", "");
+                    }
+                    1 => {
+                        let content = std::fs::read_to_string(&checksum_artifacts[0].path)
+                            .unwrap_or_default();
+                        ctx.template_vars_mut().set("Checksums", content.trim());
+                    }
+                    _ => {
+                        let mut map = serde_json::Map::new();
+                        for artifact in &checksum_artifacts {
+                            let key = artifact
+                                .metadata
+                                .get("ChecksumOf")
+                                .cloned()
+                                .unwrap_or_else(|| artifact.path.to_string_lossy().into_owned());
+                            let content =
+                                std::fs::read_to_string(&artifact.path).unwrap_or_default();
+                            map.insert(key, serde_json::Value::String(content));
                         }
+                        ctx.template_vars_mut()
+                            .set_structured("Checksums", serde_json::Value::Object(map));
                     }
                 }
-                parts.join("\n")
-            };
-            ctx.template_vars_mut().set("Checksums", &checksums_text);
+            }
 
             // Resolve and validate release mode.
             let release_mode = resolve_release_mode(release_cfg.mode.as_deref())

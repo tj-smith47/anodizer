@@ -68,6 +68,35 @@ pub struct MatrixEntry {
     pub runner: String,
 }
 
+/// Redact env vars whose names end in common secret suffixes or contain
+/// secret-hint substrings. Replaces the value with `"[redacted]"` rather
+/// than dropping the entry so the merge side still sees the key existed
+/// (helps diagnose "why is my template `.Env.X` empty?" cases).
+fn redact_secret_env_vars(env: &HashMap<String, String>) -> HashMap<String, String> {
+    const SECRET_SUFFIXES: &[&str] = &[
+        "_TOKEN",
+        "_SECRET",
+        "_PASSWORD",
+        "_KEY",
+        "_PASSPHRASE",
+        "_API_KEY",
+    ];
+    const SECRET_SUBSTRINGS: &[&str] = &["CREDENTIAL", "APIKEY"];
+    env.iter()
+        .map(|(k, v)| {
+            let k_upper = k.to_uppercase();
+            let is_secret = SECRET_SUFFIXES.iter().any(|s| k_upper.ends_with(s))
+                || SECRET_SUBSTRINGS.iter().any(|s| k_upper.contains(s));
+            let value = if is_secret && !v.is_empty() {
+                "[redacted]".to_string()
+            } else {
+                v.clone()
+            };
+            (k.clone(), value)
+        })
+        .collect()
+}
+
 /// Convert Artifact to SplitArtifact for serialization.
 fn artifact_to_split(a: &artifact::Artifact) -> SplitArtifact {
     SplitArtifact {
@@ -185,10 +214,15 @@ pub(super) fn run_split(
     let split_artifacts: Vec<SplitArtifact> =
         ctx.artifacts.all().iter().map(artifact_to_split).collect();
 
+    // Redact env vars whose names look like secrets before serializing to
+    // context.json. Users routinely upload dist/ as a CI artifact; leaking
+    // project-env-defined tokens would be trivial.
+    let env_vars_redacted = redact_secret_env_vars(ctx.template_vars().all_config_env());
+
     let split_ctx = SplitContext {
         partial_target: subdir.clone(),
         template_vars: ctx.template_vars().all().clone(),
-        env_vars: ctx.template_vars().all_config_env().clone(),
+        env_vars: env_vars_redacted,
         git_tag: ctx.template_vars().get("Tag").map(String::from),
         git_commit: ctx.template_vars().get("FullCommit").map(String::from),
         git_branch: ctx.template_vars().get("Branch").map(String::from),
@@ -302,7 +336,10 @@ pub fn run_merge(
 
     // Load and merge all split contexts
     let mut total_loaded = 0;
-    let mut seen_paths = std::collections::HashSet::new();
+    // Map path -> first (ctx_file, crate_name, target) that claimed it, so we
+    // can surface the actual pair of conflicting split jobs on collision.
+    let mut seen_paths: std::collections::HashMap<String, (PathBuf, String, Option<String>)> =
+        std::collections::HashMap::new();
     let mut first_vars: Option<HashMap<String, String>> = None;
 
     for ctx_file in &context_files {
@@ -323,9 +360,28 @@ pub fn run_merge(
         }
 
         for sa in &split_ctx.artifacts {
-            if !seen_paths.insert(sa.path.clone()) {
-                continue;
+            if let Some((prior_ctx, prior_crate, prior_target)) = seen_paths.get(&sa.path) {
+                // A2 W3 fix: silent dedup masked config bugs where two split
+                // jobs produced artifacts at the same path. Error loudly so
+                // the operator can see which per-target subdir rule broke.
+                anyhow::bail!(
+                    "merge: artifact path collision: '{}' from split job '{}' (crate={}, target={:?}) \
+                     also claimed by split job '{}' (crate={}, target={:?}). \
+                     Expected per-target subdirectory isolation (e.g. dist/<target>/); \
+                     check your `no_unique_dist_dir` / `split.subdir` config.",
+                    sa.path,
+                    prior_ctx.display(),
+                    prior_crate,
+                    prior_target,
+                    ctx_file.display(),
+                    sa.crate_name,
+                    sa.target,
+                );
             }
+            seen_paths.insert(
+                sa.path.clone(),
+                (ctx_file.clone(), sa.crate_name.clone(), sa.target.clone()),
+            );
             let kind = match artifact::ArtifactKind::parse(&sa.kind) {
                 Some(k) => k,
                 None => {

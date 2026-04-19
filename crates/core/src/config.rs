@@ -367,6 +367,114 @@ pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Known GOOS values accepted by `archives[].format_overrides[].goos`.
+/// Mirrors the Go runtime's `runtime.GOOS` values GoReleaser's archive pipe
+/// recognises; anything outside this set is almost always a typo
+/// (e.g. a Rust target triple slice like `pc-windows-msvc`).
+const KNOWN_GOOS: &[&str] = &[
+    "aix",
+    "android",
+    "darwin",
+    "dragonfly",
+    "freebsd",
+    "illumos",
+    "ios",
+    "js",
+    "linux",
+    "netbsd",
+    "openbsd",
+    "plan9",
+    "solaris",
+    "wasip1",
+    "windows",
+];
+
+/// Validate that each crate's `release:` block configures at most one SCM
+/// backend. Matches GoReleaser release.go:41-53 `ErrMultipleReleases`, which
+/// errors at `Default()` time. Anodize dispatches on `ctx.token_type` at
+/// runtime so a silently-ignored extra backend is easy to miss.
+pub fn validate_release_backends(config: &Config) -> Result<(), String> {
+    let check = |crate_name: &str, release: &ReleaseConfig| -> Result<(), String> {
+        let mut set = Vec::new();
+        if release.github.is_some() {
+            set.push("github");
+        }
+        if release.gitlab.is_some() {
+            set.push("gitlab");
+        }
+        if release.gitea.is_some() {
+            set.push("gitea");
+        }
+        if set.len() > 1 {
+            return Err(format!(
+                "crate {}: release config sets multiple mutually-exclusive SCM \
+                 backends ({}). Pick one.",
+                crate_name,
+                set.join(" + ")
+            ));
+        }
+        Ok(())
+    };
+    for krate in &config.crates {
+        if let Some(ref release) = krate.release {
+            check(&krate.name, release)?;
+        }
+    }
+    if let Some(ws_list) = config.workspaces.as_ref() {
+        for ws in ws_list {
+            for krate in &ws.crates {
+                if let Some(ref release) = krate.release {
+                    check(&krate.name, release)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate `archives[].format_overrides[].goos` values reject unknown OSes.
+/// GoReleaser silently no-ops unknown overrides, which has burned users typing
+/// Rust triples like `apple` or `pc-windows-msvc`.
+pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
+    let check = |crate_name: &str, archives: &[ArchiveConfig]| -> Result<(), String> {
+        for (idx, archive) in archives.iter().enumerate() {
+            let Some(ref overrides) = archive.format_overrides else {
+                continue;
+            };
+            for over in overrides {
+                if !KNOWN_GOOS.contains(&over.os.as_str()) {
+                    let archive_id = archive.id.as_deref().unwrap_or("default");
+                    return Err(format!(
+                        "crate {}: archives[{}] (id={}): format_overrides.goos=\"{}\" is not a recognised OS. \
+                         Accepted values: {}.",
+                        crate_name,
+                        idx,
+                        archive_id,
+                        over.os,
+                        KNOWN_GOOS.join(", ")
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+    for krate in &config.crates {
+        if let ArchivesConfig::Configs(ref list) = krate.archives {
+            check(&krate.name, list)?;
+        }
+    }
+    if let Some(ws_list) = config.workspaces.as_ref() {
+        for ws in ws_list {
+            for krate in &ws.crates {
+                if let ArchivesConfig::Configs(ref list) = krate.archives {
+                    check(&krate.name, list)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // EnvFilesConfig — accepts list of .env paths OR structured token file paths
 // ---------------------------------------------------------------------------
@@ -498,31 +606,37 @@ pub fn load_token_files(
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let mut vars = std::collections::HashMap::new();
 
-    let mappings = [
-        (
-            "GITHUB_TOKEN",
-            config
-                .github_token
-                .as_deref()
-                .unwrap_or("~/.config/goreleaser/github_token"),
-        ),
-        (
-            "GITLAB_TOKEN",
-            config
-                .gitlab_token
-                .as_deref()
-                .unwrap_or("~/.config/goreleaser/gitlab_token"),
-        ),
-        (
-            "GITEA_TOKEN",
-            config
-                .gitea_token
-                .as_deref()
-                .unwrap_or("~/.config/goreleaser/gitea_token"),
-        ),
+    // Per-token candidate paths. The user's explicit `github_token` / etc.
+    // config value wins if present; otherwise we try anodize-native first,
+    // then the goreleaser-compat path for users migrating in.
+    let github_candidates: Vec<&str> = match config.github_token.as_deref() {
+        Some(p) => vec![p],
+        None => vec![
+            "~/.config/anodize/github_token",
+            "~/.config/goreleaser/github_token",
+        ],
+    };
+    let gitlab_candidates: Vec<&str> = match config.gitlab_token.as_deref() {
+        Some(p) => vec![p],
+        None => vec![
+            "~/.config/anodize/gitlab_token",
+            "~/.config/goreleaser/gitlab_token",
+        ],
+    };
+    let gitea_candidates: Vec<&str> = match config.gitea_token.as_deref() {
+        Some(p) => vec![p],
+        None => vec![
+            "~/.config/anodize/gitea_token",
+            "~/.config/goreleaser/gitea_token",
+        ],
+    };
+    let mappings: [(&str, &[&str]); 3] = [
+        ("GITHUB_TOKEN", &github_candidates),
+        ("GITLAB_TOKEN", &gitlab_candidates),
+        ("GITEA_TOKEN", &gitea_candidates),
     ];
 
-    for (env_name, file_path) in &mappings {
+    for (env_name, candidates) in &mappings {
         // Skip if the env var is already set in the process environment
         if std::env::var(env_name)
             .ok()
@@ -532,16 +646,19 @@ pub fn load_token_files(
             log.verbose(&format!("using {} from process environment", env_name));
             continue;
         }
-        match read_token_file(file_path) {
-            Ok(Some(token)) => {
-                log.verbose(&format!("loaded {} from {}", env_name, file_path));
-                vars.insert(env_name.to_string(), token);
-            }
-            Ok(None) => {
-                // File doesn't exist or is empty — not an error, just skip
-            }
-            Err(e) => {
-                return Err(e);
+        for file_path in candidates.iter() {
+            match read_token_file(file_path) {
+                Ok(Some(token)) => {
+                    log.verbose(&format!("loaded {} from {}", env_name, file_path));
+                    vars.insert(env_name.to_string(), token);
+                    break;
+                }
+                Ok(None) => {
+                    // File doesn't exist or is empty — try next candidate
+                }
+                Err(e) => {
+                    return Err(e);
+                }
             }
         }
     }
@@ -983,6 +1100,23 @@ pub struct BuildHooksConfig {
     pub post: Option<Vec<HookEntry>>,
 }
 
+/// Pre/post archive hook configuration.
+///
+/// Archive hooks in GoReleaser's YAML use `before`/`after` (not the
+/// build-stage's `pre`/`post`). `ArchiveHooksConfig` serializes with those
+/// field names so `dist/config.yaml` round-trips user-supplied spelling;
+/// `pre`/`post` are accepted as aliases so migrated configs still parse.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ArchiveHooksConfig {
+    /// Commands to run before the archive step.
+    #[serde(alias = "pre")]
+    pub before: Option<Vec<HookEntry>>,
+    /// Commands to run after the archive step.
+    #[serde(alias = "post")]
+    pub after: Option<Vec<HookEntry>>,
+}
+
 // ---------------------------------------------------------------------------
 // ArchivesConfig — untagged enum: false => Disabled, array => Configs
 // ---------------------------------------------------------------------------
@@ -1184,8 +1318,8 @@ pub struct ArchiveConfig {
     pub strip_binary_directory: Option<bool>,
     /// Allow different binary counts across targets. Default false (warn on mismatch).
     pub allow_different_binary_count: Option<bool>,
-    /// Pre/post archive hooks.
-    pub hooks: Option<BuildHooksConfig>,
+    /// Pre/post archive hooks (`before`/`after`; `pre`/`post` accepted as aliases).
+    pub hooks: Option<ArchiveHooksConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1863,6 +1997,21 @@ pub struct CommitAuthorConfig {
     pub email: Option<String>,
     /// Commit signing configuration.
     pub signing: Option<CommitSigningConfig>,
+}
+
+impl CommitAuthorConfig {
+    /// Fill in the anodize default name/email when either field is empty.
+    /// Matches GoReleaser's `commitauthor.Default(brew.CommitAuthor)` which
+    /// runs during the Default pass — so validation messages that reference
+    /// commit-author identity see non-empty strings rather than blanks.
+    pub fn normalize_defaults(&mut self) {
+        if self.name.as_deref().is_none_or(str::is_empty) {
+            self.name = Some("anodize".to_string());
+        }
+        if self.email.as_deref().is_none_or(str::is_empty) {
+            self.email = Some("bot@anodize.dev".to_string());
+        }
+    }
 }
 
 /// Commit signing configuration (GPG, x509, or SSH).
@@ -3588,6 +3737,8 @@ pub struct PkgConfig {
     /// Which artifact type to package: "binary" (default) or "appbundle".
     #[serde(rename = "use")]
     pub use_: Option<String>,
+    /// Minimum macOS version (e.g. "10.13"). Forwarded to `productbuild --min-os-version`.
+    pub min_os_version: Option<String>,
     /// Disable this PKG config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
@@ -4674,6 +4825,18 @@ pub struct WebhookConfig {
     /// Webhook endpoint URL (supports template variables).
     pub endpoint_url: Option<String>,
     /// Custom HTTP headers to include in the request.
+    ///
+    /// Precedence — **anodize diverges from GoReleaser here**:
+    /// - anodize: a config-supplied `Authorization` header wins over the
+    ///   `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var.
+    /// - GoReleaser (webhook.go:104-115): env-supplied `Authorization` is
+    ///   appended FIRST; most servers honour the first occurrence, so the
+    ///   env value effectively wins.
+    ///
+    /// Migrating configs that relied on env-overriding the config header
+    /// must either remove the config entry or be reconfigured. Use
+    /// templated config (`Authorization: "Bearer {{ .Env.MY_TOKEN }}"`) for
+    /// the cleanest migration.
     pub headers: Option<HashMap<String, String>>,
     /// Content-Type header value. Default: "application/json".
     pub content_type: Option<String>,

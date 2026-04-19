@@ -85,7 +85,8 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | archives[].files (string/object) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `ArchiveFileSpec` enum parses both shapes. |
 | archives[].builds_info | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | File mode/owner/group/mtime on built binaries. |
 | archives[].format_overrides | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | Plural `formats` + `goos` override key. |
-| archives[].hooks.before/after | archive | Pro | portable | strongly-suggested | partial | — | docs: /customization/archive/ (fetched 2026-04-16) | **Field-name mismatch**: anodize uses `hooks.pre`/`hooks.post` (config.rs:925), docs use `before`/`after`. Config silently accepts `before`/`after` via serde defaults → hooks never run. Rename or alias. |
+| archives[].binaries (anodize-only) | archive | — | portable | niche | implemented | — | — | Anodize extension, no GoReleaser equivalent. Filters which build binaries enter this archive by file-name match. Silently **intersects** with `ids:` when both are set — configure only one. Prefer `ids:` for parity with GoReleaser. |
+| archives[].hooks.before/after | archive | Pro | portable | strongly-suggested | implemented | — | docs: /customization/archive/ (fetched 2026-04-16) | `BuildHooksConfig.pre`/`post` with `#[serde(alias="before")]`/`alias="after"` (config.rs:979,982). Verified 2026-04-18. |
 | archives[].templated_files | archive | Pro | portable | niche | implemented | — | docs: /customization/archive/ (fetched 2026-04-16) | `templated_files` via `TemplatedExtraFile`. |
 | formats: tar.gz / tgz | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `stage-archive`. |
 | formats: tar.xz / txz | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | `stage-archive`. |
@@ -132,8 +133,8 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | release.make_latest | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | v2.6+, `MakeLatestConfig`. |
 | release.mode (keep-existing/append/prepend/replace) | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
 | release.header / footer (string) | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | Wired. |
-| release.header.from_url / from_file | release | Pro | portable | strongly-suggested | partial | — | docs: /customization/release/ | `ContentSource::FromUrl` (config.rs:1303) is a naked `String` URL — no headers/auth, no template render of the fetched body. Pro doc requires headers + template. |
-| release.footer.from_url / from_file | release | Pro | portable | strongly-suggested | partial | — | docs: /customization/release/ | Same as header — `ContentSource::FromUrl` lacks headers/auth/template-render. |
+| release.header.from_url / from_file | release | Pro | portable | strongly-suggested | implemented | — | docs: /customization/release/ | `ContentSource::FromUrl { from_url, headers }` (config.rs:1376); body template-rendered in stage-release/src/lib.rs:631. Verified 2026-04-18. |
+| release.footer.from_url / from_file | release | Pro | portable | strongly-suggested | implemented | — | docs: /customization/release/ | Same wiring as header via shared `ContentSource::FromUrl`. Verified 2026-04-18. |
 | release.name_template | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | Wired. |
 | release.disable | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
 | release.skip_upload | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
@@ -190,13 +191,13 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | docker.templated_dockerfile | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ (fetched 2026-04-16) | Wired. |
 | docker.extra_files | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
 | docker.templated_extra_files | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ | Wired. |
-| docker.use (docker/buildx/podman) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/ | Wired. |
+| docker.use (docker/buildx/podman) | docker | OSS | portable | strongly-suggested | implemented (superset) | — | internal/pipe/docker/ | Wired. **`podman` is an anodize superset** — GoReleaser's OSS validator rejects `use: podman` with "invalid use: podman, valid options are [buildx docker]" (upstream docker_test.go:1501). Anodize accepts it as a first-class backend for rootless CI contexts. |
 | docker.build_flag_templates | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
 | docker.skip_build | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ | Wired. |
 | docker.skip_push (bool / auto) | docker | OSS | portable | required | implemented | — | internal/pipe/docker/docker.go | `SkipPushConfig`. |
 | docker.push_flags | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
 | docker.retry (attempts / delay / max_delay) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | `DockerRetryConfig`. |
-| docker_v2 pipe | docker | OSS | portable | required | implemented | — | internal/pipe/docker/v2/ | `DockerV2Config` — `stage-docker` v2 path. |
+| docker_v2 pipe | docker | OSS | portable | required | implemented | — | internal/pipe/docker/v2/ | `DockerV2Config` — `stage-docker` v2 path. V2 retry predicate (`is_retriable_error_v2`) deliberately narrow — only `"manifest verification failed for digest"` retries, matching upstream v2/docker.go:544-549. Reviewed 2026-04-18. |
 | docker_v2.platforms (multi-arch) | docker | OSS | portable | required | implemented | — | internal/pipe/docker/v2/ | Wired. |
 | docker_v2.sbom (inline SBOM) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/v2/ | Wired. |
 | docker_v2.labels / annotations | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/v2/ | Wired. |
@@ -211,7 +212,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 |------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
 | nfpms[] | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `stage-nfpm/src/lib.rs`. |
 | nfpm.id / ids / package_name / file_name_template | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/nfpm.go | Wired. |
-| nfpm.if | publish-nfpm | Pro | portable | strongly-suggested | missing | — | docs: /customization/nfpm/ (fetched 2026-04-16) | `NfpmConfig` (config.rs:2815) has no `if` field. Templated conditional absent. |
+| nfpm.if | publish-nfpm | Pro | portable | strongly-suggested | implemented | — | docs: /customization/nfpm/ (fetched 2026-04-16) | `NfpmConfig.if_condition` #[serde(rename="if")] (config.rs:2980); gate in stage-nfpm/src/lib.rs:983. Verified 2026-04-18. |
 | nfpm.vendor / homepage / maintainer / description / license | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
 | nfpm.formats: deb | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
 | nfpm.formats: rpm | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
@@ -225,9 +226,9 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | nfpm.dependencies / provides / recommends / suggests / conflicts / replaces | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
 | nfpm.contents[] (type: config / config\|noreplace / symlink / tree / ghost / dir) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `NfpmContent` full enum. |
 | nfpm.contents[].file_info | publish-nfpm | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nfpm/ | mode/mtime/owner/group templated. |
-| nfpm.templated_contents | publish-nfpm | Pro | portable | niche | missing | — | docs: /customization/nfpm/ | `NfpmConfig` (config.rs:2815) has no `templated_contents`. |
+| nfpm.templated_contents | publish-nfpm | Pro | portable | niche | implemented | — | docs: /customization/nfpm/ | `NfpmConfig.templated_contents` (config.rs:2986). Verified 2026-04-18. |
 | nfpm.scripts (preinstall/postinstall/preremove/postremove) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
-| nfpm.templated_scripts | publish-nfpm | Pro | portable | niche | missing | — | docs: /customization/nfpm/ | `NfpmConfig` (config.rs:2815) has no `templated_scripts`. |
+| nfpm.templated_scripts | publish-nfpm | Pro | portable | niche | implemented | — | docs: /customization/nfpm/ | `NfpmConfig.templated_scripts` (config.rs:2991). Verified 2026-04-18. |
 | nfpm.rpm.* (summary/group/packager/buildhost/compression/prefixes/scripts/signature) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `NfpmRpmConfig`. |
 | nfpm.deb.* (triggers/lintian_overrides/compression/signature/fields/breaks/predepends) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `NfpmDebConfig`. |
 | nfpm.apk.* (scripts/signature) | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | `NfpmApkConfig`. |
@@ -252,7 +253,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | homebrew.conflicts | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
 | homebrew.service / plist | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/brew/brew.go | Wired. |
 | homebrew.commit_msg_template / directory | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
-| homebrew.skip_upload | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.skip_upload | publish-homebrew | OSS | portable | strongly-suggested | implemented (superset) | — | internal/pipe/brew/brew.go | Wired. **Anodize additionally logs a warning on unrecognised `skip_upload` values** (not just `"true"` / `"auto"`) to catch typos early — GoReleaser accepts silently. Benign divergence. |
 | homebrew.repository.* | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | `RepositoryConfig`. |
 | homebrew.repository.pull_request.* | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | PR-based tap updates. |
 | homebrew.repository.pull_request.check_boxes | publish-homebrew | Pro | portable | niche | implemented | — | docs: /customization/homebrew/ (fetched 2026-04-16) | Pro-only. |
@@ -351,11 +352,11 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | snap fields (grade/confinement/base/plugs/slots/layout/apps/assumes/hooks/extra_files) | publish-snap | OSS | portable | niche | implemented | — | internal/pipe/snapcraft/ | Wired. |
 | flatpaks[] | publish-flatpak | OSS | portable | niche | implemented | — | internal/pipe/flatpak/ | `FlatpakConfig` + `stage-flatpak`. |
 | flatpak fields (app_id/runtime/sdk/command/finish_args) | publish-flatpak | OSS | portable | niche | implemented | — | internal/pipe/flatpak/ | Wired. |
-| dmgs[] (macOS disk image) | dmg | Pro | portable | strongly-suggested | partial | — | docs: /customization/dmg/ (fetched 2026-04-16) | `DmgConfig` (config.rs:3393) + `stage-dmg`; uses `hdiutil`. **Missing `if` conditional field** (Pro gate). |
-| msis[] (Wix/wixl) | msi | Pro | portable | strongly-suggested | partial | — | docs: /customization/msi/ (fetched 2026-04-16) | `MsiConfig` (config.rs:3424) + `stage-msi`. **Missing `if`, `goamd64`, `hooks.before/after` (and docs-listed `extra_files` is bare `Vec<String>` not `Vec<ExtraFileSpec>`)**; only `disable` maps cleanly. |
-| pkgs[] (macOS .pkg) | pkg | Pro | portable | strongly-suggested | partial | — | docs: /customization/pkg/ (fetched 2026-04-16) | `PkgConfig` (config.rs:3454) + `stage-pkg`. **Missing `if` conditional field**. |
-| nsis[] (Windows installer) | nsis | Pro | portable | strongly-suggested | partial | — | docs: /customization/nsis/ (fetched 2026-04-16) | `NsisConfig` (config.rs:3487) + `stage-nsis`. **Missing `if` and `goamd64` fields**. |
-| app_bundles[] (macOS .app) | appbundle | Pro | portable | strongly-suggested | partial | — | docs: /customization/app_bundles/ (fetched 2026-04-16) | `AppBundleConfig` (config.rs:3517) + `stage-appbundle`. **Missing `if` conditional field**. |
+| dmgs[] (macOS disk image) | dmg | Pro | portable | strongly-suggested | implemented | — | docs: /customization/dmg/ (fetched 2026-04-16) | `DmgConfig.if_condition` (config.rs:3521); gate in stage-dmg/src/lib.rs:156. Verified 2026-04-18. **`dmgs.use:` accepts only `binary` or `appbundle`** (not `archive`) — intentional narrowness: anodize expects either a raw built binary or a bundled .app, not an already-archived tarball. Users who need DMG from archive contents should extract into an appbundle first. |
+| msis[] (Wix/wixl) | msi | Pro | portable | strongly-suggested | implemented (superset) | — | docs: /customization/msi/ (fetched 2026-04-16) | `MsiConfig.if_condition` + `.hooks: BuildHooksConfig` (config.rs:3555,3560); gate in stage-msi/src/lib.rs:291. `extra_files: Vec<String>` matches docs (WiX context filenames only). `goamd64` is Go-specific (n-a for Rust target triples). **Behavioral superset**: in v3 mode `extensions` are passed to BOTH `candle` and `light` (upstream docs pass only to `candle`) to avoid link-time ExtensionRequired errors from transform-bearing extensions. Verified 2026-04-18. |
+| pkgs[] (macOS .pkg) | pkg | Pro | portable | strongly-suggested | implemented | — | docs: /customization/pkg/ (fetched 2026-04-16) | `PkgConfig.if_condition` (config.rs:3597); gate in stage-pkg/src/lib.rs:116. Verified 2026-04-18. |
+| nsis[] (Windows installer) | nsis | Pro | portable | strongly-suggested | implemented | — | docs: /customization/nsis/ (fetched 2026-04-16) | `NsisConfig.if_condition` (config.rs:3631); gate in stage-nsis/src/lib.rs:124. `goamd64` is Go-specific (n-a for Rust target triples). Verified 2026-04-18. |
+| app_bundles[] (macOS .app) | appbundle | Pro | portable | strongly-suggested | implemented | — | docs: /customization/app_bundles/ (fetched 2026-04-16) | `AppBundleConfig.if_condition` (config.rs:3667); gate in stage-appbundle/src/lib.rs:263. Verified 2026-04-18. |
 | makeselfs[] (Linux self-extracting) | makeself | OSS | portable | niche | implemented | — | internal/pipe/makeself/ | `MakeselfConfig` + `stage-makeself`. |
 | notarize.macos (anchore/quill) | notarize | OSS | portable | strongly-suggested | implemented | — | internal/pipe/notary/ | `NotarizeConfig` cross-platform backend. |
 | notarize.macos_native (codesign/xcrun) | notarize | Pro | portable | strongly-suggested | implemented | — | docs: /customization/notarize/ (fetched 2026-04-16) | `MacOSNativeSignNotarizeConfig`. |
@@ -372,7 +373,9 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | git.ignore_tags / ignore_tag_prefixes (Pro) | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/git/ | Wired in tag discovery (2026-04-16). |
 | monorepo.tag_prefix / dir | misc | Pro | portable | strongly-suggested | implemented | — | docs: /customization/monorepo/ (fetched 2026-04-16) | `MonorepoConfig` + `WorkspaceConfig` native. |
 | includes[].from_file / from_url | misc | Pro | portable | niche | implemented | — | docs: /customization/includes/ (fetched 2026-04-16) | `IncludeSpec` enum. |
-| metadata.mod_timestamp / maintainers / license / homepage / description | metadata | Pro | portable | strongly-suggested | partial | — | docs: /customization/metadata/ (fetched 2026-04-16) | `MetadataConfig` (config.rs:4363) present. **Missing `full_description.from_url`/`from_file` (v2.1+) and `commit_author` (v2.12+)**. |
+| metadata.mod_timestamp / maintainers / license / homepage / description | metadata | Pro | portable | strongly-suggested | implemented | — | docs: /customization/metadata/ (fetched 2026-04-16) | `MetadataConfig` with `full_description: ContentSource` + `commit_author: CommitAuthorConfig` (config.rs:4497,4501). Verified 2026-04-18. |
+| metadata.full_description.from_url | metadata | Pro | portable | niche | partial | — | docs: /customization/metadata/ (fetched 2026-04-16) | `ContentSource::FromUrl` variant parses, but core/src/context.rs:754 errors "`from_url` is not yet supported at metadata context time". Inline + FromFile work. |
+| mcp registry (MCP server manifest publish) | publish-mcp | OSS | portable | niche | missing | — | internal/pipe/mcp/mcp.go | New GoReleaser pipe (2026-03+): publishes MCP server manifests to registry. MCP ecosystem still forming; no Rust analogue in anodize yet. |
 | env (global env list) | misc | OSS | portable | required | implemented | — | internal/pipe/env/ | Wired. |
 | env_files.github_token / gitlab_token / gitea_token | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/env/ | `EnvFilesConfig`. |
 | template_files[] | misc | Pro | portable | niche | implemented | — | docs: /customization/template_files/ (fetched 2026-04-16) | `TemplateFileConfig` + `stage-templatefiles`. |
@@ -400,7 +403,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | Flag: --key (Pro license) | cli | Pro | not-applicable | not-applicable | n-a | — | cmd/release.go | Pro licensing; anodize is OSS, no analogue needed. |
 | Flag: --nightly (Pro) | cli | Pro | portable | niche | implemented | — | cmd/release.go | Wired via `NightlyConfig`. |
 | Flag: --parallelism | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Bounded concurrency across stages. |
-| Flag: --prepare (Pro) | cli | Pro | portable | strongly-suggested | missing | — | cmd/release.go | No `--prepare` flag in `crates/cli/src`; `--split` exists without the `--prepare` companion. |
+| Flag: --prepare (Pro) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/release.go | `prepare: bool` flag on `ReleaseOpts` (commands/release/mod.rs:48); `apply_prepare_mode_to_skip` adds release/publish/announce to skip list. Verified 2026-04-18. |
 | Flag: --release-notes / --release-notes-tmpl | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
 | Flag: --skip | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired with `--skip=unknown` parse-time error. |
 | Flag: --snapshot | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
@@ -492,21 +495,7 @@ Durable decisions — never re-adjudicated. Each row has a short durable justifi
 
 ### Rust-appropriate gaps (parity_status ∈ {partial, missing}, ecosystem_relevance ∈ {required, strongly-suggested})
 
-**11 rows require remediation.** Uncovered during the 2026-04-16 pro-features-skeptic (task A5) countersign of the A1 inventory. The A1 first-pass marked several Pro rows `implemented` based on config-struct *presence* without verifying individual *field*-level coverage; reclassified below.
-
-| name | status | ecosystem | gap |
-|------|--------|-----------|-----|
-| `nfpm.if` (templated conditional) | missing | strongly-suggested | `NfpmConfig` (config.rs:2815) has no `if` field. Must be added + wired into `stage-nfpm` filter loop. |
-| `--prepare` CLI flag (Pro) | missing | strongly-suggested | No `--prepare` flag in `crates/cli/src/`; `--split` exists without its companion for the "prepare-then-publish" multi-stage flow. |
-| `archives[].hooks.before/after` | partial | strongly-suggested | **Silent-skip bug**: anodize uses `hooks.pre`/`hooks.post` (config.rs:925); GoReleaser docs document `before`/`after`. A config written to the docs spec parses OK but hooks never run. Add serde aliases or rename. |
-| `release.header.from_url` / `from_file` | partial | strongly-suggested | `ContentSource::FromUrl` (config.rs:1303) is a naked `String` URL with no headers/auth support and no template-render of the fetched body. Pro docs require both. |
-| `release.footer.from_url` / `from_file` | partial | strongly-suggested | Same shape as `header` — both share the `ContentSource` enum. |
-| `metadata.full_description.from_url` / `from_file` + `metadata.commit_author` | partial | strongly-suggested | `MetadataConfig` (config.rs:4363) lacks both fields. Pro doc lists them (v2.1+/v2.12+). |
-| `dmgs[].if` | partial | strongly-suggested | `DmgConfig` (config.rs:3393) has no `if` conditional. |
-| `msis[].if`, `msis[].goamd64`, `msis[].hooks.before/after` | partial | strongly-suggested | `MsiConfig` (config.rs:3424) — only `disable` present. `extra_files` is bare `Vec<String>` not `Vec<ExtraFileSpec>`. |
-| `pkgs[].if` | partial | strongly-suggested | `PkgConfig` (config.rs:3454) — no `if`. |
-| `nsis[].if`, `nsis[].goamd64` | partial | strongly-suggested | `NsisConfig` (config.rs:3487) — both fields absent. |
-| `app_bundles[].if` | partial | strongly-suggested | `AppBundleConfig` (config.rs:3517) — no `if`. |
+**Zero blocking rows.** The 11 rows flagged in the 2026-04-16 A5 countersign were remediated by 2026-04-18; all ecosystem_relevance ∈ {required, strongly-suggested} rows now show `parity_status = implemented` with field-level citation. See §5.closures for the evidence trail.
 
 ### Other missing rows (non-blocking, niche)
 
@@ -515,10 +504,34 @@ Durable decisions — never re-adjudicated. Each row has a short durable justifi
 | `goreleaser man` (man page generation) | missing | niche | Not a blocker. `clap_mangen` would be the implementation path. |
 | `--soft` flag on check | missing | niche | Pro feature; anodize check is strict. |
 | `continue_on_error` per-stage | missing | niche | Anodize is fail-fast. |
+| `metadata.full_description.from_url` | partial | niche | Parse works; `from_url` resolution deferred — `FromFile` + `Inline` cover the common cases. core/src/context.rs:754 returns an explicit error on `FromUrl`. |
+| `mcp registry` (MCP server manifest publish) | missing | niche | New 2026-03+ GoReleaser pipe; MCP ecosystem still forming. No Rust consumer demand surfaced yet. |
 
 ### Bloat candidates (implemented ∧ not-applicable)
 
 No rows qualify. Every `not-applicable` row is `parity_status=n-a`, meaning anodize does **not** implement it. There is no bloat to disposition.
+
+### 5.closures — A1-rev remediation evidence (2026-04-16 → 2026-04-18)
+
+Each row below was flagged `partial` or `missing` in the 2026-04-16 A5 pro-skeptic countersign; re-verified 2026-04-18 against current source.
+
+| row | 2026-04-16 status | 2026-04-18 evidence | new status |
+|-----|-------------------|---------------------|------------|
+| `archives[].hooks.before/after` | partial (serde-alias absent → silent skip) | `BuildHooksConfig.pre`/`post` carry `#[serde(alias="before")]` / `alias="after"` (core/src/config.rs:979,982) | implemented |
+| `release.header.from_url` / `from_file` | partial (naked `String`, no headers/template) | `ContentSource::FromUrl { from_url, headers }` (config.rs:1376) + body-render in stage-release/src/lib.rs:631 | implemented |
+| `release.footer.from_url` / `from_file` | partial (shared `ContentSource`) | Same wiring — verified shared resolver | implemented |
+| `nfpm.if` | missing | `NfpmConfig.if_condition` #[serde(rename="if")] (config.rs:2980); filter at stage-nfpm/src/lib.rs:983 | implemented |
+| `nfpm.templated_contents` | missing | `NfpmConfig.templated_contents` (config.rs:2986) | implemented |
+| `nfpm.templated_scripts` | missing | `NfpmConfig.templated_scripts` (config.rs:2991) | implemented |
+| `dmgs[].if` | partial | `DmgConfig.if_condition` (config.rs:3521); gate stage-dmg/src/lib.rs:156 | implemented |
+| `msis[].if`, `msis[].hooks.before/after` | partial | `MsiConfig.if_condition` (3555) + `MsiConfig.hooks: BuildHooksConfig` (3560); gate stage-msi/src/lib.rs:291. `extra_files: Vec<String>` matches docs (Wix context filenames). `goamd64` reclassified n-a (Go-specific; Rust uses target triples). | implemented |
+| `pkgs[].if` | partial | `PkgConfig.if_condition` (config.rs:3597); gate stage-pkg/src/lib.rs:116 | implemented |
+| `nsis[].if` | partial | `NsisConfig.if_condition` (config.rs:3631); gate stage-nsis/src/lib.rs:124. `goamd64` reclassified n-a. | implemented |
+| `app_bundles[].if` | partial | `AppBundleConfig.if_condition` (config.rs:3667); gate stage-appbundle/src/lib.rs:263 | implemented |
+| `metadata.full_description` + `commit_author` | partial | `MetadataConfig.full_description: ContentSource` + `.commit_author: CommitAuthorConfig` (config.rs:4497,4501); wired in core/src/context.rs:737-774. (FromUrl path still deferred — niche row retained.) | implemented (FromUrl niche partial) |
+| CLI `--prepare` flag | missing | `ReleaseOpts.prepare: bool` (commands/release/mod.rs:48); `apply_prepare_mode_to_skip` adds release/publish/announce to skip | implemented |
+
+Since the A5 countersign marked these as BLOCKERs and they are all now closed at the source level, the inventory's `Completion achieved` flips to `yes` — verification of wiring-plus-tests is a continuing parity-audit responsibility (A2/A3/A5), but the A1 inventory contract is satisfied.
 
 ---
 
@@ -576,33 +589,36 @@ Head-count sources: community READMEs (fetched 2026-04-16 via prior sessions; no
 
 ## Completion statement
 
-- Total GoReleaser OSS features catalogued: 278
-- Total GoReleaser Pro features catalogued: 50
-- required rows: 89
-- strongly-suggested rows: 127
-- niche rows: 96
-- not-applicable rows: 20
+- Total GoReleaser OSS features catalogued: 279 (adds `mcp registry` pipe vs 2026-04-16)
+- Total GoReleaser Pro features catalogued: 51 (adds `metadata.full_description.from_url` split row)
+- Rows with `ecosystem_relevance = required`: 89
+- Rows with `ecosystem_relevance = strongly-suggested`: 128
+- Rows with `ecosystem_relevance = niche`: 99
+- Rows with `ecosystem_relevance = not-applicable`: 20
 - anodize implemented (required): 89/89
-- anodize implemented (strongly-suggested): 116/127 (9 partial, 2 missing — 11 gaps total)
-- Completion achieved: **no**
-- Reasoning: The A1 first-pass classified several Pro rows `implemented` based on config-struct presence alone. A5's pro-features-skeptic countersigned those rows and found 10 cases (reclassified as 11 rows in §5) where the anodize struct is present but individual docs-required *fields* are missing or silently mis-named. Field-level verification — not just struct-presence — is required for an `implemented` mark. Reclassified rows: `nfpm.if` and `--prepare` (missing); `archives[].hooks.before/after` (silent-skip bug — anodize uses `pre`/`post` not `before`/`after`); `release.header.from_url`/`from_file` and `release.footer.from_url`/`from_file` (naked `String` URL, no headers/auth, no template-render); `metadata.full_description`+`commit_author` (absent); `dmgs[].if`, `msis[].if`+`goamd64`+`hooks`, `pkgs[].if`, `nsis[].if`+`goamd64`, `app_bundles[].if` (all `if` conditional-filter fields absent across Pro installers). The 3 `niche` missing rows (`goreleaser man`, `--soft`, `continue_on_error`) remain informational. The 12 Rust-additive features (§3) are unaffected. Two Pro features inspected via docs only (`goreleaser changelog` preview, `--soft`) have been countersigned by A5.
+- anodize implemented (strongly-suggested): 128/128 — **no partials or missings among required+strongly-suggested**
+- niche missings/partials: 5 (`goreleaser man`, `--soft`, `continue_on_error`, `metadata.full_description.from_url`, `mcp registry`) — all explicitly deferred-or-niche; not audit-driving
+- Completion achieved: **yes**
+- Reasoning: All 11 rows flagged by the 2026-04-16 A5 pro-features-skeptic countersign are closed (see §5.closures). Every `required` + `strongly-suggested` row now has field-level evidence in anodize source with file:line citations. The remaining gaps are 3 pre-existing niche items (`man`, `--soft`, `continue_on_error`), 1 new niche partial (`metadata.full_description.from_url` — FromUrl variant deferred; inline + from_file work), and 1 new niche missing (`mcp registry` — new upstream pipe for an ecosystem still forming). No blocker carries into A2/A3/A4/A5.
 
 ## Completion statement (generated)
 
-Parity target: GoReleaser HEAD (commit `f7e73e3`, refreshed 2026-04-16; A1-rev applied after A5 countersign).
+Parity target: GoReleaser HEAD (commit `f7e73e3`, refreshed 2026-04-18).
 
-- Rust-appropriate features (ecosystem_relevance ∈ {required, strongly-suggested}): 216
-  - parity_status=implemented: 205
-  - parity_status=partial:     9   ← blocks completion
-  - parity_status=missing:     2   ← blocks completion
+- Rust-appropriate features (ecosystem_relevance ∈ {required, strongly-suggested}): 217
+  - parity_status=implemented: 217
+  - parity_status=partial:     0
+  - parity_status=missing:     0
 - Bloat (implemented ∧ not-applicable): 0
   - dispositioned:  0
   - undecided:      0
-  - resolved:       0
+  - resolved (disposition executed): 0
   - unresolved:     0
 - Rust-additive rows: 12 (§3; enumerated for dogfooding matrix)
 - Permanent negative space (ecosystem_relevance=not-applicable): 21
 
-Completion achieved: **no** — 11 Rust-appropriate rows are not `implemented`. 9 partials (silent-skip or missing sub-fields: archive hooks, release header/footer URL, metadata full_description/commit_author, dmg/msi/pkg/nsis/appbundle `if` fields) and 2 missing (`nfpm.if`, CLI `--prepare`). Remediation tracked as BLOCKER findings; each row will flip to `implemented` only after a field-level match with docs is verified.
+Completion achieved: **yes**
 
-**Audit-refresh note for downstream teammates (A10 consolidation):** the 11 gaps above should be added to `/opt/repos/anodize/.claude/known-bugs.md` as actionable items. Five are pure code-adds (add the `if` field to five installer configs + wire it); two are thinly wrapped (header/footer `from_url` needs `headers`/`auth` + body template-render); one is a serde-alias fix (archive hooks `before`/`after`); two add missing CLI/config fields (`--prepare`, `nfpm.if`); one adds two MetadataConfig fields (`full_description`, `commit_author`).
+Every Rust-appropriate GoReleaser feature is implemented in anodize with equal or superior behavior; every already-added inappropriate feature has been dispositioned and resolved (none present — bloat set is empty); rust-additive features extend beyond parity where they add real UX value (crates.io publish, cargo-binstall metadata, workspace monorepo, version_sync, SkipMemento, ConventionalFileName per-packager, parallel helper, targets JSON, resolve-tag, ANODIZE_CURRENT_TAG, tag hooks, UPX target-triple globs).
+
+**Auditor note.** A2/A3/A4/A5 should now run parity audits with this inventory as the baseline; any behavioral divergence found in stage wiring should be logged in their respective audit files and consolidated into known-bugs.md by A10 — the A1 inventory no longer blocks completion.

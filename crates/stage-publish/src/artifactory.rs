@@ -379,22 +379,32 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         // HTTP method (default: PUT).
         let method = entry.method.as_deref().unwrap_or("PUT");
 
-        // Resolve credentials — GoReleaser cascade:
-        // Username: config → ARTIFACTORY_{NAME}_USERNAME env var
-        // Password: ARTIFACTORY_{NAME}_SECRET env var → ARTIFACTORY_SECRET → config
+        // Resolve credentials via the anodize ctx env resolver (matches
+        // GoReleaser internal/http/http.go:168-178). Cascade:
+        //   Username: config → ARTIFACTORY_{NAME}_USERNAME
+        //   Password: config → ARTIFACTORY_{NAME}_SECRET
+        // The generic `ARTIFACTORY_SECRET` fallback is removed — it leaks one
+        // instance's credentials across every configured artifactory entry,
+        // which GoReleaser does not do.  Env vars are looked up through the
+        // ctx env map so project `env:` / `env_files:` values are visible.
+        let env_map = ctx.template_vars().all_env();
+        let lookup_env = |name: &str| -> Option<String> {
+            env_map
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+                .filter(|s| !s.is_empty())
+        };
         let name_upper = name.to_uppercase().replace('-', "_");
         let username_env_var = format!("ARTIFACTORY_{}_USERNAME", name_upper);
         let username = match entry.username {
             Some(ref u) => ctx.render_template(u).with_context(|| {
                 format!("artifactory: failed to render username for '{}'", name)
             })?,
-            None => std::env::var(&username_env_var).unwrap_or_default(),
+            None => lookup_env(&username_env_var).unwrap_or_default(),
         };
         let named_env_var = format!("ARTIFACTORY_{}_SECRET", name_upper);
-        let generic_env_var = "ARTIFACTORY_SECRET";
-        let password = std::env::var(&named_env_var)
-            .ok()
-            .or_else(|| std::env::var(generic_env_var).ok())
+        let password = lookup_env(&named_env_var)
             .or_else(|| {
                 entry
                     .password
@@ -466,10 +476,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             if let Some(ref files) = entry.extra_files {
                 log.status(&format!("(dry-run) extra files: {} entries", files.len()));
             }
-            log.status(&format!(
-                "(dry-run) credential env var: {} (fallback: {})",
-                named_env_var, generic_env_var
-            ));
+            log.status(&format!("(dry-run) credential env var: {}", named_env_var));
 
             // Log matching artifacts in dry-run
             let artifacts = collect_upload_artifacts(

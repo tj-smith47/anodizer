@@ -132,6 +132,11 @@ pub fn msi_command(
                 "-o".to_string(),
                 output_path.to_string(),
             ];
+            // Behavioral superset of upstream: GoReleaser docs pass `-ext` only
+            // to candle. Passing the same extensions to light as well is
+            // harmless (WiX ignores unused ones) but avoids link-time
+            // "ExtensionRequired" errors for extensions that supply linker
+            // transforms. Documented divergence — keep.
             for ext in extensions {
                 link.push("-ext".to_string());
                 link.push(ext.clone());

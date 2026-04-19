@@ -46,15 +46,25 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         // Username: config → UPLOAD_{NAME}_USERNAME
         // Password: UPLOAD_{NAME}_SECRET → config
         let name_upper = name.to_uppercase().replace('-', "_");
+        // Resolve UPLOAD_<NAME>_USERNAME / _SECRET via the anodize ctx env map
+        // (matches GoReleaser internal/http/http.go:163-164,176-177) so project
+        // `env:` / `env_files:` values are visible to the upload publisher.
+        let env_map = ctx.template_vars().all_env();
+        let lookup_env = |name: &str| -> Option<String> {
+            env_map
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+                .filter(|s| !s.is_empty())
+        };
         let username = entry
             .username
             .as_ref()
             .and_then(|u| ctx.render_template(u).ok())
             .unwrap_or_else(|| {
-                std::env::var(format!("UPLOAD_{}_USERNAME", name_upper)).unwrap_or_default()
+                lookup_env(&format!("UPLOAD_{}_USERNAME", name_upper)).unwrap_or_default()
             });
-        let password = std::env::var(format!("UPLOAD_{}_SECRET", name_upper))
-            .ok()
+        let password = lookup_env(&format!("UPLOAD_{}_SECRET", name_upper))
             .or_else(|| {
                 entry
                     .password

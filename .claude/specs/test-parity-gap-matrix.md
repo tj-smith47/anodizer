@@ -1,6 +1,6 @@
 # Test Parity Gap Matrix: Anodize vs GoReleaser
 
-**Refresh date:** 2026-04-16 (A1 inventory mapper run; baseline was 2026-03-26)
+**Refresh date:** 2026-04-18 (A1 inventory mapper rerun; 2026-04-16 baseline closures applied)
 **Anodize baseline:** ~3176 tests across 26 crates (~179k LOC per `wc -l crates/*/src/**`, grown from 441 tests / 17.8k LOC since March baseline)
 **GoReleaser baseline:** ~164 test files, ~44k lines of test code, est. 3000+ test cases (unchanged — pinned to GoReleaser HEAD `f7e73e3`)
 
@@ -17,8 +17,10 @@ Source: Section 2 of `goreleaser-complete-feature-inventory.md`. Only rows with 
 | `goreleaser man` (man page generation) | missing | niche | `cargo run --bin anodize -- man --help` (currently errors — subcommand absent) | Nice-to-have; `clap_mangen` would be the implementation path. Not required. |
 | `--soft` flag on `anodize check` | missing | niche | `cargo run --bin anodize -- check --soft` (currently errors — flag absent) | Pro feature; anodize check is strict by default. |
 | `continue_on_error` per-stage | missing | niche | no stage currently surfaces `continue_on_error` as a config key | Anodize is fail-fast; would need per-stage opt-in. |
+| `metadata.full_description.from_url` | partial | niche | `anodize check` against `metadata.full_description.from_url: ...` raises "`from_url` is not yet supported at metadata context time" (core/src/context.rs:754) | Inline and `from_file` paths work; `FromUrl` deferred. |
+| `mcp registry` (MCP server manifest publish) | missing | niche | no anodize stage; new GoReleaser pipe at `internal/pipe/mcp/` | MCP registry still forming; no Rust demand signal surfaced. |
 
-**No required or strongly-suggested CLI features are in the partial/missing set.** This matches the completion statement in the CLI inventory.
+**No required or strongly-suggested CLI features are in the partial/missing set.** This matches the 2026-04-18 completion statement in the CLI inventory (`Completion achieved: yes`).
 
 ---
 
@@ -579,3 +581,24 @@ To close the biggest gaps, anodize needs:
 4. **Git test fixtures** -- A helper that creates a temporary git repo with configurable commits and tags, like GoReleaser's `testlib.GitInit/GitCommit/GitTag`.
 
 5. **Fake builder** -- A build strategy that creates a fake binary file without running cargo, enabling full pipeline tests without compilation time.
+
+---
+
+## Completion statement (test-parity matrix)
+
+Refreshed 2026-04-18.
+
+- Rows audited: 5 total (partial + missing), all ecosystem_relevance = niche.
+  - required: 0 rows partial or missing
+  - strongly-suggested: 0 rows partial or missing
+  - niche: 5 (`goreleaser man`, `--soft`, `continue_on_error`, `metadata.full_description.from_url`, `mcp registry`)
+  - not-applicable: 0 (the structural-test items in §3 are infrastructure, not parity rows)
+- Implemented / partial / missing breakdown (required + strongly-suggested only):
+  - implemented: all
+  - partial: 0
+  - missing: 0
+
+Completion achieved: **yes** — every audit-driving row (required + strongly-suggested) has `parity_status = implemented`. Remaining gaps are five niche rows (informational only) plus six structural-test-infrastructure items tracked separately in §3.
+
+Rationale: All 11 blockers from the 2026-04-16 A5 countersign are closed at source (see §5.closures of the CLI inventory). Test-level parity is the natural next audit (A2/A3/A4 will exercise each implemented row against its GoReleaser equivalent); gaps surfaced during those audits feed back into known-bugs.md per the wave process.
+

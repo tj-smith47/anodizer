@@ -1438,6 +1438,7 @@ fn fetch_gitlab_commits(
     log.status(&format!("fetching commits from GitLab API: {}", url));
 
     let client = reqwest::blocking::Client::builder()
+        .user_agent(anodize_core::http::USER_AGENT)
         .danger_accept_invalid_certs(skip_tls)
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
@@ -1568,6 +1569,7 @@ fn fetch_gitea_commits(
     log.status(&format!("fetching commits from Gitea API: {}", url));
 
     let client = reqwest::blocking::Client::builder()
+        .user_agent(anodize_core::http::USER_AGENT)
         .danger_accept_invalid_certs(skip_tls)
         .timeout(std::time::Duration::from_secs(30))
         .build()?;

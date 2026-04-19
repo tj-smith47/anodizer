@@ -35,3 +35,27 @@ pub fn hash_file_with<D: Digest>(path: &Path, algo_name: &str) -> Result<String>
 pub fn sha256_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha256>(path, "sha256")
 }
+
+/// Stream a file through `update`, calling it with each 8 KiB chunk.
+/// Use this for hashers that don't implement the `Digest` trait
+/// (e.g. blake3, crc32fast) so the chunked-read loop lives in one place
+/// instead of being copy-pasted per algorithm.
+pub fn hash_file_streaming<F: FnMut(&[u8])>(
+    path: &Path,
+    algo_name: &str,
+    mut update: F,
+) -> Result<()> {
+    let mut file =
+        File::open(path).with_context(|| format!("{algo_name}: open {}", path.display()))?;
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("{algo_name}: read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        update(&buf[..n]);
+    }
+    Ok(())
+}

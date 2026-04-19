@@ -16,7 +16,7 @@ pub fn send_bluesky(
         .map(|s| s.trim_end_matches('/').to_string())
         .unwrap_or_else(|| DEFAULT_PDS_URL.to_string());
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("anodize/", env!("CARGO_PKG_VERSION")))
+        .user_agent(anodize_core::http::USER_AGENT)
         .build()?;
 
     // Step 1: Create session (login)

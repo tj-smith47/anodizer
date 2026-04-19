@@ -23,6 +23,27 @@ fn set_env_var_single_threaded(key: &str, value: &str) {
     unsafe { std::env::set_var(key, value) };
 }
 
+/// Resolve the effective `force_token` kind — config field first, then the
+/// `ANODIZE_FORCE_TOKEN` env var, then the `GORELEASER_FORCE_TOKEN` compat
+/// fallback. Returns `None` if nothing is set (or the value isn't a recognised
+/// backend).
+///
+/// Extracted so `setup_env` and `resolve_scm_token_type` can't drift — adding
+/// a new backend only needs to be wired in this one place.
+fn resolve_force_token(config: &Config) -> Option<ForceTokenKind> {
+    config.force_token.as_ref().cloned().or_else(|| {
+        let env_val = std::env::var("ANODIZE_FORCE_TOKEN")
+            .ok()
+            .or_else(|| std::env::var("GORELEASER_FORCE_TOKEN").ok())?;
+        match env_val.to_lowercase().as_str() {
+            "github" => Some(ForceTokenKind::GitHub),
+            "gitlab" => Some(ForceTokenKind::GitLab),
+            "gitea" => Some(ForceTokenKind::Gitea),
+            _ => None,
+        }
+    })
+}
+
 /// Collect all configured build targets from a config, in declaration order.
 ///
 /// Iterates `config.crates` plus every `config.workspaces[].crates` so monorepos
@@ -131,11 +152,17 @@ pub fn resolve_git_context(
         );
     }
 
-    // Allow env var overrides for tag discovery (like GoReleaser's
-    // GORELEASER_CURRENT_TAG / GORELEASER_PREVIOUS_TAG).
+    // Allow env var overrides for tag discovery. Anodize-native var wins;
+    // the GoReleaser compat alias is checked as a fallback so CI jobs migrating
+    // from GoReleaser pick up their existing env vars without rewiring.
     let tag_override = std::env::var("ANODIZE_CURRENT_TAG")
         .ok()
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::var("GORELEASER_CURRENT_TAG")
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
 
     // Resolve a crate to derive the tag from. Selection order:
     //   1. The first explicitly selected crate (--crate or --all selection)
@@ -235,8 +262,17 @@ pub fn resolve_git_context(
                     }
                 }
 
-                // Allow ANODIZE_PREVIOUS_TAG env override for the previous tag.
-                if let Ok(prev_override) = std::env::var("ANODIZE_PREVIOUS_TAG") {
+                // Allow ANODIZE_PREVIOUS_TAG (or GoReleaser compat
+                // GORELEASER_PREVIOUS_TAG) env override for the previous tag.
+                let prev_override = std::env::var("ANODIZE_PREVIOUS_TAG")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        std::env::var("GORELEASER_PREVIOUS_TAG")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                    });
+                if let Some(prev_override) = prev_override {
                     log.verbose(&format!(
                         "using ANODIZE_PREVIOUS_TAG override: {}",
                         prev_override
@@ -393,17 +429,7 @@ pub fn setup_env(
 
     // GoReleaser env.go:75-86: when force_token is active, clear non-forced
     // token env vars BEFORE the multi-token check so it cannot fire.
-    let resolved_force = config.force_token.as_ref().cloned().or_else(|| {
-        let env_val = std::env::var("ANODIZE_FORCE_TOKEN")
-            .ok()
-            .or_else(|| std::env::var("GORELEASER_FORCE_TOKEN").ok())?;
-        match env_val.to_lowercase().as_str() {
-            "github" => Some(ForceTokenKind::GitHub),
-            "gitlab" => Some(ForceTokenKind::GitLab),
-            "gitea" => Some(ForceTokenKind::Gitea),
-            _ => None,
-        }
-    });
+    let resolved_force = resolve_force_token(config);
     if let Some(ref forced) = resolved_force {
         // Remove env vars for non-forced token types so downstream code
         // only sees the forced provider's token.
@@ -418,9 +444,11 @@ pub fn setup_env(
             }
         }
         if !keep_gitlab {
+            // SAFETY: single-threaded pipeline setup, see set_env_var_single_threaded.
             unsafe { std::env::remove_var("GITLAB_TOKEN") };
         }
         if !keep_gitea {
+            // SAFETY: single-threaded pipeline setup, see set_env_var_single_threaded.
             unsafe { std::env::remove_var("GITEA_TOKEN") };
         }
     }
@@ -694,20 +722,7 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
         None
     };
 
-    // GoReleaser supports GORELEASER_FORCE_TOKEN env var as a fallback for the
-    // config-level force_token field.  We support ANODIZE_FORCE_TOKEN (primary)
-    // and GORELEASER_FORCE_TOKEN (compat).
-    let force_token = config.force_token.as_ref().cloned().or_else(|| {
-        let env_val = std::env::var("ANODIZE_FORCE_TOKEN")
-            .ok()
-            .or_else(|| std::env::var("GORELEASER_FORCE_TOKEN").ok())?;
-        match env_val.to_lowercase().as_str() {
-            "github" => Some(ForceTokenKind::GitHub),
-            "gitlab" => Some(ForceTokenKind::GitLab),
-            "gitea" => Some(ForceTokenKind::Gitea),
-            _ => None,
-        }
-    });
+    let force_token = resolve_force_token(config);
 
     ctx.token_type = scm::resolve_token_type(force_token.as_ref(), env_hint);
 

@@ -22,6 +22,7 @@ pub fn pkgbuild_command(
     version: &str,
     install_location: &str,
     scripts: Option<&str>,
+    min_os_version: Option<&str>,
     output_path: &str,
 ) -> Vec<String> {
     let mut args = vec![
@@ -39,6 +40,11 @@ pub fn pkgbuild_command(
     if let Some(scripts_dir) = scripts {
         args.push("--scripts".to_string());
         args.push(scripts_dir.to_string());
+    }
+
+    if let Some(min_os) = min_os_version {
+        args.push("--min-os-version".to_string());
+        args.push(min_os.to_string());
     }
 
     args.push(output_path.to_string());
@@ -363,6 +369,7 @@ impl Stage for PkgStage {
                         &version,
                         install_location,
                         pkg_cfg.scripts.as_deref(),
+                        pkg_cfg.min_os_version.as_deref(),
                         &pkg_path.to_string_lossy(),
                     );
 
@@ -446,6 +453,7 @@ mod tests {
             "1.0.0",
             "/usr/local/bin",
             None,
+            None,
             "/tmp/output/myapp.pkg",
         );
         assert_eq!(
@@ -473,6 +481,7 @@ mod tests {
             "2.0.0",
             "/usr/local/bin",
             Some("/path/to/scripts"),
+            None,
             "/tmp/output/myapp.pkg",
         );
         assert_eq!(
@@ -501,6 +510,7 @@ mod tests {
             "com.example.myapp",
             "1.0.0",
             "/opt/myapp/bin",
+            None,
             None,
             "/tmp/output/myapp.pkg",
         );
@@ -968,6 +978,7 @@ crates:
             "com.example.myapp",
             "1.0.0",
             "/usr/local/bin", // the default
+            None,
             None,
             "/tmp/out.pkg",
         );

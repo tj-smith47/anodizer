@@ -10,6 +10,7 @@ use anodize_core::config::{
     BuildConfig, BuildIgnore, BuildOverride, CrossStrategy, HookEntry, UniversalBinaryConfig,
 };
 use anodize_core::context::Context;
+use anodize_core::env_expand::expand_env as expand_env_vars;
 use anodize_core::hooks::run_hooks;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
@@ -797,52 +798,6 @@ fn target_for_validation(target: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// expand_env_vars — expand $VAR and ${VAR} in strings
-// ---------------------------------------------------------------------------
-
-/// Expand shell-style environment variable references (`$VAR` and `${VAR}`)
-/// in a string value, matching GoReleaser's `os.ExpandEnv()` behavior.
-fn expand_env_vars(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '$' && i + 1 < chars.len() {
-            if chars[i + 1] == '{' {
-                // ${VAR} form
-                if let Some(end) = chars[i + 2..].iter().position(|&c| c == '}') {
-                    let var_name: String = chars[i + 2..i + 2 + end].iter().collect();
-                    result.push_str(&std::env::var(&var_name).unwrap_or_default());
-                    i = i + 2 + end + 1;
-                } else {
-                    // No closing brace, keep literal
-                    result.push('$');
-                    i += 1;
-                }
-            } else if chars[i + 1].is_ascii_alphanumeric() || chars[i + 1] == '_' {
-                // $VAR form — consume alphanumeric + underscore
-                let start = i + 1;
-                let mut end = start;
-                while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
-                {
-                    end += 1;
-                }
-                let var_name: String = chars[start..end].iter().collect();
-                result.push_str(&std::env::var(&var_name).unwrap_or_default());
-                i = end;
-            } else {
-                result.push('$');
-                i += 1;
-            }
-        } else {
-            result.push(chars[i]);
-            i += 1;
-        }
-    }
-    result
-}
-
-// ---------------------------------------------------------------------------
 // is_dynamically_linked — minimal ELF check for PT_INTERP
 // ---------------------------------------------------------------------------
 
@@ -1089,17 +1044,6 @@ fn resolve_reproducible_epoch(commit_timestamp: &str) -> i64 {
         );
     }
     epoch
-}
-
-// ---------------------------------------------------------------------------
-// set_file_mtime — reproducible builds: set binary mtime to SOURCE_DATE_EPOCH
-// ---------------------------------------------------------------------------
-
-fn set_file_mtime(path: &Path, epoch_secs: i64) -> anyhow::Result<()> {
-    let ft = filetime::FileTime::from_unix_time(epoch_secs, 0);
-    filetime::set_file_mtime(path, ft)
-        .with_context(|| format!("failed to set mtime on {}", path.display()))?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1737,10 +1681,18 @@ impl Stage for BuildStage {
                         .cloned()
                         .unwrap_or_default();
 
-                    // Template vars already set before binary name render above.
                     // Render env values and expand shell-style env var references.
+                    // Cascade: each rendered KEY is injected into the template
+                    // context's env map BEFORE rendering later entries so that
+                    // `{{ .Env.KEY }}` references resolve to the same-block value.
+                    // Iteration is sorted for deterministic order; full
+                    // user-insertion-order cascade requires changing the YAML
+                    // schema to an ordered list — tracked upstream.
                     let mut rendered_env: HashMap<String, String> = HashMap::new();
-                    for (k, v) in &target_env {
+                    let mut keys: Vec<&String> = target_env.keys().collect();
+                    keys.sort();
+                    for k in keys {
+                        let v = &target_env[k];
                         let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
                             log.warn(&format!(
                                 "failed to render env value for '{}': {}, using raw value",
@@ -1748,8 +1700,11 @@ impl Stage for BuildStage {
                             ));
                             v.clone()
                         });
-                        // Expand $VAR and ${VAR} matching GoReleaser's os.ExpandEnv()
-                        rendered_env.insert(k.clone(), expand_env_vars(&rendered_val));
+                        let expanded = expand_env_vars(&rendered_val);
+                        // Inject into ctx env so later entries (and templated
+                        // fields) see this KEY via `{{ .Env.KEY }}`.
+                        ctx.template_vars_mut().set_env(k, &expanded);
+                        rendered_env.insert(k.clone(), expanded);
                     }
                     target_env = rendered_env;
 
@@ -2015,6 +1970,17 @@ impl Stage for BuildStage {
         } else if effective_parallelism <= 1 || build_jobs.len() <= 1 {
             // Sequential execution (parallelism == 1 or single job).
             for job in &build_jobs {
+                // MkdirAll the dist/target dir BEFORE running pre-hooks, so
+                // a pre-hook writing into the expected bin output directory
+                // succeeds (GoReleaser build/build.go:147-155 order).
+                if let Some(parent) = job.bin_path.parent() {
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "failed to create bin output dir: {} (for pre-hook)",
+                            parent.display()
+                        )
+                    })?;
+                }
                 // Execute pre-build hooks
                 if !job.pre_hooks.is_empty() {
                     run_hooks(
@@ -2056,7 +2022,7 @@ impl Stage for BuildStage {
                 if job.reproducible && resolved_bin.exists() {
                     let epoch = resolve_reproducible_epoch(&commit_timestamp);
                     if epoch > 0 {
-                        set_file_mtime(&resolved_bin, epoch)?;
+                        anodize_core::util::set_file_mtime_epoch(&resolved_bin, epoch)?;
                     }
                 }
 
@@ -2172,6 +2138,18 @@ impl Stage for BuildStage {
                                 let env = env.unwrap_or_default();
                                 let cwd = cwd.unwrap_or_default();
 
+                                // MkdirAll the dist/target dir BEFORE the
+                                // pre-hook (GoReleaser build/build.go:147-155
+                                // order) so pre-hooks can stage files into the
+                                // expected output directory.
+                                if let Some(parent) = bin_path.parent() {
+                                    std::fs::create_dir_all(parent).with_context(|| {
+                                        format!(
+                                            "failed to create bin output dir: {} (for pre-hook)",
+                                            parent.display()
+                                        )
+                                    })?;
+                                }
                                 // Execute pre-build hooks before compilation
                                 if !pre_hooks.is_empty() {
                                     run_hooks(&pre_hooks, "pre-build", false, &thread_log, Some(&thread_tvars))?;
@@ -2218,7 +2196,7 @@ impl Stage for BuildStage {
                                 if reproducible && bin_path.exists() {
                                     let epoch = resolve_reproducible_epoch(&commit_ts);
                                     if epoch > 0 {
-                                        set_file_mtime(&bin_path, epoch)?;
+                                        anodize_core::util::set_file_mtime_epoch(&bin_path, epoch)?;
                                     }
                                 }
 
@@ -3850,35 +3828,6 @@ crates:
     fn test_target_for_validation_no_suffix() {
         let t = target_for_validation("x86_64-unknown-linux-gnu");
         assert_eq!(t, "x86_64-unknown-linux-gnu");
-    }
-
-    #[test]
-    fn test_expand_env_vars_dollar_var() {
-        // SAFETY: test-only env mutation
-        unsafe { std::env::set_var("TEST_EXPAND_VAR", "hello") };
-        let result = expand_env_vars("$TEST_EXPAND_VAR world");
-        assert_eq!(result, "hello world");
-        unsafe { std::env::remove_var("TEST_EXPAND_VAR") };
-    }
-
-    #[test]
-    fn test_expand_env_vars_brace_var() {
-        unsafe { std::env::set_var("TEST_EXPAND_BRACE", "braced") };
-        let result = expand_env_vars("${TEST_EXPAND_BRACE}_suffix");
-        assert_eq!(result, "braced_suffix");
-        unsafe { std::env::remove_var("TEST_EXPAND_BRACE") };
-    }
-
-    #[test]
-    fn test_expand_env_vars_missing_var() {
-        let result = expand_env_vars("$NONEXISTENT_VAR_12345");
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_expand_env_vars_no_vars() {
-        let result = expand_env_vars("plain string with no vars");
-        assert_eq!(result, "plain string with no vars");
     }
 
     #[test]

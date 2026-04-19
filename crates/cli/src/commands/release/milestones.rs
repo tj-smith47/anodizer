@@ -160,6 +160,14 @@ fn resolve_milestone_repo(
         }
     }
 
+    // Final fallback: infer from the `origin` git remote (matches GoReleaser
+    // milestone.go:30-41 `ExtractRepoFromConfig`). Lets top-level `milestones:`
+    // blocks work without any per-crate release config when the `origin`
+    // remote already points at the right owner/name.
+    if let Ok(pair) = anodize_core::git::detect_owner_repo() {
+        return pair;
+    }
+
     (String::new(), String::new())
 }
 
@@ -192,7 +200,7 @@ fn close_milestone_github(
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", "anodize")
+                .header("User-Agent", anodize_core::http::USER_AGENT)
                 .send()
                 .await
                 .context("milestone: list milestones request failed")?;
@@ -249,7 +257,7 @@ fn close_milestone_github(
             .patch(&close_url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "anodize")
+            .header("User-Agent", anodize_core::http::USER_AGENT)
             .json(&serde_json::json!({ "state": "closed" }))
             .send()
             .await
@@ -318,7 +326,7 @@ fn close_milestone_gitlab(
         let resp = client
             .get(&url)
             .header("PRIVATE-TOKEN", token)
-            .header("User-Agent", "anodize")
+            .header("User-Agent", anodize_core::http::USER_AGENT)
             .send()
             .await
             .context("milestone: GitLab list milestones failed")?;
@@ -360,7 +368,7 @@ fn close_milestone_gitlab(
         let resp = client
             .put(&close_url)
             .header("PRIVATE-TOKEN", token)
-            .header("User-Agent", "anodize")
+            .header("User-Agent", anodize_core::http::USER_AGENT)
             .json(&serde_json::json!({ "state_event": "close" }))
             .send()
             .await
@@ -403,7 +411,7 @@ fn close_milestone_gitea(
         let resp = client
             .get(&url)
             .header("Authorization", format!("token {}", token))
-            .header("User-Agent", "anodize")
+            .header("User-Agent", anodize_core::http::USER_AGENT)
             .send()
             .await
             .context("milestone: Gitea list milestones failed")?;
@@ -445,7 +453,7 @@ fn close_milestone_gitea(
         let resp = client
             .patch(&close_url)
             .header("Authorization", format!("token {}", token))
-            .header("User-Agent", "anodize")
+            .header("User-Agent", anodize_core::http::USER_AGENT)
             .json(&serde_json::json!({ "state": "closed", "title": milestone_name }))
             .send()
             .await

@@ -50,7 +50,7 @@ pub fn generate_manifest(
     hash: &str,
     description: &str,
     license: &str,
-) -> String {
+) -> Result<String> {
     let entries = vec![ArchEntry {
         scoop_arch: "64bit".to_string(),
         url: url.to_string(),
@@ -78,7 +78,7 @@ pub fn generate_manifest_with_opts(
     description: &str,
     license: &str,
     opts: &ManifestOptions<'_>,
-) -> String {
+) -> Result<String> {
     // Homepage: explicit > GitHub owner/repo > bare name fallback.
     let default_homepage = opts
         .github_slug
@@ -154,10 +154,12 @@ pub fn generate_manifest_with_opts(
         "architecture": arch_obj
     });
 
-    // Add optional array fields when present.
+    // Add optional array fields when present. The manifest above is constructed
+    // from a `serde_json::json!({...})` object literal; `as_object_mut()` cannot
+    // return None unless that literal is changed to a non-object form.
     let obj = manifest
         .as_object_mut()
-        .unwrap_or_else(|| panic!("manifest is an object: programmer bug, expected JSON object"));
+        .ok_or_else(|| anyhow::anyhow!("scoop: manifest root is not a JSON object"))?;
 
     if let Some(persist) = opts.persist {
         obj.insert("persist".to_string(), serde_json::json!(persist));
@@ -175,10 +177,7 @@ pub fn generate_manifest_with_opts(
         obj.insert("shortcuts".to_string(), serde_json::json!(shortcuts));
     }
 
-    // SAFETY: The manifest is a serde_json::Value constructed from string
-    // literals and function parameters; serialisation to JSON is infallible.
-    serde_json::to_string_pretty(&manifest)
-        .unwrap_or_else(|e| panic!("scoop: serialize manifest: {e}"))
+    serde_json::to_string_pretty(&manifest).context("scoop: serialize manifest")
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +412,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         &description,
         &license,
         &opts,
-    );
+    )?;
 
     // Clone bucket repo, write manifest, commit, push.
     let token = util::resolve_repo_token(
@@ -526,7 +525,8 @@ mod tests {
             "sha256xyz",
             "Declarative config management",
             "MIT",
-        );
+        )
+        .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["version"], "1.0.0");
         assert_eq!(json["architecture"]["64bit"]["hash"], "sha256xyz");
@@ -542,7 +542,8 @@ mod tests {
             "deadbeef",
             "A helpful tool",
             "Apache-2.0",
-        );
+        )
+        .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["description"], "A helpful tool");
         assert_eq!(json["version"], "2.1.0");
@@ -622,7 +623,8 @@ mod tests {
             "Release automation for Rust projects",
             "Apache-2.0",
             &opts,
-        );
+        )
+        .unwrap();
 
         // Parse the manifest as JSON
         let json: serde_json::Value = serde_json::from_str(&manifest)
@@ -667,7 +669,8 @@ mod tests {
             "deadbeefcafebabe",
             "A useful tool",
             "MIT",
-        );
+        )
+        .unwrap();
 
         // Verify it is pretty-printed (has newlines and indentation)
         assert!(manifest.contains('\n'), "should be pretty-printed");
@@ -719,7 +722,8 @@ mod tests {
             "hash123",
             "A tool for \"parsing\" JSON & XML <data>",
             "MIT",
-        );
+        )
+        .unwrap();
 
         // Even with special characters, should produce valid JSON
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap_or_else(|e| {
@@ -741,7 +745,8 @@ mod tests {
             "abc",
             "desc",
             "MIT",
-        );
+        )
+        .unwrap();
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(
@@ -762,7 +767,8 @@ mod tests {
             "hash",
         );
         let manifest =
-            generate_manifest_with_opts("release-tool", "5.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("release-tool", "5.0.0", &entries, "desc", "MIT", &opts)
+                .unwrap();
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert!(
@@ -788,7 +794,8 @@ mod tests {
             "deadbeef",
             "My application",
             "Apache-2.0",
-        );
+        )
+        .unwrap();
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
 
@@ -811,7 +818,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/mytool.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "2.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "2.0.0", &entries, "desc", "MIT", &opts).unwrap();
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert!(
@@ -833,7 +840,8 @@ mod tests {
             "abc",
             "desc",
             "MIT",
-        );
+        )
+        .unwrap();
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert!(
@@ -855,7 +863,8 @@ mod tests {
             "hash",
             "desc",
             "MIT",
-        );
+        )
+        .unwrap();
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["homepage"], "https://github.com/my-tool");
@@ -873,7 +882,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["homepage"], "https://example.com/mytool");
     }
@@ -887,7 +896,8 @@ mod tests {
             "abc",
             "desc",
             "MIT",
-        );
+        )
+        .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["homepage"], "https://github.com/mytool");
     }
@@ -901,7 +911,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["persist"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -918,7 +928,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["depends"].as_array().unwrap();
         assert_eq!(arr, &["git", "7zip"]);
@@ -933,7 +943,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["pre_install"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -949,7 +959,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["post_install"].as_array().unwrap();
         assert_eq!(arr.len(), 1);
@@ -972,7 +982,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let arr = json["shortcuts"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
@@ -990,7 +1000,8 @@ mod tests {
             "abc",
             "desc",
             "MIT",
-        );
+        )
+        .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert!(json.get("persist").is_none());
         assert!(json.get("depends").is_none());
@@ -1018,7 +1029,7 @@ mod tests {
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
-            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts);
+            generate_manifest_with_opts("mytool", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["homepage"], "https://example.com");
         assert!(json["persist"].is_array());
@@ -1059,7 +1070,8 @@ mod tests {
             ..Default::default()
         };
         let manifest =
-            generate_manifest_with_opts("app", "1.0.0", &entries, "A multi-arch app", "MIT", &opts);
+            generate_manifest_with_opts("app", "1.0.0", &entries, "A multi-arch app", "MIT", &opts)
+                .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
 
         // Verify all three architecture blocks
@@ -1120,7 +1132,8 @@ mod tests {
             "An app",
             "MIT",
             &ManifestOptions::default(),
-        );
+        )
+        .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         // With wrap_in_directory, single bin becomes a pair: ["dir/bin.exe", "alias"]
         // (GoReleaser scoop.go:384 uses filepath.ToSlash → forward slashes.)
@@ -1146,7 +1159,8 @@ mod tests {
             ..Default::default()
         };
         let manifest =
-            generate_manifest_with_opts("suite", "1.0.0", &entries, "A suite", "MIT", &opts);
+            generate_manifest_with_opts("suite", "1.0.0", &entries, "A suite", "MIT", &opts)
+                .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         let bin = &json["architecture"]["64bit"]["bin"];
         assert!(bin.is_array());
@@ -1172,7 +1186,8 @@ mod tests {
             "An app",
             "MIT",
             &ManifestOptions::default(),
-        );
+        )
+        .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         // Without wrap_in_directory, single bin is a plain string.
         assert_eq!(json["architecture"]["64bit"]["bin"], "app.exe");
@@ -1266,7 +1281,8 @@ mod tests {
             "abc123",
             "A custom named tool",
             "MIT",
-        );
+        )
+        .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(json["architecture"]["64bit"]["bin"], "custom-name.exe");
     }

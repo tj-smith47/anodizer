@@ -17,11 +17,12 @@ fn redact_secrets(output: &str) -> String {
 
 /// Render a hook template string through the full Tera engine.
 ///
-/// This gives hooks the same template capabilities as all other config fields:
-/// conditionals, filters, `{{ .Env.VAR }}`, etc.  Falls back to the raw
-/// string if rendering fails (e.g. the string contains no template syntax).
-fn render_hook_template(template: &str, vars: &TemplateVars) -> String {
-    template::render(template, vars).unwrap_or_else(|_| template.to_string())
+/// Hard-bails on render failure: a typo like `{{ .Teg }}` in a hook command
+/// would otherwise execute literal `{{ .Teg }}` and produce a confusing
+/// shell error rather than a clear template diagnostic.
+fn render_hook_template(template: &str, vars: &TemplateVars, label: &str) -> Result<String> {
+    template::render(template, vars)
+        .with_context(|| format!("{} hook: render template '{}'", label, template))
 }
 
 /// Execute a list of shell hook commands.
@@ -51,35 +52,36 @@ pub fn run_hooks(
             }
         };
 
-        // Template-expand the command string through Tera
         let cmd_str = if let Some(tv) = template_vars {
-            render_hook_template(raw_cmd, tv)
+            render_hook_template(raw_cmd, tv, label)?
         } else {
             raw_cmd.to_string()
         };
 
-        // Template-expand the working directory
-        let dir_str = raw_dir.map(|d| {
-            if let Some(tv) = template_vars {
-                render_hook_template(d, tv)
+        let dir_str = match raw_dir {
+            Some(d) => Some(if let Some(tv) = template_vars {
+                render_hook_template(d, tv, label)?
             } else {
                 d.to_string()
-            }
-        });
+            }),
+            None => None,
+        };
 
-        // Template-expand environment variable values
-        let expanded_env: Option<HashMap<String, String>> = env.map(|envs| {
-            envs.iter()
-                .map(|(k, v)| {
+        let expanded_env: Option<HashMap<String, String>> = match env {
+            Some(envs) => {
+                let mut out = HashMap::with_capacity(envs.len());
+                for (k, v) in envs {
                     let expanded_v = if let Some(tv) = template_vars {
-                        render_hook_template(v, tv)
+                        render_hook_template(v, tv, label)?
                     } else {
                         v.clone()
                     };
-                    (k.clone(), expanded_v)
-                })
-                .collect()
-        });
+                    out.insert(k.clone(), expanded_v);
+                }
+                Some(out)
+            }
+            None => None,
+        };
 
         if dry_run {
             log.status(&format!("[dry-run] {} hook: {}", label, cmd_str));

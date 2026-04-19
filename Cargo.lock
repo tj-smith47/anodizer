@@ -92,6 +92,7 @@ dependencies = [
  "md-5",
  "percent-encoding",
  "regex",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -102,6 +103,7 @@ dependencies = [
  "sha3",
  "tempfile",
  "tera",
+ "tokio",
  "toml",
 ]
 
@@ -174,7 +176,6 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
- "filetime",
  "glob",
  "serde_yaml_ng",
  "serial_test",

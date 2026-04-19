@@ -252,7 +252,7 @@ struct LegacyInstaller {
 // ---------------------------------------------------------------------------
 
 /// Generate a legacy singleton WinGet YAML manifest string.
-pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
+pub fn generate_manifest(params: &WingetManifestParams<'_>) -> Result<String> {
     let manifest = WingetManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
@@ -277,12 +277,11 @@ pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
         manifest_type: "singleton".to_string(),
         manifest_version: "1.12.0".to_string(),
     };
-    serde_yaml_ng::to_string(&manifest)
-        .unwrap_or_else(|e| panic!("winget: serialize manifest: {e}"))
+    serde_yaml_ng::to_string(&manifest).context("winget: serialize manifest")
 }
 
 /// Generate the 3-file WinGet manifest set: (version, installer, locale).
-pub fn generate_manifests(params: &WingetManifestParams<'_>) -> (String, String, String) {
+pub fn generate_manifests(params: &WingetManifestParams<'_>) -> Result<(String, String, String)> {
     let version = VersionManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
@@ -452,29 +451,17 @@ pub fn generate_manifests(params: &WingetManifestParams<'_>) -> (String, String,
     const SCHEMA_INSTALLER: &str = "# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json\n";
     const SCHEMA_LOCALE: &str = "# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json\n";
 
-    (
-        format!(
-            "{}{}{}",
-            GENERATED_HEADER,
-            SCHEMA_VERSION,
-            serde_yaml_ng::to_string(&version)
-                .unwrap_or_else(|e| panic!("winget: serialize version manifest: {e}"))
-        ),
-        format!(
-            "{}{}{}",
-            GENERATED_HEADER,
-            SCHEMA_INSTALLER,
-            serde_yaml_ng::to_string(&installer)
-                .unwrap_or_else(|e| panic!("winget: serialize installer manifest: {e}"))
-        ),
-        format!(
-            "{}{}{}",
-            GENERATED_HEADER,
-            SCHEMA_LOCALE,
-            serde_yaml_ng::to_string(&locale)
-                .unwrap_or_else(|e| panic!("winget: serialize locale manifest: {e}"))
-        ),
-    )
+    let version_yaml =
+        serde_yaml_ng::to_string(&version).context("winget: serialize version manifest")?;
+    let installer_yaml =
+        serde_yaml_ng::to_string(&installer).context("winget: serialize installer manifest")?;
+    let locale_yaml =
+        serde_yaml_ng::to_string(&locale).context("winget: serialize locale manifest")?;
+    Ok((
+        format!("{}{}{}", GENERATED_HEADER, SCHEMA_VERSION, version_yaml),
+        format!("{}{}{}", GENERATED_HEADER, SCHEMA_INSTALLER, installer_yaml),
+        format!("{}{}{}", GENERATED_HEADER, SCHEMA_LOCALE, locale_yaml),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -878,7 +865,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         installers,
         product_code: winget_cfg.product_code.as_deref(),
         release_date: release_date_ref,
-    });
+    })?;
 
     let token = util::resolve_repo_token(
         ctx,
@@ -1064,7 +1051,7 @@ mod tests {
 
     #[test]
     fn test_generate_manifest_basic() {
-        let manifest = generate_manifest(&default_params());
+        let manifest = generate_manifest(&default_params()).unwrap();
         assert!(manifest.contains("PackageIdentifier: Org.MyTool"));
         assert!(manifest.contains("PackageVersion: 1.0.0"));
         assert!(manifest.contains("PackageName: mytool"));
@@ -1086,7 +1073,7 @@ mod tests {
     fn test_generate_manifest_no_publisher_url() {
         let mut params = default_params();
         params.publisher_url = None;
-        let manifest = generate_manifest(&params);
+        let manifest = generate_manifest(&params).unwrap();
         assert!(!manifest.contains("PublisherUrl:"));
         assert!(manifest.contains("Publisher: My Org"));
     }
@@ -1094,7 +1081,7 @@ mod tests {
     #[test]
     fn test_generate_3file_manifests() {
         let params = default_params();
-        let (ver, inst, locale) = generate_manifests(&params);
+        let (ver, inst, locale) = generate_manifests(&params).unwrap();
 
         assert!(ver.contains("ManifestType: version"));
         assert!(ver.contains("PackageIdentifier: Org.MyTool"));
@@ -1120,7 +1107,7 @@ mod tests {
         }];
         let mut params = default_params();
         params.dependencies = &deps;
-        let (_, inst, _) = generate_manifests(&params);
+        let (_, inst, _) = generate_manifests(&params).unwrap();
         assert!(inst.contains("PackageDependencies:"));
         assert!(inst.contains("PackageIdentifier: Foo.Bar"));
         assert!(inst.contains("MinimumVersion: 1.0.0"));
@@ -1131,7 +1118,7 @@ mod tests {
         let tags = vec!["CLI Tool".to_string(), "Rust".to_string()];
         let mut params = default_params();
         params.tags = Some(&tags);
-        let (_, _, locale) = generate_manifests(&params);
+        let (_, _, locale) = generate_manifests(&params).unwrap();
         assert!(locale.contains("cli-tool"));
         assert!(locale.contains("rust"));
     }
@@ -1375,7 +1362,7 @@ mod tests {
             release_date: Some("2026-03-29"),
         };
 
-        let (ver, inst, locale) = generate_manifests(&params);
+        let (ver, inst, locale) = generate_manifests(&params).unwrap();
 
         // Version manifest
         assert!(ver.contains("PackageIdentifier: MyOrg.MyTool"));
@@ -1469,7 +1456,7 @@ mod tests {
             release_date: None,
         };
 
-        let (_ver, inst, _locale) = generate_manifests(&params);
+        let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
         assert!(
             inst.contains("RelativeFilePath: myapp-1.0.0\\myapp.exe"),
             "RelativeFilePath should include wrap_in_directory prefix, got:\n{}",
@@ -1514,7 +1501,7 @@ mod tests {
             release_date: None,
         };
 
-        let (_ver, inst, _locale) = generate_manifests(&params);
+        let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
         assert!(
             inst.contains("RelativeFilePath: myapp.exe"),
             "Without wrap_in_directory, RelativeFilePath should be plain, got:\n{}",
@@ -1563,7 +1550,7 @@ mod tests {
             release_date: None,
         };
 
-        let (_ver, inst, _locale) = generate_manifests(&params);
+        let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
         assert!(
             inst.contains("RelativeFilePath: suite-2.0.0\\cli.exe"),
             "First binary should have wrap prefix, got:\n{}",
@@ -1665,7 +1652,7 @@ mod tests {
             license: "MIT",
             ..default_params()
         };
-        let (_, _, locale) = generate_manifests(&params);
+        let (_, _, locale) = generate_manifests(&params).unwrap();
         // PackageName should be "mytool" (fallback from name)
         assert!(
             locale.contains("PackageName: mytool"),
@@ -1685,7 +1672,7 @@ mod tests {
             license: "MIT",
             ..default_params()
         };
-        let (_, _, locale) = generate_manifests(&params);
+        let (_, _, locale) = generate_manifests(&params).unwrap();
         assert!(
             locale.contains("PackageName: My Tool Pro"),
             "PackageName should use the override:\n{locale}"
