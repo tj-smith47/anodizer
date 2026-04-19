@@ -3637,8 +3637,11 @@ fn test_e2e_build_command_matches_goreleaser_pipeline_outputs() {
     let before_marker_str = before_marker.to_string_lossy().replace('\\', "\\\\");
     let hook_cmd = if cfg!(windows) {
         // PowerShell New-Item is the analog of `touch` in PS 5+/Core.
+        // `\"` escapes produce literal `\"` so the outer YAML double-quoted
+        // string keeps the inner quotes as part of the PowerShell -Command
+        // payload instead of terminating the YAML scalar early.
         format!(
-            "powershell -NoProfile -Command \"New-Item -ItemType File -Force -Path '{}'\"",
+            "powershell -NoProfile -Command \\\"New-Item -ItemType File -Force -Path '{}'\\\"",
             before_marker_str
         )
     } else {
