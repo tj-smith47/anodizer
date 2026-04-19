@@ -11,7 +11,7 @@ categories.workspace = true
 
 [dependencies]
 anodize-core.workspace = true
-anodize-stage-checksum = { path = "../stage-checksum" }
+anodize-stage-checksum.workspace = true
 anyhow.workspace = true
 glob.workspace = true
 http.workspace = true

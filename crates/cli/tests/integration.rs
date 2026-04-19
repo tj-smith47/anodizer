@@ -1857,12 +1857,20 @@ crates:
         entries
     );
 
-    let has_binary = entries
-        .iter()
-        .any(|n| n.contains("raw") && !n.contains('.'));
+    // Linux/macOS: bare binary (no extension). Windows: `.exe` is appended
+    // by the binary-format archiver (matches GoReleaser windowsBinaryName).
+    let has_binary = if cfg!(windows) {
+        entries
+            .iter()
+            .any(|n| n.contains("raw") && n.ends_with(".exe"))
+    } else {
+        entries
+            .iter()
+            .any(|n| n.contains("raw") && !n.contains('.'))
+    };
     assert!(
         has_binary,
-        "dist/ should contain a raw binary (no extension), found: {:?}",
+        "dist/ should contain a raw binary (no extension on unix; .exe on windows), found: {:?}",
         entries
     );
 
@@ -3621,18 +3629,28 @@ fn test_e2e_build_command_matches_goreleaser_pipeline_outputs() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    // Use a before-hook that touches a sentinel file; `anodize build`
+    // Use a before-hook that creates a sentinel file; `anodize build`
     // must execute the hook (GoReleaser BuildCmdPipeline includes
-    // before.Pipe).
+    // before.Pipe). Cross-platform marker write uses sh-style on unix
+    // and powershell on Windows so the test runs on every CI runner.
     let before_marker = tmp.path().join("before-ran");
     let before_marker_str = before_marker.to_string_lossy().replace('\\', "\\\\");
+    let hook_cmd = if cfg!(windows) {
+        // PowerShell New-Item is the analog of `touch` in PS 5+/Core.
+        format!(
+            "powershell -NoProfile -Command \"New-Item -ItemType File -Force -Path '{}'\"",
+            before_marker_str
+        )
+    } else {
+        format!("touch {}", before_marker_str)
+    };
 
     let config = format!(
         r#"project_name: test-project
 report_sizes: true
 before:
   hooks:
-    - "touch {marker}"
+    - "{hook}"
 crates:
   - name: test-project
     path: "."
@@ -3643,7 +3661,7 @@ crates:
           - {host}
 "#,
         host = host,
-        marker = before_marker_str,
+        hook = hook_cmd,
     );
     create_config(tmp.path(), &config);
 

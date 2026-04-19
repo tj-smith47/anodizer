@@ -6210,9 +6210,11 @@ crates:
         });
         std::fs::write(tmp.path().join("myapp"), b"binary").unwrap();
 
-        NfpmStage.run(&mut ctx).unwrap();
+        // Run the stage. The render of `templated_contents` happens before
+        // nfpm is exec'd, so a missing-nfpm error on a CI runner still leaves
+        // the rendered file in place — which is what we're asserting here.
+        let _ = NfpmStage.run(&mut ctx);
 
-        // Rendered file should exist under dist/nfpm-tmp/<crate>/<id>/ with the interpolated body.
         let rendered = tmp
             .path()
             .join("dist/nfpm-tmp/myapp/default/000-greeting.tmpl");
@@ -6271,7 +6273,10 @@ crates:
         });
         std::fs::write(tmp.path().join("myapp"), b"binary").unwrap();
 
-        NfpmStage.run(&mut ctx).unwrap();
+        // Same rationale as test_nfpm_templated_contents_renders_file_body:
+        // rendering precedes nfpm exec, so the assertion holds even when
+        // nfpm isn't installed on the test host.
+        let _ = NfpmStage.run(&mut ctx);
 
         let rendered = tmp
             .path()
