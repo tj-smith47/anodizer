@@ -2310,17 +2310,27 @@ impl Stage for ReleaseStage {
                                             break;
                                         }
                                         Err(err) => {
-                                            let err_str = err.to_string();
                                             let is_server_error = matches!(
                                                 &err,
                                                 octocrab::Error::GitHub { source, .. }
                                                     if source.status_code.is_server_error()
                                             );
+                                            // `already_exists` lives in GitHubError.errors[].code,
+                                            // not in the outer Display. octocrab::Error::GitHub's
+                                            // generated Display is just "GitHub" — inspect the
+                                            // source struct directly.
                                             let is_already_exists = matches!(
                                                 &err,
                                                 octocrab::Error::GitHub { source, .. }
                                                     if source.status_code.as_u16() == 422
-                                            ) && err_str.contains("already_exists");
+                                                        && source.errors.as_ref().is_some_and(|errs| {
+                                                            errs.iter().any(|e| {
+                                                                e.get("code")
+                                                                    .and_then(|v| v.as_str())
+                                                                    == Some("already_exists")
+                                                            })
+                                                        })
+                                            );
 
                                             if is_already_exists {
                                                 // If we've already tried the delete+retry dance
