@@ -349,6 +349,15 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
     };
 
     for entry in entries {
+        // Check disable first (matches GoReleaser's Upload publisher `disable` field).
+        if let Some(ref d) = entry.disable
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            let entry_name = entry.name.as_deref().unwrap_or("<unnamed>");
+            log.status(&format!("artifactory: '{}' disabled", entry_name));
+            continue;
+        }
+
         // Check skip flag.
         if let Some(ref s) = entry.skip
             && s.is_disabled(|tmpl| ctx.render_template(tmpl))

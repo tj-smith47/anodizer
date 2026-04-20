@@ -2809,6 +2809,11 @@ pub struct KrewConfig {
     /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
+    /// Disable this Krew config entirely. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Matches GoReleaser's `disable` field (v2.7+).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
@@ -5143,6 +5148,11 @@ pub struct ArtifactoryConfig {
     /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Disable this Artifactory entry entirely. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Matches GoReleaser's Upload publisher `disable` field.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------

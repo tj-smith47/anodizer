@@ -221,6 +221,15 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("krew: no krew config for '{}'", crate_name))?;
 
+    // Check disable before doing any work. Matches GoReleaser's Disable field
+    // on the Krew pipe (v2.7+).
+    if let Some(ref d) = krew_cfg.disable
+        && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+    {
+        log.status(&format!("krew: disabled for '{}'", crate_name));
+        return Ok(());
+    }
+
     // Check skip_upload before doing any work.
     if crate::homebrew::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(

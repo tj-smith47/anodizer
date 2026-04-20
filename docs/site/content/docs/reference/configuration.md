@@ -99,6 +99,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `client_x509_key` | string | — | Path to client X.509 private key for mTLS authentication. |
 | `custom_artifact_name` | bool | — | Use custom artifact naming instead of default. |
 | `custom_headers` | map | — | Custom HTTP headers sent with each upload request. |
+| `disable` | StringOrBool | — | Disable this Artifactory entry entirely. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable). Matches GoReleaser's Upload publisher `disable` field. |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to upload alongside build artifacts. |
 | `extra_files_only` | bool | — | When true, upload only extra_files (skip normal artifacts). |
 | `exts` | list of string | — | File extension filter: only upload artifacts matching these extensions. |

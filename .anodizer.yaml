@@ -395,7 +395,7 @@ crates:
           - apk
         vendor: "TJ Smith"
         homepage: "https://github.com/tj-smith47/anodizer"
-        maintainer: "TJ Smith <tj@example.com>"
+        maintainer: "TJ Smith <tj@jarvispro.io>"
         description: "A Rust-native release automation tool"
         license: MIT
         bindir: /usr/bin
