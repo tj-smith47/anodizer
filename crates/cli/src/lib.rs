@@ -24,8 +24,13 @@ pub struct Cli {
         help = "Strict mode: configured features that silently skip become hard errors"
     )]
     pub strict: bool,
+    // Optional so `anodizer` with no args prints help and exits 0. A required
+    // subcommand (non-Option) makes clap emit a "usage" error and exit with
+    // code 2, which package-manager validators (winget's, chocolatey's) treat
+    // as install failure since they smoke-test the installed binary with no
+    // args.
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]

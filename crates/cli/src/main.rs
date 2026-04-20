@@ -87,7 +87,22 @@ fn enable_ci_colors() {
 fn main() {
     enable_ci_colors();
     let cli = Cli::parse();
-    let result = match cli.command {
+
+    // No subcommand given: print help and exit 0. Required for package-manager
+    // validators (winget, chocolatey) that smoke-test the installed binary
+    // with no args and treat any non-zero exit code as an installation
+    // failure.
+    let command = match cli.command {
+        Some(c) => c,
+        None => {
+            use clap::CommandFactory;
+            let _ = Cli::command().print_help();
+            println!();
+            return;
+        }
+    };
+
+    let result = match command {
         Commands::Release {
             crate_names,
             all,
@@ -406,7 +421,7 @@ mod tests {
             cli.as_ref().err()
         );
         if let Ok(c) = cli
-            && let Commands::Release { prepare, .. } = c.command
+            && let Some(Commands::Release { prepare, .. }) = c.command
         {
             assert!(prepare, "prepare bool should be true");
         } else {
@@ -458,7 +473,7 @@ mod tests {
     #[test]
     fn test_cli_release_default_parallelism() {
         let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
-        if let Commands::Release { parallelism, .. } = cli.command {
+        if let Some(Commands::Release { parallelism, .. }) = cli.command {
             assert!(
                 parallelism.is_none(),
                 "default parallelism should be None (auto-detect), got {:?}",
@@ -472,7 +487,7 @@ mod tests {
     #[test]
     fn test_cli_build_default_parallelism() {
         let cli = Cli::try_parse_from(["anodizer", "build"]).unwrap();
-        if let Commands::Build { parallelism, .. } = cli.command {
+        if let Some(Commands::Build { parallelism, .. }) = cli.command {
             assert!(
                 parallelism.is_none(),
                 "default parallelism should be None (auto-detect), got {:?}",
@@ -550,7 +565,7 @@ mod tests {
             "CLI should parse targets --json: {:?}",
             cli.err()
         );
-        if let Commands::Targets { json, crate_names } = cli.unwrap().command {
+        if let Some(Commands::Targets { json, crate_names }) = cli.unwrap().command {
             assert!(json, "--json should be true");
             assert!(crate_names.is_empty(), "crate_names should default empty");
         } else {
@@ -566,7 +581,7 @@ mod tests {
             "CLI should parse targets --crate: {:?}",
             cli.err()
         );
-        if let Commands::Targets { crate_names, .. } = cli.unwrap().command {
+        if let Some(Commands::Targets { crate_names, .. }) = cli.unwrap().command {
             assert_eq!(crate_names, vec!["core".to_string(), "cli".to_string()]);
         } else {
             panic!("expected Targets command");
@@ -591,7 +606,7 @@ mod tests {
             "CLI should parse tag --dry-run: {:?}",
             cli.err()
         );
-        if let Commands::Tag { dry_run, .. } = cli.unwrap().command {
+        if let Some(Commands::Tag { dry_run, .. }) = cli.unwrap().command {
             assert!(dry_run);
         } else {
             panic!("expected Tag command");
@@ -606,7 +621,7 @@ mod tests {
             "CLI should parse tag --custom-tag: {:?}",
             cli.err()
         );
-        if let Commands::Tag { custom_tag, .. } = cli.unwrap().command {
+        if let Some(Commands::Tag { custom_tag, .. }) = cli.unwrap().command {
             assert_eq!(custom_tag, Some("v5.0.0".to_string()));
         } else {
             panic!("expected Tag command");
@@ -621,7 +636,7 @@ mod tests {
             "CLI should parse tag --default-bump: {:?}",
             cli.err()
         );
-        if let Commands::Tag { default_bump, .. } = cli.unwrap().command {
+        if let Some(Commands::Tag { default_bump, .. }) = cli.unwrap().command {
             assert_eq!(default_bump, Some("major".to_string()));
         } else {
             panic!("expected Tag command");
@@ -632,7 +647,7 @@ mod tests {
     fn test_cli_parses_tag_crate_flag() {
         let cli = Cli::try_parse_from(["anodizer", "tag", "--crate", "my-lib"]);
         assert!(cli.is_ok(), "CLI should parse tag --crate: {:?}", cli.err());
-        if let Commands::Tag { crate_name, .. } = cli.unwrap().command {
+        if let Some(Commands::Tag { crate_name, .. }) = cli.unwrap().command {
             assert_eq!(crate_name, Some("my-lib".to_string()));
         } else {
             panic!("expected Tag command");
@@ -667,7 +682,7 @@ mod tests {
             "CLI should parse release --nightly: {:?}",
             cli.err()
         );
-        if let Commands::Release { nightly, .. } = cli.unwrap().command {
+        if let Some(Commands::Release { nightly, .. }) = cli.unwrap().command {
             assert!(nightly, "--nightly flag should be true");
         } else {
             panic!("expected Release command");
@@ -677,7 +692,7 @@ mod tests {
     #[test]
     fn test_cli_nightly_defaults_false() {
         let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
-        if let Commands::Release { nightly, .. } = cli.command {
+        if let Some(Commands::Release { nightly, .. }) = cli.command {
             assert!(!nightly, "--nightly should default to false");
         } else {
             panic!("expected Release command");
@@ -708,7 +723,7 @@ mod tests {
             "CLI should parse release --workspace: {:?}",
             cli.err()
         );
-        if let Commands::Release { workspace, .. } = cli.unwrap().command {
+        if let Some(Commands::Release { workspace, .. }) = cli.unwrap().command {
             assert_eq!(workspace, Some("frontend".to_string()));
         } else {
             panic!("expected Release command");
@@ -718,7 +733,7 @@ mod tests {
     #[test]
     fn test_cli_release_workspace_defaults_none() {
         let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
-        if let Commands::Release { workspace, .. } = cli.command {
+        if let Some(Commands::Release { workspace, .. }) = cli.command {
             assert!(workspace.is_none(), "--workspace should default to None");
         } else {
             panic!("expected Release command");
@@ -750,7 +765,7 @@ mod tests {
             "CLI should parse build --workspace: {:?}",
             cli.err()
         );
-        if let Commands::Build { workspace, .. } = cli.unwrap().command {
+        if let Some(Commands::Build { workspace, .. }) = cli.unwrap().command {
             assert_eq!(workspace, Some("frontend".to_string()));
         } else {
             panic!("expected Build command");
@@ -760,7 +775,7 @@ mod tests {
     #[test]
     fn test_cli_build_workspace_defaults_none() {
         let cli = Cli::try_parse_from(["anodizer", "build"]).unwrap();
-        if let Commands::Build { workspace, .. } = cli.command {
+        if let Some(Commands::Build { workspace, .. }) = cli.command {
             assert!(
                 workspace.is_none(),
                 "build --workspace should default to None"
@@ -795,7 +810,7 @@ mod tests {
             "CLI should parse check --workspace: {:?}",
             cli.err()
         );
-        if let Commands::Check { workspace } = cli.unwrap().command {
+        if let Some(Commands::Check { workspace }) = cli.unwrap().command {
             assert_eq!(workspace, Some("backend".to_string()));
         } else {
             panic!("expected Check command");
@@ -805,7 +820,7 @@ mod tests {
     #[test]
     fn test_cli_check_workspace_defaults_none() {
         let cli = Cli::try_parse_from(["anodizer", "check"]).unwrap();
-        if let Commands::Check { workspace } = cli.command {
+        if let Some(Commands::Check { workspace }) = cli.command {
             assert!(
                 workspace.is_none(),
                 "check --workspace should default to None"
@@ -851,7 +866,7 @@ mod tests {
     fn test_cli_parses_release_draft_flag() {
         let cli = Cli::try_parse_from(["anodizer", "release", "--draft"]);
         assert!(cli.is_ok(), "CLI should parse --draft: {:?}", cli.err());
-        if let Commands::Release { draft, .. } = cli.unwrap().command {
+        if let Some(Commands::Release { draft, .. }) = cli.unwrap().command {
             assert!(draft, "--draft should be true");
         } else {
             panic!("expected Release command");
@@ -861,7 +876,7 @@ mod tests {
     #[test]
     fn test_cli_draft_defaults_false() {
         let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
-        if let Commands::Release { draft, .. } = cli.command {
+        if let Some(Commands::Release { draft, .. }) = cli.command {
             assert!(!draft, "--draft should default to false");
         } else {
             panic!("expected Release command");
@@ -883,11 +898,11 @@ mod tests {
             "CLI should parse --release-header/--release-footer: {:?}",
             cli.err()
         );
-        if let Commands::Release {
+        if let Some(Commands::Release {
             release_header,
             release_footer,
             ..
-        } = cli.unwrap().command
+        }) = cli.unwrap().command
         {
             assert_eq!(
                 release_header,
@@ -908,7 +923,7 @@ mod tests {
     fn test_cli_parses_release_split_flag() {
         let cli = Cli::try_parse_from(["anodizer", "release", "--split"]);
         assert!(cli.is_ok(), "CLI should parse --split: {:?}", cli.err());
-        if let Commands::Release { split, merge, .. } = cli.unwrap().command {
+        if let Some(Commands::Release { split, merge, .. }) = cli.unwrap().command {
             assert!(split, "--split should be true");
             assert!(!merge, "--merge should be false");
         } else {
@@ -920,7 +935,7 @@ mod tests {
     fn test_cli_parses_release_merge_flag() {
         let cli = Cli::try_parse_from(["anodizer", "release", "--merge"]);
         assert!(cli.is_ok(), "CLI should parse --merge: {:?}", cli.err());
-        if let Commands::Release { split, merge, .. } = cli.unwrap().command {
+        if let Some(Commands::Release { split, merge, .. }) = cli.unwrap().command {
             assert!(!split, "--split should be false");
             assert!(merge, "--merge should be true");
         } else {
@@ -931,7 +946,7 @@ mod tests {
     #[test]
     fn test_cli_split_merge_default_false() {
         let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
-        if let Commands::Release { split, merge, .. } = cli.command {
+        if let Some(Commands::Release { split, merge, .. }) = cli.command {
             assert!(!split, "--split should default to false");
             assert!(!merge, "--merge should default to false");
         } else {
@@ -947,11 +962,11 @@ mod tests {
             "CLI should parse --split --single-target: {:?}",
             cli.err()
         );
-        if let Commands::Release {
+        if let Some(Commands::Release {
             split,
             single_target,
             ..
-        } = cli.unwrap().command
+        }) = cli.unwrap().command
         {
             assert!(split);
             assert!(single_target);
@@ -986,7 +1001,7 @@ mod tests {
     fn test_cli_parses_fail_fast() {
         let cli = Cli::try_parse_from(["anodizer", "release", "--fail-fast"]);
         assert!(cli.is_ok(), "CLI should parse --fail-fast: {:?}", cli.err());
-        if let Commands::Release { fail_fast, .. } = cli.unwrap().command {
+        if let Some(Commands::Release { fail_fast, .. }) = cli.unwrap().command {
             assert!(fail_fast, "--fail-fast should be true");
         } else {
             panic!("expected Release command");
@@ -996,7 +1011,7 @@ mod tests {
     #[test]
     fn test_cli_fail_fast_defaults_false() {
         let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
-        if let Commands::Release { fail_fast, .. } = cli.command {
+        if let Some(Commands::Release { fail_fast, .. }) = cli.command {
             assert!(!fail_fast, "--fail-fast should default to false");
         } else {
             panic!("expected Release command");
@@ -1016,9 +1031,9 @@ mod tests {
             "CLI should parse --release-notes-tmpl: {:?}",
             cli.err()
         );
-        if let Commands::Release {
+        if let Some(Commands::Release {
             release_notes_tmpl, ..
-        } = cli.unwrap().command
+        }) = cli.unwrap().command
         {
             assert_eq!(
                 release_notes_tmpl,
@@ -1033,7 +1048,7 @@ mod tests {
     fn test_cli_parses_build_output() {
         let cli = Cli::try_parse_from(["anodizer", "build", "-o", "./myapp"]);
         assert!(cli.is_ok(), "CLI should parse build -o: {:?}", cli.err());
-        if let Commands::Build { output, .. } = cli.unwrap().command {
+        if let Some(Commands::Build { output, .. }) = cli.unwrap().command {
             assert_eq!(output, Some(std::path::PathBuf::from("./myapp")));
         } else {
             panic!("expected Build command");
@@ -1048,7 +1063,7 @@ mod tests {
             "CLI should parse build --output: {:?}",
             cli.err()
         );
-        if let Commands::Build { output, .. } = cli.unwrap().command {
+        if let Some(Commands::Build { output, .. }) = cli.unwrap().command {
             assert_eq!(
                 output,
                 Some(std::path::PathBuf::from("/usr/local/bin/myapp"))
@@ -1062,7 +1077,7 @@ mod tests {
     fn test_cli_parses_man_command() {
         let cli = Cli::try_parse_from(["anodizer", "man"]);
         assert!(cli.is_ok(), "CLI should parse man command: {:?}", cli.err());
-        assert!(matches!(cli.unwrap().command, Commands::Man));
+        assert!(matches!(cli.unwrap().command, Some(Commands::Man)));
     }
 
     #[test]
