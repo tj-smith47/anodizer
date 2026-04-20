@@ -891,7 +891,21 @@ fn build_octocrab_client(
         build_octocrab_client_insecure(token, github_urls)
     } else {
         // Normal path: use octocrab's built-in hyper client.
-        let mut builder = octocrab::Octocrab::builder().personal_token(token.to_owned());
+        //
+        // Explicit timeouts are essential for release-asset uploads: without
+        // them the hyper client has `None` for connect/read/write timeouts
+        // (octocrab's defaults) and a stalled upload — common for 10+ MB
+        // artifacts hitting a flaky edge on uploads.github.com — hangs for
+        // minutes until TCP keepalive gives up, compounded 4× by octocrab's
+        // default `RetryConfig::Simple(3)` middleware. A single stall can
+        // consume 5–10 min before surfacing as `Error::Serde` (proxy HTML in
+        // the body). Explicit idle timeouts surface the stall in ~60–90s so
+        // our outer retry loop can take over cleanly.
+        let mut builder = octocrab::Octocrab::builder()
+            .personal_token(token.to_owned())
+            .set_connect_timeout(Some(std::time::Duration::from_secs(30)))
+            .set_read_timeout(Some(std::time::Duration::from_secs(120)))
+            .set_write_timeout(Some(std::time::Duration::from_secs(120)));
 
         if let Some(urls) = github_urls {
             if let Some(api) = &urls.api {
