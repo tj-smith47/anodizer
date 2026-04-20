@@ -2283,6 +2283,15 @@ impl Stage for ReleaseStage {
                                     std::time::Duration::from_secs(30);
 
                                 let mut last_err: Option<anyhow::Error> = None;
+                                // One-shot overwrite guard: once we've successfully deleted a
+                                // stale asset and the upload *still* hits `already_exists`, give
+                                // up gracefully instead of looping. This happens when GitHub's
+                                // release-asset delete is eventually consistent — our delete
+                                // returns Ok immediately but the subsequent upload still sees
+                                // the stale asset for a short window. Rather than burn 10
+                                // retries (and ultimately fail the whole release), accept the
+                                // stale bytes and move on.
+                                let mut overwrite_attempted = false;
                                 for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
                                     let data = std::fs::read(&path).with_context(|| {
                                         format!("release: read artifact {}", path.display())
@@ -2314,6 +2323,24 @@ impl Stage for ReleaseStage {
                                             ) && err_str.contains("already_exists");
 
                                             if is_already_exists {
+                                                // If we've already tried the delete+retry dance
+                                                // once and upload *still* returns already_exists,
+                                                // give up and keep the stale asset rather than
+                                                // looping until MAX_UPLOAD_ATTEMPTS exhausts. The
+                                                // re-appearing asset is typically a GitHub backend
+                                                // eventual-consistency window after our prior
+                                                // successful delete; retrying doesn't help.
+                                                if overwrite_attempted {
+                                                    eprintln!(
+                                                        "warn: existing asset '{}' on release '{}' \
+                                                         reappeared after delete+retry; \
+                                                         skipping — stale asset kept",
+                                                        file_name, tag_c
+                                                    );
+                                                    last_err = None;
+                                                    break;
+                                                }
+
                                                 // Outer-retry idempotency: if an asset with the
                                                 // same name already exists AND its size matches
                                                 // the local artifact, a prior attempt in this
@@ -2361,6 +2388,7 @@ impl Stage for ReleaseStage {
                                                 .await
                                                 {
                                                     Ok(_) => {
+                                                        overwrite_attempted = true;
                                                         last_err = Some(anyhow::anyhow!(err));
                                                         if attempt < MAX_UPLOAD_ATTEMPTS {
                                                             let delay = std::cmp::min(

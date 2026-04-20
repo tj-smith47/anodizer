@@ -378,6 +378,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       krew:
+        disable: true  # anodizer is not a kubectl plugin — krew is not an appropriate channel
         manifests_repo:
           owner: tj-smith47
           name: krew-index
