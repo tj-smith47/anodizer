@@ -64,7 +64,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/tj-smith47/anodizer"
@@ -73,32 +73,32 @@ keywords = ["release", "automation", "cargo", "ci-cd", "packaging"]
 categories = ["command-line-utilities", "development-tools"]
 
 [workspace.dependencies]
-anodizer-core = { path = "crates/core", version = "0.1.0" }
-anodizer-stage-build = { path = "crates/stage-build", version = "0.1.0" }
-anodizer-stage-archive = { path = "crates/stage-archive", version = "0.1.0" }
-anodizer-stage-nfpm = { path = "crates/stage-nfpm", version = "0.1.0" }
-anodizer-stage-checksum = { path = "crates/stage-checksum", version = "0.1.0" }
-anodizer-stage-changelog = { path = "crates/stage-changelog", version = "0.1.0" }
-anodizer-stage-release = { path = "crates/stage-release", version = "0.1.0" }
-anodizer-stage-publish = { path = "crates/stage-publish", version = "0.1.0" }
-anodizer-stage-docker = { path = "crates/stage-docker", version = "0.1.0" }
-anodizer-stage-sign = { path = "crates/stage-sign", version = "0.1.0" }
-anodizer-stage-announce = { path = "crates/stage-announce", version = "0.1.0" }
-anodizer-stage-source = { path = "crates/stage-source", version = "0.1.0" }
-anodizer-stage-sbom = { path = "crates/stage-sbom", version = "0.1.0" }
-anodizer-stage-upx = { path = "crates/stage-upx", version = "0.1.0" }
-anodizer-stage-snapcraft = { path = "crates/stage-snapcraft", version = "0.1.0" }
-anodizer-stage-dmg = { path = "crates/stage-dmg", version = "0.1.0" }
-anodizer-stage-msi = { path = "crates/stage-msi", version = "0.1.0" }
-anodizer-stage-pkg = { path = "crates/stage-pkg", version = "0.1.0" }
-anodizer-stage-blob = { path = "crates/stage-blob", version = "0.1.0" }
-anodizer-stage-nsis = { path = "crates/stage-nsis", version = "0.1.0" }
-anodizer-stage-appbundle = { path = "crates/stage-appbundle", version = "0.1.0" }
-anodizer-stage-flatpak = { path = "crates/stage-flatpak", version = "0.1.0" }
-anodizer-stage-notarize = { path = "crates/stage-notarize", version = "0.1.0" }
-anodizer-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.1.0" }
-anodizer-stage-makeself = { path = "crates/stage-makeself", version = "0.1.0" }
-anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.1.0" }
+anodizer-core = { path = "crates/core", version = "0.1.1" }
+anodizer-stage-build = { path = "crates/stage-build", version = "0.1.1" }
+anodizer-stage-archive = { path = "crates/stage-archive", version = "0.1.1" }
+anodizer-stage-nfpm = { path = "crates/stage-nfpm", version = "0.1.1" }
+anodizer-stage-checksum = { path = "crates/stage-checksum", version = "0.1.1" }
+anodizer-stage-changelog = { path = "crates/stage-changelog", version = "0.1.1" }
+anodizer-stage-release = { path = "crates/stage-release", version = "0.1.1" }
+anodizer-stage-publish = { path = "crates/stage-publish", version = "0.1.1" }
+anodizer-stage-docker = { path = "crates/stage-docker", version = "0.1.1" }
+anodizer-stage-sign = { path = "crates/stage-sign", version = "0.1.1" }
+anodizer-stage-announce = { path = "crates/stage-announce", version = "0.1.1" }
+anodizer-stage-source = { path = "crates/stage-source", version = "0.1.1" }
+anodizer-stage-sbom = { path = "crates/stage-sbom", version = "0.1.1" }
+anodizer-stage-upx = { path = "crates/stage-upx", version = "0.1.1" }
+anodizer-stage-snapcraft = { path = "crates/stage-snapcraft", version = "0.1.1" }
+anodizer-stage-dmg = { path = "crates/stage-dmg", version = "0.1.1" }
+anodizer-stage-msi = { path = "crates/stage-msi", version = "0.1.1" }
+anodizer-stage-pkg = { path = "crates/stage-pkg", version = "0.1.1" }
+anodizer-stage-blob = { path = "crates/stage-blob", version = "0.1.1" }
+anodizer-stage-nsis = { path = "crates/stage-nsis", version = "0.1.1" }
+anodizer-stage-appbundle = { path = "crates/stage-appbundle", version = "0.1.1" }
+anodizer-stage-flatpak = { path = "crates/stage-flatpak", version = "0.1.1" }
+anodizer-stage-notarize = { path = "crates/stage-notarize", version = "0.1.1" }
+anodizer-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.1.1" }
+anodizer-stage-makeself = { path = "crates/stage-makeself", version = "0.1.1" }
+anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.1.1" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
