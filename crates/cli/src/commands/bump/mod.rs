@@ -2,9 +2,9 @@
 //!
 //! Scope (v1): see `.claude/plans/2026-04-18-bump-command.md`.
 
-mod cargo_edit;
+pub(crate) mod cargo_edit;
 mod inference;
-mod plan;
+pub(crate) mod plan;
 
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Context as _, Result, bail};
@@ -95,7 +95,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
         }
     }
 
-    cargo_edit::apply_plan(&workspace_root, &rows, &opts, &log)?;
+    cargo_edit::apply_plan(&workspace_root, &rows, opts.exact, &log)?;
 
     if opts.commit {
         commit_plan(&workspace_root, &rows, &opts, &log)?;

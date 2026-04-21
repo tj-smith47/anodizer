@@ -5,6 +5,10 @@ use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template::TemplateVars;
 use anyhow::{Result, bail};
 use regex::Regex;
+use std::path::{Path, PathBuf};
+
+use crate::commands::bump::cargo_edit::{WorkspaceInfo, apply_plan, load_workspace};
+use crate::commands::bump::plan::{BumpLevel, PlanRow};
 
 pub struct TagOpts {
     pub dry_run: bool,
@@ -109,6 +113,19 @@ pub fn run(opts: TagOpts) -> Result<()> {
         crate_path = Some(info.path);
         version_sync_enabled = info.version_sync;
     }
+
+    // Workspace-mode: with no --crate, treat a Cargo workspace whose members
+    // inherit [workspace.package].version as a single versioned unit. The
+    // tag-derived version gets applied to root Cargo.toml + every member
+    // manifest + workspace.dependencies pins before the tag is created, so
+    // the tagged commit has Cargo.toml at the version the tag advertises.
+    let workspace_root_path = std::env::current_dir().ok();
+    let workspace_info: Option<WorkspaceInfo> = match (&opts.crate_name, &workspace_root_path) {
+        (None, Some(root)) => load_workspace(root)
+            .ok()
+            .filter(|ws| ws.workspace_package_version.is_some()),
+        _ => None,
+    };
 
     // Merge verbose from config: if config says verbose=true and CLI doesn't say quiet, enable verbose
     let config_verbose = tag_config.verbose.unwrap_or(false);
@@ -265,21 +282,37 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // next version. Honor it even when no per-commit bump signal fired and
     // even when the crate path had no changes. This prevents autotag from
     // stalling at the old tag after a manual `cargo set-version` bump.
-    let cargo_ahead = version_sync_enabled
-        && match (crate_path.as_deref(), prev_tag.as_deref()) {
-            (Some(path), Some(prev)) => {
-                match (
-                    anodizer_stage_build::version_sync::read_cargo_version(path)
-                        .ok()
-                        .and_then(|v| git::parse_semver(&v).ok()),
-                    git::parse_semver_tag(prev).ok(),
-                ) {
-                    (Some(c), Some(p)) => (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch),
-                    _ => false,
-                }
-            }
+    let cargo_ahead = if let Some(ws) = &workspace_info {
+        match (
+            ws.workspace_package_version
+                .as_deref()
+                .and_then(|v| git::parse_semver(v).ok()),
+            prev_tag
+                .as_deref()
+                .and_then(|t| git::parse_semver_tag(t).ok()),
+        ) {
+            (Some(c), Some(p)) => (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch),
             _ => false,
-        };
+        }
+    } else {
+        version_sync_enabled
+            && match (crate_path.as_deref(), prev_tag.as_deref()) {
+                (Some(path), Some(prev)) => {
+                    match (
+                        anodizer_stage_build::version_sync::read_cargo_version(path)
+                            .ok()
+                            .and_then(|v| git::parse_semver(&v).ok()),
+                        git::parse_semver_tag(prev).ok(),
+                    ) {
+                        (Some(c), Some(p)) => {
+                            (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch)
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+    };
 
     // If #none token detected (and Cargo.toml isn't explicitly ahead), skip.
     if bump == BumpKind::None && !cargo_ahead {
@@ -320,9 +353,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Bug fix: when version_sync is enabled, check if the current Cargo.toml
     // version is already higher than the tag-derived version. If so, use the
     // Cargo.toml version to avoid downgrading manually bumped versions.
-    if version_sync_enabled
-        && let Some(ref path) = crate_path
-        && let Ok(cargo_ver) = anodizer_stage_build::version_sync::read_cargo_version(path)
+    let cargo_current_ver: Option<String> = if let Some(ws) = &workspace_info {
+        ws.workspace_package_version.clone()
+    } else if version_sync_enabled && let Some(ref path) = crate_path {
+        anodizer_stage_build::version_sync::read_cargo_version(path).ok()
+    } else {
+        None
+    };
+    if let Some(cargo_ver) = cargo_current_ver
         && let Ok(cargo_sv) = git::parse_semver(&cargo_ver)
     {
         let tag_tuple = (new_major, new_minor, new_patch);
@@ -356,7 +394,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // CI, but the autotag job on that re-run no-ops because no new
     // release-worthy commits are present since the freshly-created tag
     // (see the conventional-commit gate in detect_bump).
-    if let Some(ref path) = crate_path
+    if let Some(ws) = &workspace_info {
+        let root = workspace_root_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new("."));
+        apply_workspace_bump(root, ws, &new_version, opts.dry_run, &log)?;
+    } else if let Some(ref path) = crate_path
         && version_sync_enabled
     {
         anodizer_stage_build::version_sync::sync_version(path, &new_version, opts.dry_run, &log)?;
@@ -447,6 +490,109 @@ pub fn run(opts: TagOpts) -> Result<()> {
     println!("old_tag={}", old_tag_str);
     println!("part={}", part_str);
 
+    Ok(())
+}
+
+/// Workspace-wide version bump for the "single tag, many crates" layout.
+///
+/// Rewrites `[workspace.package].version`, every member manifest that doesn't
+/// inherit, and every `[workspace.dependencies].*.version` / sibling
+/// `[dependencies].*.version` pin for bumped crates. Then regenerates
+/// Cargo.lock and creates a single `chore(release): bump workspace → X`
+/// commit covering the edits.
+fn apply_workspace_bump(
+    workspace_root: &Path,
+    ws: &WorkspaceInfo,
+    new_version: &str,
+    dry_run: bool,
+    log: &StageLogger,
+) -> Result<()> {
+    let rows: Vec<PlanRow> = ws
+        .members
+        .iter()
+        .map(|m| {
+            let current = if m.inherits_workspace_version {
+                ws.workspace_package_version.clone().unwrap_or_default()
+            } else {
+                m.own_version.clone().unwrap_or_default()
+            };
+            let level = if current == new_version {
+                BumpLevel::Skip
+            } else {
+                BumpLevel::Explicit
+            };
+            PlanRow {
+                crate_name: m.name.clone(),
+                current,
+                next: new_version.to_string(),
+                level,
+                reason: "workspace tag".into(),
+                edited_files: vec![],
+                manifest: m.manifest_path.clone(),
+                inherits_workspace_version: m.inherits_workspace_version,
+            }
+        })
+        .collect();
+
+    if rows.iter().all(|r| r.level == BumpLevel::Skip) {
+        log.verbose(&format!(
+            "workspace already at {}, nothing to sync",
+            new_version
+        ));
+        return Ok(());
+    }
+
+    if dry_run {
+        log.status(&format!(
+            "(dry-run) workspace version-sync: would bump {} crate(s) → {}",
+            rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
+            new_version
+        ));
+        return Ok(());
+    }
+
+    apply_plan(workspace_root, &rows, false, log)?;
+
+    let lock_updated = std::process::Command::new("cargo")
+        .args(["update", "--workspace"])
+        .current_dir(workspace_root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !lock_updated {
+        log.warn("version-sync: `cargo update --workspace` failed; Cargo.lock may be stale");
+    }
+
+    let mut staged: Vec<PathBuf> = Vec::new();
+    let root_manifest = workspace_root.join("Cargo.toml");
+    staged.push(root_manifest.clone());
+    for m in &ws.members {
+        if m.manifest_path != root_manifest && !staged.contains(&m.manifest_path) {
+            staged.push(m.manifest_path.clone());
+        }
+    }
+    let lockfile = workspace_root.join("Cargo.lock");
+    if lockfile.is_file() {
+        staged.push(lockfile);
+    }
+
+    let staged_rel: Vec<String> = staged
+        .iter()
+        .map(|p| {
+            p.strip_prefix(workspace_root)
+                .unwrap_or(p.as_path())
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let staged_refs: Vec<&str> = staged_rel.iter().map(|s| s.as_str()).collect();
+
+    git::stage_and_commit(
+        &staged_refs,
+        &format!("chore(release): bump workspace → {}", new_version),
+    )?;
+
+    log.status(&format!("workspace version-sync: bumped → {}", new_version));
     Ok(())
 }
 

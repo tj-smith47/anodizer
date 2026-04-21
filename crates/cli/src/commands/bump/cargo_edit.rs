@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use toml_edit::{DocumentMut, Item, Value};
 
-use super::BumpOpts;
 use super::plan::{BumpLevel, PlanRow};
 
 #[derive(Debug, Clone)]
@@ -177,11 +176,11 @@ fn parse_member_manifest(manifest_path: &Path) -> Result<Option<MemberInfo>> {
 }
 
 /// Apply the plan: rewrite `[package].version` (or root `[workspace.package].version`)
-/// and — unless `--exact` — propagate dep specs into sibling manifests.
+/// and — unless `exact` — propagate dep specs into sibling manifests.
 pub fn apply_plan(
     workspace_root: &Path,
     rows: &[PlanRow],
-    opts: &BumpOpts,
+    exact: bool,
     log: &StageLogger,
 ) -> Result<()> {
     // Group rows into two buckets: root-rewrite (inheriting workspace version)
@@ -233,8 +232,8 @@ pub fn apply_plan(
         ));
     }
 
-    // 3. Propagate dep-spec rewrites into sibling manifests (unless --exact).
-    if !opts.exact {
+    // 3. Propagate dep-spec rewrites into sibling manifests (unless exact).
+    if !exact {
         let bumped: BTreeMap<String, String> = rows
             .iter()
             .filter(|r| r.level != BumpLevel::Skip)
