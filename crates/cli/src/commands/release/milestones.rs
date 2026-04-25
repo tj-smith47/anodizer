@@ -17,6 +17,14 @@ pub(super) fn close_milestones(
 ) -> Result<()> {
     let token = ctx.options.token.clone().unwrap_or_default();
 
+    // Build the tokio runtime once and reuse it across every close call.
+    // The previous implementation paid per-milestone-per-provider runtime
+    // construction (3 places) which can total 5-15ms per close on cold
+    // configurations and is observable when many milestones close at once.
+    // Lazily initialized so dry-run paths that never call out to a provider
+    // do no work.
+    let mut runtime: Option<tokio::runtime::Runtime> = None;
+
     for milestone_cfg in milestones {
         if !milestone_cfg.close.unwrap_or(false) {
             continue;
@@ -68,11 +76,17 @@ pub(super) fn close_milestones(
         // first crate's release block is GitHub but the user is running a
         // GitLab release would otherwise misroute the milestone close.
         let api_url = resolve_milestone_api_url(milestone_cfg, &ctx.config);
+        if runtime.is_none() {
+            runtime =
+                Some(tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?);
+        }
+        let rt = runtime.as_ref().expect("runtime initialized above");
         let close_result = match ctx.token_type {
             ScmTokenType::GitHub => {
-                close_milestone_github(&token, &owner, &repo_name, &milestone_name)
+                close_milestone_github(rt, &token, &owner, &repo_name, &milestone_name)
             }
             ScmTokenType::GitLab => close_milestone_gitlab(
+                rt,
                 &token,
                 &owner,
                 &repo_name,
@@ -80,6 +94,7 @@ pub(super) fn close_milestones(
                 api_url.as_deref(),
             ),
             ScmTokenType::Gitea => close_milestone_gitea(
+                rt,
                 &token,
                 &owner,
                 &repo_name,
@@ -175,6 +190,7 @@ fn resolve_milestone_repo(
 
 /// Close a GitHub milestone by name using the REST API.
 fn close_milestone_github(
+    rt: &tokio::runtime::Runtime,
     token: &str,
     owner: &str,
     repo: &str,
@@ -184,7 +200,6 @@ fn close_milestone_github(
         anyhow::bail!("no authentication token available for milestone close");
     }
 
-    let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
     rt.block_on(async {
         let client = reqwest::Client::new();
 
@@ -301,6 +316,7 @@ fn resolve_milestone_api_url(
 
 /// Close a GitLab milestone by name using the REST API.
 fn close_milestone_gitlab(
+    rt: &tokio::runtime::Runtime,
     token: &str,
     owner: &str,
     repo: &str,
@@ -312,7 +328,6 @@ fn close_milestone_gitlab(
     }
     let base = api_url.unwrap_or("https://gitlab.com");
 
-    let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
     rt.block_on(async {
         let client = reqwest::Client::new();
         let project_path = format!("{}/{}", owner, repo);
@@ -387,6 +402,7 @@ fn close_milestone_gitlab(
 
 /// Close a Gitea milestone by name using the REST API.
 fn close_milestone_gitea(
+    rt: &tokio::runtime::Runtime,
     token: &str,
     owner: &str,
     repo: &str,
@@ -398,7 +414,6 @@ fn close_milestone_gitea(
     }
     let base = api_url.unwrap_or("https://gitea.com");
 
-    let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
     rt.block_on(async {
         let client = reqwest::Client::new();
 
