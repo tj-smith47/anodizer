@@ -668,56 +668,54 @@ impl SourceStage {
 
         // GoReleaser renders extra file source patterns through the
         // template engine, then expands globs relative to the repo root.
-        let extra_files: Vec<SourceFileEntry> = source_cfg
-            .files
-            .iter()
-            .flat_map(|entry| {
-                let rendered_src = ctx
-                    .render_template(&entry.src)
-                    .unwrap_or_else(|_| entry.src.clone());
+        let mut extra_files: Vec<SourceFileEntry> = Vec::new();
+        for entry in &source_cfg.files {
+            let rendered_src = ctx.render_template(&entry.src).with_context(|| {
+                format!("source: render extra files src template '{}'", entry.src)
+            })?;
 
-                // Resolve pattern relative to repo root for glob expansion
-                let pattern = if Path::new(&rendered_src).is_absolute() {
-                    rendered_src.clone()
-                } else {
-                    repo_root.join(&rendered_src).to_string_lossy().into_owned()
-                };
+            // Resolve pattern relative to repo root for glob expansion
+            let pattern = if Path::new(&rendered_src).is_absolute() {
+                rendered_src.clone()
+            } else {
+                repo_root.join(&rendered_src).to_string_lossy().into_owned()
+            };
 
-                match glob::glob(&pattern) {
-                    Ok(paths) => {
-                        let expanded: Vec<_> = paths
-                            .filter_map(|p| p.ok())
-                            .filter(|p| p.is_file())
-                            .map(|p| SourceFileEntry {
-                                src: p.to_string_lossy().into_owned(),
-                                dst: entry.dst.clone(),
-                                strip_parent: entry.strip_parent,
-                                info: entry.info.clone(),
-                            })
-                            .collect();
-                        // If glob matched nothing, treat as a literal path
-                        // (will error later with a clear message)
-                        if expanded.is_empty() {
-                            vec![SourceFileEntry {
-                                src: rendered_src,
-                                dst: entry.dst.clone(),
-                                strip_parent: entry.strip_parent,
-                                info: entry.info.clone(),
-                            }]
-                        } else {
-                            expanded
-                        }
+            let expanded_for_entry = match glob::glob(&pattern) {
+                Ok(paths) => {
+                    let expanded: Vec<_> = paths
+                        .filter_map(|p| p.ok())
+                        .filter(|p| p.is_file())
+                        .map(|p| SourceFileEntry {
+                            src: p.to_string_lossy().into_owned(),
+                            dst: entry.dst.clone(),
+                            strip_parent: entry.strip_parent,
+                            info: entry.info.clone(),
+                        })
+                        .collect();
+                    // If glob matched nothing, treat as a literal path
+                    // (will error later with a clear message)
+                    if expanded.is_empty() {
+                        vec![SourceFileEntry {
+                            src: rendered_src,
+                            dst: entry.dst.clone(),
+                            strip_parent: entry.strip_parent,
+                            info: entry.info.clone(),
+                        }]
+                    } else {
+                        expanded
                     }
-                    // Not a valid glob pattern — treat as literal path
-                    Err(_) => vec![SourceFileEntry {
-                        src: rendered_src,
-                        dst: entry.dst.clone(),
-                        strip_parent: entry.strip_parent,
-                        info: entry.info.clone(),
-                    }],
                 }
-            })
-            .collect();
+                // Not a valid glob pattern — treat as literal path
+                Err(_) => vec![SourceFileEntry {
+                    src: rendered_src,
+                    dst: entry.dst.clone(),
+                    strip_parent: entry.strip_parent,
+                    info: entry.info.clone(),
+                }],
+            };
+            extra_files.extend(expanded_for_entry);
+        }
         let commit = ctx
             .git_info
             .as_ref()

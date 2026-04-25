@@ -708,25 +708,23 @@ fn process_sign_configs(
             // available for arg substitution (artifact, signature, certificate,
             // artifactName, artifactID, digest) are ALSO injected as env vars
             // for the sign subprocess. Skip keys with empty values.
-            let mut rendered_env: HashMap<String, String> = sign_cfg
-                .env
-                .as_ref()
-                .map(|env_map| {
-                    env_map
-                        .iter()
-                        .map(|(k, v)| {
-                            let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
-                                log.warn(&format!(
-                                    "failed to render {} env '{}': {}, using raw value",
-                                    label, k, e
-                                ));
-                                v.clone()
-                            });
-                            (k.clone(), rendered_val)
-                        })
-                        .collect::<HashMap<String, String>>()
-                })
-                .unwrap_or_default();
+            // Render every env var template up-front; a failure here means a
+            // configuration typo that would otherwise propagate the raw
+            // template into the signer's environment (a credential typo
+            // delivered to gpg/cosign argv is far worse than a clear early
+            // error).
+            let mut rendered_env: HashMap<String, String> = match sign_cfg.env.as_ref() {
+                Some(env_map) => env_map
+                    .iter()
+                    .map(|(k, v)| -> Result<(String, String)> {
+                        let rendered_val = ctx.render_template(v).with_context(|| {
+                            format!("sign[{label}]: render env value for '{k}'")
+                        })?;
+                        Ok((k.clone(), rendered_val))
+                    })
+                    .collect::<Result<HashMap<String, String>>>()?,
+                None => HashMap::new(),
+            };
 
             for (k, v) in shell_vars.iter() {
                 if v.is_empty() {

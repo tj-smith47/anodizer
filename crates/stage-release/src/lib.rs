@@ -552,17 +552,18 @@ pub(crate) fn collect_extra_files(
 pub(crate) fn resolve_make_latest<F>(
     config: &Option<MakeLatestConfig>,
     render: F,
-) -> Option<octocrab::repos::releases::MakeLatest>
+) -> Result<Option<octocrab::repos::releases::MakeLatest>>
 where
     F: Fn(&str) -> anyhow::Result<String>,
 {
     use octocrab::repos::releases::MakeLatest;
-    match config {
+    Ok(match config {
         Some(MakeLatestConfig::Bool(true)) => Some(MakeLatest::True),
         Some(MakeLatestConfig::Bool(false)) => Some(MakeLatest::False),
         Some(MakeLatestConfig::Auto) => Some(MakeLatest::Legacy),
         Some(MakeLatestConfig::String(tmpl)) => {
-            let rendered = render(tmpl).unwrap_or_else(|_| tmpl.clone());
+            let rendered = render(tmpl)
+                .with_context(|| format!("release: render make_latest template '{tmpl}'"))?;
             match rendered.trim() {
                 "true" | "1" => Some(MakeLatest::True),
                 "false" | "0" | "" => Some(MakeLatest::False),
@@ -571,7 +572,7 @@ where
             }
         }
         None => None,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,14 +1250,17 @@ impl Stage for ReleaseStage {
 
             let draft = release_cfg.draft.unwrap_or(false);
             let prerelease = should_mark_prerelease(&release_cfg.prerelease, &tag);
-            let skip_upload = release_cfg
-                .skip_upload
-                .as_ref()
-                .map(|s| {
+            let skip_upload = match release_cfg.skip_upload.as_ref() {
+                Some(s) => {
                     // Template-render the value first (supports {{ .IsSnapshot }}, etc.)
                     let rendered = if s.is_template() {
-                        ctx.render_template(s.as_str())
-                            .unwrap_or_else(|_| s.as_str().to_string())
+                        ctx.render_template(s.as_str()).with_context(|| {
+                            format!(
+                                "release: render skip_upload template '{}' for crate '{}'",
+                                s.as_str(),
+                                crate_cfg.name
+                            )
+                        })?
                     } else {
                         s.as_str().to_string()
                     };
@@ -1264,13 +1268,14 @@ impl Stage for ReleaseStage {
                         "auto" => ctx.is_snapshot(),
                         other => other == "true" || other == "1",
                     }
-                })
-                .unwrap_or(false);
+                }
+                None => false,
+            };
             let replace_existing_draft = release_cfg.replace_existing_draft.unwrap_or(false);
             let replace_existing_artifacts =
                 release_cfg.replace_existing_artifacts.unwrap_or(false);
             let make_latest =
-                resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s));
+                resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?;
             let ids_filter = release_cfg.ids.as_ref();
             let target_commitish = release_cfg
                 .target_commitish
@@ -3093,28 +3098,28 @@ mod tests {
 
     #[test]
     fn test_resolve_make_latest_true() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render);
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render).unwrap();
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "true");
     }
 
     #[test]
     fn test_resolve_make_latest_false() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render);
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render).unwrap();
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "false");
     }
 
     #[test]
     fn test_resolve_make_latest_auto() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::Auto), noop_render);
+        let ml = resolve_make_latest(&Some(MakeLatestConfig::Auto), noop_render).unwrap();
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "legacy");
     }
 
     #[test]
     fn test_resolve_make_latest_none() {
-        let ml = resolve_make_latest(&None, noop_render);
+        let ml = resolve_make_latest(&None, noop_render).unwrap();
         assert!(ml.is_none());
     }
 
@@ -3123,7 +3128,8 @@ mod tests {
         let ml = resolve_make_latest(
             &Some(MakeLatestConfig::String("true".to_string())),
             noop_render,
-        );
+        )
+        .unwrap();
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "true");
     }
@@ -3133,7 +3139,8 @@ mod tests {
         let ml = resolve_make_latest(
             &Some(MakeLatestConfig::String("false".to_string())),
             noop_render,
-        );
+        )
+        .unwrap();
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "false");
     }
@@ -3143,7 +3150,8 @@ mod tests {
         let ml = resolve_make_latest(
             &Some(MakeLatestConfig::String("auto".to_string())),
             noop_render,
-        );
+        )
+        .unwrap();
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "legacy");
     }
@@ -3154,7 +3162,8 @@ mod tests {
         let ml = resolve_make_latest(
             &Some(MakeLatestConfig::String("{{ .IsSnapshot }}".to_string())),
             |_| Ok("false".to_string()),
-        );
+        )
+        .unwrap();
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "false");
     }
@@ -3555,21 +3564,25 @@ mod tests {
     #[test]
     fn test_make_latest_values_resolve_correctly() {
         // Bool(true) -> MakeLatest::True
-        let ml_true =
-            resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render).unwrap();
+        let ml_true = resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render)
+            .unwrap()
+            .unwrap();
         assert_eq!(ml_true.to_string(), "true");
 
         // Bool(false) -> MakeLatest::False
-        let ml_false =
-            resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render).unwrap();
+        let ml_false = resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render)
+            .unwrap()
+            .unwrap();
         assert_eq!(ml_false.to_string(), "false");
 
         // Auto -> MakeLatest::Legacy
-        let ml_auto = resolve_make_latest(&Some(MakeLatestConfig::Auto), noop_render).unwrap();
+        let ml_auto = resolve_make_latest(&Some(MakeLatestConfig::Auto), noop_render)
+            .unwrap()
+            .unwrap();
         assert_eq!(ml_auto.to_string(), "legacy");
 
         // None -> None
-        assert!(resolve_make_latest(&None, noop_render).is_none());
+        assert!(resolve_make_latest(&None, noop_render).unwrap().is_none());
     }
 
     #[test]

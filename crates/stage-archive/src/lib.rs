@@ -1221,30 +1221,39 @@ impl Stage for ArchiveStage {
                     {
                         let rendered_specs: Vec<ArchiveFileSpec> = file_specs
                             .iter()
-                            .map(|spec| match spec {
-                                ArchiveFileSpec::Glob(pattern) => {
-                                    let rendered = ctx
-                                        .render_template(pattern)
-                                        .unwrap_or_else(|_| pattern.clone());
-                                    ArchiveFileSpec::Glob(rendered)
-                                }
-                                ArchiveFileSpec::Detailed {
-                                    src,
-                                    dst,
-                                    info,
-                                    strip_parent,
-                                } => {
-                                    let rendered_src =
-                                        ctx.render_template(src).unwrap_or_else(|_| src.clone());
-                                    ArchiveFileSpec::Detailed {
-                                        src: rendered_src,
-                                        dst: dst.clone(),
-                                        info: info.clone(),
-                                        strip_parent: *strip_parent,
+                            .map(|spec| -> Result<ArchiveFileSpec> {
+                                Ok(match spec {
+                                    ArchiveFileSpec::Glob(pattern) => {
+                                        let rendered =
+                                            ctx.render_template(pattern).with_context(|| {
+                                                format!(
+                                                    "archive: render files glob template '{pattern}' for {crate_name}/{target}"
+                                                )
+                                            })?;
+                                        ArchiveFileSpec::Glob(rendered)
                                     }
-                                }
+                                    ArchiveFileSpec::Detailed {
+                                        src,
+                                        dst,
+                                        info,
+                                        strip_parent,
+                                    } => {
+                                        let rendered_src =
+                                            ctx.render_template(src).with_context(|| {
+                                                format!(
+                                                    "archive: render files detailed src template '{src}' for {crate_name}/{target}"
+                                                )
+                                            })?;
+                                        ArchiveFileSpec::Detailed {
+                                            src: rendered_src,
+                                            dst: dst.clone(),
+                                            info: info.clone(),
+                                            strip_parent: *strip_parent,
+                                        }
+                                    }
+                                })
                             })
-                            .collect();
+                            .collect::<Result<Vec<_>>>()?;
                         resolve_file_specs(&rendered_specs).with_context(|| {
                             format!("resolve file specs for {crate_name}/{target}")
                         })?
@@ -1420,7 +1429,11 @@ impl Stage for ArchiveStage {
                                 archive_stem.clone()
                             } else {
                                 ctx.render_template(default_binary_name_template())
-                                    .unwrap_or_else(|_| archive_stem.clone())
+                                    .with_context(|| {
+                                        format!(
+                                            "archive: render default binary name template for {crate_name}/{target}"
+                                        )
+                                    })?
                             };
                             if anodizer_core::target::is_windows(target) && !stem.ends_with(".exe")
                             {

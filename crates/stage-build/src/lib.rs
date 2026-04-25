@@ -527,7 +527,9 @@ fn build_universal_binary(
         && !dry_run
         && out_path.exists()
     {
-        let rendered_ts = ctx.render_template(ts).unwrap_or_else(|_| ts.clone());
+        let rendered_ts = ctx
+            .render_template(ts)
+            .with_context(|| format!("build: render universal mod_timestamp template '{ts}'"))?;
         let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
         anodizer_core::util::set_file_mtime(&out_path, mtime)?;
         log.verbose(&format!(
@@ -1543,15 +1545,20 @@ impl Stage for BuildStage {
                     // through the template engine before splitting on whitespace.
                     // This allows flags like `--cfg={{ .Os }}` to be resolved.
                     // Filter out empty results after rendering.
-                    let effective_flags: Option<String> = effective_flags.and_then(|f| {
-                        let rendered = ctx.render_template(&f).unwrap_or_else(|_| f.clone());
-                        let trimmed = rendered.trim().to_string();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed)
+                    let effective_flags: Option<String> = match effective_flags {
+                        Some(f) => {
+                            let rendered = ctx
+                                .render_template(&f)
+                                .with_context(|| format!("build: render flags template '{f}'"))?;
+                            let trimmed = rendered.trim().to_string();
+                            if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed)
+                            }
                         }
-                    });
+                        None => None,
+                    };
 
                     // Determine the binary path
                     // Flags may contain --release, --profile release, or
@@ -2034,7 +2041,9 @@ impl Stage for BuildStage {
                 if let Some(ref ts) = job.mod_timestamp
                     && resolved_bin.exists()
                 {
-                    let rendered_ts = ctx.render_template(ts).unwrap_or_else(|_| ts.clone());
+                    let rendered_ts = ctx
+                        .render_template(ts)
+                        .with_context(|| format!("build: render mod_timestamp template '{ts}'"))?;
                     let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
                     anodizer_core::util::set_file_mtime(&resolved_bin, mtime)?;
                     log.verbose(&format!(
@@ -2215,7 +2224,7 @@ impl Stage for BuildStage {
                                     // Thread context doesn't have ctx for template rendering,
                                     // so render using Tera directly with thread-local vars.
                                     let rendered_ts = anodizer_core::template::render(ts, &thread_tvars)
-                                        .unwrap_or_else(|_| ts.clone());
+                                        .with_context(|| format!("build: render mod_timestamp template '{ts}'"))?;
                                     let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
                                     anodizer_core::util::set_file_mtime(&bin_path, mtime)?;
                                     thread_log.verbose(&format!(

@@ -429,8 +429,9 @@ impl Stage for ChecksumStage {
                     // }}` in extra_files name_template expect it available
                     // here too.
                     vars.set("Algorithm", &algorithm);
-                    anodizer_core::template::render(tmpl, &vars)
-                        .unwrap_or_else(|_| filename.to_string())
+                    anodizer_core::template::render(tmpl, &vars).with_context(|| {
+                        format!("checksum: render extra_name_template '{tmpl}' for {filename}")
+                    })?
                 } else {
                     filename.to_string()
                 };

@@ -347,6 +347,11 @@ pub(crate) fn render_changelog(
     title: Option<&str>,
     divider: Option<&str>,
 ) -> String {
+    // Test-only wrapper that keeps the historical String return so the bulk
+    // of the changelog test corpus stays terse. A render failure in a test is
+    // still a hard failure (panic on Err) — tests that intentionally exercise
+    // template render failures should call render_changelog_with_provider
+    // directly so they can pattern-match on the Err.
     render_changelog_with_provider(
         grouped,
         abbrev,
@@ -357,6 +362,7 @@ pub(crate) fn render_changelog(
         divider,
         None,
     )
+    .expect("test render_changelog: template render failed")
 }
 
 /// Inner render function that accepts an optional SCM provider override for
@@ -373,7 +379,7 @@ pub(crate) fn render_changelog_with_provider(
     title: Option<&str>,
     divider: Option<&str>,
     scm_provider: Option<&str>,
-) -> String {
+) -> Result<String> {
     let default_format = if abbrev < 0 {
         "{{ Message }}"
     } else {
@@ -401,8 +407,8 @@ pub(crate) fn render_changelog_with_provider(
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
     }
-    render_groups(&mut out, grouped, abbrev, tmpl, logins, divider, newline, 3);
-    out
+    render_groups(&mut out, grouped, abbrev, tmpl, logins, divider, newline, 3)?;
+    Ok(out)
 }
 
 /// Recursively render grouped commits at the given heading depth.
@@ -417,9 +423,9 @@ fn render_groups(
     divider: Option<&str>,
     newline: &str,
     depth: usize,
-) {
+) -> Result<()> {
     if depth > 6 {
-        return;
+        return Ok(());
     }
     let hashes = "#".repeat(depth);
     for (i, group) in groups.iter().enumerate() {
@@ -438,7 +444,7 @@ fn render_groups(
             out.push_str(&format!("{} {}\n\n", hashes, group.title));
         }
         for commit in &group.commits {
-            render_commit_line(out, commit, abbrev, tmpl, logins, newline);
+            render_commit_line(out, commit, abbrev, tmpl, logins, newline)?;
         }
         // Render nested subgroups one level deeper (no divider at subgroup level).
         if !group.subgroups.is_empty() {
@@ -451,7 +457,7 @@ fn render_groups(
                 None,
                 newline,
                 depth + 1,
-            );
+            )?;
         }
         // Add trailing newline after commits. Skip if this group has subgroups
         // (they add their own spacing) and no direct commits.
@@ -459,6 +465,7 @@ fn render_groups(
             out.push('\n');
         }
     }
+    Ok(())
 }
 
 /// Render a single commit as a bullet line.
@@ -478,7 +485,7 @@ fn render_commit_line(
     tmpl: &str,
     logins: &str,
     newline: &str,
-) {
+) -> Result<()> {
     let short_sha = if abbrev < 0 {
         // Negative abbrev (e.g. GoReleaser's -1) means omit hash entirely.
         String::new()
@@ -504,14 +511,14 @@ fn render_commit_line(
     vars.set("AuthorEmail", &commit.author_email);
     vars.set("Logins", logins);
     vars.set("Login", &commit.login);
-    let rendered = template::render(tmpl, &vars).unwrap_or_else(|_| {
-        if abbrev < 0 {
-            commit.description.clone()
-        } else {
-            format!("{} {}", short_sha, commit.description)
-        }
-    });
+    let rendered = template::render(tmpl, &vars).with_context(|| {
+        format!(
+            "changelog: render commit format template '{tmpl}' for commit {}",
+            commit.hash
+        )
+    })?;
     out.push_str(&format!("* {}{}", rendered, newline));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -656,7 +663,7 @@ pub fn render_crate_section(
         Some(""),
         cfg.divider.as_deref(),
         None,
-    );
+    )?;
     // `render_changelog_with_provider` always emits a `## <title>` line; we
     // suppressed it by passing `Some("")`, which produces `## \n\n`. Drop
     // any empty heading at the start so our `## [<version>]` heading stands
@@ -1132,7 +1139,7 @@ impl Stage for ChangelogStage {
                 changelog_title.as_deref(),
                 changelog_divider.as_deref(),
                 Some(&scm_provider),
-            );
+            )?;
 
             // Store per-crate changelog in context for the release stage.
             ctx.changelogs.insert(crate_name.clone(), markdown.clone());
