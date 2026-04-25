@@ -3768,6 +3768,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tera",
+ "toml",
 ]
 
 [[package]]
