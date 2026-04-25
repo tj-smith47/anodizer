@@ -524,8 +524,11 @@ fn collect_artifacts<'a>(
 
 /// Upload a per-config batch of files with intra-config parallelism via
 /// tokio, given fully owned data. Phase 2 of `BlobStage::run` calls this
-/// on worker threads so `ctx` is never touched after Phase 1.
+/// on worker threads so `ctx` is never touched after Phase 1. The shared
+/// `runtime` is constructed once per stage invocation and reused across
+/// every blob job, instead of spinning up one runtime per job.
 fn upload_files_owned(
+    runtime: &tokio::runtime::Runtime,
     store: Arc<dyn ObjectStore>,
     items: Vec<(PathBuf, String)>,
     directory: String,
@@ -533,8 +536,7 @@ fn upload_files_owned(
     parallelism: usize,
     client_kms: Option<(String, KmsProvider)>,
 ) -> Result<()> {
-    let rt = tokio::runtime::Runtime::new().context("blobs: failed to create tokio runtime")?;
-    rt.block_on(async move {
+    runtime.block_on(async move {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
         let mut handles = Vec::new();
 
@@ -903,8 +905,20 @@ impl Stage for BlobStage {
         // upload loop (which itself has intra-config per-file concurrency
         // via tokio). Bounded by the global parallelism so we don't fan
         // out unbounded across both axes simultaneously.
+        //
+        // Construct one tokio runtime here and lend it to every job.
+        // Previously each call to upload_files_owned spun up its own
+        // runtime, allocating N independent thread pools for N parallel
+        // jobs. The shared runtime keeps the worker pool bounded.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("anodizer-blob")
+            .build()
+            .context("blob: failed to construct tokio runtime")?;
+        let runtime_ref = &runtime;
         let run_job = |job: &BlobJob| -> Result<()> {
             upload_files_owned(
+                runtime_ref,
                 Arc::clone(&job.store),
                 job.upload_items.clone(),
                 job.rendered_directory.clone(),
@@ -1996,7 +2010,9 @@ partial:
             .iter()
             .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
             .collect();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let result = upload_files_owned(
+            &rt,
             Arc::clone(&store),
             upload_items.clone(),
             "myproject/v1.0.0".to_string(),
@@ -2007,7 +2023,6 @@ partial:
         assert!(result.is_ok(), "upload failed: {:?}", result.err());
 
         // Verify files were uploaded to the store
-        let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let path1 = ObjectPath::from("myproject/v1.0.0/app.tar.gz");
             let get_result = store
@@ -2045,7 +2060,9 @@ partial:
             .iter()
             .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
             .collect();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let result = upload_files_owned(
+            &rt,
             Arc::clone(&store),
             upload_items.clone(),
             String::new(),
@@ -2055,7 +2072,6 @@ partial:
         );
         assert!(result.is_ok());
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let path = ObjectPath::from("file.txt");
             let get_result = store
@@ -2088,7 +2104,9 @@ partial:
             .iter()
             .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
             .collect();
+        let rt = tokio::runtime::Runtime::new().unwrap();
         let result = upload_files_owned(
+            &rt,
             store,
             upload_items.clone(),
             "dir".to_string(),
