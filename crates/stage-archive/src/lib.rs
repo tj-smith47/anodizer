@@ -1,17 +1,14 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use chrono::DateTime;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::config::{
     ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride, VALID_ARCHIVE_FORMATS,
-    parse_octal_mode,
 };
 use anodizer_core::context::Context;
 use anodizer_core::hooks::run_hooks;
@@ -19,759 +16,36 @@ use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
 
+mod entries;
+mod file_specs;
+mod formats;
+
+use entries::{
+    ArchiveEntry, deduplicate_entries, sort_entries, write_archive_entries, write_zip_entries,
+};
+use file_specs::{render_file_info, resolve_default_extra_files};
+
+pub use file_specs::{ResolvedExtraFile, resolve_file_specs};
+pub use formats::{
+    copy_binary, create_gz, create_tar, create_tar_gz, create_tar_xz, create_tar_zst, create_zip,
+    resolve_glob_patterns,
+};
+
 /// Module-level logger for warnings emitted from helpers that don't have
 /// runtime access to the stage's `ctx.logger("archive")`. Uses `Verbosity::Normal`
 /// so warnings are always shown except in `--quiet` mode (which the helpers
 /// can't observe). Routes through StageLogger for consistent `[archive]` framing.
-fn archive_log() -> StageLogger {
+pub(crate) fn archive_log() -> StageLogger {
     StageLogger::new("archive", Verbosity::Normal)
 }
 
-// ---------------------------------------------------------------------------
-// parse_mtime  (helper)
-// ---------------------------------------------------------------------------
-
-/// Parse an mtime string as either RFC3339 or a raw unix timestamp (u64).
-/// Returns the unix timestamp as `u64`, or `None` if neither format matches.
-fn parse_mtime(s: &str) -> Option<u64> {
-    // Try RFC3339 first (e.g. "2023-11-14T22:13:20+00:00")
-    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-        return Some(dt.timestamp() as u64);
-    }
-    // Fall back to raw unix timestamp
-    s.parse::<u64>().ok()
-}
-
-// ---------------------------------------------------------------------------
-// append_tar_entry  (helper)
-// ---------------------------------------------------------------------------
-
-/// Apply `ArchiveFileInfo` overrides (mode, owner, group) to a tar header.
-fn apply_file_info_to_header(
-    header: &mut tar::Header,
-    info: &anodizer_core::config::ArchiveFileInfo,
-) {
-    if let Some(mode_str) = &info.mode
-        && let Some(mode) = parse_octal_mode(mode_str)
-    {
-        header.set_mode(mode);
-    }
-    if let Some(ref owner) = info.owner {
-        header.set_username(owner).ok();
-    }
-    if let Some(ref group) = info.group {
-        header.set_groupname(group).ok();
-    }
-    if let Some(ref mtime_str) = info.mtime {
-        if let Some(ts) = parse_mtime(mtime_str) {
-            header.set_mtime(ts);
-        } else {
-            archive_log().warn(&format!(
-                "could not parse mtime '{mtime_str}' as RFC3339 or unix timestamp, ignoring"
-            ));
-        }
-    }
-}
-
-/// Append a single file to a tar archive, optionally overriding mtime and
-/// file info (mode/owner/group from builds_info).
-/// When `mtime` is Some, a header is built manually with that timestamp so
-/// that the archive is reproducible regardless of filesystem mtime.
-fn append_tar_entry<W: std::io::Write>(
-    tar: &mut tar::Builder<W>,
-    src: &Path,
-    archive_name: &Path,
-    mtime: Option<u64>,
-    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
-) -> Result<()> {
-    if mtime.is_some() || file_info.is_some() {
-        let metadata =
-            fs::metadata(src).with_context(|| format!("read metadata: {}", src.display()))?;
-        let mut header = tar::Header::new_gnu();
-        header.set_metadata(&metadata);
-        if let Some(ts) = mtime {
-            header.set_mtime(ts);
-            header.set_uid(0);
-            header.set_gid(0);
-            header.set_username("").ok();
-            header.set_groupname("").ok();
-        }
-        if let Some(info) = file_info {
-            apply_file_info_to_header(&mut header, info);
-        }
-        header
-            .set_path(archive_name)
-            .with_context(|| format!("set tar path: {}", archive_name.display()))?;
-        header.set_cksum();
-        let mut file = File::open(src).with_context(|| format!("open: {}", src.display()))?;
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)
-            .with_context(|| format!("read: {}", src.display()))?;
-        tar.append_data(&mut header, archive_name, data.as_slice())
-            .with_context(|| format!("tar append: {}", archive_name.display()))?;
-    } else {
-        tar.append_path_with_name(src, archive_name)
-            .with_context(|| format!("tar append: {}", archive_name.display()))?;
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// create_tar_gz
-// ---------------------------------------------------------------------------
-
-/// Shared tar archive creation: adds files to a tar builder, then finishes it.
-/// When `file_info` is provided, it is applied to all entries (e.g. builds_info
-/// permissions for binaries).
-fn write_tar_entries<W: std::io::Write>(
-    tar: &mut tar::Builder<W>,
-    files: &[&Path],
-    base_dir: Option<&Path>,
-    wrap_dir: Option<&str>,
-    mtime: Option<u64>,
-    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
-    label: &str,
-) -> Result<()> {
-    for &src in files {
-        if !src.exists() {
-            continue;
-        }
-        let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        append_tar_entry(tar, src, &archive_name, mtime, file_info).with_context(|| {
-            format!(
-                "{label}: adding {} as {}",
-                src.display(),
-                archive_name.display()
-            )
-        })?;
-    }
-    Ok(())
-}
-
-/// Create a tar.gz archive containing the given files.
-/// Each file is stored under its own filename (no directory prefix) unless
-/// `base_dir` is provided, in which case files are stored relative to it.
-/// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
-/// If `mtime` is provided, all entries are stored with that unix timestamp as mtime.
-pub fn create_tar_gz(
-    files: &[&Path],
-    output: &Path,
-    base_dir: Option<&Path>,
-    wrap_dir: Option<&str>,
-    mtime: Option<u64>,
-    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
-) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
-    let enc = GzEncoder::new(out_file, Compression::best());
-    let mut tar = tar::Builder::new(enc);
-    write_tar_entries(
-        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.gz",
-    )?;
-    tar.finish().context("tar.gz: finish")
-}
-
-/// Create a tar.xz archive containing the given files.
-pub fn create_tar_xz(
-    files: &[&Path],
-    output: &Path,
-    base_dir: Option<&Path>,
-    wrap_dir: Option<&str>,
-    mtime: Option<u64>,
-    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
-) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
-    let enc = xz2::write::XzEncoder::new(out_file, 9);
-    let mut tar = tar::Builder::new(enc);
-    write_tar_entries(
-        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.xz",
-    )?;
-    tar.finish().context("tar.xz: finish")
-}
-
-/// Create a tar.zst archive containing the given files.
-pub fn create_tar_zst(
-    files: &[&Path],
-    output: &Path,
-    base_dir: Option<&Path>,
-    wrap_dir: Option<&str>,
-    mtime: Option<u64>,
-    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
-) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
-    // Level 3 is zstd's default, matching the Go zstd library used by
-    // GoReleaser's archiver dependency. Previously level 19 (near-max) which
-    // was much slower with marginal size improvement for release artifacts.
-    let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
-    let mut tar = tar::Builder::new(enc);
-    write_tar_entries(
-        &mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.zst",
-    )?;
-    let enc = tar.into_inner().context("tar.zst: finish tar")?;
-    enc.finish().context("tar.zst: finish zstd")?;
-    Ok(())
-}
-
-/// Create an uncompressed tar archive containing the given files.
-pub fn create_tar(
-    files: &[&Path],
-    output: &Path,
-    base_dir: Option<&Path>,
-    wrap_dir: Option<&str>,
-    mtime: Option<u64>,
-    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
-) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create tar: {}", output.display()))?;
-    let mut tar = tar::Builder::new(out_file);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar")?;
-    tar.finish().context("tar: finish")
-}
-
-// ---------------------------------------------------------------------------
-// create_gz  (standalone gzip, no tar wrapping)
-// ---------------------------------------------------------------------------
-
-/// Create a standalone .gz file from a single input file.
-/// Unlike tar.gz, this compresses one file directly with gzip (gz cannot hold
-/// multiple files without tar).
-pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
-    if !file.exists() {
-        bail!("gz: source file does not exist: {}", file.display());
-    }
-    let out_file =
-        File::create(output).with_context(|| format!("create gz: {}", output.display()))?;
-    let mut enc = GzEncoder::new(out_file, Compression::best());
-    let data = fs::read(file).with_context(|| format!("gz: read {}", file.display()))?;
-    enc.write_all(&data).context("gz: write compressed data")?;
-    enc.finish().context("gz: finish")?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// create_zip
-// ---------------------------------------------------------------------------
-
-/// Create a zip archive containing the given files.
-/// Each file is stored under its own filename (no directory prefix).
-/// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
-/// If `file_info` is provided, unix permissions from `file_info.mode` are applied.
-pub fn create_zip(
-    files: &[&Path],
-    output: &Path,
-    wrap_dir: Option<&str>,
-    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
-) -> Result<()> {
-    let out_file =
-        File::create(output).with_context(|| format!("create zip: {}", output.display()))?;
-    let mut zip = zip::ZipWriter::new(out_file);
-    let mut options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-
-    // Apply unix permissions from file_info if set
-    if let Some(info) = file_info
-        && let Some(mode_str) = &info.mode
-        && let Some(mode) = parse_octal_mode(mode_str)
-    {
-        options = options.unix_permissions(mode);
-    }
-
-    for &src in files {
-        if !src.exists() {
-            continue;
-        }
-        let base_name = src
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        let name = if let Some(dir) = wrap_dir {
-            format!("{dir}/{base_name}")
-        } else {
-            base_name.to_string()
-        };
-        zip.start_file(&name, options)
-            .with_context(|| format!("zip: start_file {name}"))?;
-        let data = fs::read(src).with_context(|| format!("zip: read {}", src.display()))?;
-        zip.write_all(&data)
-            .with_context(|| format!("zip: write {name}"))?;
-    }
-
-    zip.finish().context("zip: finish")?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// copy_binary
-// ---------------------------------------------------------------------------
-
-/// Copy binary files directly to the output directory (no archiving).
-/// For a single file, copies to `output` directly.
-/// For multiple files, copies each file into the parent directory of `output`.
-pub fn copy_binary(files: &[&Path], output: &Path) -> Result<()> {
-    if files.len() == 1 {
-        let src = files[0];
-        if !src.exists() {
-            anyhow::bail!("binary: source does not exist: {}", src.display());
-        }
-        fs::copy(src, output)
-            .with_context(|| format!("binary: copy {} -> {}", src.display(), output.display()))?;
-    } else {
-        let out_dir = output.parent().unwrap_or(Path::new("."));
-        for &src in files {
-            if !src.exists() {
-                continue;
-            }
-            let file_name = src.file_name().unwrap_or(src.as_os_str());
-            let dest = out_dir.join(file_name);
-            fs::copy(src, &dest)
-                .with_context(|| format!("binary: copy {} -> {}", src.display(), dest.display()))?;
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// resolve_glob_patterns
-// ---------------------------------------------------------------------------
-
-/// Resolve a list of file patterns, expanding glob patterns.
-/// Non-glob entries are treated as literal paths.
-pub fn resolve_glob_patterns(patterns: &[String]) -> Result<Vec<PathBuf>> {
-    let mut results = Vec::new();
-    for pattern in patterns {
-        // Check if the pattern contains glob metacharacters
-        if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
-            let entries =
-                glob::glob(pattern).with_context(|| format!("invalid glob pattern: {pattern}"))?;
-            for entry in entries {
-                let path = entry.with_context(|| format!("glob error for pattern: {pattern}"))?;
-                results.push(path);
-            }
-        } else {
-            let p = PathBuf::from(pattern);
-            if p.exists() {
-                results.push(p);
-            }
-        }
-    }
-    Ok(results)
-}
-
-// ---------------------------------------------------------------------------
-// longest_common_prefix — used for glob directory preservation
-// ---------------------------------------------------------------------------
-
-/// Compute the longest common byte prefix of a slice of strings.
-/// Returns an empty string when the slice is empty.
-fn longest_common_prefix(strs: &[String]) -> String {
-    if strs.is_empty() {
-        return String::new();
-    }
-    let mut lcp = strs[0].as_str();
-    for s in &strs[1..] {
-        let end = lcp
-            .bytes()
-            .zip(s.bytes())
-            .take_while(|(a, b)| a == b)
-            .count();
-        lcp = &lcp[..end];
-    }
-    lcp.to_string()
-}
-
-// ---------------------------------------------------------------------------
-// render_file_info — template-render owner/group/mtime in ArchiveFileInfo
-// ---------------------------------------------------------------------------
-
-/// Render template expressions in `ArchiveFileInfo` fields.
-///
-/// GoReleaser processes `owner`, `group`, and `mtime` through its template
-/// engine (archivefiles.go `tmplInfo()`). `mode` is an octal literal and is
-/// passed through unchanged.
-fn render_file_info(
-    info: &anodizer_core::config::ArchiveFileInfo,
-    ctx: &Context,
-) -> Result<anodizer_core::config::ArchiveFileInfo> {
-    Ok(anodizer_core::config::ArchiveFileInfo {
-        owner: info
-            .owner
-            .as_deref()
-            .map(|s| ctx.render_template(s))
-            .transpose()?,
-        group: info
-            .group
-            .as_deref()
-            .map(|s| ctx.render_template(s))
-            .transpose()?,
-        mode: info.mode.clone(),
-        mtime: info
-            .mtime
-            .as_deref()
-            .map(|s| ctx.render_template(s))
-            .transpose()?,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// resolve_file_specs — handle ArchiveFileSpec entries
-// ---------------------------------------------------------------------------
-
-/// A resolved extra file to include in an archive, with optional destination
-/// path override and file info (permissions/owner/group).
-pub struct ResolvedExtraFile {
-    pub src: PathBuf,
-    /// When Some, use this path inside the archive instead of the filename.
-    pub dst: Option<String>,
-    /// File metadata to apply to the archive entry.
-    pub info: Option<anodizer_core::config::ArchiveFileInfo>,
-    /// When true, strip the parent directory from the source path so the file
-    /// is placed at the archive root (or directly under wrap_in_directory).
-    pub strip_parent: bool,
-    /// True when this entry came from the auto-resolved default file list
-    /// (LICENSE/README/CHANGELOG glob), not user-configured `files:`.
-    /// Mirrors GoReleaser's `Default: true` flag on archive file entries —
-    /// useful for diagnostics that need to distinguish user intent from
-    /// automatic defaults.
-    pub default: bool,
-}
-
-/// Resolve a list of ArchiveFileSpec entries into concrete file paths with
-/// optional destination overrides and file info.
-pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtraFile>> {
-    let mut results = Vec::new();
-    for spec in specs {
-        match spec {
-            ArchiveFileSpec::Glob(pattern) => {
-                let paths = resolve_glob_patterns(std::slice::from_ref(pattern))?;
-                for p in paths {
-                    results.push(ResolvedExtraFile {
-                        src: p,
-                        dst: None,
-                        info: None,
-                        strip_parent: false,
-                        default: false,
-                    });
-                }
-            }
-            ArchiveFileSpec::Detailed {
-                src,
-                dst,
-                info,
-                strip_parent,
-            } => {
-                let paths = resolve_glob_patterns(std::slice::from_ref(src))?;
-                let do_strip = strip_parent.unwrap_or(false);
-
-                // When dst is set and strip_parent is false, compute per-file
-                // destinations that preserve the directory structure relative
-                // to the longest common prefix of all matched paths.
-                //
-                // GoReleaser divergence: when src is a non-glob literal,
-                // GoReleaser uses it as the prefix directly, so
-                // Rel(file, file) = "." and the file is effectively renamed
-                // to dst. We always compute LCP, which for a single file
-                // produces dst/filename — more intuitive behavior (e.g.
-                // dst: "licenses/" puts the file inside a licenses directory
-                // rather than renaming it).
-                if let Some(dst_prefix) = dst.as_deref().filter(|_| !do_strip) {
-                    let file_strs: Vec<String> = paths
-                        .iter()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .collect();
-
-                    // Compute prefix directory: use the LCP of matched paths,
-                    // then take its parent directory if it's not an existing
-                    // directory (inspired by GoReleaser's filepath.Dir fallback).
-                    let lcp = longest_common_prefix(&file_strs);
-                    let prefix_dir = {
-                        let lcp_path = std::path::Path::new(&lcp);
-                        if lcp_path.is_dir() {
-                            lcp_path.to_path_buf()
-                        } else {
-                            lcp_path
-                                .parent()
-                                .unwrap_or_else(|| std::path::Path::new(""))
-                                .to_path_buf()
-                        }
-                    };
-
-                    for p in paths {
-                        let rel = p
-                            .strip_prefix(&prefix_dir)
-                            .unwrap_or(&p)
-                            .to_string_lossy()
-                            .to_string();
-                        // Normalize to forward slashes — archive entry paths must
-                        // always use '/' regardless of platform.
-                        let dest =
-                            normalize_archive_path(std::path::PathBuf::from(dst_prefix).join(&rel))
-                                .to_string_lossy()
-                                .to_string();
-                        results.push(ResolvedExtraFile {
-                            src: p,
-                            dst: Some(dest),
-                            info: info.clone(),
-                            strip_parent: false,
-                            default: false,
-                        });
-                    }
-                } else if dst.is_some() && do_strip {
-                    // GoReleaser archivefiles.go:117-118 — when both dst and
-                    // strip_parent are set, each file's destination is
-                    // dst/basename(path) so files don't collide at a single dst.
-                    let dst_prefix = dst.as_deref().unwrap_or("");
-                    for p in paths {
-                        let base = p
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        let dest = normalize_archive_path(
-                            std::path::PathBuf::from(dst_prefix).join(&base),
-                        )
-                        .to_string_lossy()
-                        .to_string();
-                        results.push(ResolvedExtraFile {
-                            src: p,
-                            dst: Some(dest),
-                            info: info.clone(),
-                            strip_parent: false,
-                            default: false,
-                        });
-                    }
-                } else {
-                    for p in paths {
-                        results.push(ResolvedExtraFile {
-                            src: p,
-                            dst: dst.clone(),
-                            info: info.clone(),
-                            strip_parent: do_strip,
-                            default: false,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(results)
-}
-
-// ---------------------------------------------------------------------------
-// resolve_default_extra_files — auto-include common files when none configured
-// ---------------------------------------------------------------------------
-
-/// When no extra files are explicitly configured, glob for common project files
-/// (LICENSE, README, CHANGELOG) in `base_dir`, matching GoReleaser's
-/// Default() behavior. Non-matching patterns are silently skipped.
-///
-/// `base_dir` must be the crate's root directory (resolved absolute against the
-/// project root). Globbing in CWD is unsafe in test/CI environments where the
-/// process working directory may be the workspace root and pull in unrelated
-/// files (e.g. the workspace's top-level README).
-fn resolve_default_extra_files(base_dir: &Path) -> Vec<ResolvedExtraFile> {
-    let patterns = [
-        "LICENSE*",
-        "license*",
-        "README*",
-        "readme*",
-        "CHANGELOG*",
-        "changelog*",
-    ];
-    let mut results = Vec::new();
-    for pattern in &patterns {
-        let full_pattern = base_dir.join(pattern);
-        let Some(pattern_str) = full_pattern.to_str() else {
-            continue;
-        };
-        if let Ok(entries) = glob::glob(pattern_str) {
-            for entry in entries.flatten() {
-                // Avoid duplicates (e.g. LICENSE matched by both LICENSE* and license*)
-                if !results.iter().any(|r: &ResolvedExtraFile| r.src == entry) {
-                    results.push(ResolvedExtraFile {
-                        src: entry,
-                        dst: None,
-                        info: None,
-                        strip_parent: false,
-                        // GoReleaser `Default: true` parity — distinguishes
-                        // auto-resolved LICENSE/README/CHANGELOG from
-                        // user-configured `files:` entries for diagnostics.
-                        default: true,
-                    });
-                }
-            }
-        }
-    }
-    results
-}
-
-/// Normalize path separators: backslashes to forward slashes for archive entries.
-/// Matches GoReleaser `archive.go:377`: `strings.ReplaceAll(..., "\\", "/")`.
-fn normalize_archive_path(p: PathBuf) -> PathBuf {
-    PathBuf::from(p.to_string_lossy().replace('\\', "/"))
-}
-
-// ---------------------------------------------------------------------------
-// compute_archive_name  (helper)
-// ---------------------------------------------------------------------------
-
-/// Compute the archive entry name for a source file.
-/// If `base_dir` is provided, the source is stored relative to it.
-/// If `wrap_dir` is provided, the entry is prefixed with that directory name.
-fn compute_archive_name(src: &Path, base_dir: Option<&Path>, wrap_dir: Option<&str>) -> PathBuf {
-    let relative = if let Some(base) = base_dir {
-        src.strip_prefix(base)
-            .unwrap_or_else(|_| src.file_name().map(Path::new).unwrap_or(src))
-            .to_path_buf()
-    } else {
-        PathBuf::from(src.file_name().unwrap_or(src.as_os_str()))
-    };
-
-    let joined = if let Some(dir) = wrap_dir {
-        PathBuf::from(dir).join(relative)
-    } else {
-        relative
-    };
-
-    normalize_archive_path(joined)
-}
-
-// ---------------------------------------------------------------------------
-// ArchiveEntry — rich file descriptor for archive creation
-// ---------------------------------------------------------------------------
-
-/// An entry to add to an archive, carrying source path, archive-internal name,
-/// and optional per-file info (permissions/owner/group).
-struct ArchiveEntry {
-    /// Source file path on disk.
-    src: PathBuf,
-    /// Name inside the archive (may differ from src filename due to dst override).
-    archive_name: PathBuf,
-    /// Per-file info overrides (mode/owner/group/mtime).
-    info: Option<anodizer_core::config::ArchiveFileInfo>,
-}
-
-// ---------------------------------------------------------------------------
-// deduplicate_entries — warn + skip when the same archive path appears twice
-// ---------------------------------------------------------------------------
-
-/// Deduplicate archive entries by `archive_name`. When a duplicate destination
-/// path is found, emit a warning to stderr and keep only the first occurrence.
-/// This matches GoReleaser's `unique()` in archivefiles.go.
-fn deduplicate_entries(entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
-    let mut seen: HashMap<PathBuf, PathBuf> = HashMap::new();
-    let mut result = Vec::with_capacity(entries.len());
-    for entry in entries {
-        if let Some(first_src) = seen.get(&entry.archive_name) {
-            archive_log().warn(&format!(
-                "file '{}' already exists in archive as '{}' — '{}' will be ignored",
-                entry.archive_name.display(),
-                first_src.display(),
-                entry.src.display(),
-            ));
-        } else {
-            seen.insert(entry.archive_name.clone(), entry.src.clone());
-            result.push(entry);
-        }
-    }
-    result
-}
-
-// ---------------------------------------------------------------------------
-// sort_entries — deterministic archive order for reproducibility
-// ---------------------------------------------------------------------------
-
-/// Sort archive entries by `archive_name` to ensure deterministic ordering.
-/// This matches GoReleaser's sort in archivefiles.go:66-68 and is essential
-/// for reproducible archives.
-fn sort_entries(mut entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
-    entries.sort_by(|a, b| a.archive_name.cmp(&b.archive_name));
-    entries
-}
-
-/// Write a list of `ArchiveEntry` items into a tar builder, applying per-entry
-/// file info and an optional global mtime.
-fn write_archive_entries<W: std::io::Write>(
-    tar: &mut tar::Builder<W>,
-    entries: &[ArchiveEntry],
-    mtime: Option<u64>,
-    label: &str,
-) -> Result<()> {
-    for entry in entries {
-        if !entry.src.exists() {
-            continue;
-        }
-        append_tar_entry(
-            tar,
-            &entry.src,
-            &entry.archive_name,
-            mtime,
-            entry.info.as_ref(),
-        )
-        .with_context(|| {
-            format!(
-                "{label}: adding {} as {}",
-                entry.src.display(),
-                entry.archive_name.display()
-            )
-        })?;
-    }
-    Ok(())
-}
-
-/// Convert a unix timestamp to a `zip::DateTime` for setting zip entry mtime.
-fn unix_timestamp_to_zip_datetime(ts: u64) -> Option<zip::DateTime> {
-    use chrono::{TimeZone, Utc};
-    let dt = Utc.timestamp_opt(ts as i64, 0).single()?;
-    zip::DateTime::from_date_and_time(
-        dt.format("%Y").to_string().parse::<u16>().ok()?,
-        dt.format("%m").to_string().parse::<u8>().ok()?,
-        dt.format("%d").to_string().parse::<u8>().ok()?,
-        dt.format("%H").to_string().parse::<u8>().ok()?,
-        dt.format("%M").to_string().parse::<u8>().ok()?,
-        dt.format("%S").to_string().parse::<u8>().ok()?,
-    )
-    .ok()
-}
-
-/// Write a list of `ArchiveEntry` items into a zip writer, applying per-entry
-/// file info (unix permissions from mode) and optional mtime for reproducible builds.
-fn write_zip_entries<W: std::io::Write + std::io::Seek>(
-    zip: &mut zip::ZipWriter<W>,
-    entries: &[ArchiveEntry],
-    mtime: Option<u64>,
-) -> Result<()> {
-    let mut base_options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-
-    // Apply mtime for reproducible builds
-    if let Some(ts) = mtime
-        && let Some(zip_dt) = unix_timestamp_to_zip_datetime(ts)
-    {
-        base_options = base_options.last_modified_time(zip_dt);
-    }
-
-    for entry in entries {
-        if !entry.src.exists() {
-            continue;
-        }
-        let mut options = base_options;
-        if let Some(ref info) = entry.info
-            && let Some(mode_str) = &info.mode
-            && let Some(mode) = parse_octal_mode(mode_str)
-        {
-            options = options.unix_permissions(mode);
-        }
-        let name = entry.archive_name.to_string_lossy().to_string();
-        zip.start_file(&name, options)
-            .with_context(|| format!("zip: start_file {name}"))?;
-        let data =
-            fs::read(&entry.src).with_context(|| format!("zip: read {}", entry.src.display()))?;
-        zip.write_all(&data)
-            .with_context(|| format!("zip: write {name}"))?;
-    }
-    Ok(())
-}
+// File-spec resolution (longest_common_prefix, render_file_info,
+// ResolvedExtraFile, resolve_file_specs, resolve_default_extra_files) lives
+// in `file_specs.rs`. Naming utilities (normalize_archive_path,
+// compute_archive_name) live in `formats.rs`.
+//
+// ArchiveEntry, deduplicate_entries, sort_entries, write_archive_entries,
+// write_zip_entries live in `entries.rs`.
 
 // ---------------------------------------------------------------------------
 // format_for_target
@@ -1299,7 +573,7 @@ impl Stage for ArchiveStage {
                             } else {
                                 PathBuf::from(&file_name)
                             };
-                            let archive_name = normalize_archive_path(raw_name);
+                            let archive_name = formats::normalize_archive_path(raw_name);
                             ArchiveEntry {
                                 src: bp.clone(),
                                 archive_name,
@@ -1339,7 +613,7 @@ impl Stage for ArchiveStage {
                             } else {
                                 PathBuf::from(&base_name)
                             };
-                            let archive_name = normalize_archive_path(raw_name);
+                            let archive_name = formats::normalize_archive_path(raw_name);
                             Ok(ArchiveEntry {
                                 src: ef.src.clone(),
                                 archive_name,
@@ -5009,13 +4283,16 @@ crates:
 
     #[test]
     fn test_lcp_empty() {
-        assert_eq!(longest_common_prefix(&[]), "");
+        assert_eq!(crate::file_specs::longest_common_prefix(&[]), "");
     }
 
     #[test]
     fn test_lcp_single() {
         let strs = vec!["/home/user/docs/README.md".to_string()];
-        assert_eq!(longest_common_prefix(&strs), "/home/user/docs/README.md");
+        assert_eq!(
+            crate::file_specs::longest_common_prefix(&strs),
+            "/home/user/docs/README.md"
+        );
     }
 
     #[test]
@@ -5025,7 +4302,10 @@ crates:
             "/home/user/docs/guide/intro.md".to_string(),
             "/home/user/docs/guide/advanced.md".to_string(),
         ];
-        assert_eq!(longest_common_prefix(&strs), "/home/user/docs/");
+        assert_eq!(
+            crate::file_specs::longest_common_prefix(&strs),
+            "/home/user/docs/"
+        );
     }
 
     #[test]
@@ -5034,7 +4314,7 @@ crates:
             "/usr/local/bin/foo".to_string(),
             "/home/user/bar".to_string(),
         ];
-        assert_eq!(longest_common_prefix(&strs), "/");
+        assert_eq!(crate::file_specs::longest_common_prefix(&strs), "/");
     }
 
     #[test]
@@ -5043,7 +4323,10 @@ crates:
             "/home/user/file.txt".to_string(),
             "/home/user/file.txt".to_string(),
         ];
-        assert_eq!(longest_common_prefix(&strs), "/home/user/file.txt");
+        assert_eq!(
+            crate::file_specs::longest_common_prefix(&strs),
+            "/home/user/file.txt"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -5202,7 +4485,8 @@ crates:
             mtime: None,
         };
 
-        append_tar_entry(&mut tar, &bin_path, Path::new("mybin"), None, Some(&info)).unwrap();
+        formats::append_tar_entry(&mut tar, &bin_path, Path::new("mybin"), None, Some(&info))
+            .unwrap();
         tar.finish().unwrap();
 
         // Read back the archive and verify permissions
@@ -5245,7 +4529,7 @@ crates:
             mtime: None,
         };
 
-        write_tar_entries(
+        formats::write_tar_entries(
             &mut tar,
             &[bin_path.as_path()],
             None,
