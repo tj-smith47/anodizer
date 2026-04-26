@@ -258,6 +258,11 @@ impl Stage for ChecksumStage {
             .collect();
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
+        // Track extra-file paths already checksummed so a workspace run with
+        // `defaults.checksum.extra_files` doesn't add the same line N times
+        // across N per-crate combined files.
+        let mut seen_extra_paths: std::collections::HashSet<PathBuf> =
+            std::collections::HashSet::new();
 
         for crate_cfg in &crates {
             let crate_name = &crate_cfg.name;
@@ -321,10 +326,12 @@ impl Stage for ChecksumStage {
                 }
             }
 
-            // Resolve extra_files globs and create synthetic artifacts for them
             if let Some(ref specs) = extra_files {
                 let resolved = resolve_extra_files(specs, &log)?;
                 for ef in resolved {
+                    if !seen_extra_paths.insert(ef.path.clone()) {
+                        continue;
+                    }
                     let mut metadata =
                         HashMap::from([("extra_file".to_string(), "true".to_string())]);
                     if let Some(tmpl) = ef.name_template {
@@ -336,7 +343,11 @@ impl Stage for ChecksumStage {
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     source_artifacts.push(Artifact {
-                        kind: ArtifactKind::Archive, // treated as a checksummable file
+                        // Synthetic extra-file checksum sources are not
+                        // archive artifacts; tag them as UploadableFile so
+                        // downstream stages don't accidentally treat them
+                        // like build outputs.
+                        kind: ArtifactKind::UploadableFile,
                         name,
                         path: ef.path,
                         target: None,
@@ -347,7 +358,6 @@ impl Stage for ChecksumStage {
                 }
             }
 
-            // Process templated_extra_files: render and add as checksummable artifacts
             if let Some(ref tpl_specs) = templated_extra_files
                 && !tpl_specs.is_empty()
             {
@@ -355,9 +365,12 @@ impl Stage for ChecksumStage {
                     tpl_specs, ctx, &dist, "checksum",
                 )?;
                 for (path, dst_name) in rendered {
+                    if !seen_extra_paths.insert(path.clone()) {
+                        continue;
+                    }
                     let metadata = HashMap::from([("extra_file".to_string(), "true".to_string())]);
                     source_artifacts.push(Artifact {
-                        kind: ArtifactKind::Archive,
+                        kind: ArtifactKind::UploadableFile,
                         name: dst_name,
                         path,
                         target: None,
@@ -388,6 +401,26 @@ impl Stage for ChecksumStage {
             // per-artifact metadata convention).
             let mut artifact_checksums: Vec<(PathBuf, String, String)> = Vec::new();
 
+            // Split mode writes one sidecar per source artifact. If the user
+            // supplies a name_template that doesn't reference ArtifactName
+            // (or Algorithm) every sidecar resolves to the same path and the
+            // last write silently overwrites the rest. Refuse upfront with a
+            // pointer at what to add.
+            if split
+                && let Some(tmpl) = &name_template
+                && !tmpl.contains("ArtifactName")
+                && source_artifacts.len() > 1
+            {
+                bail!(
+                    "checksum: split mode requires the name_template to reference \
+                     {{{{ ArtifactName }}}} (or another per-artifact variable) so each \
+                     sidecar writes to a distinct path; got name_template = {:?} for \
+                     crate '{}'",
+                    tmpl,
+                    crate_name
+                );
+            }
+
             for artifact in &source_artifacts {
                 // In dry-run mode, files may not exist on disk; skip with placeholder
                 let hash = if dry_run && !artifact.path.exists() {
@@ -410,11 +443,17 @@ impl Stage for ChecksumStage {
                 // Store the checksum for later propagation to artifact metadata.
                 artifact_checksums.push((artifact.path.clone(), algorithm.clone(), hash.clone()));
 
-                let filename = artifact
+                // Non-UTF8 filenames produce a lossy display rather than the
+                // sentinel string `"unknown"` — any filename anodizer wrote
+                // is UTF-8, so this only triggers for paths handed in by the
+                // user. Lossy gives the user something searchable instead
+                // of collapsing every problematic name to one bucket.
+                let filename_owned = artifact
                     .path
                     .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown");
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| artifact.path.display().to_string());
+                let filename = filename_owned.as_str();
 
                 // Determine the display name for this artifact in the checksum line.
                 // If the extra file has a name_template, render it to get an alias.
@@ -485,7 +524,7 @@ impl Stage for ChecksumStage {
                     let sidecar_name = sidecar_path
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| sidecar_path.display().to_string());
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::Checksum,
                         name: sidecar_name,
@@ -573,7 +612,7 @@ impl Stage for ChecksumStage {
                 let combined_name = combined_path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| combined_path.display().to_string());
                 new_artifacts.push(Artifact {
                     kind: ArtifactKind::Checksum,
                     name: combined_name,
