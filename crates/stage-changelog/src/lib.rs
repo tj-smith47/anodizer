@@ -5,7 +5,7 @@ use anodizer_core::git::{
 };
 use anodizer_core::stage::Stage;
 use anodizer_core::template::{self, TemplateVars};
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -113,18 +113,14 @@ pub(crate) fn extract_co_authors(message: &str) -> Vec<String> {
 /// Filter out commits whose `raw_message` matches any of the exclude regex
 /// patterns. Returns a new `Vec` of commits that did NOT match any pattern.
 ///
-/// Returns an error if any regex pattern fails to compile.
+/// Invalid regex patterns are warned and skipped so a single bad
+/// pattern doesn't drop the rest of the changelog.
 pub(crate) fn apply_filters(
     commits: &[CommitInfo],
     exclude: &[String],
-    _log: &anodizer_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<CommitInfo>> {
-    let mut patterns: Vec<Regex> = Vec::with_capacity(exclude.len());
-    for p in exclude {
-        let re =
-            Regex::new(p).map_err(|e| anyhow::anyhow!("invalid exclude regex {:?}: {}", p, e))?;
-        patterns.push(re);
-    }
+    let patterns = compile_filter_patterns(exclude, "exclude", log);
 
     Ok(commits
         .iter()
@@ -140,20 +136,19 @@ pub(crate) fn apply_filters(
 /// Keep only commits whose `raw_message` matches at least one of the include
 /// regex patterns. If `include` is empty, all commits are kept (no-op).
 ///
-/// Returns an error if any regex pattern fails to compile.
+/// Invalid regex patterns are warned and skipped. If every pattern fails
+/// to compile the include filter is treated as empty (no-op).
 pub(crate) fn apply_include_filters(
     commits: &[CommitInfo],
     include: &[String],
-    _log: &anodizer_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<CommitInfo>> {
     if include.is_empty() {
         return Ok(commits.to_vec());
     }
-    let mut patterns: Vec<Regex> = Vec::with_capacity(include.len());
-    for p in include {
-        let re =
-            Regex::new(p).map_err(|e| anyhow::anyhow!("invalid include regex {:?}: {}", p, e))?;
-        patterns.push(re);
+    let patterns = compile_filter_patterns(include, "include", log);
+    if patterns.is_empty() {
+        return Ok(commits.to_vec());
     }
 
     Ok(commits
@@ -161,6 +156,24 @@ pub(crate) fn apply_include_filters(
         .filter(|c| patterns.iter().any(|re| re.is_match(&c.raw_message)))
         .cloned()
         .collect())
+}
+
+fn compile_filter_patterns(
+    raw: &[String],
+    kind: &str,
+    log: &anodizer_core::log::StageLogger,
+) -> Vec<Regex> {
+    let mut patterns = Vec::with_capacity(raw.len());
+    for p in raw {
+        match Regex::new(p) {
+            Ok(re) => patterns.push(re),
+            Err(e) => log.warn(&format!(
+                "changelog: invalid {} regex {:?}: {} (skipping pattern)",
+                kind, p, e
+            )),
+        }
+    }
+    patterns
 }
 
 // ---------------------------------------------------------------------------
@@ -385,9 +398,8 @@ pub(crate) fn render_changelog_with_provider(
     } else {
         match use_source {
             "github" | "gitlab" | "gitea" => {
-                "{{ ShortSHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})"
+                "{{ SHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})"
             }
-            // GoReleaser default: `{{ .SHA }} {{ .Message }}` (full hash).
             _ => "{{ SHA }} {{ Message }}",
         }
     };
@@ -860,6 +872,12 @@ impl Stage for ChangelogStage {
                     notes_path.display()
                 )
             })?;
+            if content.trim().is_empty() {
+                log.warn(&format!(
+                    "release notes file {} is empty; release body will be blank",
+                    notes_path.display()
+                ));
+            }
             log.status(&format!(
                 "using custom release notes from {}",
                 notes_path.display()
@@ -879,16 +897,16 @@ impl Stage for ChangelogStage {
                     .insert(crate_cfg.name.clone(), content.clone());
             }
 
-            // Write to dist/CHANGELOG.md (skip during dry-run).
-            if !ctx.is_dry_run() {
-                let dist = ctx.config.dist.clone();
-                std::fs::create_dir_all(&dist)
-                    .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
-                let notes_out = dist.join("CHANGELOG.md");
-                std::fs::write(&notes_out, &content)
-                    .with_context(|| format!("changelog: write {}", notes_out.display()))?;
-                log.status(&format!("wrote {}", notes_out.display()));
-            }
+            // Write the dist file even in dry-run so the artifact set looks
+            // identical to a real run; the regular path also writes in
+            // dry-run.
+            let dist = ctx.config.dist.clone();
+            std::fs::create_dir_all(&dist)
+                .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
+            let notes_out = dist.join("CHANGELOG.md");
+            std::fs::write(&notes_out, &content)
+                .with_context(|| format!("changelog: write {}", notes_out.display()))?;
+            log.status(&format!("wrote {}", notes_out.display()));
             return Ok(());
         }
 
@@ -912,6 +930,31 @@ impl Stage for ChangelogStage {
             .unwrap_or_else(|| "git".to_string());
 
         if use_source == "github-native" {
+            // The release stage will eventually call GitHub's
+            // generate-release-notes endpoint, which needs the same token
+            // and repo identity that any other release would. Verify both
+            // are present here so the user gets a config-time error
+            // instead of a confusing failure deep in the release stage.
+            if ctx.options.token.is_none() && !ctx.is_dry_run() && !ctx.is_snapshot() {
+                bail!(
+                    "changelog: use=github-native requires a GitHub token (set \
+                     GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN, or pass --token); \
+                     GitHub auto-release-notes is an authenticated API"
+                );
+            }
+            let has_repo = ctx.config.crates.iter().any(|c| {
+                c.release
+                    .as_ref()
+                    .and_then(|r| r.github.as_ref())
+                    .is_some_and(|g| !g.owner.is_empty() && !g.name.is_empty())
+            });
+            if !has_repo && !ctx.is_dry_run() && !ctx.is_snapshot() {
+                bail!(
+                    "changelog: use=github-native requires release.github.owner and \
+                     release.github.name on at least one crate so the auto-release-notes \
+                     API knows which repository to read"
+                );
+            }
             log.status("using github-native changelog — skipping local generation");
             ctx.github_native_changelog = true;
             let selected = ctx.options.selected_crates.clone();
@@ -1054,7 +1097,7 @@ impl Stage for ChangelogStage {
                             ),
                         )?;
                         (
-                            fetch_git_commits(&prev_tag, &paths, &crate_name, &log),
+                            fetch_git_commits(&prev_tag, &paths, &crate_name, &log)?,
                             String::new(),
                         )
                     }
@@ -1071,7 +1114,7 @@ impl Stage for ChangelogStage {
                             ),
                         )?;
                         (
-                            fetch_git_commits(&prev_tag, &paths, &crate_name, &log),
+                            fetch_git_commits(&prev_tag, &paths, &crate_name, &log)?,
                             String::new(),
                         )
                     }
@@ -1088,14 +1131,14 @@ impl Stage for ChangelogStage {
                             ),
                         )?;
                         (
-                            fetch_git_commits(&prev_tag, &paths, &crate_name, &log),
+                            fetch_git_commits(&prev_tag, &paths, &crate_name, &log)?,
                             String::new(),
                         )
                     }
                 }
             } else {
                 (
-                    fetch_git_commits(&prev_tag, &paths, &crate_name, &log),
+                    fetch_git_commits(&prev_tag, &paths, &crate_name, &log)?,
                     String::new(),
                 )
             };
@@ -1160,15 +1203,23 @@ impl Stage for ChangelogStage {
         let mut final_markdown = String::new();
         if let Some(ref h) = header {
             let rendered = ctx.render_template_strict(h, "changelog header", &log)?;
-            final_markdown.push_str(&rendered);
-            final_markdown.push_str("\n\n");
+            if rendered.trim().is_empty() {
+                log.warn("changelog: header rendered to an empty string (will be omitted)");
+            } else {
+                final_markdown.push_str(&rendered);
+                final_markdown.push_str("\n\n");
+            }
         }
         final_markdown.push_str(&combined_markdown);
         if let Some(ref f) = footer {
             let rendered = ctx.render_template_strict(f, "changelog footer", &log)?;
-            final_markdown.push('\n');
-            final_markdown.push_str(&rendered);
-            final_markdown.push('\n');
+            if rendered.trim().is_empty() {
+                log.warn("changelog: footer rendered to an empty string (will be omitted)");
+            } else {
+                final_markdown.push('\n');
+                final_markdown.push_str(&rendered);
+                final_markdown.push('\n');
+            }
         }
 
         // Write to dist/CHANGELOG.md (GoReleaser writes this even in dry-run mode).
@@ -1192,15 +1243,22 @@ fn fetch_git_commits(
     paths: &[String],
     crate_name: &str,
     log: &anodizer_core::log::StageLogger,
-) -> Vec<CommitInfo> {
+) -> Result<Vec<CommitInfo>> {
     let raw_commits = match prev_tag {
-        Some(tag) => get_commits_between_paths(tag, "HEAD", paths).unwrap_or_default(),
+        Some(tag) => get_commits_between_paths(tag, "HEAD", paths).with_context(|| {
+            format!(
+                "changelog: read git commits between {}..HEAD for crate '{}'",
+                tag, crate_name
+            )
+        })?,
         None => {
             log.status(&format!(
                 "no previous tag found for crate '{}', using all commits",
                 crate_name
             ));
-            get_all_commits_paths(paths).unwrap_or_default()
+            get_all_commits_paths(paths).with_context(|| {
+                format!("changelog: read all git commits for crate '{}'", crate_name)
+            })?
         }
     };
 
@@ -1215,7 +1273,7 @@ fn fetch_git_commits(
         info.co_authors = extract_co_authors(&commit.body);
         all_commit_infos.push(info);
     }
-    all_commit_infos
+    Ok(all_commit_infos)
 }
 
 // ---------------------------------------------------------------------------
@@ -2052,15 +2110,21 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_include_filters_invalid_regex_is_error() {
+    fn test_apply_include_filters_invalid_regex_is_skipped() {
         let commits = vec![ci("feat: good", "feat", "good", "a")];
-        // Invalid regex should be a hard error.
+        // Invalid pattern is warned and skipped; the second valid pattern
+        // still matches.
         let include = vec!["[invalid".to_string(), "^feat".to_string()];
-        let result = apply_include_filters(&commits, &include, &test_logger());
-        assert!(
-            result.is_err(),
-            "invalid include regex should return an error"
-        );
+        let result = apply_include_filters(&commits, &include, &test_logger()).unwrap();
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_include_filters_all_invalid_keeps_everything() {
+        let commits = vec![ci("feat: good", "feat", "good", "a")];
+        let include = vec!["[invalid".to_string()];
+        let result = apply_include_filters(&commits, &include, &test_logger()).unwrap();
+        assert_eq!(result.len(), 1, "all-invalid include is treated as no-op");
     }
 
     // -----------------------------------------------------------------------
@@ -2169,6 +2233,80 @@ abbrev: 10
 
     #[test]
     fn test_changelog_stage_github_native_produces_empty() {
+        use anodizer_core::config::{
+            ChangelogConfig, Config, CrateConfig, ReleaseConfig, ScmRepoConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.changelog = Some(ChangelogConfig {
+            use_source: Some("github-native".to_string()),
+            ..Default::default()
+        });
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("test-token".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let stage = ChangelogStage;
+        stage.run(&mut ctx).unwrap();
+
+        // github-native should produce an empty changelog body per crate.
+        assert_eq!(ctx.changelogs.get("mylib"), Some(&String::new()));
+    }
+
+    #[test]
+    fn test_changelog_stage_github_native_requires_token() {
+        use anodizer_core::config::{
+            ChangelogConfig, Config, CrateConfig, ReleaseConfig, ScmRepoConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.changelog = Some(ChangelogConfig {
+            use_source: Some("github-native".to_string()),
+            ..Default::default()
+        });
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let err = ChangelogStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("requires a GitHub token"), "{}", err);
+    }
+
+    #[test]
+    fn test_changelog_stage_github_native_requires_repo() {
         use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
         use anodizer_core::context::{Context, ContextOptions};
 
@@ -2185,13 +2323,19 @@ abbrev: 10
             ..Default::default()
         }];
 
-        let mut ctx = Context::new(config, ContextOptions::default());
-
-        let stage = ChangelogStage;
-        stage.run(&mut ctx).unwrap();
-
-        // github-native should produce an empty changelog body per crate.
-        assert_eq!(ctx.changelogs.get("mylib"), Some(&String::new()));
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("test-token".to_string()),
+                ..Default::default()
+            },
+        );
+        let err = ChangelogStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(
+            err.contains("release.github.owner and release.github.name"),
+            "{}",
+            err
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2935,26 +3079,23 @@ abbrev: 10
     // ---- Error path tests (Task 4D) ----
 
     #[test]
-    fn test_invalid_exclude_regex_returns_error() {
+    fn test_invalid_exclude_regex_is_warned_and_skipped() {
         let commits = vec![ci("feat: new feature", "feat", "new feature", "abc")];
-        // Invalid regex: unclosed group
+        // Invalid regex: unclosed group is warned and skipped; the rest of
+        // the changelog is preserved unfiltered.
         let filters = vec!["^feat(".to_string()];
-        let result = apply_filters(&commits, &filters, &test_logger());
-        assert!(
-            result.is_err(),
-            "invalid exclude regex should return an error"
-        );
+        let result = apply_filters(&commits, &filters, &test_logger()).unwrap();
+        assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn test_invalid_include_regex_returns_error() {
+    fn test_invalid_include_regex_is_warned_and_skipped() {
         let commits = vec![ci("fix: a bug", "fix", "a bug", "def")];
+        // Single invalid pattern means no valid filter is applied → keep
+        // all commits.
         let filters = vec!["[invalid".to_string()];
-        let result = apply_include_filters(&commits, &filters, &test_logger());
-        assert!(
-            result.is_err(),
-            "invalid include regex should return an error"
-        );
+        let result = apply_include_filters(&commits, &filters, &test_logger()).unwrap();
+        assert_eq!(result.len(), 1);
     }
 
     #[test]
