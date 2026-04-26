@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::SignConfig;
@@ -138,18 +138,25 @@ fn prepare_stdin_from(
 }
 
 /// Determine the default signing command by checking `git config gpg.program`
-/// first, falling back to "gpg" if unset or unavailable.
+/// first, falling back to "gpg" if unset or unavailable. Cached for the
+/// life of the process — `git config` is shelled out at most once.
 fn default_sign_cmd() -> String {
-    if let Ok(output) = std::process::Command::new("git")
-        .args(["config", "gpg.program"])
-        .output()
-    {
-        let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !cmd.is_empty() {
-            return cmd;
-        }
-    }
-    "gpg".to_string()
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            if let Ok(output) = std::process::Command::new("git")
+                .args(["config", "gpg.program"])
+                .output()
+            {
+                let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !cmd.is_empty() {
+                    return cmd;
+                }
+            }
+            "gpg".to_string()
+        })
+        .clone()
 }
 
 /// Expand shell-style variable references (`$var` and `${var}`) in a string
@@ -645,9 +652,8 @@ fn process_sign_configs(
             sig_metadata.insert("type".to_string(), "Signature".to_string());
             let sig_name = sig_path
                 .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| sig_path.display().to_string());
             let mut job_artifacts = vec![anodizer_core::artifact::Artifact {
                 kind: ArtifactKind::Signature,
                 name: sig_name,
@@ -667,9 +673,8 @@ fn process_sign_configs(
                 };
                 let cert_name = cert_path
                     .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| cert_path.display().to_string());
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
                 job_artifacts.push(anodizer_core::artifact::Artifact {
@@ -1030,15 +1035,12 @@ impl Stage for DockerSignStage {
                         arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
                         arts
                     }
-                    other => {
-                        log.warn(&format!(
-                            "unknown docker_signs artifacts filter '{}', defaulting to images",
-                            other
-                        ));
-                        let mut arts = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
-                        arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
-                        arts
-                    }
+                    other => bail!(
+                        "docker_signs[{}]: unknown artifacts filter {:?} (expected one of: \
+                         all, images, manifests, none, or empty)",
+                        sign_id,
+                        other
+                    ),
                 };
 
                 let image_paths: Vec<(
