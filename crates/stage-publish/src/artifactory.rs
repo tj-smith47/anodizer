@@ -11,10 +11,7 @@ use std::fs;
 // ---------------------------------------------------------------------------
 
 /// Validate the upload mode string. Only `"archive"` and `"binary"` are
-/// accepted; matching is case-insensitive (matches GoReleaser
-/// `internal/pipe/upload/upload.go:228` `strings.ToLower(upload.Mode)`),
-/// so YAML lifted from a goreleaser config that capitalised the value
-/// (`mode: Archive`) keeps working.
+/// accepted; matching is case-insensitive so `mode: Archive` works.
 pub fn validate_upload_mode(mode: &str) -> Result<()> {
     match mode.to_ascii_lowercase().as_str() {
         "archive" | "binary" => Ok(()),
@@ -30,17 +27,11 @@ pub fn validate_upload_mode(mode: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// Return the artifact kinds that match the given upload mode.
-/// GoReleaser archive mode: archives, source archives, makeself, linux packages,
-/// flatpak, python distributions.
-/// GoReleaser binary mode: compiled binaries only.
-/// Mode matching is case-insensitive — `validate_upload_mode` accepts mixed
-/// case for GR-config compatibility, so this normalizes here too.
+/// `binary` selects compiled binaries; everything else selects every
+/// uploadable artifact kind.
 fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
     match mode.to_ascii_lowercase().as_str() {
         "binary" => vec![ArtifactKind::UploadableBinary],
-        // A8 fix: include the full first-class artifact set so installers
-        // (MSI/DMG/PKG/NSIS), SRPMs, SBOMs, snaps, and disk images don't
-        // silently no-op on `mode: archive` upload publishers.
         _ => vec![
             ArtifactKind::Archive,
             ArtifactKind::SourceArchive,
@@ -169,13 +160,9 @@ pub fn build_reqwest_client(
         );
     }
 
-    // Trusted CA certificates. GR (`http.go:134-136`) calls AppendCertsFromPEM
-    // and treats a "no certs found" result as a misconfigured warning that
-    // skips the publisher rather than a hard error. Match that: a bundle
-    // present but containing zero parseable certs almost always means a
-    // copy-paste accident (PEM headers stripped, base64 truncated). Bail with
-    // a clear message so the user knows to re-paste, but don't pretend a
-    // parse failure produced a working bundle.
+    // Trusted CA certificates. A set-but-empty bundle almost always means
+    // a copy-paste accident (PEM headers stripped, base64 truncated); bail
+    // with a clear message instead of installing an empty trust store.
     if let Some(pem_data) = trusted_certs_pem {
         let trimmed = pem_data.trim();
         if trimmed.is_empty() {
@@ -206,22 +193,13 @@ pub fn build_reqwest_client(
 // render_artifact_url
 // ---------------------------------------------------------------------------
 
-/// Render a target URL template with artifact-specific variables.
+/// Render a target URL template with the artifact context bound
+/// (Os, Arch, Target, ArtifactName, ArtifactExt).
 ///
-/// Uses the full template engine with the artifact context bound (Os, Arch,
-/// Target, ArtifactName, ArtifactExt) so the same expressions, filters, and
-/// pipes a user can write in `target:` work consistently in both the dry-run
-/// log and the live upload (A4 / A9). Previously this was a hand-rolled
-/// string-replace pass that only recognised exact `{{ .ArtifactName }}`,
-/// `{{ .Os }}`, `{{ .Arch }}` whitespace variants — pipe expressions
-/// (`{{ .Arch | upper }}`) and any other artifact field rendered as the
-/// raw template, while the dry-run log used the full engine.
-///
-/// When `custom_artifact_name` is false (default) and the template does not
-/// already reference `ArtifactName`, the artifact name is appended after the
-/// rendered URL. The "already references" guard prevents the double-name
-/// `…/myapp.tar.gz/myapp.tar.gz` foot-gun (A5) when a user writes
-/// `target: ".../{{ .ArtifactName }}"`.
+/// When `custom_artifact_name` is false and the template does not already
+/// reference `ArtifactName`, the artifact name is appended after the
+/// rendered URL — guarding against the `…/foo.tar.gz/foo.tar.gz`
+/// double-name when a user writes `target: ".../{{ .ArtifactName }}"`.
 pub fn render_artifact_url(
     ctx: &Context,
     template: &str,
@@ -245,10 +223,8 @@ pub fn render_artifact_url(
     let mut rendered = anodizer_core::template::render(template, &vars)
         .with_context(|| "artifactory: failed to render target URL template")?;
 
-    // GR upload.go:191-198 only appends the artifact name when
-    // custom_artifact_name is unset and the template did not already place it
-    // in the URL. The substring check matches both `ArtifactName` and
-    // `.ArtifactName` (Tera-style and Go-style).
+    // The substring check matches both `ArtifactName` and `.ArtifactName`
+    // so the same guard works for Tera and Go-template syntax.
     if !custom_artifact_name && !template.contains("ArtifactName") {
         if !rendered.ends_with('/') {
             rendered.push('/');
@@ -319,9 +295,9 @@ pub fn upload_single_artifact(
         req = req.header(checksum_header, &checksum);
     }
 
-    // Custom headers (template-rendered with artifact context)
-    // GoReleaser template-renders custom_headers values with artifact-specific
-    // variables (ArtifactName, Os, Arch, etc.), not just global template vars.
+    // Custom header values are template-rendered with the artifact context
+    // (ArtifactName, Os, Arch, Target) so per-asset metadata can be sent
+    // through `custom_headers:` rather than only global template vars.
     for (k, v) in custom_headers {
         let rendered_v = {
             let mut vars = ctx.template_vars().clone();
@@ -352,11 +328,10 @@ pub fn upload_single_artifact(
     let status = resp.status();
     if !status.is_success() {
         let resp_body = resp.text().unwrap_or_default();
-        // Try to extract JSON error details (Artifactory format —
-        // {"errors": [{"status": 401, "message": "..."}]}). GR's Error
-        // struct surfaces both `status` and `message`; only including
-        // message hides per-error HTTP codes that explain why a 200 OK
-        // could be paired with a partial-failure body.
+        // Artifactory's error envelope is
+        // `{"errors": [{"status": 401, "message": "..."}]}`. Surface both
+        // status and message so a 200 OK with a partial-failure body
+        // explains itself.
         let detail = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp_body) {
             if let Some(errors) = json.get("errors").and_then(|e| e.as_array()) {
                 errors
@@ -455,14 +430,13 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         // HTTP method (default: PUT).
         let method = entry.method.as_deref().unwrap_or("PUT");
 
-        // Resolve credentials via the anodizer ctx env resolver (matches
-        // GoReleaser internal/http/http.go:168-178). Cascade:
+        // Credential cascade (per-entry):
         //   Username: config → ARTIFACTORY_{NAME}_USERNAME
         //   Password: config → ARTIFACTORY_{NAME}_SECRET
-        // The generic `ARTIFACTORY_SECRET` fallback is removed — it leaks one
-        // instance's credentials across every configured artifactory entry,
-        // which GoReleaser does not do.  Env vars are looked up through the
-        // ctx env map so project `env:` / `env_files:` values are visible.
+        // Env vars are looked up through the ctx env map so project
+        // `env:` / `env_files:` values are visible. The generic
+        // `ARTIFACTORY_SECRET` fallback is intentionally absent — it
+        // would leak one instance's credentials across every entry.
         let env_map = ctx.template_vars().all_env();
         let lookup_env = |name: &str| -> Option<String> {
             env_map
@@ -473,11 +447,8 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         };
         let name_upper = name.to_uppercase().replace('-', "_");
         let username_env_var = format!("ARTIFACTORY_{}_USERNAME", name_upper);
-        // A2 fix: an empty-string `username:` in config (left behind by a
-        // half-edited YAML or a `username: "{{ .Env.MISSING }}"` that
-        // rendered to "") used to disable the env-var fallback and ship an
-        // anonymous upload. Treat empty-after-render the same as None so the
-        // env-var still wins.
+        // An empty-after-render username falls through to the env var so a
+        // half-edited YAML doesn't silently ship an anonymous upload.
         let username = match entry.username.as_deref() {
             Some(u) => {
                 let rendered = ctx.render_template(u).with_context(|| {
@@ -492,10 +463,8 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             None => lookup_env(&username_env_var).unwrap_or_default(),
         };
         let named_env_var = format!("ARTIFACTORY_{}_SECRET", name_upper);
-        // Cascade order: explicit config first, then the auto-discovered env
-        // var fallback. Matches GoReleaser http.go:168-178 — a user who set
-        // `password:` in config wants that value to win, not be shadowed by a
-        // stale ARTIFACTORY_X_SECRET left over from a previous run.
+        // Config wins over env so a user who set `password:` in config
+        // isn't shadowed by a stale ARTIFACTORY_X_SECRET in the shell.
         let password = entry
             .password
             .as_ref()
@@ -504,10 +473,10 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             .or_else(|| lookup_env(&named_env_var))
             .unwrap_or_default();
 
-        // A10: silent anonymous upload is a security foot-gun. Distinguish
-        // the two failure modes so the error message points at the actual
-        // missing piece. Skipped in dry-run so config tests / previews
-        // don't have to populate fake credentials.
+        // Refuse to ship an anonymous upload silently. Each branch points
+        // at the actual missing piece so the user knows where to look.
+        // Skipped in dry-run so config previews don't need real
+        // credentials.
         if !ctx.is_dry_run() {
             match (username.is_empty(), password.is_empty()) {
                 (false, true) => bail!(
@@ -611,10 +580,8 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
                 extra_files_only,
             );
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
-            // A9 fix: render the per-artifact URL through the same code path
-            // live mode uses, so dry-run doesn't lie about whether template
-            // expressions like `{{ .ArtifactName | upper }}` will work at
-            // upload time.
+            // Render per-artifact URLs through the same path live mode uses
+            // so dry-run reflects template behaviour exactly.
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
                 log.status(&format!("(dry-run)   {} ({}) -> {}", a.name(), a.kind, url));

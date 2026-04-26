@@ -524,9 +524,9 @@ fn collect_artifacts<'a>(
 
 /// Upload a per-config batch of files with intra-config parallelism via
 /// tokio, given fully owned data. Phase 2 of `BlobStage::run` calls this
-/// on worker threads so `ctx` is never touched after Phase 1. The shared
-/// `runtime` is constructed once per stage invocation and reused across
-/// every blob job, instead of spinning up one runtime per job.
+/// on worker threads so `ctx` is never touched after Phase 1. `runtime`
+/// is shared across every blob job so we don't spin up one tokio
+/// thread pool per job.
 fn upload_files_owned(
     runtime: &tokio::runtime::Runtime,
     store: Arc<dyn ObjectStore>,
@@ -906,10 +906,8 @@ impl Stage for BlobStage {
         // via tokio). Bounded by the global parallelism so we don't fan
         // out unbounded across both axes simultaneously.
         //
-        // Construct one tokio runtime here and lend it to every job.
-        // Previously each call to upload_files_owned spun up its own
-        // runtime, allocating N independent thread pools for N parallel
-        // jobs. The shared runtime keeps the worker pool bounded.
+        // One tokio runtime is shared across every job — N parallel jobs
+        // would otherwise allocate N independent thread pools.
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("anodizer-blob")

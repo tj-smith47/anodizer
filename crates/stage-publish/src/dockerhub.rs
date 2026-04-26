@@ -30,9 +30,6 @@ pub fn resolve_full_description(
             .with_context(|| format!("dockerhub: failed to fetch URL '{}'", from_url.url))?;
         let status = resp.status();
         if !status.is_success() {
-            // D4: surface the body-read failure mode instead of swallowing
-            // it as `unwrap_or_default()` — an empty body in the error
-            // message is otherwise indistinguishable from a real empty body.
             let body = resp
                 .text()
                 .unwrap_or_else(|e| format!("<body read failed: {}>", e));
@@ -65,10 +62,8 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         _ => return Ok(()),
     };
 
-    // D7 fix: build one HTTP client up front and share it across every
-    // entry. The previous per-entry `Client::new()` allocated a fresh
-    // connection pool for each repo and never reused TLS handshakes.
-    // A 30s timeout matches the docs.docker.com guidance for the API.
+    // One shared HTTP client for every entry: connection pool and TLS
+    // handshakes are reused across repos.
     let shared_client = reqwest::blocking::Client::builder()
         .user_agent("anodizer/1.0")
         .timeout(std::time::Duration::from_secs(30))
@@ -87,10 +82,9 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             }
         }
 
-        // Critical 1: Resolve username from config, falling back to
-        // DOCKER_USERNAME env var (D2 parity with GR's docker auth helpers).
+        // Resolve username from config, falling back to DOCKER_USERNAME.
         // Bail early when neither is set so config errors surface even in
-        // dry-run mode.
+        // dry-run.
         let username_env = std::env::var("DOCKER_USERNAME").ok();
         let username = match entry.username.as_deref() {
             Some(u) if !u.is_empty() => u.to_string(),
@@ -109,11 +103,9 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        // D3 fix: GR Pro's dockerhub doc says
-        // "Default: inferred from global metadata." When the per-entry
-        // `description:` is empty, fall back to the project's global
-        // metadata.description so a single source of truth in
-        // `metadata.description` covers every dockerhub entry.
+        // Empty per-entry description falls back to the project's global
+        // metadata.description so a single source of truth covers every
+        // dockerhub entry.
         let description_owned: Option<String> = entry
             .description
             .as_deref()
@@ -128,12 +120,8 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                     .map(str::to_string)
             });
         let short_desc: &str = description_owned.as_deref().unwrap_or("");
-        // D6 fix: short description length warning previously used
-        // `s.len()` (UTF-8 byte count), which over-counts emoji and
-        // accented characters by 2-4×. Docker Hub itself counts code
-        // points (Unicode chars), not bytes — a 50-emoji description is
-        // 50 chars on Docker Hub's side, not 200. `chars().count()` is
-        // the closest pre-grapheme-cluster approximation in std.
+        // Docker Hub counts code points, not UTF-8 bytes, so emoji /
+        // accented descriptions don't falsely trip the 100-char warning.
         let short_desc_chars = short_desc.chars().count();
         if short_desc_chars > 100 {
             log.warn(&format!(
@@ -142,12 +130,9 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             ));
         }
 
-        // Validate image references. D5/D9/D10: reject obviously invalid
-        // forms upfront (empty segments, multi-slash) and refuse bare names
-        // in strict mode — Docker Hub's `library/` namespace requires
-        // Docker Inc permissions, so a bare name is almost never what the
-        // user wants. Outside strict mode, keep the legacy warn-and-proceed
-        // behaviour so existing configs don't break on upgrade.
+        // Validate image references: reject empty path segments and
+        // multi-slash names; refuse bare names in strict mode (Docker Hub's
+        // `library/` namespace requires Docker Inc permissions).
         for image in images {
             let segments: Vec<&str> = image.split('/').collect();
             if segments.iter().any(|s| s.is_empty()) {
@@ -170,11 +155,9 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             }
         }
 
-        // D8 fix: in dry-run, surface a misconfigured `secret_name:` so a
-        // typo doesn't slip through unnoticed. We don't fail dry-run on
-        // missing env (config tests should still pass without secrets in
-        // the environment), but we do log a clear warning so the user
-        // knows authentication will fail at live time.
+        // Surface a missing secret env in dry-run as a warning (live mode
+        // will hard-fail later) so a typo'd secret_name doesn't slip
+        // through unnoticed during config-test runs.
         let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
         if ctx.is_dry_run() && std::env::var(secret_name).ok().is_none() {
             log.warn(&format!(
@@ -183,7 +166,8 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             ));
         }
 
-        // Important 3: Dry-run check BEFORE resolving full description.
+        // Dry-run: log the intent without resolving full_description (which
+        // would do file/network I/O).
         if ctx.is_dry_run() {
             for image in images {
                 log.status(&format!(
@@ -205,7 +189,9 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             None => None,
         };
 
-        // Critical 2: Skip PATCH when both descriptions are absent.
+        // Skip PATCH when both descriptions are absent — there's nothing
+        // to sync and Docker Hub would clobber the existing description
+        // with empty strings.
         if short_desc.is_empty() && full_desc.is_none() {
             ctx.strict_guard(
                 log,
@@ -214,8 +200,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        // Authenticate: POST to get JWT token. `secret_name` was resolved
-        // above so dry-run can warn on a misconfigured value (D8).
+        // Authenticate: POST to get JWT token.
         let password = std::env::var(secret_name).with_context(|| {
             format!("dockerhub: environment variable '{}' not set", secret_name)
         })?;
@@ -231,12 +216,8 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             .send()
             .context("dockerhub: failed to authenticate with Docker Hub")?;
 
-        // Important 6: Include response body in login error message.
         if !login_resp.status().is_success() {
             let status = login_resp.status();
-            // D4 fix: surface the body-read failure mode in the error
-            // message so an empty `body:` doesn't masquerade as a real
-            // empty response.
             let body = login_resp
                 .text()
                 .unwrap_or_else(|e| format!("<body read failed: {}>", e));
@@ -288,11 +269,8 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .send()
                 .with_context(|| format!("dockerhub: failed to PATCH repository '{}'", image))?;
 
-            // Important 6: Include response body in PATCH error message.
             if !patch_resp.status().is_success() {
                 let status = patch_resp.status();
-                // D4 fix: same as login — distinguish a "body read failed"
-                // from a "real empty body" in the surfaced error.
                 let body = patch_resp
                     .text()
                     .unwrap_or_else(|e| format!("<body read failed: {}>", e));
@@ -378,7 +356,6 @@ mod tests {
         assert!(publish_to_dockerhub(&ctx, &log).is_ok());
     }
 
-    // Finding 7: Test that empty images vec is also skipped.
     #[test]
     fn test_dockerhub_skips_when_images_empty_vec() {
         let mut config = Config::default();
@@ -422,8 +399,8 @@ mod tests {
 
     #[test]
     fn test_dockerhub_dry_run_with_full_description_from_file() {
-        // In dry-run mode, full_description is NOT resolved (Important 3),
-        // so this test just confirms dry-run succeeds without reading the file.
+        // In dry-run, full_description is not resolved, so this test
+        // confirms dry-run succeeds without reading the file.
         let mut config = Config::default();
         config.dockerhub = Some(vec![DockerHubConfig {
             username: Some("testuser".to_string()),
@@ -481,7 +458,6 @@ mod tests {
         assert!(resolve_full_description(&desc, &client).is_err());
     }
 
-    // Finding 1: Username missing should bail.
     #[test]
     fn test_dockerhub_fails_when_username_missing() {
         let mut config = Config::default();
@@ -501,7 +477,6 @@ mod tests {
         );
     }
 
-    // Finding 1: Empty username string should also bail.
     #[test]
     fn test_dockerhub_fails_when_username_empty() {
         let mut config = Config::default();
@@ -521,7 +496,6 @@ mod tests {
         );
     }
 
-    // Finding 9: from_url with unreachable URL should error.
     #[test]
     fn test_resolve_full_description_from_url_unreachable() {
         let client = reqwest::blocking::Client::builder()

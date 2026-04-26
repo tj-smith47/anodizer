@@ -34,11 +34,9 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             }
         }
 
-        // U3 fix: GoReleaser refuses an upload entry with no `name:` because
-        // the env-var lookup (UPLOAD_{NAME}_USERNAME / _SECRET) collapses
-        // for two anonymous entries. Anodizer used to silently pick the
-        // literal string "upload" which made every nameless entry share the
-        // same credential namespace. Fail loudly instead.
+        // `name` is the env-var prefix for credential lookup
+        // (UPLOAD_<NAME>_USERNAME / _SECRET); two nameless entries would
+        // share the same namespace, so refuse them.
         let name = entry
             .name
             .as_deref()
@@ -54,9 +52,7 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         let mode = entry.mode.as_deref().unwrap_or("archive");
         validate_upload_mode(mode)?;
 
-        // U4 fix: GR (`internal/http/http.go:101-104`) treats a missing
-        // target as `pipe.Skip(...)` — a soft skip with a status log,
-        // not a hard error. Match that so a partly-filled YAML scaffold
+        // Empty target soft-skips so a partly-filled YAML scaffold
         // doesn't break the whole release.
         if entry.target.is_empty() {
             log.status(&format!(
@@ -70,13 +66,10 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         // HTTP method (default: PUT)
         let method = entry.method.as_deref().unwrap_or("PUT");
 
-        // Resolve credentials — env var cascade:
-        // Username: config → UPLOAD_{NAME}_USERNAME
-        // Password: UPLOAD_{NAME}_SECRET → config
+        // Cascade: explicit config first, then UPLOAD_<NAME>_USERNAME /
+        // UPLOAD_<NAME>_SECRET via the ctx env map, so project `env:` /
+        // `env_files:` values reach this publisher.
         let name_upper = name.to_uppercase().replace('-', "_");
-        // Resolve UPLOAD_<NAME>_USERNAME / _SECRET via the anodizer ctx env map
-        // (matches GoReleaser internal/http/http.go:163-164,176-177) so project
-        // `env:` / `env_files:` values are visible to the upload publisher.
         let env_map = ctx.template_vars().all_env();
         let lookup_env = |name: &str| -> Option<String> {
             env_map
@@ -85,9 +78,9 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .or_else(|| std::env::var(name).ok())
                 .filter(|s| !s.is_empty())
         };
-        // U9: same empty-after-render fallback as artifactory (A2). An
-        // empty `username:` in config used to suppress the env-var
-        // fallback and ship anonymous.
+        // An empty username/password after template render counts as
+        // "not in config" and falls through to the env var, otherwise a
+        // half-edited YAML would silently ship anonymous.
         let username = entry
             .username
             .as_ref()
@@ -96,10 +89,6 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             .unwrap_or_else(|| {
                 lookup_env(&format!("UPLOAD_{}_USERNAME", name_upper)).unwrap_or_default()
             });
-        // Cascade order: explicit config first, then the auto-discovered env
-        // var fallback. Matches GoReleaser http.go:168-178 — a user who set
-        // `password:` in config wants that value to win, not be shadowed by a
-        // stale UPLOAD_X_SECRET left over from a previous run.
         let password = entry
             .password
             .as_ref()
@@ -108,12 +97,10 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             .or_else(|| lookup_env(&format!("UPLOAD_{}_SECRET", name_upper)))
             .unwrap_or_default();
 
-        // U9: refuse a half-set credential pair so a stale env or an
-        // accidentally-blanked password doesn't ship an anonymous upload
-        // to a target that requires auth. Both empty is acceptable —
-        // some Upload targets accept anonymous PUT (treated as opt-in
-        // by the user). Skipped in dry-run so config tests don't need
-        // to populate fake credentials.
+        // A half-set credential pair almost always means a typo'd env
+        // var or a stale leftover. Both empty is acceptable for targets
+        // that accept anonymous PUT. Skipped in dry-run so config tests
+        // don't need fake credentials.
         if !ctx.is_dry_run() && username.is_empty() != password.is_empty() {
             bail!(
                 "upload: '{}' has only one of username/password set \
@@ -123,12 +110,8 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             );
         }
 
-        // U10 fix: GR (`internal/http/http.go:138-149`) refuses an mTLS
-        // config where only one of the cert/key pair is set. Anodizer
-        // previously deferred this check to build_reqwest_client, which
-        // ran *after* artifact collection — wasted work, and the error
-        // surface was inconsistent with artifactory.rs which validates
-        // the pair upfront.
+        // mTLS cert/key are a pair; reject upfront so a misconfigured
+        // pair fails fast instead of after the artifact collection pass.
         if entry.client_x509_cert.is_some() != entry.client_x509_key.is_some() {
             bail!(
                 "upload: '{}' has only one of client_x509_cert / client_x509_key set \
@@ -159,10 +142,6 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         );
 
         if artifacts.is_empty() {
-            // U7 fix: artifactory.rs logs the "no artifacts matched" case at
-            // status level so it appears in normal CI output. upload.rs used
-            // to log it at verbose level, hiding the fact from anyone not
-            // running with `-v`. Match the artifactory level.
             log.status(&format!(
                 "upload: no artifacts matched for '{}' (mode={})",
                 name, mode
@@ -178,8 +157,6 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
                 mode,
                 method
             ));
-            // Render each artifact URL through the same code path live mode
-            // uses so dry-run accurately reflects template behaviour.
             for artifact in &artifacts {
                 let url =
                     render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
@@ -207,10 +184,6 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         )?;
 
         for artifact in &artifacts {
-            // U8 fix: share render_artifact_url with the artifactory
-            // publisher so the per-artifact template behaviour, ArtifactName
-            // double-name guard, and Os/Arch/Target binding stay in lock-step
-            // between the two structurally-identical publishers.
             let url = render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
 
             log.status(&format!("  {} {} -> {}", method, artifact.name, url));
