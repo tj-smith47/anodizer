@@ -353,6 +353,60 @@ fn detect_cargo_profile(flags: Option<&str>) -> &str {
 // build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
 // ---------------------------------------------------------------------------
 
+/// Resolve the output path that `build_universal_binary` will write to without
+/// performing the build. Returns `None` when the source binaries needed for
+/// the lipo step are not present, so callers can skip the duplicate-output
+/// check on entries that are no-ops on the current platform.
+fn project_universal_out_path(
+    crate_name: &str,
+    ub: &UniversalBinaryConfig,
+    ctx: &mut Context,
+) -> anyhow::Result<Option<std::path::PathBuf>> {
+    let log = ctx.logger("build");
+    let binaries = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Binary, crate_name);
+    let default_ids: Vec<String> = vec![ub.id.clone().unwrap_or_else(|| crate_name.to_string())];
+    let effective_ids = ub.ids.clone().unwrap_or(default_ids);
+    let filtered: Vec<_> = if !effective_ids.is_empty() {
+        binaries
+            .into_iter()
+            .filter(|a| {
+                a.metadata
+                    .get("id")
+                    .map(|v| effective_ids.contains(v))
+                    .unwrap_or(false)
+                    || a.metadata
+                        .get("binary")
+                        .map(|v| effective_ids.contains(v))
+                        .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        binaries
+    };
+    let arm64_present = filtered
+        .iter()
+        .any(|a| a.target.as_deref() == Some("aarch64-apple-darwin"));
+    let x86_64_present = filtered
+        .iter()
+        .any(|a| a.target.as_deref() == Some("x86_64-apple-darwin"));
+    if !arm64_present || !x86_64_present {
+        return Ok(None);
+    }
+    let out_name = if let Some(ref tmpl) = ub.name_template {
+        ctx.render_template_strict(tmpl, "universal_binaries name_template", &log)?
+    } else {
+        ctx.render_template_strict(
+            "{{ .ProjectName }}",
+            "universal_binaries name_template (default)",
+            &log,
+        )?
+    };
+    let ub_dir = ctx.config.dist.join(format!("{}_darwin_all", crate_name));
+    Ok(Some(ub_dir.join(&out_name)))
+}
+
 fn build_universal_binary(
     crate_name: &str,
     ub: &UniversalBinaryConfig,
@@ -1922,9 +1976,13 @@ impl Stage for BuildStage {
                 meta.insert("DynamicallyLinked".to_string(), "true".to_string());
             }
 
+            let artifact_name = artifact_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| artifact_path.display().to_string());
             ctx.artifacts.add(Artifact {
                 kind: artifact_kind,
-                name: String::new(),
+                name: artifact_name,
                 path: artifact_path,
                 target: Some(target.to_string()),
                 crate_name: crate_name.to_string(),
@@ -2309,9 +2367,21 @@ impl Stage for BuildStage {
         }
 
         // --- Universal binaries (macOS lipo) ---
+        let mut seen_universal_outputs: std::collections::HashSet<std::path::PathBuf> =
+            std::collections::HashSet::new();
         for crate_cfg in &crates {
             if let Some(ref ub_configs) = crate_cfg.universal_binaries {
                 for ub in ub_configs {
+                    let projected = project_universal_out_path(crate_cfg.name.as_str(), ub, ctx)?;
+                    if let Some(existing) = projected.as_ref()
+                        && !seen_universal_outputs.insert(existing.clone())
+                    {
+                        anyhow::bail!(
+                            "build: two universal_binaries entries resolve to the same output path \
+                             {:?}; set distinct `name_template` or `id` values to disambiguate",
+                            existing
+                        );
+                    }
                     build_universal_binary(crate_cfg.name.as_str(), ub, ctx, dry_run)?;
                 }
             }

@@ -18,21 +18,36 @@ use anodizer_core::stage::Stage;
 /// `git archive` automatically respects `.gitignore` and only includes
 /// tracked files, which is exactly what we want for source archives.
 ///
+/// Inputs for `create_source_archive`. Bundled into a struct so the
+/// arity-rule lint can stand without a blanket `#[allow]` and so call-sites
+/// read as one record per archive.
+struct SourceArchiveInputs<'a> {
+    dist: &'a Path,
+    format: &'a str,
+    name: &'a str,
+    prefix: &'a str,
+    extra_files: &'a [SourceFileEntry],
+    repo_root: &'a Path,
+    commit: &'a str,
+    log: &'a anodizer_core::log::StageLogger,
+    strict: bool,
+}
+
 /// Extra files are placed under the prefix directory (matching GoReleaser)
 /// by creating a temporary staging directory and using `tar --append` to
 /// insert them into the archive after creation.
-#[allow(clippy::too_many_arguments)]
-fn create_source_archive(
-    dist: &Path,
-    format: &str,
-    name: &str,
-    prefix: &str,
-    extra_files: &[SourceFileEntry],
-    repo_root: &Path,
-    commit: &str,
-    log: &anodizer_core::log::StageLogger,
-    strict: bool,
-) -> Result<PathBuf> {
+fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<PathBuf> {
+    let SourceArchiveInputs {
+        dist,
+        format,
+        name,
+        prefix,
+        extra_files,
+        repo_root,
+        commit,
+        log,
+        strict,
+    } = *inputs;
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
         "tar" => ("tar", "tar"),
@@ -648,15 +663,6 @@ impl SourceStage {
         };
 
         let log = ctx.logger("source");
-        if ctx.is_dry_run() {
-            log.status(&format!(
-                "(dry-run) would create {}.{} archive",
-                name, format
-            ));
-            return Ok(());
-        }
-
-        log.status(&format!("creating {}.{} archive...", name, format));
 
         let cwd = ctx
             .options
@@ -666,15 +672,15 @@ impl SourceStage {
             .unwrap_or_else(|| PathBuf::from("."));
         let repo_root = get_repo_root(&cwd)?;
 
-        // GoReleaser renders extra file source patterns through the
-        // template engine, then expands globs relative to the repo root.
+        // Render and expand extra-file globs up front, even in dry-run mode,
+        // so users catch template typos and zero-match patterns before the
+        // real run.
         let mut extra_files: Vec<SourceFileEntry> = Vec::new();
         for entry in &source_cfg.files {
             let rendered_src = ctx.render_template(&entry.src).with_context(|| {
                 format!("source: render extra files src template '{}'", entry.src)
             })?;
 
-            // Resolve pattern relative to repo root for glob expansion
             let pattern = if Path::new(&rendered_src).is_absolute() {
                 rendered_src.clone()
             } else {
@@ -693,9 +699,12 @@ impl SourceStage {
                             info: entry.info.clone(),
                         })
                         .collect();
-                    // If glob matched nothing, treat as a literal path
-                    // (will error later with a clear message)
                     if expanded.is_empty() {
+                        if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+                            log.warn(&format!(
+                                "source: extra file pattern {pattern:?} matched no files"
+                            ));
+                        }
                         vec![SourceFileEntry {
                             src: rendered_src,
                             dst: entry.dst.clone(),
@@ -706,32 +715,47 @@ impl SourceStage {
                         expanded
                     }
                 }
-                // Not a valid glob pattern — treat as literal path
-                Err(_) => vec![SourceFileEntry {
-                    src: rendered_src,
-                    dst: entry.dst.clone(),
-                    strip_parent: entry.strip_parent,
-                    info: entry.info.clone(),
-                }],
+                Err(e) => {
+                    log.warn(&format!(
+                        "source: extra file pattern {pattern:?} is not a valid glob ({e}); \
+                         treating as literal path"
+                    ));
+                    vec![SourceFileEntry {
+                        src: rendered_src,
+                        dst: entry.dst.clone(),
+                        strip_parent: entry.strip_parent,
+                        info: entry.info.clone(),
+                    }]
+                }
             };
             extra_files.extend(expanded_for_entry);
         }
+
+        if ctx.is_dry_run() {
+            log.status(&format!(
+                "(dry-run) would create {}.{} archive",
+                name, format
+            ));
+            return Ok(());
+        }
+
+        log.status(&format!("creating {}.{} archive...", name, format));
         let commit = ctx
             .git_info
             .as_ref()
             .map(|info| info.commit.as_str())
             .unwrap_or("HEAD");
-        let output_path = create_source_archive(
+        let output_path = create_source_archive(&SourceArchiveInputs {
             dist,
-            &format,
-            &name,
-            &prefix,
-            &extra_files,
-            &repo_root,
+            format: &format,
+            name: &name,
+            prefix: &prefix,
+            extra_files: &extra_files,
+            repo_root: &repo_root,
             commit,
-            &log,
-            ctx.is_strict(),
-        )?;
+            log: &log,
+            strict: ctx.is_strict(),
+        })?;
 
         // GoReleaser sets artifact name to the filename (e.g. "foo-1.0.0.tar.gz").
         let artifact_name = output_path
@@ -2080,17 +2104,17 @@ dependencies = [
         // create_source_archive uses repo_root (tmp.path()) directly via current_dir(),
         // so no process-wide CWD mutation is needed.
 
-        let result = create_source_archive(
-            &dist,
-            "tar.gz",
-            "test-project-1.0.0",
-            "test-project-1.0.0",
-            &extra_files,
-            tmp.path(),
-            "HEAD",
-            &log,
-            false,
-        );
+        let result = create_source_archive(&SourceArchiveInputs {
+            dist: &dist,
+            format: "tar.gz",
+            name: "test-project-1.0.0",
+            prefix: "test-project-1.0.0",
+            extra_files: &extra_files,
+            repo_root: tmp.path(),
+            commit: "HEAD",
+            log: &log,
+            strict: false,
+        });
 
         let archive_path =
             result.unwrap_or_else(|e| panic!("create_source_archive should succeed: {e}"));
@@ -2157,17 +2181,17 @@ dependencies = [
 
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let result = create_source_archive(
-            &dist,
-            "tar.gz",
-            "myapp-2.0.0",
-            "myapp-2.0.0",
-            &extra_files,
-            tmp.path(),
-            "HEAD",
-            &log,
-            false,
-        );
+        let result = create_source_archive(&SourceArchiveInputs {
+            dist: &dist,
+            format: "tar.gz",
+            name: "myapp-2.0.0",
+            prefix: "myapp-2.0.0",
+            extra_files: &extra_files,
+            repo_root: tmp.path(),
+            commit: "HEAD",
+            log: &log,
+            strict: false,
+        });
 
         let archive_path =
             result.unwrap_or_else(|e| panic!("create_source_archive should succeed: {e}"));
@@ -2222,17 +2246,17 @@ dependencies = [
 
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let result = create_source_archive(
-            &dist,
-            "tar.gz",
-            "proj-3.0.0",
-            "proj-3.0.0",
-            &extra_files,
-            tmp.path(),
-            "HEAD",
-            &log,
-            false,
-        );
+        let result = create_source_archive(&SourceArchiveInputs {
+            dist: &dist,
+            format: "tar.gz",
+            name: "proj-3.0.0",
+            prefix: "proj-3.0.0",
+            extra_files: &extra_files,
+            repo_root: tmp.path(),
+            commit: "HEAD",
+            log: &log,
+            strict: false,
+        });
 
         let archive_path =
             result.unwrap_or_else(|e| panic!("create_source_archive should succeed: {e}"));
@@ -2291,17 +2315,17 @@ dependencies = [
 
         std::env::set_current_dir(tmp.path()).unwrap();
 
-        let result = create_source_archive(
-            &dist,
-            "tar.gz",
-            "test-src",
-            "test-src",
-            &extra_files,
-            tmp.path(),
-            "HEAD",
-            &log,
-            false,
-        );
+        let result = create_source_archive(&SourceArchiveInputs {
+            dist: &dist,
+            format: "tar.gz",
+            name: "test-src",
+            prefix: "test-src",
+            extra_files: &extra_files,
+            repo_root: tmp.path(),
+            commit: "HEAD",
+            log: &log,
+            strict: false,
+        });
 
         assert!(result.is_ok(), "failed: {:?}", result.err());
 

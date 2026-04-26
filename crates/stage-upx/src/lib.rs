@@ -22,6 +22,20 @@ pub(crate) fn target_matches_pattern(target: &str, pattern: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Validate the `compress` value against UPX's accepted set: empty (use UPX
+/// defaults), `best`, or one of `1`..=`9`. Returning `Err` here surfaces the
+/// typo before we shell out and UPX rejects it with an unhelpful exit code.
+pub fn validate_compress(level: Option<&str>) -> Result<()> {
+    let Some(level) = level else { return Ok(()) };
+    if level.is_empty() || level == "best" {
+        return Ok(());
+    }
+    if matches!(level, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") {
+        return Ok(());
+    }
+    anyhow::bail!("upx: compress {level:?} is invalid (use \"best\", \"1\"..=\"9\", or omit)");
+}
+
 /// Check if an artifact should be compressed by this UPX config.
 /// Returns `true` if the artifact matches the ids and targets filters.
 ///
@@ -86,6 +100,8 @@ impl Stage for UpxStage {
             if !is_enabled {
                 continue;
             }
+
+            validate_compress(upx_cfg.compress.as_deref())?;
 
             let binary = &upx_cfg.binary;
 
@@ -185,9 +201,22 @@ impl Stage for UpxStage {
                     id_label, artifact_str, target_label,
                 ));
 
-                let size_before = std::fs::metadata(artifact_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let size_before = match std::fs::metadata(artifact_path) {
+                    Ok(m) => m.len(),
+                    Err(e) => {
+                        anyhow::bail!(
+                            "upx: cannot stat artifact {} before compressing: {e}",
+                            artifact_path.display()
+                        );
+                    }
+                };
+                if size_before == 0 {
+                    anyhow::bail!(
+                        "upx: artifact {} has zero bytes — refusing to compress \
+                         (would emit a misleading 100% ratio)",
+                        artifact_path.display()
+                    );
+                }
 
                 let mut cmd = Command::new(binary);
                 cmd.arg("--quiet");
@@ -235,10 +264,16 @@ impl Stage for UpxStage {
                         thread_log.check_output(output, binary)?;
                     }
                 } else {
-                    let size_after = std::fs::metadata(artifact_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    let ratio = (size_after * 100).checked_div(size_before).unwrap_or(100);
+                    let size_after = match std::fs::metadata(artifact_path) {
+                        Ok(m) => m.len(),
+                        Err(e) => {
+                            anyhow::bail!(
+                                "upx: cannot stat artifact {} after compressing: {e}",
+                                artifact_path.display()
+                            );
+                        }
+                    };
+                    let ratio = (size_after * 100) / size_before;
                     thread_log.status(&format!(
                         "compressed {} ({} -> {}, {}%)",
                         artifact_path.display(),

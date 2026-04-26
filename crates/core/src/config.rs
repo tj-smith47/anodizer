@@ -1283,10 +1283,17 @@ impl WrapInDirectory {
 // ArchiveConfig
 // ---------------------------------------------------------------------------
 
+fn default_archive_id() -> Option<String> {
+    Some("default".to_string())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ArchiveConfig {
     /// Unique identifier for cross-referencing this archive from other configs.
+    /// Defaults to `"default"` so a parse->serialise->reparse round-trip is
+    /// stable (GoReleaser stores this verbatim, not as an Option).
+    #[serde(default = "default_archive_id")]
     pub id: Option<String>,
     /// Archive filename template (supports templates, e.g., "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}").
     pub name_template: Option<String>,

@@ -1039,6 +1039,16 @@ impl Stage for ArchiveStage {
                 };
 
                 if binaries.is_empty() && !is_meta {
+                    let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
+                    let id_filter_desc = archive_cfg
+                        .ids
+                        .as_deref()
+                        .map(|ids| format!(" matching ids {ids:?}"))
+                        .unwrap_or_default();
+                    log.warn(&format!(
+                        "archive[{archive_id}]: crate {crate_name} has no binaries{id_filter_desc} \
+                         — skipping (set `meta: true` if this is intentional)"
+                    ));
                     continue;
                 }
 
