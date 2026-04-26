@@ -1,6 +1,6 @@
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 
 use crate::artifactory::{self, render_artifact_url, validate_upload_mode};
@@ -66,59 +66,27 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         // HTTP method (default: PUT)
         let method = entry.method.as_deref().unwrap_or("PUT");
 
-        // Cascade: explicit config first, then UPLOAD_<NAME>_USERNAME /
-        // UPLOAD_<NAME>_SECRET via the ctx env map, so project `env:` /
-        // `env_files:` values reach this publisher.
-        let name_upper = name.to_uppercase().replace('-', "_");
-        let env_map = ctx.template_vars().all_env();
-        let lookup_env = |name: &str| -> Option<String> {
-            env_map
-                .get(name)
-                .cloned()
-                .or_else(|| std::env::var(name).ok())
-                .filter(|s| !s.is_empty())
-        };
-        // An empty username/password after template render counts as
-        // "not in config" and falls through to the env var, otherwise a
-        // half-edited YAML would silently ship anonymous.
-        let username = entry
-            .username
-            .as_ref()
-            .and_then(|u| ctx.render_template(u).ok())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                lookup_env(&format!("UPLOAD_{}_USERNAME", name_upper)).unwrap_or_default()
-            });
-        let password = entry
-            .password
-            .as_ref()
-            .and_then(|p| ctx.render_template(p).ok())
-            .filter(|p| !p.is_empty())
-            .or_else(|| lookup_env(&format!("UPLOAD_{}_SECRET", name_upper)))
-            .unwrap_or_default();
-
-        // A half-set credential pair almost always means a typo'd env
-        // var or a stale leftover. Both empty is acceptable for targets
-        // that accept anonymous PUT. Skipped in dry-run so config tests
-        // don't need fake credentials.
-        if !ctx.is_dry_run() && username.is_empty() != password.is_empty() {
-            bail!(
-                "upload: '{}' has only one of username/password set \
-                 (set both to authenticate, or leave both empty for \
-                 anonymous upload)",
-                name
-            );
-        }
-
-        // mTLS cert/key are a pair; reject upfront so a misconfigured
-        // pair fails fast instead of after the artifact collection pass.
-        if entry.client_x509_cert.is_some() != entry.client_x509_key.is_some() {
-            bail!(
-                "upload: '{}' has only one of client_x509_cert / client_x509_key set \
-                 (set both to enable mTLS, or leave both empty)",
-                name
-            );
-        }
+        // Credential cascade lives in http_upload::resolve_http_credentials
+        // so upload + artifactory share one implementation. anonymous_ok=true
+        // because the upload publisher accepts anonymous PUT to targets that
+        // permit it (e.g. CI artifact stores).
+        let (username, password) = crate::http_upload::resolve_http_credentials(
+            ctx,
+            &crate::http_upload::CredentialResolveSpec {
+                publisher: "upload",
+                entry_name: name,
+                config_username: entry.username.as_deref(),
+                config_password: entry.password.as_deref(),
+                env_prefix: "UPLOAD",
+                anonymous_ok: true,
+            },
+        )?;
+        crate::http_upload::validate_mtls_pair(
+            "upload",
+            name,
+            entry.client_x509_cert.as_deref(),
+            entry.client_x509_key.as_deref(),
+        )?;
 
         let checksum_header = entry.checksum_header.as_deref().unwrap_or("");
         let empty = HashMap::new();

@@ -6,6 +6,7 @@ pub mod cloudsmith;
 pub mod crates_io;
 pub mod dockerhub;
 pub mod homebrew;
+pub(crate) mod http_upload;
 pub mod krew;
 pub mod nix;
 pub mod scoop;

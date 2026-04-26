@@ -430,78 +430,23 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         // HTTP method (default: PUT).
         let method = entry.method.as_deref().unwrap_or("PUT");
 
-        // Credential cascade (per-entry):
-        //   Username: config → ARTIFACTORY_{NAME}_USERNAME
-        //   Password: config → ARTIFACTORY_{NAME}_SECRET
-        // Env vars are looked up through the ctx env map so project
-        // `env:` / `env_files:` values are visible. The generic
-        // `ARTIFACTORY_SECRET` fallback is intentionally absent — it
-        // would leak one instance's credentials across every entry.
-        let env_map = ctx.template_vars().all_env();
-        let lookup_env = |name: &str| -> Option<String> {
-            env_map
-                .get(name)
-                .cloned()
-                .or_else(|| std::env::var(name).ok())
-                .filter(|s| !s.is_empty())
-        };
+        // Credential cascade lives in http_upload::resolve_http_credentials
+        // so artifactory + upload share one implementation. Refuses
+        // anonymous (anonymous_ok=false) since artifactory always requires
+        // creds.
+        let (username, password) = crate::http_upload::resolve_http_credentials(
+            ctx,
+            &crate::http_upload::CredentialResolveSpec {
+                publisher: "artifactory",
+                entry_name: name,
+                config_username: entry.username.as_deref(),
+                config_password: entry.password.as_deref(),
+                env_prefix: "ARTIFACTORY",
+                anonymous_ok: false,
+            },
+        )?;
         let name_upper = name.to_uppercase().replace('-', "_");
-        let username_env_var = format!("ARTIFACTORY_{}_USERNAME", name_upper);
-        // An empty-after-render username falls through to the env var so a
-        // half-edited YAML doesn't silently ship an anonymous upload.
-        let username = match entry.username.as_deref() {
-            Some(u) => {
-                let rendered = ctx.render_template(u).with_context(|| {
-                    format!("artifactory: failed to render username for '{}'", name)
-                })?;
-                if rendered.is_empty() {
-                    lookup_env(&username_env_var).unwrap_or_default()
-                } else {
-                    rendered
-                }
-            }
-            None => lookup_env(&username_env_var).unwrap_or_default(),
-        };
         let named_env_var = format!("ARTIFACTORY_{}_SECRET", name_upper);
-        // Config wins over env so a user who set `password:` in config
-        // isn't shadowed by a stale ARTIFACTORY_X_SECRET in the shell.
-        let password = entry
-            .password
-            .as_ref()
-            .and_then(|p| ctx.render_template(p).ok())
-            .filter(|p| !p.is_empty())
-            .or_else(|| lookup_env(&named_env_var))
-            .unwrap_or_default();
-
-        // Refuse to ship an anonymous upload silently. Each branch points
-        // at the actual missing piece so the user knows where to look.
-        // Skipped in dry-run so config previews don't need real
-        // credentials.
-        if !ctx.is_dry_run() {
-            match (username.is_empty(), password.is_empty()) {
-                (false, true) => bail!(
-                    "artifactory: '{}' has username set but no password \
-                     (set 'password:' in config or ARTIFACTORY_{}_SECRET in env)",
-                    name,
-                    name_upper
-                ),
-                (true, false) => bail!(
-                    "artifactory: '{}' has password set but no username \
-                     (set 'username:' in config or ARTIFACTORY_{}_USERNAME in env)",
-                    name,
-                    name_upper
-                ),
-                (true, true) => bail!(
-                    "artifactory: '{}' resolved with no credentials \
-                     (set username/password in config or ARTIFACTORY_{}_USERNAME / \
-                     ARTIFACTORY_{}_SECRET in env; anonymous upload is refused)",
-                    name,
-                    name_upper,
-                    name_upper
-                ),
-                (false, false) => {}
-            }
-        }
 
         // Determine checksum header name (GoReleaser default: X-Checksum-SHA256).
         let checksum_header = entry
@@ -591,15 +536,14 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // --- Live mode ---
         //
-        // Credential cross-validation already happened upstream in the A10
-        // block, so live mode is unreachable with a half-set username/
-        // password pair. mTLS still needs its own pair check.
-        if entry.client_x509_cert.is_some() != entry.client_x509_key.is_some() {
-            bail!(
-                "artifactory: entry '{}': client_x509_cert and client_x509_key must both be set",
-                name
-            );
-        }
+        // Credentials are already validated above; live mode just needs
+        // mTLS pair coherence.
+        crate::http_upload::validate_mtls_pair(
+            "artifactory",
+            name,
+            entry.client_x509_cert.as_deref(),
+            entry.client_x509_key.as_deref(),
+        )?;
 
         // Build HTTP client
         let client = build_reqwest_client(
