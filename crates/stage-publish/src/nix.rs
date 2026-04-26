@@ -697,8 +697,20 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("nix: no nix config for '{}'", crate_name))?;
 
-    // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx) {
+    // Honor `disable` first (template-aware), then `skip_upload`.
+    if let Some(d) = nix_cfg.disable.as_ref() {
+        let off = d
+            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("nix: render disable template for '{}'", crate_name))?;
+        if off {
+            log.status(&format!(
+                "nix: skipping disabled config for '{}' (disable=true)",
+                crate_name
+            ));
+            return Ok(());
+        }
+    }
+    if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "nix: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -711,11 +723,15 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         return Ok(());
     }
 
-    // Resolve repository config.
-    // GoReleaser applies TemplateRef() to repository fields (nix.go:159-162).
-    let (repo_owner_raw, repo_name_raw) =
-        crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref(), None, None)
-            .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
+    // Resolve repository config (no legacy field — nix is post-RepositoryConfig).
+    let (repo_owner_raw, repo_name_raw) = crate::util::resolve_repo_owner_name(
+        "nix",
+        "repository",
+        nix_cfg.repository.as_ref(),
+        None,
+        None,
+    )?
+    .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
     let repo_owner = ctx
         .render_template(&repo_owner_raw)
         .unwrap_or(repo_owner_raw);

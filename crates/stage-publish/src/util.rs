@@ -656,22 +656,116 @@ pub(crate) struct CommitOptions<'a> {
     pub signing: Option<&'a anodizer_core::config::CommitSigningConfig>,
 }
 
-/// Resolve repository owner/name from a RepositoryConfig, falling back to
-/// a legacy config's owner/name pair.
+/// Resolve repository owner/name from a RepositoryConfig, falling back to a
+/// legacy config's owner/name pair.
+///
+/// Refuses two-source-of-truth: if BOTH the modern `repository` and the
+/// legacy `<legacy_field>` are set with a complete owner/name pair, the
+/// caller has written the same data twice and we cannot know which they
+/// meant. The previous behavior silently dropped the legacy value, which
+/// produced surprising "I changed `tap.owner` but the wrong repo got
+/// updated" failures. Bail with both values shown so the user picks one.
 pub(crate) fn resolve_repo_owner_name(
+    publisher: &str,
+    legacy_field: &str,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
     legacy_owner: Option<&str>,
     legacy_name: Option<&str>,
-) -> Option<(String, String)> {
-    if let Some(r) = repo
-        && let (Some(o), Some(n)) = (r.owner.as_deref(), r.name.as_deref())
-    {
-        return Some((o.to_string(), n.to_string()));
+) -> Result<Option<(String, String)>> {
+    let modern = repo.and_then(|r| match (r.owner.as_deref(), r.name.as_deref()) {
+        (Some(o), Some(n)) => Some((o.to_string(), n.to_string())),
+        _ => None,
+    });
+    let legacy = match (legacy_owner, legacy_name) {
+        (Some(o), Some(n)) => Some((o.to_string(), n.to_string())),
+        _ => None,
+    };
+    match (modern, legacy) {
+        (Some((mo, mn)), Some((lo, ln))) => {
+            anyhow::bail!(
+                "{publisher}: configure either `repository.owner`/`name` (\"{mo}/{mn}\") \
+                 or legacy `{legacy_field}.owner`/`name` (\"{lo}/{ln}\"), not both"
+            );
+        }
+        (Some((o, n)), None) | (None, Some((o, n))) => Ok(Some((o, n))),
+        (None, None) => Ok(None),
     }
-    if let (Some(o), Some(n)) = (legacy_owner, legacy_name) {
-        return Some((o.to_string(), n.to_string()));
+}
+
+/// Resolve `skip_upload` to a boolean for publisher entry-points.
+///
+/// Accepts the StringOrBool field directly. Templates are rendered via
+/// `ctx.render_template`. Returns:
+/// - `true` if the value renders to literal "true", or to "auto" while the
+///   release is a prerelease (template var `Prerelease` is non-empty).
+/// - `false` if `None`, or renders to "false"/"".
+/// - `false` with a warn if the value is an unrecognized string.
+///
+/// Moved here so all publishers share a single implementation; previously
+/// homebrew.rs owned this and other crates reached across modules.
+pub(crate) fn should_skip_upload(
+    skip_upload: Option<&anodizer_core::config::StringOrBool>,
+    ctx: &Context,
+) -> bool {
+    let raw = match skip_upload {
+        Some(v) => v.as_str(),
+        None => return false,
+    };
+    let rendered = ctx.render_template(raw).unwrap_or_else(|_| raw.to_string());
+    match rendered.trim() {
+        "true" => true,
+        "auto" => {
+            let pre = ctx
+                .template_vars()
+                .get("Prerelease")
+                .cloned()
+                .unwrap_or_default();
+            !pre.is_empty()
+        }
+        "false" | "" => false,
+        other => {
+            eprintln!(
+                "  ⚠ unrecognized skip_upload value {:?} (expected \"true\", \"false\", or \"auto\"); treating as false",
+                other
+            );
+            false
+        }
     }
-    None
+}
+
+/// Render a `disable` / `skip_upload` field's bool-or-template into a bool,
+/// returning a labeled error on render failure. Used by publisher loops that
+/// need to short-circuit early when either field evaluates truthy.
+///
+/// Returns `Ok(true)` to skip; `Ok(false)` to proceed. This consolidates the
+/// per-publisher pattern of two near-identical `if let Some(d) = ...` blocks
+/// that previously lived in aur_source.rs (per-crate AND top-level paths).
+pub(crate) fn is_publisher_disabled(
+    ctx: &Context,
+    disable: Option<&anodizer_core::config::StringOrBool>,
+    skip_upload: Option<&anodizer_core::config::StringOrBool>,
+    label: &str,
+    log: &StageLogger,
+) -> Result<bool> {
+    if let Some(d) = disable {
+        let off = d
+            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("{label}: render disable template"))?;
+        if off {
+            log.status(&format!("{label}: skipping disabled entry"));
+            return Ok(true);
+        }
+    }
+    if let Some(skip) = skip_upload {
+        let off = skip
+            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("{label}: render skip_upload template"))?;
+        if off {
+            log.status(&format!("{label}: skipping upload (skip_upload=true)"));
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Default commit author name used when no author is configured.
@@ -2004,5 +2098,164 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(result.iter().any(|a| a.url == "amd64-v1"));
         assert!(result.iter().any(|a| a.url == "arm7"));
+    }
+
+    // -----------------------------------------------------------------------
+    // should_skip_upload tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_should_skip_upload_true_string() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::String("true".to_string());
+        assert!(should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_true_bool() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::Bool(true);
+        assert!(should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_false_when_none() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!should_skip_upload(None, &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_explicit_false_string() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::String("false".to_string());
+        assert!(!should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_explicit_false_bool() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::Bool(false);
+        assert!(!should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_auto_skips_prerelease() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("Prerelease", "rc.1");
+        let val = StringOrBool::String("auto".to_string());
+        assert!(should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_auto_does_not_skip_stable() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set("Prerelease", "");
+        let val = StringOrBool::String("auto".to_string());
+        assert!(!should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_auto_does_not_skip_when_no_prerelease_var() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::String("auto".to_string());
+        assert!(!should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_template_rendered() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set_env("SKIP", "true");
+        let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
+        assert!(should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_template_rendered_false() {
+        use anodizer_core::config::{Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.template_vars_mut().set_env("SKIP", "false");
+        let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
+        assert!(!should_skip_upload(Some(&val), &ctx));
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_repo_owner_name tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_repo_owner_name_modern_only() {
+        use anodizer_core::config::RepositoryConfig;
+        let repo = RepositoryConfig {
+            owner: Some("a".into()),
+            name: Some("b".into()),
+            ..Default::default()
+        };
+        let got = resolve_repo_owner_name("homebrew", "tap", Some(&repo), None, None).unwrap();
+        assert_eq!(got, Some(("a".to_string(), "b".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_repo_owner_name_legacy_only() {
+        let got = resolve_repo_owner_name("homebrew", "tap", None, Some("a"), Some("b")).unwrap();
+        assert_eq!(got, Some(("a".to_string(), "b".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_repo_owner_name_neither() {
+        let got = resolve_repo_owner_name("homebrew", "tap", None, None, None).unwrap();
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn test_resolve_repo_owner_name_partial_modern_falls_back_to_legacy() {
+        use anodizer_core::config::RepositoryConfig;
+        let repo = RepositoryConfig {
+            branch: Some("main".into()),
+            ..Default::default()
+        };
+        let got =
+            resolve_repo_owner_name("homebrew", "tap", Some(&repo), Some("a"), Some("b")).unwrap();
+        assert_eq!(got, Some(("a".to_string(), "b".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_repo_owner_name_both_full_bails() {
+        use anodizer_core::config::RepositoryConfig;
+        let repo = RepositoryConfig {
+            owner: Some("modern_o".into()),
+            name: Some("modern_n".into()),
+            ..Default::default()
+        };
+        let err = resolve_repo_owner_name(
+            "homebrew",
+            "tap",
+            Some(&repo),
+            Some("legacy_o"),
+            Some("legacy_n"),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("homebrew"));
+        assert!(msg.contains("modern_o/modern_n"));
+        assert!(msg.contains("legacy_o/legacy_n"));
     }
 }

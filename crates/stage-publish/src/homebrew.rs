@@ -1,4 +1,3 @@
-use anodizer_core::config::StringOrBool;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::template::{self, TemplateVars};
@@ -709,7 +708,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         .skip_upload
         .as_ref()
         .or(hb_cfg.skip_upload.as_ref());
-    if should_skip_upload(effective_skip, ctx) {
+    if crate::util::should_skip_upload(effective_skip, ctx) {
         log.status(&format!(
             "homebrew cask: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -718,12 +717,14 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         return Ok(());
     }
 
-    // Resolve repository config: prefer `repository` over legacy `tap`.
+    // Resolve repository config: bails when both modern + legacy are set.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+        "homebrew_cask",
+        "tap",
         hb_cfg.repository.as_ref(),
         hb_cfg.tap.as_ref().map(|t| t.owner.as_str()),
         hb_cfg.tap.as_ref().map(|t| t.name.as_str()),
-    )
+    )?
     .ok_or_else(|| {
         anyhow::anyhow!(
             "homebrew cask: no repository/tap config for '{}'",
@@ -1215,42 +1216,6 @@ pub fn generate_formula_with_opts(
 // publish_to_homebrew
 // ---------------------------------------------------------------------------
 
-/// Check whether a `skip_upload` value means "skip this publish".
-///
-/// The value is first rendered through the template engine so that
-/// expressions like `{{ .Env.SKIP }}` resolve before comparison.
-///
-/// - `"true"` (or bool `true`) always skips.
-/// - `"auto"` skips when the current version is a prerelease (the `Prerelease`
-///   template variable is non-empty).
-/// - Anything else (including `None`) does not skip.
-pub(crate) fn should_skip_upload(skip_upload: Option<&StringOrBool>, ctx: &Context) -> bool {
-    let raw = match skip_upload {
-        Some(v) => v.as_str(),
-        None => return false,
-    };
-    let rendered = ctx.render_template(raw).unwrap_or_else(|_| raw.to_string());
-    match rendered.trim() {
-        "true" => true,
-        "auto" => {
-            let pre = ctx
-                .template_vars()
-                .get("Prerelease")
-                .cloned()
-                .unwrap_or_default();
-            !pre.is_empty()
-        }
-        "false" | "" => false,
-        other => {
-            eprintln!(
-                "  ⚠ unrecognized skip_upload value {:?} (expected \"true\", \"false\", or \"auto\"); treating as false",
-                other
-            );
-            false
-        }
-    }
-}
-
 /// Render a commit message from an optional Tera template string.
 ///
 /// The template receives `ProjectName` (= name) and `Tag`/`Version` variables
@@ -1313,7 +1278,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx) {
+    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "homebrew: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -1326,12 +1291,14 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         return Ok(());
     }
 
-    // Resolve repository config: prefer `repository` over legacy `tap`.
+    // Resolve repository config: bails when both modern + legacy are set.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+        "homebrew",
+        "tap",
         hb_cfg.repository.as_ref(),
         hb_cfg.tap.as_ref().map(|t| t.owner.as_str()),
         hb_cfg.tap.as_ref().map(|t| t.name.as_str()),
-    )
+    )?
     .ok_or_else(|| anyhow::anyhow!("homebrew: no repository/tap config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
@@ -1620,7 +1587,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     let mut cask_path_lossy: Option<String> = None;
 
     if let Some(cask_cfg) = hb_cfg.cask.as_ref() {
-        if should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
+        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
             log.status(&format!(
                 "homebrew cask: skipping upload for '{}' (skip_upload={})",
                 crate_name,
@@ -1754,7 +1721,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
         let version = ctx.version();
 
         // Check skip_upload.
-        if should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
+        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
             log.status(&format!(
                 "homebrew_casks: skipping upload for '{}' (skip_upload)",
                 cask_name
@@ -1764,13 +1731,14 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
 
         // Repository is required for top-level cask.
         let repo_cfg = cask_cfg.repository.as_ref();
-        let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(repo_cfg, None, None)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "homebrew_casks: no repository config for cask '{}'",
-                    cask_name
-                )
-            })?;
+        let (repo_owner, repo_name) =
+            crate::util::resolve_repo_owner_name("homebrew_casks", "tap", repo_cfg, None, None)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "homebrew_casks: no repository config for cask '{}'",
+                        cask_name
+                    )
+                })?;
 
         // Directory defaults to "Casks" (GoReleaser default).
         // GoReleaser templates the directory field.
@@ -2952,110 +2920,10 @@ mod tests {
         assert!(formula.contains("Important note."));
     }
 
-    // -----------------------------------------------------------------------
-    // skip_upload tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_should_skip_upload_true_string() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let ctx = Context::new(Config::default(), ContextOptions::default());
-        let val = StringOrBool::String("true".to_string());
-        assert!(should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_true_bool() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let ctx = Context::new(Config::default(), ContextOptions::default());
-        let val = StringOrBool::Bool(true);
-        assert!(should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_false_when_none() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!should_skip_upload(None, &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_explicit_false_string() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let ctx = Context::new(Config::default(), ContextOptions::default());
-        let val = StringOrBool::String("false".to_string());
-        assert!(!should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_explicit_false_bool() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let ctx = Context::new(Config::default(), ContextOptions::default());
-        let val = StringOrBool::Bool(false);
-        assert!(!should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_auto_skips_prerelease() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let mut ctx = Context::new(Config::default(), ContextOptions::default());
-        ctx.template_vars_mut().set("Prerelease", "rc.1");
-        let val = StringOrBool::String("auto".to_string());
-        assert!(should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_auto_does_not_skip_stable() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let mut ctx = Context::new(Config::default(), ContextOptions::default());
-        ctx.template_vars_mut().set("Prerelease", "");
-        let val = StringOrBool::String("auto".to_string());
-        assert!(!should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_auto_does_not_skip_when_no_prerelease_var() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let ctx = Context::new(Config::default(), ContextOptions::default());
-        let val = StringOrBool::String("auto".to_string());
-        // Prerelease var not set at all
-        assert!(!should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_template_rendered() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        // Set an env variable that resolves to "true" via template.
-        let mut ctx = Context::new(Config::default(), ContextOptions::default());
-        ctx.template_vars_mut().set_env("SKIP", "true");
-        let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-        // The template {{ .Env.SKIP }} should render to "true" and cause skip.
-        assert!(should_skip_upload(Some(&val), &ctx));
-    }
-
-    #[test]
-    fn test_should_skip_upload_template_rendered_false() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        let mut ctx = Context::new(Config::default(), ContextOptions::default());
-        ctx.template_vars_mut().set_env("SKIP", "false");
-        let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-        assert!(!should_skip_upload(Some(&val), &ctx));
-    }
-
     #[test]
     fn test_publish_to_homebrew_skip_upload_true() {
         use anodizer_core::config::{
-            Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig,
+            Config, CrateConfig, HomebrewConfig, PublishConfig, StringOrBool, TapConfig,
         };
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};
@@ -3090,7 +2958,7 @@ mod tests {
     #[test]
     fn test_publish_to_homebrew_skip_upload_auto_prerelease() {
         use anodizer_core::config::{
-            Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig,
+            Config, CrateConfig, HomebrewConfig, PublishConfig, StringOrBool, TapConfig,
         };
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};

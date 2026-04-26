@@ -254,39 +254,15 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         })?
         .clone();
 
-    if let Some(ref d) = publish_cfg.disable {
-        let off = d
-            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| {
-                format!(
-                    "aur_source: render disable template for crate '{}'",
-                    crate_name
-                )
-            })?;
-        if off {
-            log.status(&format!(
-                "aur_source: skipping disabled config for crate '{}'",
-                crate_name
-            ));
-            return Ok(());
-        }
-    }
-    if let Some(ref skip) = publish_cfg.skip_upload {
-        let off = skip
-            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| {
-                format!(
-                    "aur_source: render skip_upload template for crate '{}'",
-                    crate_name
-                )
-            })?;
-        if off {
-            log.status(&format!(
-                "aur_source: skipping upload for crate '{}' (skip_upload=true)",
-                crate_name
-            ));
-            return Ok(());
-        }
+    let label = format!("aur_source: crate '{crate_name}'");
+    if crate::util::is_publisher_disabled(
+        ctx,
+        publish_cfg.disable.as_ref(),
+        publish_cfg.skip_upload.as_ref(),
+        &label,
+        log,
+    )? {
+        return Ok(());
     }
 
     publish_aur_source_entry(ctx, &publish_cfg, crate_name, false, "aur_source", log)
@@ -311,24 +287,14 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
 
     for (i, cfg) in entries.iter().enumerate() {
         let label = format!("aur_sources[{}]", i);
-
-        if let Some(ref d) = cfg.disable {
-            let off = d
-                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-                .with_context(|| format!("{}: render disable template", label))?;
-            if off {
-                log.status(&format!("{}: skipping disabled entry", label));
-                continue;
-            }
-        }
-        if let Some(ref skip) = cfg.skip_upload {
-            let off = skip
-                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-                .with_context(|| format!("{}: render skip_upload template", label))?;
-            if off {
-                log.status(&format!("{}: skipping upload (skip_upload=true)", label));
-                continue;
-            }
+        if crate::util::is_publisher_disabled(
+            ctx,
+            cfg.disable.as_ref(),
+            cfg.skip_upload.as_ref(),
+            &label,
+            log,
+        )? {
+            continue;
         }
 
         publish_aur_source_entry(ctx, cfg, &project_name, true, &label, log)?;

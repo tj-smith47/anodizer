@@ -2040,7 +2040,7 @@ pub struct CommitSigningConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PublishConfig {
     #[schemars(schema_with = "crates_publish_schema")]
     /// Publish to crates.io: true/false or object with enabled and index_timeout fields.
@@ -2126,7 +2126,7 @@ impl Default for CratesPublishSettings {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewConfig {
     /// Legacy tap config (owner/name). Prefer `repository` for new configs.
     pub tap: Option<TapConfig>,
@@ -2247,7 +2247,7 @@ impl HomebrewConflict {
 
 /// Homebrew Cask configuration for macOS .app bundles.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskConfig {
     /// Override the cask name (default: crate name).
     pub name: Option<String>,
@@ -2299,7 +2299,7 @@ pub struct HomebrewCaskConfig {
 /// GoReleaser has `homebrew_casks` as a top-level config array with its own
 /// repository, commit_author, directory, skip_upload, etc.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TopLevelHomebrewCaskConfig {
     /// Cask name (default: project name).
     pub name: Option<String>,
@@ -2464,7 +2464,7 @@ pub struct HomebrewCaskGeneratedCompletions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScoopConfig {
     /// Legacy bucket config (owner/name). Prefer `repository` for new configs.
     pub bucket: Option<BucketConfig>,
@@ -2536,7 +2536,7 @@ pub struct BucketConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChocolateyConfig {
     /// Override the package name (default: crate name).
     pub name: Option<String>,
@@ -2626,7 +2626,7 @@ pub struct ChocolateyRepoConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WingetConfig {
     /// Override the package name (default: crate name).
     pub name: Option<String>,
@@ -2720,7 +2720,7 @@ pub struct WingetManifestsRepoConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AurConfig {
     /// Override the package name (default: crate name + "-bin").
     #[serde(alias = "package_name")]
@@ -2791,7 +2791,7 @@ pub struct AurConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct KrewConfig {
     /// Override the plugin name (default: crate name).
     pub name: Option<String>,
@@ -2819,6 +2819,13 @@ pub struct KrewConfig {
     /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
+    /// Disable this Krew config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Distinct from `skip_upload` so users can opt out of generating the
+    /// manifest entirely (common when a project is not a kubectl plugin and
+    /// has no krew channel).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
@@ -2844,7 +2851,7 @@ pub struct KrewManifestsRepoConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NixConfig {
     /// Override the derivation name (default: crate name).
     pub name: Option<String>,
@@ -2864,6 +2871,14 @@ pub struct NixConfig {
     /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
+    /// Disable this Nix config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Distinct from `skip_upload` so users can model both intents — disable
+    /// means "don't generate at all", skip_upload means "generate but don't
+    /// push". Without this field, `nix: { disable: true }` was silently
+    /// dropped by the serde unknown-field default.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Custom install commands (replaces auto-generated binary install).
     pub install: Option<String>,
     /// Additional install commands appended after the main install.
@@ -5986,7 +6001,7 @@ pub struct UploadConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AurSourceConfig {
     /// Override the package name (default: crate name, no -bin suffix).
     #[serde(alias = "package_name")]

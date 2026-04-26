@@ -294,7 +294,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx) {
+    if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "aur: skipping upload for '{}' (skip_upload={})",
             crate_name,

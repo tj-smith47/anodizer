@@ -334,9 +334,6 @@ crates:
           - release
           - automation
           - rust
-        commit_author:
-          name: TJ Smith
-          email: tj@jarvispro.io
       winget:
         manifests_repo:
           owner: tj-smith47

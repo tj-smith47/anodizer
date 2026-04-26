@@ -477,7 +477,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(winget_cfg.skip_upload.as_ref(), ctx) {
+    if util::should_skip_upload(winget_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "winget: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -490,12 +490,14 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         return Ok(());
     }
 
-    // Resolve repository config: prefer `repository` over legacy `manifests_repo`.
+    // Resolve repository config: bails when both modern + legacy are set.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+        "winget",
+        "manifests_repo",
         winget_cfg.repository.as_ref(),
         winget_cfg.manifests_repo.as_ref().map(|r| r.owner.as_str()),
         winget_cfg.manifests_repo.as_ref().map(|r| r.name.as_str()),
-    )
+    )?
     .ok_or_else(|| {
         anyhow::anyhow!(
             "winget: no repository/manifests_repo config for '{}'",

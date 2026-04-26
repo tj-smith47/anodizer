@@ -193,7 +193,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(scoop_cfg.skip_upload.as_ref(), ctx) {
+    if util::should_skip_upload(scoop_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "scoop: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -206,12 +206,14 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    // Resolve repository config: prefer `repository` over legacy `bucket`.
+    // Resolve repository config: bails when both modern + legacy are set.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+        "scoop",
+        "bucket",
         scoop_cfg.repository.as_ref(),
         scoop_cfg.bucket.as_ref().map(|b| b.owner.as_str()),
         scoop_cfg.bucket.as_ref().map(|b| b.name.as_str()),
-    )
+    )?
     .ok_or_else(|| anyhow::anyhow!("scoop: no repository/bucket config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
@@ -391,11 +393,18 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .and_then(|r| r.github.as_ref())
         .map(|gh| format!("{}/{}", gh.owner, gh.name));
 
+    // Template-render homepage so users can write
+    // `homepage: "https://{{ .Env.HOSTED_DOMAIN }}/{{ .ProjectName }}"`.
+    // Matches GoReleaser scoop.go:147-152 ApplyAll(Name, Description,
+    // Homepage, SkipUpload).
+    let homepage_raw = scoop_cfg
+        .homepage
+        .as_deref()
+        .or_else(|| ctx.config.meta_homepage());
+    let homepage_rendered =
+        homepage_raw.map(|h| ctx.render_template(h).unwrap_or_else(|_| h.to_string()));
     let opts = ManifestOptions {
-        homepage: scoop_cfg
-            .homepage
-            .as_deref()
-            .or_else(|| ctx.config.meta_homepage()),
+        homepage: homepage_rendered.as_deref(),
         github_slug,
         persist: scoop_cfg.persist.as_deref(),
         depends: scoop_cfg.depends.as_deref(),

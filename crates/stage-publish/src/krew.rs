@@ -247,8 +247,23 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("krew: no krew config for '{}'", crate_name))?;
 
-    // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx) {
+    // Honor `disable` first (template-aware), then `skip_upload`. Anodizer
+    // exposes `disable` so projects that are not kubectl plugins can keep a
+    // krew block in shared config and turn it off without removing the
+    // surrounding repository/short_description boilerplate.
+    if let Some(d) = krew_cfg.disable.as_ref() {
+        let off = d
+            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("krew: render disable template for '{}'", crate_name))?;
+        if off {
+            log.status(&format!(
+                "krew: skipping disabled config for '{}' (disable=true)",
+                crate_name
+            ));
+            return Ok(());
+        }
+    }
+    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "krew: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -264,10 +279,12 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     // Resolve repository config: prefer `repository` over legacy `manifests_repo`.
     // GoReleaser applies TemplateRef() to repository fields (krew.go:292-296).
     let (repo_owner_raw, repo_name_raw) = crate::util::resolve_repo_owner_name(
+        "krew",
+        "manifests_repo",
         krew_cfg.repository.as_ref(),
         krew_cfg.manifests_repo.as_ref().map(|r| r.owner.as_str()),
         krew_cfg.manifests_repo.as_ref().map(|r| r.name.as_str()),
-    )
+    )?
     .ok_or_else(|| {
         anyhow::anyhow!(
             "krew: no repository/manifests_repo config for '{}'",
