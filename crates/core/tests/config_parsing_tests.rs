@@ -1872,6 +1872,42 @@ crates:
     assert!(config.crates[0].publish.is_none());
 }
 
+#[test]
+fn test_parse_publish_cargo_bool_form_rejected() {
+    // The bool shorthand `cargo: true` was removed in WAVE 3 (ITEM-3).
+    // The only valid forms are `cargo: {}` (opt-in) or `cargo: { skip: true }` (opt-out).
+    let yaml = r#"
+project_name: test
+crates:
+  - name: foo
+    publish:
+      cargo: true
+"#;
+    let result = serde_yaml_ng::from_str::<Config>(yaml);
+    assert!(
+        result.is_err(),
+        "publish.cargo: true must be rejected (bool shorthand removed in WAVE 3, ITEM-3)"
+    );
+}
+
+#[test]
+fn test_parse_publish_crates_key_rejected_after_rename() {
+    // The `crates:` publish key was renamed to `cargo:` in WAVE 3 (DEC-1).
+    // Using the old name must fail with an unknown-field error.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: foo
+    publish:
+      crates: { skip: false }
+"#;
+    let result = serde_yaml_ng::from_str::<Config>(yaml);
+    assert!(
+        result.is_err(),
+        "publish.crates is renamed to publish.cargo (DEC-1, WAVE 3)"
+    );
+}
+
 // ---- docker tests ----
 
 #[test]

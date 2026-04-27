@@ -11,6 +11,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Valid --skip values for the `release` command (matches GoReleaser).
+///
+/// Publisher skip names use the short canonical form (matching the CLI binary
+/// name and GoReleaser convention): `brew`, `choco`, `krew`, `cargo`, etc.
+/// Long aliases (e.g. `homebrew`, `chocolatey`) are NOT accepted — DEC-5 forbids
+/// aliases; use the short name everywhere (FOLL-1).
 pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "publish",
     "announce",
@@ -19,13 +24,15 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "sbom",
     "docker",
     "winget",
-    "chocolatey",
+    "choco",
     "snapcraft",
     "snapcraft-publish",
     "scoop",
-    "homebrew",
+    "brew",
     "nix",
     "aur",
+    "cargo",
+    "krew",
     "nfpm",
     "makeself",
     "flatpak",

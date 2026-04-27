@@ -1463,6 +1463,308 @@ crates:
 }
 
 // ============================================================================
+// Publisher skip-name acceptance / rejection tests (FOLL-1, DEC-5)
+// ============================================================================
+
+/// `--skip=brew` is accepted (short canonical name per FOLL-1).
+#[test]
+fn test_skip_brew_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=brew",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        "--skip=brew should be accepted, got:\n{}",
+        stderr
+    );
+}
+
+/// `--skip=choco` is accepted (short canonical name per FOLL-1).
+#[test]
+fn test_skip_choco_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=choco",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        "--skip=choco should be accepted, got:\n{}",
+        stderr
+    );
+}
+
+/// `--skip=cargo` is accepted (crates.io publisher skip per FOLL-1).
+#[test]
+fn test_skip_cargo_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=cargo",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        "--skip=cargo should be accepted, got:\n{}",
+        stderr
+    );
+}
+
+/// `--skip=krew` is accepted (krew publisher skip per FOLL-1).
+#[test]
+fn test_skip_krew_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=krew",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        "--skip=krew should be accepted, got:\n{}",
+        stderr
+    );
+}
+
+/// `--skip=homebrew` is REJECTED — the long alias is not valid (DEC-5).
+#[test]
+fn test_skip_homebrew_alias_rejected() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=homebrew",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "--skip=homebrew should be rejected (use --skip=brew); command unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.to_lowercase().contains("invalid")
+            || stderr.to_lowercase().contains("unknown")
+            || stderr.to_lowercase().contains("valid"),
+        "--skip=homebrew rejection should mention invalidity, got:\n{}",
+        stderr
+    );
+}
+
+/// `--skip=chocolatey` is REJECTED — the long alias is not valid (DEC-5).
+#[test]
+fn test_skip_chocolatey_alias_rejected() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=chocolatey",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "--skip=chocolatey should be rejected (use --skip=choco); command unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.to_lowercase().contains("invalid")
+            || stderr.to_lowercase().contains("unknown")
+            || stderr.to_lowercase().contains("valid"),
+        "--skip=chocolatey rejection should mention invalidity, got:\n{}",
+        stderr
+    );
+}
+
+/// `--skip=crates` is REJECTED — `crates` was renamed to `cargo` in WAVE 3 (DEC-1).
+#[test]
+fn test_skip_crates_alias_rejected() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=crates",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "--skip=crates should be rejected (use --skip=cargo, DEC-1); command unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.to_lowercase().contains("invalid")
+            || stderr.to_lowercase().contains("unknown")
+            || stderr.to_lowercase().contains("valid"),
+        "--skip=crates rejection should mention invalidity, got:\n{}",
+        stderr
+    );
+}
+
+// ============================================================================
 // Error Path Tests
 // ============================================================================
 
