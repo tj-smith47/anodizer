@@ -3,6 +3,11 @@
 # Templates use Tera syntax with Go-style compat.
 #   - Pipe filters: {{ Tag | trimprefix(prefix='v') }}
 #   - Variables: {{ RawVersion }}, {{ Branch }}, {{ CommitDate }}, etc.
+#
+# WAVE 6 (Session B, 2026-04-27): migrated to the final Session B schema.
+# Hoists shared publisher / archive config into `defaults:` so per-crate
+# entries inherit via DEC-9 (`{}` or omission inherits the defaults verbatim;
+# `skip: true` suppresses inheritance for that block).
 
 version: 2
 project_name: anodizer
@@ -51,12 +56,16 @@ defaults:
     - x86_64-pc-windows-msvc
     - aarch64-pc-windows-msvc
   cross: auto
-  # WAVE 2: per-build settings (flags/ignore/overrides) live under defaults.builds.*
+  # Per-build settings (flags/ignore/overrides) live under defaults.builds.*.
   # `binary` is omitted here — defaults supply only the cross-cutting fields,
   # the per-crate `builds[].binary` names the actual cargo bin target.
   builds:
     flags:
       - --release
+  # Single archive entry shared by every crate. `format: tar.gz` is the
+  # identity key the merge engine uses to fold this into per-crate archives,
+  # so the CLI's per-crate archive entry below mirrors the same `format` to
+  # deep-merge fields into a single resolved archive instead of producing two.
   archives:
     format: tar.gz
     format_overrides:
@@ -64,6 +73,12 @@ defaults:
         format: zip
   checksum:
     algorithm: sha256
+  # Publisher inheritance: `cargo: {}` opts every crate into crates.io
+  # publishing. Per-crate `publish.cargo: { skip: true }` suppresses inheritance
+  # for that crate (DEC-9). `index_timeout` defaults to 300s in the publisher,
+  # so it is omitted here (keeping the empty `{}` is the explicit opt-in).
+  publish:
+    cargo: {}
 
 before:
   hooks:
@@ -80,161 +95,110 @@ crates:
   - name: anodizer-core
     path: crates/core
     tag_template: "v{{ Version }}"
-    publish:
-      cargo:
-        index_timeout: 300
 
   # --- Tier 2: stage crates (depend on core) ---
+  # All inherit defaults.publish.cargo = {} (DEC-9). No per-crate publish block
+  # required — each opts in via the inherited cargo publisher slot.
   - name: anodizer-stage-build
     path: crates/stage-build
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-archive
     path: crates/stage-archive
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-nfpm
     path: crates/stage-nfpm
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-checksum
     path: crates/stage-checksum
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-changelog
     path: crates/stage-changelog
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-release
     path: crates/stage-release
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-publish
     path: crates/stage-publish
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-docker
     path: crates/stage-docker
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-sign
     path: crates/stage-sign
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-announce
     path: crates/stage-announce
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-source
     path: crates/stage-source
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-upx
     path: crates/stage-upx
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-snapcraft
     path: crates/stage-snapcraft
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-dmg
     path: crates/stage-dmg
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-msi
     path: crates/stage-msi
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-pkg
     path: crates/stage-pkg
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-blob
     path: crates/stage-blob
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-nsis
     path: crates/stage-nsis
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-appbundle
     path: crates/stage-appbundle
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-flatpak
     path: crates/stage-flatpak
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-notarize
     path: crates/stage-notarize
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-templatefiles
     path: crates/stage-templatefiles
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-makeself
     path: crates/stage-makeself
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-srpm
     path: crates/stage-srpm
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
   - name: anodizer-stage-sbom
     path: crates/stage-sbom
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
-    publish:
-      cargo: {}
 
   # --- Tier 3: CLI binary (depends on all stages) ---
   - name: anodizer
@@ -272,11 +236,11 @@ crates:
         features: []
         no_default_features: false
     archives:
+      # `format: tar.gz` mirrors the defaults identity key so this entry
+      # deep-merges with the defaults archive (picking up format_overrides)
+      # rather than appearing as a second entry.
       - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
         format: tar.gz
-        format_overrides:
-          - os: windows
-            format: zip
         files:
           - LICENSE
           - README.md
@@ -302,8 +266,8 @@ crates:
         Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀
       include_meta: true
     publish:
-      cargo:
-        index_timeout: 300
+      # `cargo:` inherits from defaults.publish.cargo (= {} → presence-as-opt-in).
+      # Other publishers below are CLI-only, so they live per-crate.
       homebrew:
         repository:
           owner: tj-smith47
@@ -532,7 +496,7 @@ nightly:
   tag_name: nightly
 
 snapshot:
-  name_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"
+  version_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"
 
 # Split/merge CI configuration for fan-out builds
 partial:
