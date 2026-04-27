@@ -697,10 +697,10 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("nix: no nix config for '{}'", crate_name))?;
 
-    // Honor `disable` first (template-aware), then `skip_upload`.
+    // Honor `skip` first (template-aware), then `skip_upload`.
     if let Some(d) = nix_cfg.skip.as_ref() {
         let off = d
-            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("nix: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!("nix: config skipped for '{}'", crate_name));

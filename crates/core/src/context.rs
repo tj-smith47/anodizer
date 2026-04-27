@@ -229,7 +229,7 @@ impl Context {
             return Ok(false);
         };
         let should_skip = d
-            .try_evaluates_to_skip(|s| self.render_template(s))
+            .try_evaluates_to_true(|s| self.render_template(s))
             .with_context(|| format!("evaluate skip expression for {label}"))?;
         if should_skip {
             log.status(&format!("{} skipped", label));

@@ -172,7 +172,7 @@ impl Stage for AnnounceStage {
         // Evaluate template-conditional skip.
         if let Some(ref skip_val) = announce.skip {
             let should_skip = skip_val
-                .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "announce: render skip template")?;
             if should_skip {
                 log.status("announce.skip evaluated to true — skipping");

@@ -596,23 +596,23 @@ pub fn build_docker_v2_command(
     Ok(cmd)
 }
 
-/// Evaluate whether a Docker V2 config is disabled.
+/// Evaluate whether a Docker V2 config is skipped.
 ///
-/// Checks the `disable` field: if it's a template, renders it and checks for "true".
+/// Checks the `skip` field: if it's a template, renders it and checks for "true".
 /// Returns `true` when the config should be skipped. Surfaces template render
-/// errors instead of silently treating them as "not disabled".
-pub fn is_docker_v2_disabled(skip: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
+/// errors instead of silently treating them as "not skipped".
+pub fn is_docker_v2_skipped(skip: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
     match skip {
         None => Ok(false),
         Some(d) => d
-            .try_evaluates_to_skip(|s| ctx.render_template(s))
+            .try_evaluates_to_true(|s| ctx.render_template(s))
             .with_context(|| "docker_v2: render skip template"),
     }
 }
 
 /// Resolve the docker digest configuration for a crate into job-level fields.
 ///
-/// Returns `(digest_disabled, digest_name_template)`.
+/// Returns `(skip_digest, digest_name_template)`.
 /// Errors if the `name_template` contains a template expression that fails to render.
 fn resolve_digest_config(
     cfg: Option<&DockerDigestConfig>,
@@ -621,11 +621,11 @@ fn resolve_digest_config(
     let Some(dc) = cfg else {
         return Ok((false, None));
     };
-    let disabled = match &dc.skip {
+    let skip_digest = match &dc.skip {
         None => false,
         Some(d) => d
-            .try_evaluates_to_skip(|s| ctx.render_template(s))
-            .with_context(|| "docker: render digest disable template")?,
+            .try_evaluates_to_true(|s| ctx.render_template(s))
+            .with_context(|| "docker: render digest skip template")?,
     };
     let name_template = match dc.name_template.as_ref() {
         Some(tmpl) => {
@@ -640,7 +640,7 @@ fn resolve_digest_config(
         }
         None => None,
     };
-    Ok((disabled, name_template))
+    Ok((skip_digest, name_template))
 }
 
 /// Evaluate whether the sbom flag should be added for a Docker V2 config.
@@ -792,8 +792,8 @@ struct DockerBuildJob {
     dist: PathBuf,
     /// Whether this is a V2 docker build (affects artifact type registration).
     is_v2: bool,
-    /// Whether digest artifact creation is disabled.
-    digest_disabled: bool,
+    /// Whether digest artifact creation is skipped.
+    skip_digest: bool,
     /// Digest file name template (rendered). None = use default tag-based naming.
     digest_name_template: Option<String>,
     /// Context environment variables to inject into docker commands.
@@ -1076,7 +1076,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                     tag_digests.insert(tag.clone(), digest.clone());
                 }
                 // Write per-tag digest files
-                if !job.digest_disabled {
+                if !job.skip_digest {
                     for tag in &job.rendered_tags {
                         let safe_name = tag.replace(['/', ':'], "_");
                         let digest_file = job.dist.join(format!("{}.digest", safe_name));
@@ -1135,7 +1135,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 // Always use tag-based naming for per-tag files to avoid collisions
                 // when multiple tags exist. The name_template controls the artifact
                 // name (metadata), not the file path.
-                if !job.digest_disabled {
+                if !job.skip_digest {
                     let safe_name = tag.replace(['/', ':'], "_");
                     let filename = format!("{}.digest", safe_name);
                     let digest_file = job.dist.join(&filename);
@@ -1898,7 +1898,7 @@ impl Stage for DockerStage {
                     }
                 } else {
                     // Resolve docker_digest config from the crate
-                    let (digest_disabled, digest_name_template) =
+                    let (skip_digest, digest_name_template) =
                         resolve_digest_config(krate.docker_digest.as_ref(), ctx)?;
 
                     build_jobs.push(DockerBuildJob {
@@ -1917,7 +1917,7 @@ impl Stage for DockerStage {
                         use_backend: docker_cfg.use_backend.clone(),
                         dist: dist.clone(),
                         is_v2: false,
-                        digest_disabled,
+                        skip_digest,
                         digest_name_template,
                         env_vars: ctx.template_vars().all_config_env().clone(),
                         push_flags,
@@ -1965,7 +1965,7 @@ impl Stage for DockerStage {
 
             for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
                 // Check disable — skip when template evaluates to true
-                if is_docker_v2_disabled(&v2_cfg.skip, ctx)? {
+                if is_docker_v2_skipped(&v2_cfg.skip, ctx)? {
                     log.status(&format!(
                         "docker_v2[{}]: skipping config for crate {} (skip=true)",
                         idx, krate.name
@@ -2270,7 +2270,7 @@ impl Stage for DockerStage {
                         }
                     } else {
                         // Resolve docker_digest config from the crate
-                        let (digest_disabled, digest_name_template) =
+                        let (skip_digest, digest_name_template) =
                             resolve_digest_config(krate.docker_digest.as_ref(), ctx)?;
 
                         build_jobs.push(DockerBuildJob {
@@ -2289,7 +2289,7 @@ impl Stage for DockerStage {
                             use_backend: Some("buildx".to_string()),
                             dist: dist.clone(),
                             is_v2: true,
-                            digest_disabled,
+                            skip_digest,
                             digest_name_template,
                             env_vars: ctx.template_vars().all_config_env().clone(),
                             push_flags: Vec::new(), // V2 always uses buildx; push flags baked into cmd_args
@@ -5560,30 +5560,30 @@ crates:
     }
 
     #[test]
-    fn test_is_docker_v2_disabled_none() {
+    fn test_is_docker_v2_skipped_none() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_disabled(&None, &ctx).unwrap());
+        assert!(!is_docker_v2_skipped(&None, &ctx).unwrap());
     }
 
     #[test]
-    fn test_is_docker_v2_disabled_bool_true() {
+    fn test_is_docker_v2_skipped_bool_true() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(is_docker_v2_disabled(&Some(StringOrBool::Bool(true)), &ctx).unwrap());
+        assert!(is_docker_v2_skipped(&Some(StringOrBool::Bool(true)), &ctx).unwrap());
     }
 
     #[test]
-    fn test_is_docker_v2_disabled_bool_false() {
+    fn test_is_docker_v2_skipped_bool_false() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_disabled(&Some(StringOrBool::Bool(false)), &ctx).unwrap());
+        assert!(!is_docker_v2_skipped(&Some(StringOrBool::Bool(false)), &ctx).unwrap());
     }
 
     #[test]
@@ -5614,36 +5614,36 @@ crates:
     }
 
     #[test]
-    fn test_is_docker_v2_disabled_string_true() {
+    fn test_is_docker_v2_skipped_string_true() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(
-            is_docker_v2_disabled(&Some(StringOrBool::String("true".to_string())), &ctx).unwrap()
+            is_docker_v2_skipped(&Some(StringOrBool::String("true".to_string())), &ctx).unwrap()
         );
     }
 
     #[test]
-    fn test_is_docker_v2_disabled_string_false() {
+    fn test_is_docker_v2_skipped_string_false() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(
-            !is_docker_v2_disabled(&Some(StringOrBool::String("false".to_string())), &ctx).unwrap()
+            !is_docker_v2_skipped(&Some(StringOrBool::String("false".to_string())), &ctx).unwrap()
         );
     }
 
     #[test]
-    fn test_is_docker_v2_disabled_template_snapshot_true() {
+    fn test_is_docker_v2_skipped_template_snapshot_true() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "true");
         assert!(
-            is_docker_v2_disabled(
+            is_docker_v2_skipped(
                 &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
                 &ctx
             )
@@ -5652,14 +5652,14 @@ crates:
     }
 
     #[test]
-    fn test_is_docker_v2_disabled_template_snapshot_false() {
+    fn test_is_docker_v2_skipped_template_snapshot_false() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "false");
         assert!(
-            !is_docker_v2_disabled(
+            !is_docker_v2_skipped(
                 &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
                 &ctx
             )
@@ -6128,7 +6128,7 @@ skip: "{{ .IsSnapshot }}"
             use_backend: None,
             dist: PathBuf::new(),
             is_v2: false,
-            digest_disabled: false,
+            skip_digest: false,
             digest_name_template: None,
             env_vars: env,
             push_flags: Vec::new(),

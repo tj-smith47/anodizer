@@ -223,11 +223,11 @@ impl Stage for NotarizeStage {
             None => return Ok(()),
         };
 
-        // Respect top-level skip flag. Use try_evaluates_to_skip so a malformed
+        // Respect top-level skip flag. Use try_evaluates_to_true so a malformed
         // skip: template surfaces as Err instead of silently evaluating
         // false and running notarization the user thought was suppressed.
         if let Some(ref d) = notarize_config.skip
-            && d.try_evaluates_to_skip(|s| ctx.render_template(s))
+            && d.try_evaluates_to_true(|s| ctx.render_template(s))
                 .with_context(|| "notarize: evaluate top-level skip expression")?
         {
             log.status("notarization skipped");

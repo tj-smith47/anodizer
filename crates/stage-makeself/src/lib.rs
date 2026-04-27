@@ -174,10 +174,10 @@ impl Stage for MakeselfStage {
         let mut jobs: Vec<MakeselfJob> = Vec::new();
 
         for cfg in &configs {
-            // Check disable
+            // Skip configs marked skip:
             if let Some(ref d) = cfg.skip {
                 let off = d
-                    .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                     .with_context(|| "makeself: render skip template")?;
                 if off {
                     log.verbose("makeself config skipped");

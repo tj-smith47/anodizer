@@ -515,10 +515,10 @@ impl Stage for SnapcraftStage {
                 .collect();
 
             for snap_cfg in snap_configs {
-                // Skip disabled configs
+                // Skip configs marked skip:
                 if let Some(ref d) = snap_cfg.skip {
                     let off = d
-                        .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                        .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                         .with_context(|| {
                             format!("snapcraft: render skip template for crate {}", krate.name)
                         })?;
@@ -1034,10 +1034,10 @@ impl Stage for SnapcraftPublishStage {
                 if !snap_cfg.publish.unwrap_or(false) {
                     continue;
                 }
-                // Skip disabled configs
+                // Skip configs marked skip:
                 if let Some(ref d) = snap_cfg.skip {
                     let off = d
-                        .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                        .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                         .with_context(|| {
                             format!(
                                 "snapcraft: render publish.skip template for crate {}",

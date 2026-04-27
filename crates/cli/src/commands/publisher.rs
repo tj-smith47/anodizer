@@ -48,7 +48,7 @@ fn split_shellwords(s: &str) -> Vec<String> {
 /// In dry-run mode, the command is logged but not executed.
 ///
 /// When `skip_memento` is `Some`, intentional per-publisher skips (template
-/// disable, empty `cmd`, no matching artifacts) are recorded so the
+/// skip, empty `cmd`, no matching artifacts) are recorded so the
 /// end-of-pipeline summary can report them. Pass `None` from tests or
 /// standalone callers that don't care.
 pub fn run_publishers(
@@ -65,10 +65,10 @@ pub fn run_publishers(
         let default_label = format!("publisher[{}]", i);
         let label = publisher.name.as_deref().unwrap_or(&default_label);
 
-        // Check template-conditional disable
+        // Check template-conditional skip
         if let Some(ref d) = publisher.skip {
             let off = d
-                .try_evaluates_to_skip(|tmpl| template::render(tmpl, base_vars))
+                .try_evaluates_to_true(|tmpl| template::render(tmpl, base_vars))
                 .with_context(|| format!("[publisher] render skip template for {}", label))?;
             if off {
                 log.verbose(&format!(

@@ -1432,7 +1432,7 @@ impl Stage for BuildStage {
                 // Skip builds marked with skip: true/template
                 let should_skip = match build.skip.as_ref() {
                     Some(s) => s
-                        .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                        .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                         .with_context(|| {
                             format!(
                                 "build: render skip template for build '{}'",
@@ -1559,10 +1559,10 @@ impl Stage for BuildStage {
 
                 // Resolve no_unique_dist_dir: per-build overrides crate-level
                 let no_unique_dist_dir_val = if let Some(s) = build.no_unique_dist_dir.as_ref() {
-                    s.try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                    s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                         .with_context(|| "build: render no_unique_dist_dir template")?
                 } else if let Some(s) = crate_cfg.no_unique_dist_dir.as_ref() {
-                    s.try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                    s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                         .with_context(|| "crate: render no_unique_dist_dir template")?
                 } else {
                     false

@@ -747,7 +747,7 @@ pub(crate) fn should_skip_publisher(
 ) -> Result<bool> {
     if let Some(d) = skip {
         let off = d
-            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("{label}: render skip template"))?;
         if off {
             log.status(&format!("{label}: skipped"));
@@ -756,7 +756,7 @@ pub(crate) fn should_skip_publisher(
     }
     if let Some(s) = skip_upload {
         let off = s
-            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("{label}: render skip_upload template"))?;
         if off {
             log.status(&format!("{label}: skipping upload (skip_upload=true)"));

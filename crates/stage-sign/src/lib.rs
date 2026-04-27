@@ -348,29 +348,18 @@ impl Stage for DockerSignStage {
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped());
 
-                    // Parse docker-sign env once; reuse for both command injection
-                    // and redaction below. Avoids a second parse call that
-                    // previously used .unwrap_or_default() and silently swallowed errors.
-                    let docker_parsed_env: Vec<(String, String)> = docker_sign_cfg
-                        .env
-                        .as_deref()
-                        .map(|list| {
-                            anodizer_core::config::parse_env_entries(list)
-                                .with_context(|| "docker-sign: parse env entries")
-                        })
-                        .transpose()?
-                        .unwrap_or_default();
+                    // Parse and render docker-sign env in one pass; propagate errors
+                    // instead of silently falling back to unrendered template strings.
+                    // The rendered pairs are reused for redaction below.
+                    let docker_rendered_env: Vec<(String, String)> =
+                        anodizer_core::config::render_env_entries(
+                            docker_sign_cfg.env.as_deref().unwrap_or(&[]),
+                            |v| ctx.render_template(v),
+                        )
+                        .with_context(|| "docker-sign: render env entries")?;
 
-                    // Template-render and merge custom env vars if configured on docker sign.
-                    for (k, v) in &docker_parsed_env {
-                        let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
-                            log.warn(&format!(
-                                "failed to render docker-sign env '{}': {}, using raw value",
-                                k, e
-                            ));
-                            v.clone()
-                        });
-                        command.env(k, rendered_val);
+                    for (k, v) in &docker_rendered_env {
+                        command.env(k, v);
                     }
 
                     let mut child = command.spawn().with_context(|| {
@@ -405,8 +394,9 @@ impl Stage for DockerSignStage {
                     })?;
 
                     // Redact secrets from stdout/stderr before any output or logging.
-                    // Reuse the already-parsed env pairs from above.
-                    let docker_env_pairs: Vec<(String, String)> = docker_parsed_env
+                    // Use the already-rendered env pairs (rendered values are what
+                    // actually appear in command output, so redact those).
+                    let docker_env_pairs: Vec<(String, String)> = docker_rendered_env
                         .into_iter()
                         .chain(std::env::vars())
                         .collect();

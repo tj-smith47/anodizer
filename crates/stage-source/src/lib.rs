@@ -797,7 +797,7 @@ impl SourceStage {
         // Evaluate skip — supports bool or template string
         if let Some(ref d) = sbom_cfg.skip {
             let off = d
-                .try_evaluates_to_skip(|s| ctx.render_template(s))
+                .try_evaluates_to_true(|s| ctx.render_template(s))
                 .with_context(|| format!("sbom[{}]: render skip template", id))?;
             if off {
                 log.status(&format!("sbom[{}]: skipped", id));

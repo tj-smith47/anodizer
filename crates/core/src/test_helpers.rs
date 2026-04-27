@@ -262,7 +262,7 @@ impl TestContextBuilder {
         self
     }
 
-    /// Set default configuration (e.g. global checksum disable).
+    /// Set default configuration (e.g. global checksum skip).
     pub fn defaults(mut self, defaults: Defaults) -> Self {
         self.defaults = Some(defaults);
         self

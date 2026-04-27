@@ -285,7 +285,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // Check skip before doing any work.
     if let Some(ref d) = aur_cfg.skip {
         let off = d
-            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!("aur: skipped for '{}'", crate_name));

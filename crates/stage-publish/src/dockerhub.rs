@@ -74,7 +74,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         // Check skip flag.
         if let Some(ref d) = entry.skip {
             let off = d
-                .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "dockerhub: render skip template")?;
             if off {
                 log.status("dockerhub: entry skipped");

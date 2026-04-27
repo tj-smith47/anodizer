@@ -5547,6 +5547,9 @@ impl StringOrBool {
     ///
     /// Returns the render error so callers can fail fast on a malformed
     /// template instead of silently treating it as `false`.
+    ///
+    /// Used for both `skip:` evaluation (most callers) and `output:` / `sbom:`
+    /// bool-or-template fields — there is no separate alias; call this directly.
     pub fn try_evaluates_to_true(
         &self,
         render: impl Fn(&str) -> anyhow::Result<String>,
@@ -5556,19 +5559,6 @@ impl StringOrBool {
         } else {
             Ok(self.as_bool())
         }
-    }
-
-    /// Evaluate whether this value means "skip this item".
-    ///
-    /// Domain-specific alias for
-    /// [`try_evaluates_to_true`](Self::try_evaluates_to_true). Returns the
-    /// render error so callers can fail fast on a malformed `skip:`
-    /// template instead of silently treating it as "not skipped".
-    pub fn try_evaluates_to_skip(
-        &self,
-        render: impl Fn(&str) -> anyhow::Result<String>,
-    ) -> anyhow::Result<bool> {
-        self.try_evaluates_to_true(render)
     }
 }
 
@@ -10709,6 +10699,18 @@ sboms:
 
     // ---- env map-form rejection tests (must be Vec<String>, not map) ----
 
+    /// Assert that the given YAML fails to deserialize into `Config` because an
+    /// `env:` field was supplied as a map (`KEY: value`) rather than the
+    /// required `Vec<String>` (`- KEY=value`).
+    #[track_caller]
+    fn assert_env_map_rejected(yaml: &str, label: &str) {
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "{label}.env map form should be rejected after Vec<String> migration"
+        );
+    }
+
     #[test]
     fn test_top_level_env_map_form_rejected() {
         let yaml = r#"
@@ -10717,11 +10719,7 @@ crates: []
 env:
   MY_VAR: hello
 "#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(
-            result.is_err(),
-            "top-level Config.env map form should be rejected after Vec<String> migration"
-        );
+        assert_env_map_rejected(yaml, "top-level Config");
     }
 
     #[test]
@@ -10740,11 +10738,7 @@ defaults:
       env:
         MY_VAR: hello
 "#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(
-            result.is_err(),
-            "BuildOverride.env map form should be rejected after Vec<String> migration"
-        );
+        assert_env_map_rejected(yaml, "BuildOverride");
     }
 
     #[test]
@@ -10757,11 +10751,7 @@ signs:
     env:
       COSIGN_PASSWORD: hunter2
 "#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(
-            result.is_err(),
-            "SignConfig.env map form should be rejected after Vec<String> migration"
-        );
+        assert_env_map_rejected(yaml, "SignConfig");
     }
 
     #[test]
@@ -10773,11 +10763,7 @@ sboms:
     env:
       MY_VAR: value
 "#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(
-            result.is_err(),
-            "SbomConfig.env map form should be rejected after Vec<String> migration"
-        );
+        assert_env_map_rejected(yaml, "SbomConfig");
     }
 
     #[test]
@@ -10790,11 +10776,7 @@ workspaces:
     env:
       MY_VAR: value
 "#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(
-            result.is_err(),
-            "WorkspaceConfig.env map form should be rejected after Vec<String> migration"
-        );
+        assert_env_map_rejected(yaml, "WorkspaceConfig");
     }
 
     #[test]
@@ -10807,11 +10789,7 @@ publishers:
     env:
       MY_VAR: value
 "#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(
-            result.is_err(),
-            "PublisherConfig.env map form should be rejected after Vec<String> migration"
-        );
+        assert_env_map_rejected(yaml, "PublisherConfig");
     }
 
     #[test]
@@ -10825,10 +10803,6 @@ before:
       env:
         MY_VAR: value
 "#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(
-            result.is_err(),
-            "StructuredHook.env map form should be rejected after Vec<String> migration"
-        );
+        assert_env_map_rejected(yaml, "StructuredHook");
     }
 }

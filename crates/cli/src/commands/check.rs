@@ -230,7 +230,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
     }
 
-    // 6. Warn if changelog is disabled but has other fields configured
+    // 6. Warn if changelog has skip:true with other fields configured
     if let Some(cl) = &config.changelog
         && cl.skip == Some(anodizer_core::config::StringOrBool::Bool(true))
     {
@@ -260,7 +260,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         ));
     }
 
-    // 7. Warn if checksum is disabled but has other fields configured (global defaults)
+    // 7. Warn if checksum has skip:true with other fields configured (global defaults)
     if let Some(defaults) = &config.defaults
         && let Some(cksum) = &defaults.checksum
         && cksum.skip.as_ref().is_some_and(|d| d.as_bool())
@@ -276,7 +276,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
     }
 
-    // 8. Warn if per-crate checksum is disabled but has other fields configured
+    // 8. Warn if per-crate checksum has skip:true with other fields configured
     for c in &config.crates {
         if let Some(cksum) = &c.checksum
             && cksum.skip.as_ref().is_some_and(|d| d.as_bool())

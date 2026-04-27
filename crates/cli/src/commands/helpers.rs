@@ -493,19 +493,19 @@ pub fn setup_env(
     // Error early if no SCM token and the pipeline needs one.
     // Snapshot mode, dry-run, and release.skip can proceed without a token.
     if ctx.options.token.is_none() && !ctx.is_snapshot() && !ctx.is_dry_run() {
-        let release_disabled = match config
+        let release_skipped = match config
             .crates
             .first()
             .and_then(|c| c.release.as_ref()?.skip.as_ref())
         {
             Some(d) => d
-                .try_evaluates_to_skip(|t| ctx.render_template(t))
+                .try_evaluates_to_true(|t| ctx.render_template(t))
                 .with_context(|| "release: render skip template")?,
             None => false,
         };
         let needs_token = config.crates.iter().any(|c| c.release.is_some())
             && !ctx.should_skip("release")
-            && !release_disabled;
+            && !release_skipped;
         if needs_token {
             let hint = match ctx.token_type {
                 anodizer_core::scm::ScmTokenType::GitLab => {

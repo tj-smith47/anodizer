@@ -395,7 +395,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         // Check skip flag.
         if let Some(ref s) = entry.skip {
             let off = s
-                .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| {
                     format!(
                         "artifactory: render skip template for entry '{}'",

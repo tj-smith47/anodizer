@@ -328,10 +328,10 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let id = sbom_cfg.id.as_deref().unwrap_or("default");
 
     // Evaluate skip — supports bool or template string. Use
-    // try_evaluates_to_skip so a malformed skip: template surfaces as Err
+    // try_evaluates_to_true so a malformed skip: template surfaces as Err
     // instead of silently evaluating false.
     if let Some(ref d) = sbom_cfg.skip
-        && d.try_evaluates_to_skip(|s| ctx.render_template(s))
+        && d.try_evaluates_to_true(|s| ctx.render_template(s))
             .with_context(|| format!("sbom[{}]: evaluate skip expression", id))?
     {
         log.status(&format!("sbom[{}]: skipped", id));

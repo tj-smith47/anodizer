@@ -19,6 +19,10 @@ violations, user-reported issues.
 
 ## Active
 
+### WAVE 1.5 deferred — 2026-04-27 (1 SUGGEST)
+
+- [ ] 2026-04-27 code-review (WAVE 1.5): consider extracting parse_env_entries / split_env_entry / render_env_entries to crates/core/src/env.rs once WAVE 2 adds defaults env merging — currently 3 helpers + 7 tests sit in 10K-line config.rs.
+
 ### cfgd v0.3.5 dogfooding — 2026-04-19 (3 BLOCKER)
 
 Surfaced by reviewing the open winget + krew PRs anodizer created for cfgd v0.3.5 (microsoft/winget-pkgs#361032, kubernetes-sigs/krew-index#5595). Both PRs currently fail CI because of generator bugs in anodizer publishers. Fixes MUST land before cfgd can bump `ANODIZER_REV` and re-run the v0.3.5 pipeline (tags/releases already deleted on the cfgd side).

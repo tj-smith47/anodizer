@@ -913,7 +913,7 @@ impl Stage for ChangelogStage {
         // If skipped, skip the stage entirely (supports template-conditional skip).
         if let Some(d) = changelog_cfg.as_ref().and_then(|c| c.skip.as_ref()) {
             let off = d
-                .try_evaluates_to_skip(|s| ctx.render_template(s))
+                .try_evaluates_to_true(|s| ctx.render_template(s))
                 .with_context(|| "changelog: render skip template")?;
             if off {
                 log.status("changelog skipped");
