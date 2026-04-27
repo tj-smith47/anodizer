@@ -87,8 +87,16 @@ pub struct Config {
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
-    /// Binary-specific signing configs (same shape as `signs` but only for binary artifacts).
-    #[serde(default, alias = "binary_sign", deserialize_with = "deserialize_signs")]
+    /// Binary-specific signing configs (same shape as `signs` but only for
+    /// binary artifacts). The `artifacts` field on each entry is constrained
+    /// at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a
+    /// broader filter on `binary_signs` would silently match nothing because
+    /// the loop only iterates Binary artifacts.
+    #[serde(
+        default,
+        alias = "binary_sign",
+        deserialize_with = "deserialize_binary_signs"
+    )]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,
     /// Docker image signing configurations.
@@ -1489,6 +1497,39 @@ where
     }
 
     deserializer.deserialize_any(SignsVisitor)
+}
+
+/// The constrained `artifacts` value for `binary_signs[]`. Mirrors GR's
+/// allowed set for binary-only sign pipes — broader filters silently match
+/// nothing because the binary-sign loop only iterates Binary artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BinarySignArtifacts {
+    Binary,
+    None,
+}
+
+/// Wraps [`deserialize_signs`] and enforces that each entry's `artifacts`
+/// is either `binary` or `none` (or omitted). Catches misconfiguration at
+/// load time instead of producing a silent no-op signing pipe.
+fn deserialize_binary_signs<'de, D>(deserializer: D) -> Result<Vec<SignConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let configs = deserialize_signs(deserializer)?;
+    for (idx, cfg) in configs.iter().enumerate() {
+        if let Some(art) = cfg.artifacts.as_deref()
+            && art != "binary"
+            && art != "none"
+        {
+            return Err(serde::de::Error::custom(format!(
+                "binary_signs[{idx}].artifacts: '{art}' is not allowed; \
+                 binary_signs accepts only 'binary' or 'none' (use top-level \
+                 `signs:` for broader artifact filters)"
+            )));
+        }
+    }
+    Ok(configs)
 }
 
 // ---------------------------------------------------------------------------
@@ -4292,6 +4333,17 @@ pub struct MacOSNotarizeApiConfig {
     pub wait: Option<bool>,
 }
 
+/// Artifact-type selector for native macOS notarization. Constrains the YAML
+/// `use:` field on `notarize.macos_native` so an unsupported value fails at
+/// parse time. Only `dmg` and `pkg` are valid — `notarytool` (the only
+/// supported tool) is implicit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MacOSNativeArtifactKind {
+    Dmg,
+    Pkg,
+}
+
 /// Native macOS signing and notarization via `codesign` + `xcrun notarytool`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
@@ -4301,9 +4353,14 @@ pub struct MacOSNativeSignNotarizeConfig {
     /// Enable this configuration. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
-    /// Which artifact type to sign/notarize: "dmg" (default) or "pkg".
+    /// Artifact type to sign and notarize: `dmg` (default) or `pkg`.
+    ///
+    /// Anodizer-original. GR's notarize.macos has no equivalent (signs
+    /// binaries directly via rcodesign). Constrained to a typed enum at
+    /// parse time so an unsupported value (`zip`, `app`, etc.) fails fast
+    /// instead of producing a silent no-op signing pipe.
     #[serde(rename = "use")]
-    pub use_: Option<String>,
+    pub use_: Option<MacOSNativeArtifactKind>,
     /// Native signing configuration (Keychain).
     pub sign: Option<MacOSNativeSignConfig>,
     /// Native notarization configuration (xcrun notarytool).
@@ -5758,8 +5815,16 @@ pub struct WorkspaceConfig {
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
-    /// Binary-specific signing configs (same shape as `signs` but only for binary artifacts).
-    #[serde(default, alias = "binary_sign", deserialize_with = "deserialize_signs")]
+    /// Binary-specific signing configs (same shape as `signs` but only for
+    /// binary artifacts). The `artifacts` field on each entry is constrained
+    /// at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a
+    /// broader filter on `binary_signs` would silently match nothing because
+    /// the loop only iterates Binary artifacts.
+    #[serde(
+        default,
+        alias = "binary_sign",
+        deserialize_with = "deserialize_binary_signs"
+    )]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,
     /// Hooks run before this workspace's pipeline starts.
@@ -7624,6 +7689,80 @@ tag_template = "v{{ .Version }}"
     fn test_signs_default_config_has_empty_signs() {
         let config = Config::default();
         assert!(config.signs.is_empty());
+    }
+
+    // ---- binary_signs artifacts constraint (SCH-27) ----
+
+    #[test]
+    fn test_binary_signs_artifacts_binary_accepted() {
+        let yaml = r#"
+project_name: test
+binary_signs:
+  - id: cosign-binary
+    artifacts: binary
+    cmd: cosign
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.binary_signs.len(), 1);
+        assert_eq!(config.binary_signs[0].artifacts.as_deref(), Some("binary"));
+    }
+
+    #[test]
+    fn test_binary_signs_artifacts_none_accepted() {
+        let yaml = r#"
+project_name: test
+binary_signs:
+  - artifacts: none
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.binary_signs[0].artifacts.as_deref(), Some("none"));
+    }
+
+    #[test]
+    fn test_binary_signs_artifacts_omitted_accepted() {
+        let yaml = r#"
+project_name: test
+binary_signs:
+  - id: implicit
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.binary_signs[0].artifacts, None);
+    }
+
+    #[test]
+    fn test_binary_signs_artifacts_archive_rejected() {
+        // SCH-27: anything broader than `binary` / `none` would silently
+        // match nothing because the binary-sign loop only iterates Binary
+        // artifacts. Reject at parse time instead.
+        let yaml = r#"
+project_name: test
+binary_signs:
+  - artifacts: archive
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "binary_signs[].artifacts: archive must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_binary_signs_artifacts_all_rejected() {
+        let yaml = r#"
+project_name: test
+binary_signs:
+  - artifacts: all
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "binary_signs[].artifacts: all must be rejected"
+        );
     }
 
     // ---- report_sizes tests ----

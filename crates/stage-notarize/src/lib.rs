@@ -542,7 +542,8 @@ fn run_native(
         return Ok(());
     }
 
-    let artifact_type = cfg.use_.as_deref().unwrap_or("dmg");
+    use anodizer_core::config::MacOSNativeArtifactKind;
+    let artifact_type = cfg.use_.unwrap_or(MacOSNativeArtifactKind::Dmg);
 
     // Validate sign config
     let sign = cfg.sign.as_ref().ok_or_else(|| {
@@ -593,7 +594,9 @@ fn run_native(
     });
 
     // Issue 9: Warn if options set with use: pkg (options only apply to DMGs)
-    if artifact_type == "pkg" && sign.options.as_ref().is_some_and(|o| !o.is_empty()) {
+    if artifact_type == MacOSNativeArtifactKind::Pkg
+        && sign.options.as_ref().is_some_and(|o| !o.is_empty())
+    {
         log.warn(&format!(
             "notarize: macos_native[{idx}] sign.options is set but only applies to DMG mode; ignored for pkg"
         ));
@@ -612,9 +615,8 @@ fn run_native(
     };
 
     match artifact_type {
-        "dmg" => run_native_dmg(ctx, &params, dry_run, log),
-        "pkg" => run_native_pkg(ctx, &params, dry_run, log),
-        other => bail!("notarize: macos_native[{idx}] unsupported artifact type: {other}"),
+        MacOSNativeArtifactKind::Dmg => run_native_dmg(ctx, &params, dry_run, log),
+        MacOSNativeArtifactKind::Pkg => run_native_pkg(ctx, &params, dry_run, log),
     }
 }
 
@@ -1069,7 +1071,10 @@ notarize:
 
         let entry = &native[0];
         assert_eq!(entry.enabled, Some(StringOrBool::Bool(true)));
-        assert_eq!(entry.use_, Some("dmg".to_string()));
+        assert_eq!(
+            entry.use_,
+            Some(anodizer_core::config::MacOSNativeArtifactKind::Dmg)
+        );
         assert_eq!(entry.ids, Some(vec!["myapp".to_string()]));
 
         let sign = entry.sign.as_ref().unwrap();
@@ -1101,7 +1106,10 @@ notarize:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let notarize = config.notarize.unwrap();
         let native = notarize.macos_native.unwrap();
-        assert_eq!(native[0].use_, Some("pkg".to_string()));
+        assert_eq!(
+            native[0].use_,
+            Some(anodizer_core::config::MacOSNativeArtifactKind::Pkg)
+        );
     }
 
     #[test]
@@ -1463,35 +1471,24 @@ notarize: {}
     }
 
     #[test]
-    fn test_native_rejects_unsupported_use_type() {
-        let mut config = Config::default();
-        config.notarize = Some(NotarizeConfig {
-            skip: None,
-            macos: None,
-            macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
-                use_: Some("zip".to_string()),
-                sign: Some(MacOSNativeSignConfig {
-                    identity: Some("Developer ID".to_string()),
-                    ..Default::default()
-                }),
-                notarize: Some(MacOSNativeNotarizeConfig {
-                    profile_name: Some("profile".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }]),
-        });
-
-        let mut ctx = make_ctx_with_notarize(config);
-        let stage = NotarizeStage;
-        let result = stage.run(&mut ctx);
-        assert!(result.is_err());
+    fn test_native_rejects_unsupported_use_type_at_parse_time() {
+        // SCH-31 hard-break: macos_native.use is a typed enum; unsupported
+        // values fail at parse time instead of producing a silent no-op.
+        let yaml = r#"
+notarize:
+  macos_native:
+    - enabled: true
+      use: zip
+      sign:
+        identity: "Developer ID"
+      notarize:
+        profile_name: "profile"
+crates: []
+"#;
+        let result: std::result::Result<Config, _> = serde_yaml_ng::from_str(yaml);
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("unsupported artifact type: zip"),
+            result.is_err(),
+            "macos_native.use: zip must be rejected (only 'dmg' / 'pkg' allowed)"
         );
     }
 
@@ -1663,7 +1660,7 @@ notarize: {}
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
-                use_: Some("dmg".to_string()),
+                use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Dmg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Application: Test".to_string()),
                     keychain: Some("/path/to/kc".to_string()),
@@ -1722,7 +1719,7 @@ notarize: {}
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
-                use_: Some("pkg".to_string()),
+                use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Pkg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Installer: Test".to_string()),
                     ..Default::default()
@@ -1771,7 +1768,7 @@ notarize: {}
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
-                use_: Some("dmg".to_string()),
+                use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Dmg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Application: Test".to_string()),
                     ..Default::default()
@@ -1806,7 +1803,7 @@ notarize: {}
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
-                use_: Some("pkg".to_string()),
+                use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Pkg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Installer: Test".to_string()),
                     ..Default::default()

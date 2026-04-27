@@ -18,7 +18,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `artifactories` | list of ArtifactoryConfig | — | Artifactory upload configurations. |
 | `aur_sources` | list of AurSourceConfig | — | AUR source package publishing configurations (source-only PKGBUILD, not -bin). |
 | `before` | HooksConfig | — | Hooks run before the release pipeline starts. |
-| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). |
+| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. |
 | `changelog` | ChangelogConfig | — | Changelog generation configuration. |
 | `cloudsmiths` | list of CloudSmithConfig | — | CloudSmith publisher configurations. |
 | `crates` | list of CrateConfig | `[]` | List of crates in this project. |
@@ -629,7 +629,7 @@ A workspace represents an independent project root within a monorepo. Each works
 |-------|------|---------|-------------|
 | `after` | HooksConfig | — | Hooks run after this workspace's pipeline completes. |
 | `before` | HooksConfig | — | Hooks run before this workspace's pipeline starts. |
-| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). |
+| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. |
 | `changelog` | ChangelogConfig | — | Changelog configuration for this workspace. |
 | `crates` | list of CrateConfig | `[]` | Crates belonging to this workspace. |
 | `env` | list of string | — | Environment variables scoped to this workspace.

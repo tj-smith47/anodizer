@@ -1800,11 +1800,13 @@ artifacts: all
 
     #[test]
     fn test_binary_signs_config_parsing() {
+        // `artifacts: binary` is the canonical value post-SCH-27 — broader
+        // filters like `all` would silently match nothing.
         let yaml = r#"
 project_name: test
 binary_signs:
   - cmd: gpg
-    artifacts: all
+    artifacts: binary
   - cmd: cosign
     args:
       - sign-blob
@@ -1822,7 +1824,7 @@ crates: []
 project_name: test
 binary_sign:
   cmd: gpg
-  artifacts: all
+  artifacts: binary
 crates: []
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();

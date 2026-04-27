@@ -63,7 +63,7 @@
       ]
     },
     "binary_signs": {
-      "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts).",
+      "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts.",
       "default": [],
       "type": "array",
       "items": {
@@ -6664,6 +6664,14 @@
         }
       }
     },
+    "MacOSNativeArtifactKind": {
+      "description": "Artifact-type selector for native macOS notarization. Constrains the YAML `use:` field on `notarize.macos_native` so an unsupported value fails at parse time. Only `dmg` and `pkg` are valid — `notarytool` (the only supported tool) is implicit.",
+      "type": "string",
+      "enum": [
+        "dmg",
+        "pkg"
+      ]
+    },
     "MacOSNativeNotarizeConfig": {
       "description": "Native notarization configuration for `xcrun notarytool`.",
       "type": "object",
@@ -6791,11 +6799,15 @@
           ]
         },
         "use": {
-          "description": "Which artifact type to sign/notarize: \"dmg\" (default) or \"pkg\".",
+          "description": "Artifact type to sign and notarize: `dmg` (default) or `pkg`.\n\nAnodizer-original. GR's notarize.macos has no equivalent (signs binaries directly via rcodesign). Constrained to a typed enum at parse time so an unsupported value (`zip`, `app`, etc.) fails fast instead of producing a silent no-op signing pipe.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MacOSNativeArtifactKind"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       }
@@ -12655,7 +12667,7 @@
           ]
         },
         "binary_signs": {
-          "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts).",
+          "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts.",
           "default": [],
           "type": "array",
           "items": {
