@@ -66,7 +66,7 @@ pub fn run_publishers(
         let label = publisher.name.as_deref().unwrap_or(&default_label);
 
         // Check template-conditional disable
-        if let Some(ref d) = publisher.disable {
+        if let Some(ref d) = publisher.skip {
             let off = d
                 .try_is_disabled(|tmpl| template::render(tmpl, base_vars))
                 .with_context(|| format!("[publisher] render disable template for {}", label))?;
@@ -231,8 +231,10 @@ pub fn run_publishers(
                         cmd.env(key, val);
                     }
                 }
-                if let Some(ref env_map) = publisher.env {
-                    for (k, v) in env_map {
+                if let Some(ref env_list) = publisher.env {
+                    let parsed = anodizer_core::config::parse_env_entries(env_list)
+                        .with_context(|| "publisher env: parse entries")?;
+                    for (k, v) in &parsed {
                         cmd.env(k, v);
                     }
                 }
@@ -484,7 +486,7 @@ mod tests {
             artifact_types: artifact_types.map(|v| v.into_iter().map(|s| s.to_string()).collect()),
             env: None,
             dir: None,
-            disable: None,
+            skip: None,
             checksum: None,
             signature: None,
             meta: None,
@@ -703,7 +705,7 @@ mod tests {
             artifact_types: None,
             env: None,
             dir: None,
-            disable: None,
+            skip: None,
             checksum: None,
             signature: None,
             meta: None,
@@ -754,7 +756,7 @@ mod tests {
             artifact_types: None,
             env: None,
             dir: None,
-            disable: None,
+            skip: None,
             checksum: None,
             signature: None,
             meta: None,
@@ -791,7 +793,7 @@ mod tests {
             artifact_types: None,
             env: None,
             dir: None,
-            disable: None,
+            skip: None,
             checksum: None,
             signature: None,
             meta: None,
@@ -831,7 +833,7 @@ mod tests {
             artifact_types: None,
             env: None,
             dir: None,
-            disable: None,
+            skip: None,
             checksum: None,
             signature: None,
             meta: None,
@@ -883,7 +885,7 @@ publishers:
       - archive
       - checksum
     env:
-      AWS_REGION: us-east-1
+      - AWS_REGION=us-east-1
   - name: notify
     cmd: "curl -X POST https://hooks.example.com/release"
     ids:
@@ -905,9 +907,11 @@ crates:
             p0.artifact_types.as_ref().unwrap(),
             &["archive", "checksum"]
         );
-        assert_eq!(
-            p0.env.as_ref().unwrap().get("AWS_REGION").unwrap(),
-            "us-east-1"
+        assert!(
+            p0.env
+                .as_ref()
+                .unwrap()
+                .contains(&"AWS_REGION=us-east-1".to_string())
         );
         assert!(p0.ids.is_none());
 
@@ -975,7 +979,7 @@ publishers:
   - name: deploy
     cmd: "deploy.sh"
     dir: "/opt/deploy"
-    disable: "{{ IsSnapshot }}"
+    skip: "{{ IsSnapshot }}"
 crates:
   - name: a
     path: "."
@@ -986,7 +990,7 @@ crates:
         assert_eq!(publishers.len(), 1);
         assert_eq!(publishers[0].dir.as_deref(), Some("/opt/deploy"));
         assert_eq!(
-            publishers[0].disable,
+            publishers[0].skip,
             Some(StringOrBool::String("{{ IsSnapshot }}".to_string()))
         );
     }
@@ -1004,7 +1008,7 @@ crates:
             artifact_types: None,
             env: None,
             dir: Some("/tmp/work".to_string()),
-            disable: None,
+            skip: None,
             checksum: None,
             signature: None,
             meta: None,
@@ -1030,7 +1034,7 @@ crates:
             artifact_types: None,
             env: None,
             dir: None,
-            disable: Some(StringOrBool::String("true".to_string())),
+            skip: Some(StringOrBool::String("true".to_string())),
             checksum: None,
             signature: None,
             meta: None,
@@ -1073,7 +1077,7 @@ crates:
             artifact_types: None,
             env: None,
             dir: None,
-            disable: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
+            skip: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
             checksum: None,
             signature: None,
             meta: None,

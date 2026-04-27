@@ -1,8 +1,7 @@
-use crate::config::HookEntry;
+use crate::config::{self, HookEntry};
 use crate::log::StageLogger;
 use crate::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
-use std::collections::HashMap;
 use std::process::Command;
 
 /// Redact sensitive environment variable values from output strings.
@@ -67,16 +66,18 @@ pub fn run_hooks(
             None => None,
         };
 
-        let expanded_env: Option<HashMap<String, String>> = match env {
+        let expanded_env: Option<Vec<(String, String)>> = match env {
             Some(envs) => {
-                let mut out = HashMap::with_capacity(envs.len());
-                for (k, v) in envs {
+                let parsed = config::parse_env_entries(envs)
+                    .with_context(|| format!("{label} hook: parse env entries"))?;
+                let mut out = Vec::with_capacity(parsed.len());
+                for (k, v) in parsed {
                     let expanded_v = if let Some(tv) = template_vars {
-                        render_hook_template(v, tv, label)?
+                        render_hook_template(&v, tv, label)?
                     } else {
-                        v.clone()
+                        v
                     };
-                    out.insert(k.clone(), expanded_v);
+                    out.push((k, expanded_v));
                 }
                 Some(out)
             }

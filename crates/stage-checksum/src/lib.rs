@@ -217,7 +217,7 @@ impl Stage for ChecksumStage {
             .as_ref()
             .and_then(|d| d.checksum.as_ref());
 
-        let global_disable = global_cksum.and_then(|c| c.disable.clone());
+        let global_disable = global_cksum.and_then(|c| c.skip.clone());
         if ctx.is_disabled_with_log(&global_disable, &log, "checksum globally")? {
             return Ok(());
         }
@@ -268,7 +268,7 @@ impl Stage for ChecksumStage {
             let crate_name = &crate_cfg.name;
 
             // Skip crates that have checksum explicitly disabled
-            let crate_disable = crate_cfg.checksum.as_ref().and_then(|c| c.disable.clone());
+            let crate_disable = crate_cfg.checksum.as_ref().and_then(|c| c.skip.clone());
             if ctx.is_disabled_with_log(
                 &crate_disable,
                 &log,
@@ -1244,7 +1244,7 @@ ids:
             .dist(dist)
             .defaults(Defaults {
                 checksum: Some(ChecksumConfig {
-                    disable: Some(StringOrBool::Bool(true)),
+                    skip: Some(StringOrBool::Bool(true)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1296,7 +1296,7 @@ ids:
             tag_template: "v{{ .Version }}".to_string(),
             checksum: Some(ChecksumConfig {
                 algorithm: Some("sha256".to_string()),
-                disable: Some(StringOrBool::Bool(true)),
+                skip: Some(StringOrBool::Bool(true)),
                 ..Default::default()
             }),
             ..Default::default()
@@ -2509,13 +2509,13 @@ algorithm: "sha256"
     fn test_config_disable_template_string_parsing() {
         let yaml = r#"
 algorithm: "sha256"
-disable: "{{ if .IsSnapshot }}true{{ end }}"
+skip: "{{ if .IsSnapshot }}true{{ end }}"
 "#;
         let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        match &cfg.disable {
+        match &cfg.skip {
             Some(anodizer_core::config::StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
-                assert!(cfg.disable.as_ref().unwrap().is_template());
+                assert!(cfg.skip.as_ref().unwrap().is_template());
             }
             other => panic!("expected StringOrBool::String, got {:?}", other),
         }
@@ -2525,14 +2525,14 @@ disable: "{{ if .IsSnapshot }}true{{ end }}"
     fn test_config_disable_bool_parsing() {
         let yaml = r#"
 algorithm: "sha256"
-disable: true
+skip: true
 "#;
         let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
-            cfg.disable,
+            cfg.skip,
             Some(anodizer_core::config::StringOrBool::Bool(true))
         );
-        assert!(!cfg.disable.as_ref().unwrap().is_template());
+        assert!(!cfg.skip.as_ref().unwrap().is_template());
     }
 
     #[test]
@@ -2793,7 +2793,7 @@ extra_files:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 checksum: Some(ChecksumConfig {
-                    disable: Some(StringOrBool::String("true".to_string())),
+                    skip: Some(StringOrBool::String("true".to_string())),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -2816,7 +2816,7 @@ extra_files:
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
         assert!(
             checksums.is_empty(),
-            "disable: 'true' string should disable checksums"
+            "skip: 'true' string should disable checksums"
         );
     }
 

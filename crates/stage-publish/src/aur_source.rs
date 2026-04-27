@@ -257,7 +257,7 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
     let label = format!("aur_source: crate '{crate_name}'");
     if crate::util::is_publisher_disabled(
         ctx,
-        publish_cfg.disable.as_ref(),
+        publish_cfg.skip.as_ref(),
         publish_cfg.skip_upload.as_ref(),
         &label,
         log,
@@ -289,7 +289,7 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
         let label = format!("aur_sources[{}]", i);
         if crate::util::is_publisher_disabled(
             ctx,
-            cfg.disable.as_ref(),
+            cfg.skip.as_ref(),
             cfg.skip_upload.as_ref(),
             &label,
             log,

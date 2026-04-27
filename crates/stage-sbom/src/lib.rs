@@ -328,9 +328,9 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let id = sbom_cfg.id.as_deref().unwrap_or("default");
 
     // Evaluate disable — supports bool or template string. Use
-    // try_is_disabled so a malformed disable: template surfaces as Err
+    // try_is_disabled so a malformed skip: template surfaces as Err
     // instead of silently evaluating false.
-    if let Some(ref d) = sbom_cfg.disable
+    if let Some(ref d) = sbom_cfg.skip
         && d.try_is_disabled(|s| ctx.render_template(s))
             .with_context(|| format!("sbom[{}]: evaluate disable expression", id))?
     {
@@ -388,18 +388,20 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     });
 
     // Default env for syft with source/archive
-    let env_vars: HashMap<String, String> = sbom_cfg.env.clone().unwrap_or_else(|| {
-        if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
-            let mut m = HashMap::new();
-            m.insert(
-                "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
-                "true".to_string(),
-            );
-            m
-        } else {
-            HashMap::new()
+    let env_vars: Vec<(String, String)> = match sbom_cfg.env.as_deref() {
+        Some(list) => anodizer_core::config::parse_env_entries(list)
+            .with_context(|| "sbom: parse env entries")?,
+        None => {
+            if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
+                vec![(
+                    "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
+                    "true".to_string(),
+                )]
+            } else {
+                Vec::new()
+            }
         }
-    });
+    };
 
     // Filter artifacts from the registry based on artifacts type.
     //

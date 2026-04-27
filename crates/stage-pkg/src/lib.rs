@@ -137,7 +137,7 @@ impl Stage for PkgStage {
                 }
 
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = pkg_cfg.disable {
+                if let Some(ref d) = pkg_cfg.skip {
                     let off = d
                         .try_is_disabled(|s| ctx.render_template(s))
                         .with_context(|| {
@@ -554,7 +554,7 @@ mod tests {
 
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            disable: Some(StringOrBool::Bool(true)),
+            skip: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -876,7 +876,7 @@ crates:
         assert!(pkgs[0].install_location.is_none());
         assert!(pkgs[0].scripts.is_none());
         assert!(pkgs[0].replace.is_none());
-        assert!(pkgs[0].disable.is_none());
+        assert!(pkgs[0].skip.is_none());
     }
 
     #[test]
@@ -901,7 +901,7 @@ crates:
           - LICENSE
         replace: true
         mod_timestamp: "2024-01-01T00:00:00Z"
-        disable: false
+        skip: false
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let pkgs = config.crates[0].pkgs.as_ref().unwrap();
@@ -925,7 +925,7 @@ crates:
         assert_eq!(extras[1].glob(), "LICENSE");
         assert_eq!(p.replace, Some(true));
         assert_eq!(p.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(p.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(p.skip, Some(StringOrBool::Bool(false)));
     }
 
     #[test]
@@ -1477,7 +1477,7 @@ crates:
 
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            disable: Some(StringOrBool::String("true".to_string())),
+            skip: Some(StringOrBool::String("true".to_string())),
             ..Default::default()
         };
 
@@ -1513,7 +1513,7 @@ crates:
 
         PkgStage.run(&mut ctx).unwrap();
 
-        // disable: "true" should skip the config
+        // skip: "true" should skip the config
         assert!(ctx.artifacts.by_kind(ArtifactKind::MacOsPackage).is_empty());
     }
 
@@ -1523,7 +1523,7 @@ crates:
 
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            disable: Some(StringOrBool::String("false".to_string())),
+            skip: Some(StringOrBool::String("false".to_string())),
             ..Default::default()
         };
 
@@ -1559,7 +1559,7 @@ crates:
 
         PkgStage.run(&mut ctx).unwrap();
 
-        // disable: "false" should NOT skip the config
+        // skip: "false" should NOT skip the config
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::MacOsPackage).len(), 1);
     }
 
@@ -1570,7 +1570,7 @@ crates:
         // Template that evaluates to "true" when IsSnapshot is set
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            disable: Some(StringOrBool::String(
+            skip: Some(StringOrBool::String(
                 "{% if IsSnapshot %}true{% else %}false{% endif %}".to_string(),
             )),
             ..Default::default()
@@ -1627,13 +1627,13 @@ crates:
     pkgs:
       - identifier: com.example.test
         use: appbundle
-        disable: "{{ if IsSnapshot }}true{{ else }}false{{ endif }}"
+        skip: "{{ if IsSnapshot }}true{{ else }}false{{ endif }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let pkgs = config.crates[0].pkgs.as_ref().unwrap();
         assert_eq!(pkgs.len(), 1);
         assert_eq!(pkgs[0].use_.as_deref(), Some("appbundle"));
-        assert!(matches!(pkgs[0].disable, Some(StringOrBool::String(_))));
+        assert!(matches!(pkgs[0].skip, Some(StringOrBool::String(_))));
     }
 
     // --- `pkg.if` template-conditional (GoReleaser Pro) ---

@@ -911,7 +911,7 @@ impl Stage for ChangelogStage {
         }
 
         // If disabled, skip the stage entirely (supports template-conditional disable).
-        if let Some(d) = changelog_cfg.as_ref().and_then(|c| c.disable.as_ref()) {
+        if let Some(d) = changelog_cfg.as_ref().and_then(|c| c.skip.as_ref()) {
             let off = d
                 .try_is_disabled(|s| ctx.render_template(s))
                 .with_context(|| "changelog: render disable template")?;
@@ -2049,7 +2049,7 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
-            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
+            skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
         config.crates = vec![CrateConfig {
@@ -2978,7 +2978,7 @@ abbrev: 10
         let mut config = Config::default();
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
-            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
+            skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
         config.crates = vec![CrateConfig {
@@ -3546,11 +3546,11 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     #[test]
     fn test_config_parse_disable_template_string() {
         let yaml = r#"
-disable: "{{ if .IsSnapshot }}true{{ end }}"
+skip: "{{ if .IsSnapshot }}true{{ end }}"
 sort: asc
 "#;
         let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        match &cfg.disable {
+        match &cfg.skip {
             Some(anodizer_core::config::StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"), "should contain template string");
             }
@@ -3561,11 +3561,11 @@ sort: asc
     #[test]
     fn test_config_parse_disable_bool_true() {
         let yaml = r#"
-disable: true
+skip: true
 "#;
         let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
-            cfg.disable,
+            cfg.skip,
             Some(anodizer_core::config::StringOrBool::Bool(true))
         );
     }

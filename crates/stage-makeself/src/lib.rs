@@ -175,7 +175,7 @@ impl Stage for MakeselfStage {
 
         for cfg in &configs {
             // Check disable
-            if let Some(ref d) = cfg.disable {
+            if let Some(ref d) = cfg.skip {
                 let off = d
                     .try_is_disabled(|tmpl| ctx.render_template(tmpl))
                     .with_context(|| "makeself: render disable template")?;

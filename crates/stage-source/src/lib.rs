@@ -795,7 +795,7 @@ impl SourceStage {
         let id = sbom_cfg.id.as_deref().unwrap_or("default");
 
         // Evaluate disable — supports bool or template string
-        if let Some(ref d) = sbom_cfg.disable {
+        if let Some(ref d) = sbom_cfg.skip {
             let off = d
                 .try_is_disabled(|s| ctx.render_template(s))
                 .with_context(|| format!("sbom[{}]: render disable template", id))?;
@@ -844,18 +844,20 @@ impl SourceStage {
         });
 
         // Default env for syft with source/archive
-        let env_vars: HashMap<String, String> = sbom_cfg.env.clone().unwrap_or_else(|| {
-            if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
-                let mut m = HashMap::new();
-                m.insert(
-                    "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
-                    "true".to_string(),
-                );
-                m
-            } else {
-                HashMap::new()
+        let env_vars: Vec<(String, String)> = match sbom_cfg.env.as_deref() {
+            Some(list) => anodizer_core::config::parse_env_entries(list)
+                .with_context(|| "source-sbom: parse env entries")?,
+            None => {
+                if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
+                    vec![(
+                        "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
+                        "true".to_string(),
+                    )]
+                } else {
+                    Vec::new()
+                }
             }
-        });
+        };
 
         // Filter artifacts from the registry based on artifacts type
         let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
@@ -1521,7 +1523,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         // All fields are None by default
         assert!(cfg.cmd.is_none());
         assert!(cfg.artifacts.is_none());
-        assert!(cfg.disable.is_none());
+        assert!(cfg.skip.is_none());
     }
 
     #[test]

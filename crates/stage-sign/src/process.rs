@@ -44,8 +44,8 @@ struct SignJob {
     args: Vec<String>,
     /// Optional stdin content to pipe to the signing command.
     stdin_data: Option<Vec<u8>>,
-    /// Optional environment variables to set on the child process.
-    env: Option<HashMap<String, String>>,
+    /// Optional environment variables to set on the child process, ordered.
+    env: Option<Vec<(String, String)>>,
     /// Human-readable label for log messages (e.g., "sign", "binary-sign").
     label: String,
     /// The sign config's `id` field for log messages.
@@ -81,7 +81,9 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
         .stderr(Stdio::piped());
 
     if let Some(ref env_vars) = job.env {
-        command.envs(env_vars);
+        for (k, v) in env_vars {
+            command.env(k, v);
+        }
     }
 
     let mut child = command.spawn().with_context(|| {
@@ -120,7 +122,7 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     let env_pairs: Vec<(String, String)> = job
         .env
         .iter()
-        .flat_map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())))
+        .flat_map(|m| m.iter().cloned())
         .chain(std::env::vars())
         .collect();
 
@@ -469,26 +471,30 @@ pub(crate) fn process_sign_configs(
                 label,
             )?;
 
-            let mut rendered_env: HashMap<String, String> = match sign_cfg.env.as_ref() {
-                Some(env_map) => env_map
-                    .iter()
-                    .map(|(k, v)| -> Result<(String, String)> {
-                        let rendered_val = ctx.render_template(v).with_context(|| {
-                            format!("sign[{label}]: render env value for '{k}'")
-                        })?;
-                        Ok((k.clone(), rendered_val))
-                    })
-                    .collect::<Result<HashMap<String, String>>>()?,
-                None => HashMap::new(),
+            let mut rendered_env: Vec<(String, String)> = match sign_cfg.env.as_ref() {
+                Some(env_list) => {
+                    let parsed = anodizer_core::config::parse_env_entries(env_list)
+                        .with_context(|| format!("sign[{label}]: parse env entries"))?;
+                    parsed
+                        .into_iter()
+                        .map(|(k, v)| -> Result<(String, String)> {
+                            let rendered_val = ctx.render_template(&v).with_context(|| {
+                                format!("sign[{label}]: render env value for '{k}'")
+                            })?;
+                            Ok((k, rendered_val))
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                }
+                None => Vec::new(),
             };
 
             for (k, v) in shell_vars.iter() {
                 if v.is_empty() {
                     continue;
                 }
-                rendered_env
-                    .entry((*k).to_string())
-                    .or_insert_with(|| (*v).to_string());
+                if !rendered_env.iter().any(|(ek, _)| ek == *k) {
+                    rendered_env.push(((*k).to_string(), (*v).to_string()));
+                }
             }
 
             let rendered_env = if rendered_env.is_empty() {

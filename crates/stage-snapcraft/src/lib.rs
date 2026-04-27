@@ -516,7 +516,7 @@ impl Stage for SnapcraftStage {
 
             for snap_cfg in snap_configs {
                 // Skip disabled configs
-                if let Some(ref d) = snap_cfg.disable {
+                if let Some(ref d) = snap_cfg.skip {
                     let off = d
                         .try_is_disabled(|tmpl| ctx.render_template(tmpl))
                         .with_context(|| {
@@ -1038,12 +1038,12 @@ impl Stage for SnapcraftPublishStage {
                     continue;
                 }
                 // Skip disabled configs
-                if let Some(ref d) = snap_cfg.disable {
+                if let Some(ref d) = snap_cfg.skip {
                     let off = d
                         .try_is_disabled(|tmpl| ctx.render_template(tmpl))
                         .with_context(|| {
                             format!(
-                                "snapcraft: render publish.disable template for crate {}",
+                                "snapcraft: render publish.skip template for crate {}",
                                 krate.name
                             )
                         })?;
@@ -1519,7 +1519,7 @@ mod tests {
 
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
-            disable: Some(StringOrBool::Bool(true)),
+            skip: Some(StringOrBool::Bool(true)),
             summary: Some("Test snap".to_string()),
             description: Some("A test snap package".to_string()),
             ..Default::default()
@@ -2016,7 +2016,7 @@ crates:
         extra_files:
           - README.md
         name_template: "mysnap_{{ Version }}_{{ Arch }}"
-        disable: false
+        skip: false
         replace: true
         mod_timestamp: "1704067200"
 "#;
@@ -2068,7 +2068,7 @@ crates:
             snap.name_template.as_deref(),
             Some("mysnap_{{ Version }}_{{ Arch }}")
         );
-        assert_eq!(snap.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(snap.skip, Some(StringOrBool::Bool(false)));
         assert_eq!(snap.replace, Some(true));
         assert_eq!(snap.mod_timestamp.as_deref(), Some("1704067200"));
     }
@@ -2579,7 +2579,7 @@ crates:
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             publish: Some(true),
-            disable: Some(StringOrBool::Bool(true)),
+            skip: Some(StringOrBool::Bool(true)),
             summary: Some("Test snap".to_string()),
             description: Some("A test snap package".to_string()),
             ..Default::default()

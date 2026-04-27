@@ -139,7 +139,7 @@ impl Stage for NsisStage {
                 }
 
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = nsis_cfg.disable {
+                if let Some(ref d) = nsis_cfg.skip {
                     let off = d
                         .try_is_disabled(|s| ctx.render_template(s))
                         .with_context(|| {
@@ -587,7 +587,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
 
         let nsis_cfg = NsisConfig {
-            disable: Some(StringOrBool::Bool(true)),
+            skip: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -641,7 +641,7 @@ mod tests {
 
         // Template evaluates to "true" when IsSnapshot is set
         let nsis_cfg = NsisConfig {
-            disable: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
+            skip: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
             ..Default::default()
         };
 
@@ -974,7 +974,7 @@ crates:
             nsis_configs[0].name.as_deref(),
             Some("{{ ProjectName }}_{{ Version }}_{{ Arch }}_setup.exe")
         );
-        assert!(nsis_configs[0].disable.is_none());
+        assert!(nsis_configs[0].skip.is_none());
         assert!(nsis_configs[0].replace.is_none());
         assert!(nsis_configs[0].script.is_none());
     }
@@ -999,7 +999,7 @@ crates:
           - LICENSE
         replace: true
         mod_timestamp: "{{ .CommitTimestamp }}"
-        disable: "false"
+        skip: "false"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nsis_configs = config.crates[0].nsis.as_ref().unwrap();
@@ -1025,7 +1025,7 @@ crates:
             Some("{{ .CommitTimestamp }}")
         );
         assert_eq!(
-            nsis.disable,
+            nsis.skip,
             Some(anodizer_core::config::StringOrBool::String(
                 "false".to_string()
             ))

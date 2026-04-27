@@ -352,7 +352,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       aur:
-        disable: true  # no AUR account registered yet
+        skip: true  # no AUR account registered yet
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
         package_name: anodizer-bin
         description: "A Rust-native release automation tool"
@@ -375,7 +375,7 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       krew:
-        disable: true  # anodizer is not a kubectl plugin — krew is not an appropriate channel
+        skip: true  # anodizer is not a kubectl plugin — krew is not an appropriate channel
         manifests_repo:
           owner: tj-smith47
           name: krew-index
@@ -421,7 +421,7 @@ crates:
               - network
               - network-bind
     flatpaks:
-      - disable: true  # disabled — no Flatpak runtime configured yet
+      - skip: true  # disabled — no Flatpak runtime configured yet
         app_id: io.github.tj_smith47.Anodizer
         runtime: org.freedesktop.Platform
         runtime_version: "24.08"
@@ -431,28 +431,28 @@ crates:
           - "--share=network"
           - "--filesystem=host"
     app_bundles:
-      - disable: true  # disabled — no macOS app bundle identity configured
+      - skip: true  # disabled — no macOS app bundle identity configured
         bundle: io.github.tj-smith47.anodizer
         name: Anodizer
     dmgs:
-      - disable: true  # disabled — no macOS DMG configured (needs app_bundle first)
+      - skip: true  # disabled — no macOS DMG configured (needs app_bundle first)
         name: Anodizer
     pkgs:
-      - disable: true  # disabled — no macOS PKG signing identity configured
+      - skip: true  # disabled — no macOS PKG signing identity configured
         identifier: io.github.tj-smith47.anodizer
     msis:
-      - disable: true  # disabled — no WiX source file (.wxs) created
+      - skip: true  # disabled — no WiX source file (.wxs) created
         name: Anodizer
     nsis:
-      - disable: true  # disabled — no NSIS script created
+      - skip: true  # disabled — no NSIS script created
         name: Anodizer
     blobs:
-      - disable: true  # disabled — no cloud storage configured
+      - skip: true  # disabled — no cloud storage configured
         provider: s3
         bucket: anodizer-releases
 
 notarize:
-  disable: true  # disabled — no Apple Developer credentials configured
+  skip: true  # disabled — no Apple Developer credentials configured
 
 template_files:
   - id: install-script
@@ -569,14 +569,14 @@ milestones:
 
 # DockerHub description sync
 dockerhub:
-  - disable: true  # disabled — no DockerHub image for anodizer
+  - skip: true  # disabled — no DockerHub image for anodizer
     username: "{{ Env.DOCKERHUB_USERNAME }}"
     description: "A Rust-native release automation tool"
 
 # Artifactory upload configurations
 artifactories:
   - name: production
-    disable: true  # disabled — no Artifactory instance
+    skip: true  # disabled — no Artifactory instance
     target: "https://artifactory.example.com/generic-local/anodizer/{{ Tag }}/"
     method: PUT
 

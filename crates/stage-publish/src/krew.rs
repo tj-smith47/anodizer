@@ -251,7 +251,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     // exposes `disable` so projects that are not kubectl plugins can keep a
     // krew block in shared config and turn it off without removing the
     // surrounding repository/short_description boilerplate.
-    if let Some(d) = krew_cfg.disable.as_ref() {
+    if let Some(d) = krew_cfg.skip.as_ref() {
         let off = d
             .try_is_disabled(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("krew: render disable template for '{}'", crate_name))?;

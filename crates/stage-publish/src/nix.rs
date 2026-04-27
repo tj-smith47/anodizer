@@ -698,7 +698,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .ok_or_else(|| anyhow::anyhow!("nix: no nix config for '{}'", crate_name))?;
 
     // Honor `disable` first (template-aware), then `skip_upload`.
-    if let Some(d) = nix_cfg.disable.as_ref() {
+    if let Some(d) = nix_cfg.skip.as_ref() {
         let off = d
             .try_is_disabled(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("nix: render disable template for '{}'", crate_name))?;

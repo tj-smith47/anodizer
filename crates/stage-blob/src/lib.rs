@@ -818,7 +818,7 @@ impl Stage for BlobStage {
             for blob_cfg in blob_configs {
                 // Evaluate disable (supports both bool and template string)
                 if ctx.is_disabled_with_log(
-                    &blob_cfg.disable,
+                    &blob_cfg.skip,
                     &log,
                     &format!("blob config for crate {}", krate.name),
                 )? {
@@ -1291,7 +1291,7 @@ mod tests {
         );
     }
 
-    /// Regression: a malformed `disable:` template now propagates as Err
+    /// Regression: a malformed `skip:` template now propagates as Err
     /// instead of silently evaluating to "not disabled".
     #[test]
     fn test_is_disabled_template_render_failure_propagates() {
@@ -1303,7 +1303,7 @@ mod tests {
             .is_disabled_with_log(&disable, &test_log(), "t")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("evaluate disable expression"), "{err}");
+        assert!(err.contains("evaluate skip expression"), "{err}");
     }
 
     // -----------------------------------------------------------------------
@@ -1536,7 +1536,7 @@ blobs:
     kms_key: "key123"
     ids:
       - build-linux
-    disable: false
+    skip: false
     include_meta: true
     extra_files:
       - glob: "LICENSE*"
@@ -1558,7 +1558,7 @@ blobs:
         assert_eq!(b.content_disposition.as_deref(), Some("inline"));
         assert_eq!(b.kms_key.as_deref(), Some("key123"));
         assert_eq!(b.ids.as_ref().unwrap(), &["build-linux"]);
-        assert_eq!(b.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(b.skip, Some(StringOrBool::Bool(false)));
         assert_eq!(b.include_meta, Some(true));
         assert!(b.extra_files.is_some());
         assert_eq!(b.extra_files_only, Some(false));
@@ -1603,11 +1603,11 @@ blobs:
 blobs:
   - provider: s3
     bucket: b
-    disable: true
+    skip: true
 "#;
         let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
-        assert_eq!(blobs[0].disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(blobs[0].skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -1616,11 +1616,11 @@ blobs:
 blobs:
   - provider: s3
     bucket: b
-    disable: "{% if IsSnapshot %}true{% endif %}"
+    skip: "{% if IsSnapshot %}true{% endif %}"
 "#;
         let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
-        match &blobs[0].disable {
+        match &blobs[0].skip {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
             }
@@ -1643,7 +1643,7 @@ blobs:
         assert!(cfg.content_disposition.is_none());
         assert!(cfg.kms_key.is_none());
         assert!(cfg.ids.is_none());
-        assert!(cfg.disable.is_none());
+        assert!(cfg.skip.is_none());
         assert!(cfg.include_meta.is_none());
         assert!(cfg.extra_files.is_none());
         assert!(cfg.extra_files_only.is_none());
@@ -1912,7 +1912,7 @@ partial:
                 blobs: Some(vec![BlobConfig {
                     provider: "s3".to_string(),
                     bucket: "b".to_string(),
-                    disable: Some(StringOrBool::Bool(true)),
+                    skip: Some(StringOrBool::Bool(true)),
                     ..Default::default()
                 }]),
                 ..Default::default()

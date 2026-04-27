@@ -601,12 +601,12 @@ pub fn build_docker_v2_command(
 /// Checks the `disable` field: if it's a template, renders it and checks for "true".
 /// Returns `true` when the config should be skipped. Surfaces template render
 /// errors instead of silently treating them as "not disabled".
-pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
-    match disable {
+pub fn is_docker_v2_disabled(skip: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
+    match skip {
         None => Ok(false),
         Some(d) => d
             .try_is_disabled(|s| ctx.render_template(s))
-            .with_context(|| "docker_v2: render disable template"),
+            .with_context(|| "docker_v2: render skip template"),
     }
 }
 
@@ -621,7 +621,7 @@ fn resolve_digest_config(
     let Some(dc) = cfg else {
         return Ok((false, None));
     };
-    let disabled = match &dc.disable {
+    let disabled = match &dc.skip {
         None => false,
         Some(d) => d
             .try_is_disabled(|s| ctx.render_template(s))
@@ -1131,7 +1131,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             if let Some(digest) = digest {
                 tag_digests.insert(tag.clone(), digest.clone());
 
-                // Write per-tag digest file unless docker_digest.disable is truthy.
+                // Write per-tag digest file unless docker_digest.skip is truthy.
                 // Always use tag-based naming for per-tag files to avoid collisions
                 // when multiple tags exist. The name_template controls the artifact
                 // name (metadata), not the file path.
@@ -1965,7 +1965,7 @@ impl Stage for DockerStage {
 
             for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
                 // Check disable — skip when template evaluates to true
-                if is_docker_v2_disabled(&v2_cfg.disable, ctx)? {
+                if is_docker_v2_disabled(&v2_cfg.skip, ctx)? {
                     log.status(&format!(
                         "docker_v2[{}]: skipping disabled config for crate {}",
                         idx, krate.name
@@ -5151,7 +5151,7 @@ build_args:
   BUILD_DATE: "2024-01-01"
 flags:
   - "--no-cache"
-disable: false
+skip: false
 sbom: true
 retry:
   attempts: 5
@@ -5189,7 +5189,7 @@ retry:
 
         assert_eq!(cfg.flags.unwrap(), vec!["--no-cache"]);
 
-        assert_eq!(cfg.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(cfg.skip, Some(StringOrBool::Bool(false)));
         assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
 
         let retry = cfg.retry.unwrap();
@@ -5219,7 +5219,7 @@ tags:
         assert_eq!(cfg.platforms, None);
         assert_eq!(cfg.build_args, None);
         assert_eq!(cfg.flags, None);
-        assert_eq!(cfg.disable, None);
+        assert_eq!(cfg.skip, None);
         assert_eq!(cfg.sbom, None);
         assert!(cfg.retry.is_none());
     }
@@ -5230,10 +5230,10 @@ tags:
 dockerfile: Dockerfile
 images: ["img"]
 tags: ["latest"]
-disable: true
+skip: true
 "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(cfg.skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -5242,10 +5242,10 @@ disable: true
 dockerfile: Dockerfile
 images: ["img"]
 tags: ["latest"]
-disable: "{{ if .IsSnapshot }}true{{ end }}"
+skip: "{{ if .IsSnapshot }}true{{ end }}"
 "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
-        match cfg.disable {
+        match cfg.skip {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
             }
@@ -5418,7 +5418,7 @@ sbom: "true"
             images: vec!["ghcr.io/owner/app".to_string()],
             tags: vec!["latest".to_string()],
             dockerfile: dockerfile.to_string_lossy().into_owned(),
-            disable: Some(StringOrBool::Bool(true)),
+            skip: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -6075,11 +6075,11 @@ output: "false"
     fn test_docker_digest_config_parses() {
         use anodizer_core::config::DockerDigestConfig;
         let yaml = r#"
-disable: false
+skip: false
 name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
 "#;
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(!cfg.disable.unwrap().as_bool());
+        assert!(!cfg.skip.unwrap().as_bool());
         assert_eq!(
             cfg.name_template.as_deref(),
             Some("{{ .ProjectName }}_{{ .Version }}_checksums.txt")
@@ -6091,7 +6091,7 @@ name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
         use anodizer_core::config::DockerDigestConfig;
         let yaml = "{}";
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(cfg.disable.is_none());
+        assert!(cfg.skip.is_none());
         assert!(cfg.name_template.is_none());
     }
 
@@ -6099,10 +6099,10 @@ name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
     fn test_docker_digest_config_disable_template() {
         use anodizer_core::config::DockerDigestConfig;
         let yaml = r#"
-disable: "{{ .IsSnapshot }}"
+skip: "{{ .IsSnapshot }}"
 "#;
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(cfg.disable.unwrap().is_template());
+        assert!(cfg.skip.unwrap().is_template());
     }
 
     #[test]

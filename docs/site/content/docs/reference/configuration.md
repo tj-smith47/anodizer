@@ -26,11 +26,9 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `dist` | string | `./dist` | Output directory for build artifacts (default: ./dist). |
 | `docker_signs` | list of DockerSignConfig | — | Docker image signing configurations. |
 | `dockerhub` | list of DockerHubConfig | — | DockerHub description sync configurations. |
-| `env` | map | — | Environment variables available to all template expressions.
+| `env` | list of string | — | Environment variables available to all template expressions.
 
-Accepts two YAML forms: - **Map form**: `env: { MY_VAR: hello, DEPLOY_ENV: staging }` - **List form** (GoReleaser parity): `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`
-
-Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded. |
+List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded. |
 | `env_files` | EnvFilesConfig | — | Environment file configuration. Accepts either: - A list of `.env` file paths: `[".env", ".release.env"]` - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }` |
 | `force_token` | ForceTokenKind | — | Force a specific token type for authentication. When set, overrides automatic token detection from environment variables. |
 | `git` | GitConfig | — | Git-level tag discovery and sorting settings. |
@@ -127,7 +125,6 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `depends` | list of string | — | Runtime dependencies. |
 | `description` | string | — | Short description of the package. |
 | `directory` | string | — | Subdirectory in the git repo for committed files. |
-| `disable` | StringOrBool | — | Disable this config. |
 | `git_ssh_command` | string | — | Custom SSH command for git operations. |
 | `git_url` | string | — | AUR SSH git URL. |
 | `homepage` | string | — | Project homepage URL. |
@@ -142,6 +139,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `private_key` | string | — | Path to SSH private key file. |
 | `provides` | list of string | — | Packages this PKGBUILD provides. |
 | `rel` | string | — | Package release number (default: "1"). |
+| `skip` | StringOrBool | — | Disable this config. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
 | `url_template` | string | — | Custom URL template for download URLs. |
 
@@ -159,7 +157,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `artifacts` | string | — | Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none"). |
 | `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
 | `cmd` | string | — | Signing command to invoke (default: "cosign" or "gpg"). |
-| `env` | map | — | Environment variables passed to the signing command. |
+| `env` | list of string | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
@@ -173,7 +171,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 |-------|------|---------|-------------|
 | `abbrev` | integer | — | Hash abbreviation length. Default: 7. Set to -1 to omit the hash entirely. |
 | `ai` | ChangelogAiConfig | — | AI-powered changelog enhancement configuration. |
-| `disable` | StringOrBool | — | Disable changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). |
 | `divider` | string | — | Divider string inserted between changelog groups (e.g. `"---"`). Supports templates. |
 | `filters` | ChangelogFilters | — | Commit message filters to include or exclude from the changelog. |
 | `footer` | string | — | Text appended to the changelog (inline string or path). |
@@ -181,6 +178,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
 | `header` | string | — | Text prepended to the changelog (inline string or path). |
 | `paths` | list of string | — | File paths to filter commits by. Only commits touching files under these paths are included. Works with `use: git` for precise per-commit filtering. With `use: github`, only the first path is used for API queries; multi-path filtering is coarse. Supports template rendering. |
+| `skip` | StringOrBool | — | Disable changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). |
 | `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |
 | `title` | string | — | Title heading for the changelog. Default: "Changelog". Supports templates. |
 | `use` | string | — | Changelog source: `"git"` (default), `"github"`, or `"github-native"`. `"github"` fetches commits via the GitHub API, enriching entries with author login information (available as the `Logins` template variable). `"github-native"` delegates entirely to GitHub's auto-generated notes. |
@@ -249,7 +247,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `artifacts` | string | — | Docker artifact types to sign: "all", "image", or "manifest" (default: "none"). |
 | `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
 | `cmd` | string | — | Signing command to invoke (default: "cosign"). |
-| `env` | map | — | Environment variables passed to the signing command. |
+| `env` | list of string | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this docker sign config. |
 | `ids` | list of string | — | Docker config IDs filter: only sign images from configs whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this docker sign config if rendered result is "false" or empty. |
@@ -263,10 +261,10 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `description` | string | — | Short description for the DockerHub repository (max 100 chars). |
-| `disable` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
 | `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
+| `skip` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
 | `username` | string | — | DockerHub username for authentication. |
 
 ## `git`
@@ -344,7 +342,6 @@ Top-level Homebrew Cask configuration. GoReleaser has `homebrew_casks` as a top-
 |-------|------|---------|-------------|
 | `compression` | string | — | Compression algorithm: gzip, bzip2, xz, lzo, compress, or none. |
 | `description` | string | — | Description for LSM metadata. |
-| `disable` | StringOrBool | — | Disable this config. Accepts bool or template string. |
 | `extra_args` | list of string | — | Extra arguments passed to the makeself command. |
 | `files` | list of MakeselfFile | — | Additional files to include in the archive. |
 | `goarch` | list of string | — | Target architecture filter. |
@@ -358,6 +355,7 @@ Top-level Homebrew Cask configuration. GoReleaser has `homebrew_casks` as a top-
 | `name` | string | — | Display name embedded in the self-extracting archive. |
 | `name_template` | string | — | Output filename template (default includes project, version, os, arch). |
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
+| `skip` | StringOrBool | — | Disable this config. Accepts bool or template string. |
 
 ## `metadata`
 | Field | Type | Default | Description |
@@ -405,9 +403,9 @@ Tags matching this prefix are selected during tag discovery, and the prefix is s
 Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `disable` | StringOrBool | — | Disable all notarization. Accepts bool or template string. |
 | `macos` | list of MacOSSignNotarizeConfig | — | Cross-platform signing/notarization (rcodesign-based, works on any OS). |
 | `macos_native` | list of MacOSNativeSignNotarizeConfig | — | Native signing/notarization (codesign + xcrun, macOS only). |
+| `skip` | StringOrBool | — | Disable all notarization. Accepts bool or template string. |
 
 ## `partial`
 | Field | Type | Default | Description |
@@ -422,19 +420,18 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `checksum` | bool | — | Include checksums in published artifacts. |
 | `cmd` | string | — | Command to invoke for publishing. |
 | `dir` | string | — | Working directory for the publisher command. |
-| `disable` | StringOrBool | — | Template-conditional disable: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). |
-| `env` | map | — | Environment variables passed to the publish command. |
+| `env` | list of string | — | Environment variables passed to the publish command. |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to include in publishing (glob patterns with optional name override). |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
 | `meta` | bool | — | Include metadata artifacts in published artifacts. |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
+| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). |
 | `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature. |
 
 ## `release`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `disable` | StringOrBool | — | Disable the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). GoReleaser supports template strings here since v1.15.0. |
 | `discussion_category_name` | string | — | GitHub Discussion category name for the release. |
 | `draft` | bool | — | When true, create the release as a draft (unpublished). |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts. |
@@ -451,6 +448,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
 | `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
 | `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
+| `skip` | StringOrBool | — | Disable the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). GoReleaser supports template strings here since v1.15.0. |
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type). |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
@@ -463,13 +461,11 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `args` | list of string | — | Command-line arguments (supports templates and $artifact, $document vars). |
 | `artifacts` | string | — | Which artifacts to catalog: "source", "archive", "binary", "package", "diskimage", "installer", "any" (default: "archive"). |
 | `cmd` | string | — | Command to run for SBOM generation (default: "syft"). |
-| `disable` | StringOrBool | — | Disable this SBOM config. Accepts bool or template string. |
 | `documents` | list of string | — | Output document path templates (supports templates). |
-| `env` | map | — | Environment variables to pass to the command.
-
-Accepts both map form (`KEY: value`) and GoReleaser list form (`- KEY=value`). Values are template-rendered before being set. |
+| `env` | list of string | — | Environment variables to pass to the command, as `KEY=VALUE` strings. Order is preserved. Values are template-rendered before being set. |
 | `id` | string | — | Unique identifier for this SBOM config (default: "default"). |
 | `ids` | list of string | — | Filter by artifact IDs (ignored if artifacts="source"). |
+| `skip` | StringOrBool | — | Disable this SBOM config. Accepts bool or template string. |
 
 ## `signs`
 | Field | Type | Default | Description |
@@ -478,7 +474,7 @@ Accepts both map form (`KEY: value`) and GoReleaser list form (`- KEY=value`). V
 | `artifacts` | string | — | Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none"). |
 | `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
 | `cmd` | string | — | Signing command to invoke (default: "cosign" or "gpg"). |
-| `env` | map | — | Environment variables passed to the signing command. |
+| `env` | list of string | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
@@ -507,7 +503,6 @@ Accepts both map form (`KEY: value`) and GoReleaser list form (`- KEY=value`). V
 | `compression` | string | — | Compression algorithm (gzip, xz, zstd, none). |
 | `contents` | list of NfpmContentConfig | — | Additional contents to include in the source RPM. |
 | `description` | string | — | Package description. |
-| `disable` | StringOrBool | — | Disable this config. Accepts bool or template string. |
 | `docs` | list of string | — | Documentation files to include. |
 | `enabled` | bool | — | Enable source RPM generation. Default: false. |
 | `epoch` | string | — | RPM epoch. |
@@ -520,6 +515,7 @@ Accepts both map form (`KEY: value`) and GoReleaser list form (`- KEY=value`). V
 | `packager` | string | — | RPM packager field. |
 | `section` | string | — | RPM section. |
 | `signature` | SrpmSignatureConfig | — | RPM signature configuration. |
+| `skip` | StringOrBool | — | Disable this config. Accepts bool or template string. |
 | `spec_file` | string | — | Path to the RPM spec file template. |
 | `summary` | string | — | Summary line. |
 | `url` | string | — | Homepage URL. |
@@ -568,7 +564,6 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `client_x509_key` | string | — | Path to PEM-encoded client X.509 key for mTLS. |
 | `custom_artifact_name` | bool | — | When true, use the artifact name as-is (don't append to target URL). |
 | `custom_headers` | map | — | Custom HTTP headers (each value is template-expanded). |
-| `disable` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to include in uploading. |
 | `extra_files_only` | bool | — | Upload only extra files, skip normal artifacts. |
 | `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |
@@ -579,6 +574,7 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `name` | string | — | Human-readable name for this upload config. |
 | `password` | string | — | Password for HTTP basic auth (env var template strongly recommended; in-config plaintext leaves the value in `dist/config.yaml` after dry-run). Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12). |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
+| `skip` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
 | `target` | string | — | Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}). |
 | `trusted_certificates` | string | — | Path to PEM-encoded trusted CA certificates. |
 | `username` | string | — | Username for HTTP basic auth. Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`. Set this to a literal value or a `{{ .Env.X }}` template. |
@@ -606,9 +602,9 @@ A workspace represents an independent project root within a monorepo. Each works
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). |
 | `changelog` | ChangelogConfig | — | Changelog configuration for this workspace. |
 | `crates` | list of CrateConfig | `[]` | Crates belonging to this workspace. |
-| `env` | map | — | Environment variables scoped to this workspace.
+| `env` | list of string | — | Environment variables scoped to this workspace.
 
-Accepts both map form (`MY_VAR: hello`) and GoReleaser list form (`- MY_VAR=hello`). Values are template-rendered at pipeline startup. |
+List of `KEY=VALUE` strings (GoReleaser parity). Order is preserved. Values are template-rendered at pipeline startup. |
 | `name` | string | — | Workspace identifier used in logs and template variables. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `skip` | list of string | `[]` | Pipeline stages to skip when releasing this workspace. Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`). |

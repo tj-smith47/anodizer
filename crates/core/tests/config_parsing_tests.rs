@@ -401,7 +401,7 @@ defaults:
   checksum:
     name_template: "checksums-{{ version }}.txt"
     algorithm: sha256
-    disable: false
+    skip: false
     extra_files:
       - "dist/extra.sig"
     ids:
@@ -416,7 +416,7 @@ crates: []
     );
     assert_eq!(checksum.algorithm, Some("sha256".to_string()));
     assert_eq!(
-        checksum.disable,
+        checksum.skip,
         Some(anodizer_core::config::StringOrBool::Bool(false))
     );
     assert_eq!(checksum.extra_files.as_ref().unwrap().len(), 1);
@@ -1307,14 +1307,14 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     checksum:
-      disable: true
+      skip: true
       algorithm: sha512
       name_template: "ignored.txt"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.crates[0].checksum.as_ref().unwrap();
     assert_eq!(
-        checksum.disable,
+        checksum.skip,
         Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     // Other fields are still parsed even when disabled
@@ -2105,8 +2105,8 @@ publishers:
       - archive
       - checksum
     env:
-      AWS_REGION: us-east-1
-      S3_BUCKET: my-releases
+      - AWS_REGION=us-east-1
+      - S3_BUCKET=my-releases
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -2120,7 +2120,7 @@ crates: []
         &["archive", "checksum"]
     );
     let env = pub_cfg.env.as_ref().unwrap();
-    assert_eq!(env.get("AWS_REGION").unwrap(), "us-east-1");
+    assert!(env.contains(&"AWS_REGION=us-east-1".to_string()));
 }
 
 #[test]
@@ -2736,7 +2736,7 @@ fn test_parse_changelog_disable_with_groups() {
     let yaml = r#"
 project_name: test
 changelog:
-  disable: true
+  skip: true
   groups:
     - title: Features
       regexp: "^feat"
@@ -2745,7 +2745,7 @@ crates: []
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
     assert_eq!(
-        cl.disable,
+        cl.skip,
         Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     // Groups are still parsed even when disabled
@@ -2936,9 +2936,7 @@ project_name = "test"
 name = "upload"
 cmd = "publish.sh"
 args = ["--verbose"]
-
-[publishers.env]
-TOKEN = "abc123"
+env = ["TOKEN=abc123"]
 
 [[crates]]
 name = "app"
@@ -2948,9 +2946,12 @@ tag_template = "v{{ .Version }}"
     let config: Config = toml::from_str(toml_str).unwrap();
     let pub_cfg = &config.publishers.as_ref().unwrap()[0];
     assert_eq!(pub_cfg.name, Some("upload".to_string()));
-    assert_eq!(
-        pub_cfg.env.as_ref().unwrap().get("TOKEN").unwrap(),
-        "abc123"
+    assert!(
+        pub_cfg
+            .env
+            .as_ref()
+            .unwrap()
+            .contains(&"TOKEN=abc123".to_string())
     );
 }
 
@@ -3115,9 +3116,16 @@ fn test_parse_invalid_type_publishers_string() {
 
 #[test]
 fn test_parse_invalid_type_env_array() {
+    // Vec<String> accepts any string at parse time; entries without `=` are
+    // caught by parse_env_entries when the env list is consumed.
     let yaml = "project_name: test\nenv:\n  - item\ncrates: []";
-    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-    assert!(result.is_err());
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = anodizer_core::config::parse_env_entries(config.env.as_ref().unwrap()).unwrap_err();
+    assert!(
+        err.to_string().contains("KEY=VALUE"),
+        "parse_env_entries should reject entries without =, got: {}",
+        err
+    );
 }
 
 #[test]
@@ -3141,18 +3149,18 @@ crates: []
 
 #[test]
 fn test_parse_checksum_disable_string_is_valid() {
-    // checksum.disable now accepts StringOrBool, so string values are valid
+    // checksum.skip now accepts StringOrBool, so string values are valid
     let yaml = r#"
 project_name: test
 defaults:
   checksum:
-    disable: "yes"
+    skip: "yes"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.defaults.unwrap().checksum.unwrap();
     assert_eq!(
-        checksum.disable,
+        checksum.skip,
         Some(anodizer_core::config::StringOrBool::String(
             "yes".to_string()
         ))
@@ -3166,7 +3174,7 @@ fn test_parse_changelog_disable_true_with_all_fields() {
     let yaml = r#"
 project_name: test
 changelog:
-  disable: true
+  skip: true
   sort: asc
   header: "header"
   footer: "footer"
@@ -3183,7 +3191,7 @@ crates: []
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
     assert_eq!(
-        cl.disable,
+        cl.skip,
         Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     assert_eq!(cl.sort, Some("asc".to_string()));
@@ -3273,7 +3281,7 @@ fn test_parse_comprehensive_config() {
 project_name: comprehensive-test
 dist: ./custom-dist
 env:
-  GLOBAL_VAR: "value"
+  - GLOBAL_VAR=value
 report_sizes: true
 before:
   hooks:
@@ -3318,7 +3326,7 @@ publishers:
   - name: custom
     cmd: upload.sh
     env:
-      TOKEN: secret
+      - TOKEN=secret
 crates:
   - name: lib
     path: crates/lib
@@ -3565,7 +3573,7 @@ fn test_checksum_config_default_struct() {
     let config = ChecksumConfig::default();
     assert!(config.name_template.is_none());
     assert!(config.algorithm.is_none());
-    assert!(config.disable.is_none());
+    assert!(config.skip.is_none());
     assert!(config.extra_files.is_none());
     assert!(config.ids.is_none());
 }

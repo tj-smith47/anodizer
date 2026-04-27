@@ -726,7 +726,7 @@ impl Stage for ReleaseStage {
             };
 
             // Skip crates where release is explicitly disabled (supports template strings).
-            if let Some(ref d) = release_cfg.disable {
+            if let Some(ref d) = release_cfg.skip {
                 let off = d
                     .try_is_disabled(|s| ctx.render_template(s))
                     .with_context(|| {
@@ -3659,29 +3659,29 @@ mod tests {
     #[test]
     fn test_release_disable_config_parsing() {
         let yaml = r#"
-disable: true
+skip: true
 draft: false
 "#;
         let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(cfg.skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
     fn test_release_disable_config_parsing_false() {
         let yaml = r#"
-disable: false
+skip: false
 "#;
         let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(cfg.skip, Some(StringOrBool::Bool(false)));
     }
 
     #[test]
     fn test_release_disable_config_parsing_template_string() {
         let yaml = r#"
-disable: "{{ if IsSnapshot }}true{{ endif }}"
+skip: "{{ if IsSnapshot }}true{{ endif }}"
 "#;
         let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        match cfg.disable {
+        match cfg.skip {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
             }
@@ -3695,12 +3695,12 @@ disable: "{{ if IsSnapshot }}true{{ endif }}"
 draft: true
 "#;
         let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.disable, None);
+        assert_eq!(cfg.skip, None);
     }
 
     #[test]
     fn test_release_stage_skipped_when_disabled() {
-        // When disable: true is set, the release stage should skip
+        // When skip: true is set, the release stage should skip
         // the crate entirely. We test via dry-run to avoid real API calls.
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -3710,7 +3710,7 @@ draft: true
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    disable: Some(StringOrBool::Bool(true)),
+                    skip: Some(StringOrBool::Bool(true)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -3732,7 +3732,7 @@ draft: true
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    disable: Some(StringOrBool::Bool(false)),
+                    skip: Some(StringOrBool::Bool(false)),
                     ..Default::default()
                 }),
                 ..Default::default()

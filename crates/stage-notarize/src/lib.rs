@@ -224,9 +224,9 @@ impl Stage for NotarizeStage {
         };
 
         // Respect top-level disable flag. Use try_is_disabled so a malformed
-        // disable: template surfaces as Err instead of silently evaluating
+        // skip: template surfaces as Err instead of silently evaluating
         // false and running notarization the user thought was suppressed.
-        if let Some(ref d) = notarize_config.disable
+        if let Some(ref d) = notarize_config.skip
             && d.try_is_disabled(|s| ctx.render_template(s))
                 .with_context(|| "notarize: evaluate top-level disable expression")?
         {
@@ -1181,7 +1181,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(false)),
                 sign: Some(MacOSSignConfig {
@@ -1205,7 +1205,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(false)),
@@ -1230,7 +1230,7 @@ notarize: {}
     fn test_stage_skips_when_enabled_is_none() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: None,
                 sign: Some(MacOSSignConfig {
@@ -1257,7 +1257,7 @@ notarize: {}
     fn test_cross_platform_requires_sign_config() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 sign: None,
@@ -1283,7 +1283,7 @@ notarize: {}
     fn test_cross_platform_requires_certificate() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
@@ -1312,7 +1312,7 @@ notarize: {}
     fn test_cross_platform_requires_password() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
@@ -1341,7 +1341,7 @@ notarize: {}
     fn test_native_requires_sign_config() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1370,7 +1370,7 @@ notarize: {}
     fn test_native_requires_identity() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1402,7 +1402,7 @@ notarize: {}
     fn test_native_requires_notarize_config() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1431,7 +1431,7 @@ notarize: {}
     fn test_native_requires_profile_name() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1463,7 +1463,7 @@ notarize: {}
     fn test_native_rejects_unsupported_use_type() {
         let mut config = Config::default();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1501,7 +1501,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
@@ -1572,7 +1572,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
@@ -1613,7 +1613,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
@@ -1654,7 +1654,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1713,7 +1713,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1762,7 +1762,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1797,7 +1797,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1835,7 +1835,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 ids: Some(vec!["other-crate".to_string()]),
@@ -1926,7 +1926,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
@@ -1977,7 +1977,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -2072,7 +2072,7 @@ notarize: {}
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.notarize = Some(NotarizeConfig {
-            disable: None,
+            skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
                 enabled: Some(StringOrBool::Bool(true)),

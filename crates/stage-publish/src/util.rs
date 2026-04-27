@@ -742,22 +742,22 @@ pub(crate) fn should_skip_upload(
 /// that previously lived in aur_source.rs (per-crate AND top-level paths).
 pub(crate) fn is_publisher_disabled(
     ctx: &Context,
-    disable: Option<&anodizer_core::config::StringOrBool>,
+    skip: Option<&anodizer_core::config::StringOrBool>,
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
     label: &str,
     log: &StageLogger,
 ) -> Result<bool> {
-    if let Some(d) = disable {
+    if let Some(d) = skip {
         let off = d
             .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| format!("{label}: render disable template"))?;
+            .with_context(|| format!("{label}: render skip template"))?;
         if off {
             log.status(&format!("{label}: skipping disabled entry"));
             return Ok(true);
         }
     }
-    if let Some(skip) = skip_upload {
-        let off = skip
+    if let Some(s) = skip_upload {
+        let off = s
             .try_is_disabled(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("{label}: render skip_upload template"))?;
         if off {

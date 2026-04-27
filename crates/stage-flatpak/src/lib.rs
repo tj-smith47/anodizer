@@ -134,7 +134,7 @@ impl Stage for FlatpakStage {
                 continue;
             };
             for cfg in cfgs {
-                let off = match cfg.disable.as_ref() {
+                let off = match cfg.skip.as_ref() {
                     Some(d) => {
                         d.try_is_disabled(|s| ctx.render_template(s))
                             .with_context(|| {
@@ -207,7 +207,7 @@ impl Stage for FlatpakStage {
 
             for flatpak_cfg in flatpak_configs {
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = flatpak_cfg.disable {
+                if let Some(ref d) = flatpak_cfg.skip {
                     let off = d
                         .try_is_disabled(|s| ctx.render_template(s))
                         .with_context(|| {
@@ -853,7 +853,7 @@ finish_args:
         assert!(config.extra_files.is_none());
         assert!(config.replace.is_none());
         assert!(config.mod_timestamp.is_none());
-        assert!(config.disable.is_none());
+        assert!(config.skip.is_none());
         assert!(config.id.is_none());
     }
 
@@ -1072,7 +1072,7 @@ finish_args:
         // Disable via bool
         {
             let flatpak_cfg = FlatpakConfig {
-                disable: Some(StringOrBool::Bool(true)),
+                skip: Some(StringOrBool::Bool(true)),
                 app_id: Some("org.example.MyApp".to_string()),
                 runtime: Some("org.freedesktop.Platform".to_string()),
                 runtime_version: Some("24.08".to_string()),
@@ -1119,7 +1119,7 @@ finish_args:
         // Disable via template
         {
             let flatpak_cfg = FlatpakConfig {
-                disable: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
+                skip: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
                 app_id: Some("org.example.MyApp".to_string()),
                 runtime: Some("org.freedesktop.Platform".to_string()),
                 runtime_version: Some("24.08".to_string()),

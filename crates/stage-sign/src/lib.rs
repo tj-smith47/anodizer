@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -350,21 +349,19 @@ impl Stage for DockerSignStage {
                         .stderr(Stdio::piped());
 
                     // Template-render and merge custom env vars if configured on docker sign.
-                    if let Some(ref env_vars) = docker_sign_cfg.env {
-                        let rendered_docker_env: HashMap<String, String> = env_vars
-                            .iter()
-                            .map(|(k, v)| {
-                                let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
-                                    log.warn(&format!(
-                                        "failed to render docker-sign env '{}': {}, using raw value",
-                                        k, e
-                                    ));
-                                    v.clone()
-                                });
-                                (k.clone(), rendered_val)
-                            })
-                            .collect();
-                        command.envs(&rendered_docker_env);
+                    if let Some(ref env_list) = docker_sign_cfg.env {
+                        let parsed = anodizer_core::config::parse_env_entries(env_list)
+                            .with_context(|| "docker-sign: parse env entries")?;
+                        for (k, v) in &parsed {
+                            let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
+                                log.warn(&format!(
+                                    "failed to render docker-sign env '{}': {}, using raw value",
+                                    k, e
+                                ));
+                                v.clone()
+                            });
+                            command.env(k, rendered_val);
+                        }
                     }
 
                     let mut child = command.spawn().with_context(|| {
@@ -401,8 +398,12 @@ impl Stage for DockerSignStage {
                     // Redact secrets from stdout/stderr before any output or logging.
                     let docker_env_pairs: Vec<(String, String)> = docker_sign_cfg
                         .env
-                        .iter()
-                        .flat_map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())))
+                        .as_deref()
+                        .map(|list| {
+                            anodizer_core::config::parse_env_entries(list).unwrap_or_default()
+                        })
+                        .unwrap_or_default()
+                        .into_iter()
                         .chain(std::env::vars())
                         .collect();
 
@@ -1316,13 +1317,12 @@ mod tests {
         let yaml = r#"
 cmd: "cosign"
 env:
-  COSIGN_EXPERIMENTAL: "1"
-  MY_KEY: "my_value"
+  - COSIGN_EXPERIMENTAL=1
+  - MY_KEY=my_value
 "#;
         let cfg: SignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let env = cfg.env.unwrap();
-        assert_eq!(env.get("COSIGN_EXPERIMENTAL").unwrap(), "1");
-        assert_eq!(env.get("MY_KEY").unwrap(), "my_value");
+        assert_eq!(env, vec!["COSIGN_EXPERIMENTAL=1", "MY_KEY=my_value"]);
     }
 
     #[test]
@@ -1381,12 +1381,6 @@ stdin_file: "/path/to/password"
         let marker_path = tmp.path().join("env_check.txt");
         let marker_str = marker_path.to_string_lossy().to_string();
 
-        let mut env_map = std::collections::HashMap::new();
-        env_map.insert(
-            "ANODIZER_TEST_SIGN_ENV".to_string(),
-            "hello_from_sign".to_string(),
-        );
-
         let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_SIGN_ENV", &marker_str);
         let signs = vec![SignConfig {
             id: Some("test-env".to_string()),
@@ -1397,7 +1391,7 @@ stdin_file: "/path/to/password"
             signature: None,
             stdin: None,
             stdin_file: None,
-            env: Some(env_map),
+            env: Some(vec!["ANODIZER_TEST_SIGN_ENV=hello_from_sign".to_string()]),
             certificate: None,
             output: None,
             if_condition: None,
@@ -1707,13 +1701,12 @@ cmd: "cosign"
         let yaml = r#"
 cmd: "cosign"
 env:
-  COSIGN_EXPERIMENTAL: "1"
-  REGISTRY_TOKEN: "secret"
+  - COSIGN_EXPERIMENTAL=1
+  - REGISTRY_TOKEN=secret
 "#;
         let cfg: anodizer_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let env = cfg.env.unwrap();
-        assert_eq!(env.get("COSIGN_EXPERIMENTAL").unwrap(), "1");
-        assert_eq!(env.get("REGISTRY_TOKEN").unwrap(), "secret");
+        assert_eq!(env, vec!["COSIGN_EXPERIMENTAL=1", "REGISTRY_TOKEN=secret"]);
     }
 
     #[test]
@@ -1726,12 +1719,6 @@ env:
         let marker_path = tmp.path().join("docker_env_check.txt");
         let marker_str = marker_path.to_string_lossy().to_string();
 
-        let mut env_map = std::collections::HashMap::new();
-        env_map.insert(
-            "ANODIZER_TEST_DOCKER_ENV".to_string(),
-            "docker_hello".to_string(),
-        );
-
         let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_DOCKER_ENV", &marker_str);
         let docker_signs = vec![DockerSignConfig {
             id: Some("test-env".to_string()),
@@ -1741,7 +1728,7 @@ env:
             ids: None,
             stdin: None,
             stdin_file: None,
-            env: Some(env_map),
+            env: Some(vec!["ANODIZER_TEST_DOCKER_ENV=docker_hello".to_string()]),
             output: None,
             if_condition: None,
             signature: None,

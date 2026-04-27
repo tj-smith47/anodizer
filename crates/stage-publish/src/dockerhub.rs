@@ -72,7 +72,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag.
-        if let Some(ref d) = entry.disable {
+        if let Some(ref d) = entry.skip {
             let off = d
                 .try_is_disabled(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "dockerhub: render disable template")?;
@@ -335,7 +335,7 @@ mod tests {
     fn test_dockerhub_skips_when_disabled() {
         let mut config = Config::default();
         config.dockerhub = Some(vec![DockerHubConfig {
-            disable: Some(StringOrBool::Bool(true)),
+            skip: Some(StringOrBool::Bool(true)),
             ..Default::default()
         }]);
         let ctx = dry_run_ctx(config);

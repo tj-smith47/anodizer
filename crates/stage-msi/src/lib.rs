@@ -311,7 +311,7 @@ impl Stage for MsiStage {
                 }
 
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = msi_cfg.disable {
+                if let Some(ref d) = msi_cfg.skip {
                     let off = d
                         .try_is_disabled(|s| ctx.render_template(s))
                         .with_context(|| {
@@ -821,7 +821,7 @@ mod tests {
 
         let msi_cfg = MsiConfig {
             wxs: Some(wxs_path.to_string_lossy().into_owned()),
-            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
+            skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -1058,7 +1058,7 @@ crates:
         assert!(msis[0].name.is_none());
         assert!(msis[0].version.is_none());
         assert!(msis[0].replace.is_none());
-        assert!(msis[0].disable.is_none());
+        assert!(msis[0].skip.is_none());
     }
 
     #[test]
@@ -1078,7 +1078,7 @@ crates:
         version: v4
         replace: true
         mod_timestamp: "2024-01-01T00:00:00Z"
-        disable: false
+        skip: false
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
@@ -1096,7 +1096,7 @@ crates:
         assert_eq!(msi.replace, Some(true));
         assert_eq!(msi.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
         assert_eq!(
-            msi.disable,
+            msi.skip,
             Some(anodizer_core::config::StringOrBool::Bool(false))
         );
     }
@@ -1802,12 +1802,12 @@ crates:
     tag_template: "v{{ .Version }}"
     msis:
       - wxs: app.wxs
-        disable: true
+        skip: true
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(
-            msis[0].disable,
+            msis[0].skip,
             Some(anodizer_core::config::StringOrBool::Bool(true))
         );
     }
@@ -1822,12 +1822,12 @@ crates:
     tag_template: "v{{ .Version }}"
     msis:
       - wxs: app.wxs
-        disable: "true"
+        skip: "true"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(
-            msis[0].disable,
+            msis[0].skip,
             Some(anodizer_core::config::StringOrBool::String(
                 "true".to_string()
             ))
@@ -1844,12 +1844,12 @@ crates:
     tag_template: "v{{ .Version }}"
     msis:
       - wxs: app.wxs
-        disable: "{{ .Env.SKIP_MSI }}"
+        skip: "{{ .Env.SKIP_MSI }}"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(
-            msis[0].disable,
+            msis[0].skip,
             Some(anodizer_core::config::StringOrBool::String(
                 "{{ .Env.SKIP_MSI }}".to_string()
             ))
@@ -1868,7 +1868,7 @@ crates:
 
         let msi_cfg = MsiConfig {
             wxs: Some(wxs_path.to_string_lossy().into_owned()),
-            disable: Some(StringOrBool::String("true".to_string())),
+            skip: Some(StringOrBool::String("true".to_string())),
             ..Default::default()
         };
 
@@ -1905,7 +1905,7 @@ crates:
         let stage = MsiStage;
         stage.run(&mut ctx).unwrap();
 
-        // disable: "true" should skip
+        // skip: "true" should skip
         assert!(ctx.artifacts.by_kind(ArtifactKind::Installer).is_empty());
     }
 
@@ -2125,7 +2125,7 @@ crates:
         version: v4
         replace: true
         mod_timestamp: "2024-01-01T00:00:00Z"
-        disable: "{{ .Env.SKIP_MSI }}"
+        skip: "{{ .Env.SKIP_MSI }}"
         extra_files:
           - README.md
           - LICENSE
@@ -2147,7 +2147,7 @@ crates:
         assert_eq!(msi.replace, Some(true));
         assert_eq!(msi.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
         assert_eq!(
-            msi.disable,
+            msi.skip,
             Some(anodizer_core::config::StringOrBool::String(
                 "{{ .Env.SKIP_MSI }}".to_string()
             ))

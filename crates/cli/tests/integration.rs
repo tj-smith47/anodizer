@@ -796,8 +796,8 @@ dist: ./dist
 report_sizes: true
 
 env:
-  BUILD_ENV: ci
-  DEPLOY_TARGET: staging
+  - BUILD_ENV=ci
+  - DEPLOY_TARGET=staging
 
 defaults:
   targets:
@@ -1650,7 +1650,7 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     checksum:
-      disable: true
+      skip: true
 "#,
     );
 
@@ -1708,7 +1708,7 @@ fn test_check_global_checksum_disable_valid() {
 project_name: test-project
 defaults:
   checksum:
-    disable: true
+    skip: true
 crates:
   - name: test-project
     path: "."
@@ -1739,7 +1739,7 @@ fn test_check_changelog_disabled_valid() {
         r#"
 project_name: test-project
 changelog:
-  disable: true
+  skip: true
 crates:
   - name: test-project
     path: "."

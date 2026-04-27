@@ -278,7 +278,7 @@ impl Stage for AppBundleStage {
                 }
 
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = bundle_cfg.disable {
+                if let Some(ref d) = bundle_cfg.skip {
                     let off = d
                         .try_is_disabled(|s| ctx.render_template(s))
                         .with_context(|| {
@@ -1449,7 +1449,7 @@ crates:
         let disabled_cfg = AppBundleConfig {
             id: Some("disabled".to_string()),
             name: Some("{{ ProjectName }}-disabled-{{ Arch }}.app".to_string()),
-            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
+            skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -1517,13 +1517,13 @@ crates:
     tag_template: "v{{ .Version }}"
     app_bundles:
       - bundle: "com.example.test"
-        disable: true
+        skip: true
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let bundles = config.crates[0].app_bundles.as_ref().unwrap();
         assert_eq!(bundles.len(), 1);
         assert_eq!(
-            bundles[0].disable,
+            bundles[0].skip,
             Some(anodizer_core::config::StringOrBool::Bool(true))
         );
     }

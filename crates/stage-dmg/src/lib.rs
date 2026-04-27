@@ -171,7 +171,7 @@ impl Stage for DmgStage {
                 }
 
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = dmg_cfg.disable {
+                if let Some(ref d) = dmg_cfg.skip {
                     let off = d
                         .try_is_disabled(|s| ctx.render_template(s))
                         .with_context(|| {
@@ -591,7 +591,7 @@ mod tests {
         use anodizer_core::context::{Context, ContextOptions};
 
         let dmg_cfg = DmgConfig {
-            disable: Some(StringOrBool::Bool(true)),
+            skip: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -863,7 +863,7 @@ crates:
             dmgs[0].name.as_deref(),
             Some("{{ ProjectName }}_{{ Version }}_{{ Arch }}.dmg")
         );
-        assert!(dmgs[0].disable.is_none());
+        assert!(dmgs[0].skip.is_none());
         assert!(dmgs[0].replace.is_none());
     }
 
@@ -886,7 +886,7 @@ crates:
           - LICENSE
         replace: true
         mod_timestamp: "{{ .CommitTimestamp }}"
-        disable: false
+        skip: false
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let dmgs = config.crates[0].dmgs.as_ref().unwrap();
@@ -912,7 +912,7 @@ crates:
         assert_eq!(dmg.replace, Some(true));
         assert_eq!(dmg.mod_timestamp.as_deref(), Some("{{ .CommitTimestamp }}"));
         assert_eq!(
-            dmg.disable,
+            dmg.skip,
             Some(anodizer_core::config::StringOrBool::Bool(false))
         );
     }
@@ -1466,7 +1466,7 @@ crates:
 
         // Test with StringOrBool::String("true")
         let dmg_cfg = DmgConfig {
-            disable: Some(StringOrBool::String("true".to_string())),
+            skip: Some(StringOrBool::String("true".to_string())),
             ..Default::default()
         };
 
@@ -1517,7 +1517,7 @@ crates:
 
         // Test with StringOrBool::String("false") — should NOT be disabled
         let dmg_cfg = DmgConfig {
-            disable: Some(StringOrBool::String("false".to_string())),
+            skip: Some(StringOrBool::String("false".to_string())),
             ..Default::default()
         };
 
@@ -1571,7 +1571,7 @@ crates:
 
         // Template that evaluates to "true" when IsSnapshot is truthy
         let dmg_cfg = DmgConfig {
-            disable: Some(StringOrBool::String(
+            skip: Some(StringOrBool::String(
                 "{% if IsSnapshot %}true{% endif %}".to_string(),
             )),
             ..Default::default()
@@ -1646,12 +1646,12 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     dmgs:
-      - disable: "{% if IsSnapshot %}true{% endif %}"
+      - skip: "{% if IsSnapshot %}true{% endif %}"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let dmgs = config.crates[0].dmgs.as_ref().unwrap();
         assert_eq!(
-            dmgs[0].disable,
+            dmgs[0].skip,
             Some(anodizer_core::config::StringOrBool::String(
                 "{% if IsSnapshot %}true{% endif %}".to_string()
             ))

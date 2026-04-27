@@ -127,11 +127,9 @@ pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
     if ws.after.is_some() {
         config.after = ws.after.clone();
     }
-    if let Some(ref env_map) = ws.env {
-        let merged = config.env.get_or_insert_with(HashMap::new);
-        for (k, v) in env_map {
-            merged.insert(k.clone(), v.clone());
-        }
+    if let Some(ref env_list) = ws.env {
+        let merged = config.env.get_or_insert_with(Vec::new);
+        merged.extend(env_list.iter().cloned());
     }
 }
 
@@ -402,8 +400,10 @@ pub fn setup_env(
 
     // Populate user-defined env vars into template context (highest priority).
     // GoReleaser renders env values through the template engine.
-    if let Some(ref env_map) = config.env {
-        for (key, value) in env_map {
+    if let Some(ref env_list) = config.env {
+        let parsed = anodizer_core::config::parse_env_entries(env_list)
+            .with_context(|| "config.env: parse entries")?;
+        for (key, value) in &parsed {
             let rendered = ctx.render_template(value).unwrap_or_else(|_| value.clone());
             ctx.template_vars_mut().set_config_env(key, &rendered);
             // Also set in the process environment so that child processes which
@@ -491,12 +491,12 @@ pub fn setup_env(
 
     // Missing token hard error (GoReleaser env.go:138-142 ErrMissingToken).
     // Error early if no SCM token and the pipeline needs one.
-    // Snapshot mode, dry-run, and release.disable can proceed without a token.
+    // Snapshot mode, dry-run, and release.skip can proceed without a token.
     if ctx.options.token.is_none() && !ctx.is_snapshot() && !ctx.is_dry_run() {
         let release_disabled = match config
             .crates
             .first()
-            .and_then(|c| c.release.as_ref()?.disable.as_ref())
+            .and_then(|c| c.release.as_ref()?.skip.as_ref())
         {
             Some(d) => d
                 .try_is_disabled(|t| ctx.render_template(t))
@@ -829,27 +829,27 @@ mod tests {
     fn test_apply_workspace_overlay_merges_env() {
         let mut config = Config {
             project_name: "test".to_string(),
-            env: Some(HashMap::from([
-                ("SHARED".to_string(), "from-top".to_string()),
-                ("TOP_ONLY".to_string(), "top-value".to_string()),
-            ])),
+            env: Some(vec![
+                "SHARED=from-top".to_string(),
+                "TOP_ONLY=top-value".to_string(),
+            ]),
             ..Default::default()
         };
         let ws = WorkspaceConfig {
             name: "ws".to_string(),
             crates: vec![],
-            env: Some(HashMap::from([
-                ("SHARED".to_string(), "from-ws".to_string()),
-                ("WS_ONLY".to_string(), "ws-value".to_string()),
-            ])),
+            env: Some(vec![
+                "SHARED=from-ws".to_string(),
+                "WS_ONLY=ws-value".to_string(),
+            ]),
             ..Default::default()
         };
 
         apply_workspace_overlay(&mut config, &ws);
         let env = config.env.as_ref().unwrap();
-        assert_eq!(env.get("TOP_ONLY").unwrap(), "top-value");
-        assert_eq!(env.get("SHARED").unwrap(), "from-ws");
-        assert_eq!(env.get("WS_ONLY").unwrap(), "ws-value");
+        assert!(env.contains(&"TOP_ONLY=top-value".to_string()));
+        assert!(env.contains(&"SHARED=from-ws".to_string()));
+        assert!(env.contains(&"WS_ONLY=ws-value".to_string()));
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag
-        if let Some(ref d) = entry.disable {
+        if let Some(ref d) = entry.skip {
             let off = d
                 .try_is_disabled(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| {

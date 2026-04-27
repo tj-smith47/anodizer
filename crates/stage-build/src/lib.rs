@@ -1777,7 +1777,9 @@ impl Stage for BuildStage {
                     if let Some(ov) = matched_override
                         && let Some(ref ov_env) = ov.env
                     {
-                        for (k, v) in ov_env {
+                        let parsed = anodizer_core::config::parse_env_entries(ov_env)
+                            .with_context(|| "build override: parse env entries")?;
+                        for (k, v) in &parsed {
                             let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
                                 log.warn(&format!(
                                     "failed to render override env value for '{}': {}, using raw value",

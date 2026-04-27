@@ -830,16 +830,15 @@ mod tests {
     #[test]
     fn test_workspace_overlay_semantics() {
         use anodizer_core::config::{ChangelogConfig, SignConfig};
-        use std::collections::HashMap;
 
         // Build a top-level config with env, signs, and changelog
         let mut config = Config {
             project_name: "test".to_string(),
             crates: vec![make_crate("top-crate", None)],
-            env: Some(HashMap::from([
-                ("SHARED".to_string(), "from-top".to_string()),
-                ("TOP_ONLY".to_string(), "top-value".to_string()),
-            ])),
+            env: Some(vec![
+                "SHARED=from-top".to_string(),
+                "TOP_ONLY=top-value".to_string(),
+            ]),
             signs: vec![SignConfig {
                 cmd: Some("gpg".to_string()),
                 ..Default::default()
@@ -851,10 +850,10 @@ mod tests {
             workspaces: Some(vec![WorkspaceConfig {
                 name: "ws".to_string(),
                 crates: vec![make_crate("ws-crate", None)],
-                env: Some(HashMap::from([
-                    ("SHARED".to_string(), "from-ws".to_string()),
-                    ("WS_ONLY".to_string(), "ws-value".to_string()),
-                ])),
+                env: Some(vec![
+                    "SHARED=from-ws".to_string(),
+                    "WS_ONLY=ws-value".to_string(),
+                ]),
                 signs: vec![SignConfig {
                     cmd: Some("cosign".to_string()),
                     ..Default::default()
@@ -883,21 +882,18 @@ mod tests {
         assert_eq!(config.crates.len(), 1);
         assert_eq!(config.crates[0].name, "ws-crate");
 
-        // Verify env merged additively: TOP_ONLY preserved, SHARED overridden, WS_ONLY added
+        // Verify env merged additively: TOP_ONLY preserved, SHARED and WS_ONLY added from workspace
         let env = config.env.as_ref().unwrap();
-        assert_eq!(
-            env.get("TOP_ONLY").unwrap(),
-            "top-value",
+        assert!(
+            env.contains(&"TOP_ONLY=top-value".to_string()),
             "top-level-only key should be preserved"
         );
-        assert_eq!(
-            env.get("SHARED").unwrap(),
-            "from-ws",
-            "shared key should be overridden by workspace"
+        assert!(
+            env.contains(&"SHARED=from-ws".to_string()),
+            "workspace SHARED entry should be present"
         );
-        assert_eq!(
-            env.get("WS_ONLY").unwrap(),
-            "ws-value",
+        assert!(
+            env.contains(&"WS_ONLY=ws-value".to_string()),
             "workspace-only key should be added"
         );
 

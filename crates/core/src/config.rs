@@ -109,14 +109,14 @@ pub struct Config {
     pub report_sizes: Option<bool>,
     /// Environment variables available to all template expressions.
     ///
-    /// Accepts two YAML forms:
-    /// - **Map form**: `env: { MY_VAR: hello, DEPLOY_ENV: staging }`
-    /// - **List form** (GoReleaser parity): `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`
-    ///
-    /// Values are rendered through the template engine before being set, so
-    /// expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    /// List of `KEY=VALUE` strings (matches GoReleaser):
+    /// `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so
+    /// chained env applications (sign + sbom + notarize) see entries in
+    /// declared order. Values are rendered through the template engine before
+    /// being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are
+    /// expanded.
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// Custom template variables accessible as {{ .Var.key }} in templates.
     /// Provides a way to define reusable values, especially useful with config includes.
     pub variables: Option<HashMap<String, String>>,
@@ -731,85 +731,38 @@ pub fn load_env_files(
 }
 
 // ---------------------------------------------------------------------------
-// deserialize_env_map — accepts YAML mapping OR list-of-KEY=VALUE strings
+// env helpers — Vec<String> of "KEY=VAL" entries
 // ---------------------------------------------------------------------------
 
-/// Custom deserializer for `env` fields that accepts both forms:
+/// Split a `KEY=VAL` env entry into `(key, value)`.
 ///
-/// - **Map form** (YAML mapping):
-///   ```yaml
-///   env:
-///     MY_VAR: hello
-///     DEPLOY_ENV: staging
-///   ```
-///
-/// - **List form** (GoReleaser parity — list of `KEY=VALUE` strings):
-///   ```yaml
-///   env:
-///     - MY_VAR=hello
-///     - DEPLOY_ENV=staging
-///   ```
-///
-/// Both forms are normalized to `Option<HashMap<String, String>>`.
-/// Lines without `=` in the list form are rejected with a deserialization error.
-fn deserialize_env_map<'de, D>(deserializer: D) -> Result<Option<HashMap<String, String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::{self, Visitor};
-
-    struct EnvMapVisitor;
-
-    impl<'de> Visitor<'de> for EnvMapVisitor {
-        type Value = Option<HashMap<String, String>>;
-
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a mapping of env vars (KEY: VALUE) or a list of KEY=VALUE strings")
-        }
-
-        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        fn visit_map<M: de::MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-            let mut result = HashMap::new();
-            while let Some((key, value)) = map.next_entry::<String, String>()? {
-                result.insert(key, value);
-            }
-            Ok(Some(result))
-        }
-
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            let mut result = HashMap::new();
-            while let Some(entry) = seq.next_element::<String>()? {
-                match entry.split_once('=') {
-                    Some((key, value)) => {
-                        let key = key.trim();
-                        if key.is_empty() {
-                            return Err(de::Error::custom(format!(
-                                "env list entry has empty key: {:?}",
-                                entry
-                            )));
-                        }
-                        result.insert(key.to_string(), value.to_string());
-                    }
-                    None => {
-                        return Err(de::Error::custom(format!(
-                            "env list entry must be KEY=VALUE, got: {:?}",
-                            entry
-                        )));
-                    }
-                }
-            }
-            Ok(Some(result))
-        }
+/// Returns the original entry as the error message when the line is missing
+/// `=` or has an empty key. Used by stage code that needs to apply env entries
+/// to a child process (sign, sbom, notarize, publishers).
+pub fn split_env_entry(entry: &str) -> Result<(&str, &str), String> {
+    let (k, v) = entry
+        .split_once('=')
+        .ok_or_else(|| format!("env entry must be KEY=VALUE, got: {entry:?}"))?;
+    let key = k.trim();
+    if key.is_empty() {
+        return Err(format!("env entry has empty key: {entry:?}"));
     }
+    Ok((key, v))
+}
 
-    deserializer.deserialize_any(EnvMapVisitor)
+/// Parse a list of `KEY=VAL` env entries into ordered `(key, value)` pairs.
+///
+/// Order is preserved so chained env applications (sign + sbom + notarize)
+/// see entries in user-declared order.
+pub fn parse_env_entries(entries: &[String]) -> anyhow::Result<Vec<(String, String)>> {
+    entries
+        .iter()
+        .map(|e| {
+            split_env_entry(e)
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .map_err(anyhow::Error::msg)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -868,8 +821,8 @@ pub struct BuildOverride {
     /// Glob patterns to match against target triples (e.g., `["x86_64-*", "*-linux-*"]`).
     pub targets: Vec<String>,
     /// Extra environment variables to set for matching targets.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// Extra flags to append for matching targets.
     pub flags: Option<String>,
     /// Extra features to enable for matching targets.
@@ -1473,7 +1426,7 @@ pub struct ChecksumConfig {
     pub algorithm: Option<String>,
     /// Disable checksums. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Extra files to include in the checksum file (beyond build artifacts).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before inclusion.
@@ -1588,7 +1541,7 @@ pub struct ReleaseConfig {
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
     /// GoReleaser supports template strings here since v1.15.0.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Release mode: "keep-existing", "append", "prepend", or "replace".
     pub mode: Option<String>,
     /// Artifact IDs filter for uploads.
@@ -2773,7 +2726,7 @@ pub struct AurConfig {
     /// Disable this AUR config. Accepts bool or template string
     /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Content for a .install file (post-install/pre-remove scripts).
     pub install: Option<String>,
     /// Legacy project URL field.
@@ -2825,7 +2778,7 @@ pub struct KrewConfig {
     /// manifest entirely (common when a project is not a kubectl plugin and
     /// has no krew channel).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
@@ -2875,10 +2828,10 @@ pub struct NixConfig {
     /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
     /// Distinct from `skip_upload` so users can model both intents — disable
     /// means "don't generate at all", skip_upload means "generate but don't
-    /// push". Without this field, `nix: { disable: true }` was silently
+    /// push". Without this field, `nix: { skip: true }` was silently
     /// dropped by the serde unknown-field default.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Custom install commands (replaces auto-generated binary install).
     pub install: Option<String>,
     /// Additional install commands appended after the main install.
@@ -3010,7 +2963,7 @@ pub struct DockerV2Config {
     pub flags: Option<Vec<String>>,
     /// When truthy, skip this docker build entirely. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
@@ -3033,7 +2986,7 @@ pub struct DockerV2Config {
 pub struct DockerDigestConfig {
     /// When truthy, disable docker digest artifact creation.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Template for the digest artifact filename.
     /// Default: tag-based naming (e.g., "ghcr.io_owner_app_v1.0.0.digest").
     pub name_template: Option<String>,
@@ -3511,7 +3464,7 @@ pub struct SnapcraftConfig {
     /// Disable this snapcraft config. Accepts bool or template string
     /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only snap.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
@@ -3684,7 +3637,7 @@ pub struct DmgConfig {
     pub mod_timestamp: Option<String>,
     /// Disable this DMG config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Which artifact type to package: "binary" (default) or "appbundle".
     #[serde(rename = "use")]
     pub use_: Option<String>,
@@ -3717,7 +3670,7 @@ pub struct MsiConfig {
     pub mod_timestamp: Option<String>,
     /// Disable this MSI config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Additional files available in the WiX build context (simple filenames).
     pub extra_files: Option<Vec<String>>,
     /// WiX extensions to enable (e.g., "WixUIExtension"). Templates allowed.
@@ -3764,7 +3717,7 @@ pub struct PkgConfig {
     pub min_os_version: Option<String>,
     /// Disable this PKG config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this PKG config if rendered result is "false"
     /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
@@ -3794,7 +3747,7 @@ pub struct NsisConfig {
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Disable this NSIS config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only the installer.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
@@ -3834,7 +3787,7 @@ pub struct AppBundleConfig {
     pub replace: Option<bool>,
     /// Disable this app bundle config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this app bundle config if rendered result is
     /// "false" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
@@ -3874,7 +3827,7 @@ pub struct FlatpakConfig {
     pub mod_timestamp: Option<String>,
     /// Disable this Flatpak config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3927,7 +3880,7 @@ pub struct BlobConfig {
     /// Disable this blob config. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Also upload metadata.json and artifacts.json.
     pub include_meta: Option<bool>,
     /// Pre-existing files to upload (supports glob patterns).
@@ -3984,7 +3937,7 @@ pub struct BinstallConfig {
 pub struct NotarizeConfig {
     /// Disable all notarization. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Cross-platform signing/notarization (rcodesign-based, works on any OS).
     pub macos: Option<Vec<MacOSSignNotarizeConfig>>,
     /// Native signing/notarization (codesign + xcrun, macOS only).
@@ -4234,12 +4187,10 @@ pub struct SbomConfig {
     pub id: Option<String>,
     /// Command to run for SBOM generation (default: "syft").
     pub cmd: Option<String>,
-    /// Environment variables to pass to the command.
-    ///
-    /// Accepts both map form (`KEY: value`) and GoReleaser list form
-    /// (`- KEY=value`). Values are template-rendered before being set.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    /// Environment variables to pass to the command, as `KEY=VALUE` strings.
+    /// Order is preserved. Values are template-rendered before being set.
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// Command-line arguments (supports templates and $artifact, $document vars).
     pub args: Option<Vec<String>>,
     /// Output document path templates (supports templates).
@@ -4250,7 +4201,7 @@ pub struct SbomConfig {
     pub ids: Option<Vec<String>>,
     /// Disable this SBOM config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
 }
 
 /// Custom deserializer for the `sboms` / `sbom` field.
@@ -4331,7 +4282,7 @@ pub struct ChangelogConfig {
     /// Disable changelog generation. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Changelog source: `"git"` (default), `"github"`, or `"github-native"`.
     /// `"github"` fetches commits via the GitHub API, enriching entries with
     /// author login information (available as the `Logins` template variable).
@@ -4492,8 +4443,8 @@ pub struct SignConfig {
     /// Build IDs filter: only sign artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Environment variables passed to the signing command.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// Certificate file to embed in the signature (Cosign bundle signing).
     pub certificate: Option<String>,
     /// Capture and log stdout/stderr of the signing command.
@@ -4527,8 +4478,8 @@ pub struct DockerSignConfig {
     /// Path to a file whose content is written to the signing command's stdin.
     pub stdin_file: Option<String>,
     /// Environment variables passed to the signing command.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// Capture and log stdout/stderr of the docker signing command.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub output: Option<StringOrBool>,
@@ -5138,7 +5089,7 @@ pub struct DockerHubConfig {
     pub full_description: Option<DockerHubFullDescription>,
     /// Disable this publisher. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
 }
 
 /// Full description source for DockerHub: either from a URL or a local file.
@@ -5271,14 +5222,14 @@ pub struct PublisherConfig {
     /// Artifact type filter: only publish artifacts of these types (e.g., "archive", "binary").
     pub artifact_types: Option<Vec<String>>,
     /// Environment variables passed to the publish command.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// Working directory for the publisher command.
     pub dir: Option<String>,
-    /// Template-conditional disable: if rendered result is `"true"`, skip this publisher.
+    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
     /// Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Include checksums in published artifacts.
     pub checksum: Option<bool>,
     /// Include signatures in published artifacts.
@@ -5319,8 +5270,8 @@ pub struct StructuredHook {
     /// Working directory for the command (defaults to project root).
     pub dir: Option<String>,
     /// Environment variables for the command.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// When true, capture and log stdout/stderr of the command.
     pub output: Option<bool>,
 }
@@ -5509,10 +5460,10 @@ pub struct WorkspaceConfig {
     pub after: Option<HooksConfig>,
     /// Environment variables scoped to this workspace.
     ///
-    /// Accepts both map form (`MY_VAR: hello`) and GoReleaser list form
-    /// (`- MY_VAR=hello`). Values are template-rendered at pipeline startup.
-    #[serde(default, deserialize_with = "deserialize_env_map")]
-    pub env: Option<HashMap<String, String>>,
+    /// List of `KEY=VALUE` strings (GoReleaser parity). Order is preserved.
+    /// Values are template-rendered at pipeline startup.
+    #[serde(default)]
+    pub env: Option<Vec<String>>,
     /// Pipeline stages to skip when releasing this workspace.
     /// Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`).
     #[serde(default)]
@@ -5525,8 +5476,8 @@ pub struct WorkspaceConfig {
 
 /// A value that can be either a bool or a template string.
 /// Used by `disable`, `skip_upload`, and similar fields across multiple config
-/// structs to support both `disable: true` and template conditionals like
-/// `disable: "{{ if .IsSnapshot }}true{{ endif }}"`.
+/// structs to support both `skip: true` and template conditionals like
+/// `skip: "{{ if .IsSnapshot }}true{{ endif }}"`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum StringOrBool {
@@ -5581,7 +5532,7 @@ impl StringOrBool {
     ///
     /// Domain-specific alias for
     /// [`try_evaluates_to_true`](Self::try_evaluates_to_true). Returns the
-    /// render error so callers can fail fast on a malformed `disable:`
+    /// render error so callers can fail fast on a malformed `skip:`
     /// template instead of silently treating it as "not disabled".
     pub fn try_is_disabled(
         &self,
@@ -5780,7 +5731,7 @@ pub struct MakeselfConfig {
     pub goarch: Option<Vec<String>>,
     /// Disable this config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -5895,7 +5846,7 @@ pub struct SrpmConfig {
     pub signature: Option<SrpmSignatureConfig>,
     /// Disable this config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -5993,7 +5944,7 @@ pub struct UploadConfig {
     pub extra_files_only: Option<bool>,
     /// Skip condition template (if rendered to "true", skip this upload).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -6057,7 +6008,7 @@ pub struct AurSourceConfig {
     pub directory: Option<String>,
     /// Disable this config.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Explicit architecture list (default: auto-detect from artifacts).
     pub arches: Option<Vec<String>>,
 }
@@ -6365,7 +6316,7 @@ crates:
         let yaml = r#"
 project_name: test
 changelog:
-  disable: true
+  skip: true
 crates:
   - name: a
     path: "."
@@ -6373,7 +6324,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let cl = config.changelog.as_ref().unwrap();
-        assert_eq!(cl.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(cl.skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -6381,7 +6332,7 @@ crates:
         let yaml = r#"
 project_name: test
 changelog:
-  disable: false
+  skip: false
   sort: desc
 crates:
   - name: a
@@ -6390,7 +6341,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let cl = config.changelog.as_ref().unwrap();
-        assert_eq!(cl.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(cl.skip, Some(StringOrBool::Bool(false)));
         assert_eq!(cl.sort, Some("desc".to_string()));
     }
 
@@ -6402,7 +6353,7 @@ crates:
 project_name: test
 defaults:
   checksum:
-    disable: true
+    skip: true
 crates:
   - name: a
     path: "."
@@ -6410,7 +6361,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let checksum = config.defaults.as_ref().unwrap().checksum.as_ref().unwrap();
-        assert_eq!(checksum.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(checksum.skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -6422,12 +6373,12 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     checksum:
-      disable: true
+      skip: true
       algorithm: sha512
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let checksum = config.crates[0].checksum.as_ref().unwrap();
-        assert_eq!(checksum.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(checksum.skip, Some(StringOrBool::Bool(true)));
         assert_eq!(checksum.algorithm, Some("sha512".to_string()));
     }
 
@@ -6437,7 +6388,7 @@ crates:
 project_name: test
 defaults:
   checksum:
-    disable: "{{ if .IsSnapshot }}true{{ end }}"
+    skip: "{{ if .IsSnapshot }}true{{ end }}"
 crates:
   - name: a
     path: "."
@@ -6445,7 +6396,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let checksum = config.defaults.as_ref().unwrap().checksum.as_ref().unwrap();
-        match &checksum.disable {
+        match &checksum.skip {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
             }
@@ -7179,8 +7130,8 @@ crates:
         let yaml = r#"
 project_name: test
 env:
-  MY_VAR: hello
-  DEPLOY_ENV: staging
+  - MY_VAR=hello
+  - DEPLOY_ENV=staging
 crates:
   - name: a
     path: "."
@@ -7188,8 +7139,8 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env = config.env.as_ref().unwrap();
-        assert_eq!(env.get("MY_VAR").unwrap(), "hello");
-        assert_eq!(env.get("DEPLOY_ENV").unwrap(), "staging");
+        assert!(env.contains(&"MY_VAR=hello".to_string()));
+        assert!(env.contains(&"DEPLOY_ENV=staging".to_string()));
     }
 
     #[test]
@@ -7209,10 +7160,7 @@ crates:
     fn test_env_field_toml() {
         let toml_str = r#"
 project_name = "test"
-
-[env]
-API_KEY = "secret123"
-STAGE = "prod"
+env = ["API_KEY=secret123", "STAGE=prod"]
 
 [[crates]]
 name = "a"
@@ -7221,8 +7169,8 @@ tag_template = "v{{ .Version }}"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         let env = config.env.as_ref().unwrap();
-        assert_eq!(env.get("API_KEY").unwrap(), "secret123");
-        assert_eq!(env.get("STAGE").unwrap(), "prod");
+        assert!(env.contains(&"API_KEY=secret123".to_string()));
+        assert!(env.contains(&"STAGE=prod".to_string()));
     }
 
     #[test]
@@ -7234,8 +7182,8 @@ crates = []
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         let env = config.env.as_ref().unwrap();
-        assert_eq!(env.get("MY_VAR").unwrap(), "hello");
-        assert_eq!(env.get("STAGE").unwrap(), "prod");
+        assert!(env.contains(&"MY_VAR=hello".to_string()));
+        assert!(env.contains(&"STAGE=prod".to_string()));
     }
 
     // ---- env list form tests (GoReleaser parity) ----
@@ -7251,8 +7199,8 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env = config.env.as_ref().unwrap();
-        assert_eq!(env.get("MY_VAR").unwrap(), "hello");
-        assert_eq!(env.get("DEPLOY_ENV").unwrap(), "staging");
+        assert!(env.contains(&"MY_VAR=hello".to_string()));
+        assert!(env.contains(&"DEPLOY_ENV=staging".to_string()));
     }
 
     #[test]
@@ -7267,8 +7215,8 @@ crates: []
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env = config.env.as_ref().unwrap();
         // Values are stored raw; template rendering happens at setup_env time.
-        assert_eq!(env.get("MY_VERSION").unwrap(), "{{ .Tag }}");
-        assert_eq!(env.get("BUILD_DATE").unwrap(), "{{ .Date }}");
+        assert!(env.contains(&"MY_VERSION={{ .Tag }}".to_string()));
+        assert!(env.contains(&"BUILD_DATE={{ .Date }}".to_string()));
     }
 
     #[test]
@@ -7282,9 +7230,8 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env = config.env.as_ref().unwrap();
-        assert_eq!(
-            env.get("LDFLAGS").unwrap(),
-            "-X main.version=1.0.0",
+        assert!(
+            env.contains(&"LDFLAGS=-X main.version=1.0.0".to_string()),
             "only first = should split key from value"
         );
     }
@@ -7299,44 +7246,45 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env = config.env.as_ref().unwrap();
-        assert_eq!(env.get("EMPTY_VAR").unwrap(), "");
+        assert!(env.contains(&"EMPTY_VAR=".to_string()));
     }
 
     #[test]
     fn test_env_list_form_no_equals_is_error() {
+        // Vec<String> accepts any string at parse time; validation happens when
+        // parse_env_entries is called by consumers (e.g. setup_env).
         let yaml = r#"
 project_name: test
 env:
   - "NO_EQUALS"
 crates: []
 "#;
-        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-        assert!(result.is_err(), "list entries without = should be rejected");
-        let err = result.unwrap_err().to_string();
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        let err = super::parse_env_entries(env).unwrap_err();
         assert!(
-            err.contains("KEY=VALUE"),
-            "error should mention KEY=VALUE format, got: {}",
+            err.to_string().contains("KEY=VALUE"),
+            "parse_env_entries should mention KEY=VALUE format, got: {}",
             err
         );
     }
 
     #[test]
     fn test_env_list_form_empty_key_is_error() {
+        // Vec<String> accepts any string at parse time; validation happens when
+        // parse_env_entries is called by consumers (e.g. setup_env).
         let yaml = r#"
 project_name: test
 env:
   - "=orphan_value"
 crates: []
 "#;
-        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        let err = super::parse_env_entries(env).unwrap_err();
         assert!(
-            result.is_err(),
-            "list entries with empty key should be rejected"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("empty key"),
-            "error should mention empty key, got: {}",
+            err.to_string().contains("empty key"),
+            "parse_env_entries should mention empty key, got: {}",
             err
         );
     }
@@ -7352,10 +7300,10 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env = config.env.as_ref().unwrap();
-        assert_eq!(
-            env.get("DUPED").unwrap(),
-            "second",
-            "later entries should override earlier ones"
+        // Vec<String> preserves all entries; consumers use last-wins semantics when iterating
+        assert!(
+            env.contains(&"DUPED=second".to_string()),
+            "later entries should be present"
         );
     }
 
@@ -7374,8 +7322,8 @@ workspaces:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let ws = &config.workspaces.as_ref().unwrap()[0];
         let env = ws.env.as_ref().unwrap();
-        assert_eq!(env.get("WS_VAR").unwrap(), "from-workspace");
-        assert_eq!(env.get("WS_BUILD").unwrap(), "{{ .Tag }}");
+        assert!(env.contains(&"WS_VAR=from-workspace".to_string()));
+        assert!(env.contains(&"WS_BUILD={{ .Tag }}".to_string()));
     }
 
     // ---- Error path tests (Task 3B) ----
@@ -7916,7 +7864,7 @@ workspaces:
       hooks:
         - echo after
     env:
-      MY_VAR: hello
+      - MY_VAR=hello
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let ws = &config.workspaces.as_ref().unwrap()[0];
@@ -7924,7 +7872,12 @@ workspaces:
         assert_eq!(ws.signs.len(), 1);
         assert!(ws.before.is_some());
         assert!(ws.after.is_some());
-        assert_eq!(ws.env.as_ref().unwrap().get("MY_VAR").unwrap(), "hello");
+        assert!(
+            ws.env
+                .as_ref()
+                .unwrap()
+                .contains(&"MY_VAR=hello".to_string())
+        );
     }
 
     #[test]
@@ -9025,7 +8978,7 @@ defaults:
         - simd
       flags: "--release"
       env:
-        CC: gcc
+        - CC=gcc
     - targets:
         - "*-apple-darwin"
       features:
@@ -9039,7 +8992,13 @@ crates: []
         assert_eq!(overrides[0].targets, vec!["x86_64-*"]);
         assert_eq!(overrides[0].features, Some(vec!["simd".to_string()]));
         assert_eq!(overrides[0].flags, Some("--release".to_string()));
-        assert_eq!(overrides[0].env.as_ref().unwrap().get("CC").unwrap(), "gcc");
+        assert!(
+            overrides[0]
+                .env
+                .as_ref()
+                .unwrap()
+                .contains(&"CC=gcc".to_string())
+        );
         assert_eq!(overrides[1].targets, vec!["*-apple-darwin"]);
         assert_eq!(overrides[1].features, Some(vec!["metal".to_string()]));
         assert!(overrides[1].env.is_none());
@@ -9527,11 +9486,11 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     snapcrafts:
-      - disable: true
+      - skip: true
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
-        assert_eq!(snap.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(snap.skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -9543,11 +9502,11 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     snapcrafts:
-      - disable: false
+      - skip: false
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
-        assert_eq!(snap.disable, Some(StringOrBool::Bool(false)));
+        assert_eq!(snap.skip, Some(StringOrBool::Bool(false)));
     }
 
     #[test]
@@ -9559,11 +9518,11 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     snapcrafts:
-      - disable: "{{ if .IsSnapshot }}true{{ end }}"
+      - skip: "{{ if .IsSnapshot }}true{{ end }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
-        match &snap.disable {
+        match &snap.skip {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
             }
@@ -9584,7 +9543,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
-        assert!(snap.disable.is_none());
+        assert!(snap.skip.is_none());
     }
 
     // ---- AurConfig disable StringOrBool tests ----
@@ -9599,7 +9558,7 @@ crates:
     tag_template: "v{{ .Version }}"
     publish:
       aur:
-        disable: true
+        skip: true
         git_url: "ssh://aur@aur.archlinux.org/a.git"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -9610,7 +9569,7 @@ crates:
             .aur
             .as_ref()
             .unwrap();
-        assert_eq!(aur.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(aur.skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -9623,7 +9582,7 @@ crates:
     tag_template: "v{{ .Version }}"
     publish:
       aur:
-        disable: "{{ if .IsSnapshot }}true{{ end }}"
+        skip: "{{ if .IsSnapshot }}true{{ end }}"
         git_url: "ssh://aur@aur.archlinux.org/a.git"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -9634,7 +9593,7 @@ crates:
             .aur
             .as_ref()
             .unwrap();
-        match &aur.disable {
+        match &aur.skip {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
             }
@@ -9662,7 +9621,7 @@ crates:
             .aur
             .as_ref()
             .unwrap();
-        assert!(aur.disable.is_none());
+        assert!(aur.skip.is_none());
     }
 
     // ---- PublisherConfig disable StringOrBool tests ----
@@ -9673,7 +9632,7 @@ crates:
 project_name: test
 publishers:
   - cmd: "echo hello"
-    disable: true
+    skip: true
 crates:
   - name: a
     path: "."
@@ -9681,7 +9640,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let pub_cfg = &config.publishers.as_ref().unwrap()[0];
-        assert_eq!(pub_cfg.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(pub_cfg.skip, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -9690,7 +9649,7 @@ crates:
 project_name: test
 publishers:
   - cmd: "echo hello"
-    disable: "{{ if .IsSnapshot }}true{{ end }}"
+    skip: "{{ if .IsSnapshot }}true{{ end }}"
 crates:
   - name: a
     path: "."
@@ -9698,7 +9657,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let pub_cfg = &config.publishers.as_ref().unwrap()[0];
-        match &pub_cfg.disable {
+        match &pub_cfg.skip {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
             }
@@ -9719,7 +9678,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let pub_cfg = &config.publishers.as_ref().unwrap()[0];
-        assert!(pub_cfg.disable.is_none());
+        assert!(pub_cfg.skip.is_none());
     }
 
     // ---- skip_upload StringOrBool tests for publisher configs ----
@@ -10399,7 +10358,7 @@ dockerhub:
     images:
       - myorg/myapp
     description: "My app"
-    disable: true
+    skip: true
     full_description:
       from_file:
         path: ./README.md
@@ -10410,7 +10369,7 @@ dockerhub:
         assert_eq!(dh.secret_name.as_deref(), Some("DOCKER_TOKEN"));
         assert_eq!(dh.images.as_ref().unwrap(), &["myorg/myapp"]);
         assert_eq!(dh.description.as_deref(), Some("My app"));
-        assert_eq!(dh.disable, Some(StringOrBool::Bool(true)));
+        assert_eq!(dh.skip, Some(StringOrBool::Bool(true)));
         let fd = dh.full_description.as_ref().unwrap();
         assert!(fd.from_url.is_none());
         let ff = fd.from_file.as_ref().unwrap();
@@ -10500,28 +10459,8 @@ cloudsmiths:
     }
 
     // -----------------------------------------------------------------------
-    // deserialize_env_map tests — map, list-of-strings, null/missing
+    // env: Vec<String> tests — list-only, null/missing, parse helpers
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_docker_sign_env_map_format() {
-        let yaml = r#"
-project_name: test
-docker_signs:
-  - cmd: cosign
-    env:
-      COSIGN_PASSWORD: hunter2
-      COSIGN_KEY: /path/to/key
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let ds = &cfg.docker_signs.as_ref().unwrap()[0];
-        let env = ds
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("COSIGN_PASSWORD").unwrap(), "hunter2");
-        assert_eq!(env.get("COSIGN_KEY").unwrap(), "/path/to/key");
-    }
 
     #[test]
     fn test_docker_sign_env_list_format() {
@@ -10535,30 +10474,27 @@ docker_signs:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let ds = &cfg.docker_signs.as_ref().unwrap()[0];
-        let env = ds
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("COSIGN_PASSWORD").unwrap(), "hunter2");
-        assert_eq!(env.get("COSIGN_KEY").unwrap(), "/path/to/key");
+        let env = ds.env.as_ref().expect("env should be Some");
+        assert_eq!(
+            env,
+            &vec!["COSIGN_PASSWORD=hunter2", "COSIGN_KEY=/path/to/key"]
+        );
     }
 
     #[test]
-    fn test_docker_sign_env_list_split_on_first_equals() {
+    fn test_docker_sign_env_map_form_rejected() {
         let yaml = r#"
 project_name: test
 docker_signs:
   - cmd: cosign
     env:
-      - FLAGS=--key=val --other=stuff
+      COSIGN_PASSWORD: hunter2
 "#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let ds = &cfg.docker_signs.as_ref().unwrap()[0];
-        let env = ds
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("FLAGS").unwrap(), "--key=val --other=stuff");
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "map form should be rejected after Vec<String> migration"
+        );
     }
 
     #[test]
@@ -10587,16 +10523,49 @@ docker_signs:
     }
 
     #[test]
-    fn test_docker_sign_env_list_invalid_no_equals() {
-        let yaml = r#"
-project_name: test
-docker_signs:
-  - cmd: cosign
-    env:
-      - COSIGN_PASSWORD
-"#;
-        let result = serde_yaml_ng::from_str::<Config>(yaml);
-        assert!(result.is_err(), "entry without '=' should fail");
+    fn test_split_env_entry_basic() {
+        assert_eq!(
+            super::split_env_entry("KEY=value").unwrap(),
+            ("KEY", "value")
+        );
+    }
+
+    #[test]
+    fn test_split_env_entry_split_on_first_equals() {
+        assert_eq!(
+            super::split_env_entry("FLAGS=--key=val --other=stuff").unwrap(),
+            ("FLAGS", "--key=val --other=stuff")
+        );
+    }
+
+    #[test]
+    fn test_split_env_entry_no_equals_errors() {
+        let err = super::split_env_entry("COSIGN_PASSWORD").unwrap_err();
+        assert!(err.contains("must be KEY=VALUE"), "{err}");
+    }
+
+    #[test]
+    fn test_split_env_entry_empty_key_errors() {
+        let err = super::split_env_entry("=value").unwrap_err();
+        assert!(err.contains("empty key"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_env_entries_preserves_order() {
+        let input = vec![
+            "FIRST=1".to_string(),
+            "SECOND=2".to_string(),
+            "THIRD=3".to_string(),
+        ];
+        let parsed = super::parse_env_entries(&input).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ("FIRST".to_string(), "1".to_string()),
+                ("SECOND".to_string(), "2".to_string()),
+                ("THIRD".to_string(), "3".to_string()),
+            ]
+        );
     }
 
     #[test]
@@ -10611,12 +10580,8 @@ signs:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.signs[0];
-        let env = s
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("GPG_KEY").unwrap(), "ABCDEF");
-        assert_eq!(env.get("GPG_TTY").unwrap(), "/dev/pts/0");
+        let env = s.env.as_ref().expect("env should be Some");
+        assert_eq!(env, &vec!["GPG_KEY=ABCDEF", "GPG_TTY=/dev/pts/0"]);
     }
 
     #[test]
@@ -10631,16 +10596,9 @@ publishers:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let p = &cfg.publishers.as_ref().unwrap()[0];
-        let env = p
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("API_TOKEN").unwrap(), "secret123");
+        let env = p.env.as_ref().expect("env should be Some");
+        assert_eq!(env, &vec!["API_TOKEN=secret123"]);
     }
-
-    // -----------------------------------------------------------------------
-    // BuildOverride.env — list and map format tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_build_override_env_list_format() {
@@ -10659,42 +10617,9 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let overrides = config.defaults.unwrap().overrides.unwrap();
-        let env = overrides[0]
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("CC").unwrap(), "gcc-12");
-        assert_eq!(env.get("CFLAGS").unwrap(), "-O2 -Wall");
+        let env = overrides[0].env.as_ref().expect("env should be Some");
+        assert_eq!(env, &vec!["CC=gcc-12", "CFLAGS=-O2 -Wall"]);
     }
-
-    #[test]
-    fn test_build_override_env_map_format() {
-        let yaml = r#"
-project_name: test
-defaults:
-  targets:
-    - x86_64-unknown-linux-gnu
-  overrides:
-    - targets:
-        - "x86_64-*"
-      env:
-        CC: gcc-12
-        CFLAGS: "-O2 -Wall"
-crates: []
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let overrides = config.defaults.unwrap().overrides.unwrap();
-        let env = overrides[0]
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("CC").unwrap(), "gcc-12");
-        assert_eq!(env.get("CFLAGS").unwrap(), "-O2 -Wall");
-    }
-
-    // -----------------------------------------------------------------------
-    // StructuredHook.env — list and map format tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_structured_hook_env_list_format() {
@@ -10711,117 +10636,11 @@ before:
         let hooks = cfg.before.as_ref().unwrap().hooks.as_ref().unwrap();
         match &hooks[0] {
             HookEntry::Structured(h) => {
-                let env = h
-                    .env
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("env should be Some"));
-                assert_eq!(env.get("MY_VAR").unwrap(), "foo");
-                assert_eq!(env.get("OTHER").unwrap(), "bar=baz");
+                let env = h.env.as_ref().expect("env should be Some");
+                assert_eq!(env, &vec!["MY_VAR=foo", "OTHER=bar=baz"]);
             }
             HookEntry::Simple(_) => panic!("expected Structured hook"),
         }
-    }
-
-    #[test]
-    fn test_structured_hook_env_map_format() {
-        let yaml = r#"
-project_name: test
-before:
-  hooks:
-    - cmd: echo hello
-      env:
-        MY_VAR: foo
-        OTHER: "bar=baz"
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let hooks = cfg.before.as_ref().unwrap().hooks.as_ref().unwrap();
-        match &hooks[0] {
-            HookEntry::Structured(h) => {
-                let env = h
-                    .env
-                    .as_ref()
-                    .unwrap_or_else(|| panic!("env should be Some"));
-                assert_eq!(env.get("MY_VAR").unwrap(), "foo");
-                assert_eq!(env.get("OTHER").unwrap(), "bar=baz");
-            }
-            HookEntry::Simple(_) => panic!("expected Structured hook"),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // SignConfig.env — map format test (list already covered above)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_sign_config_env_map_format() {
-        let yaml = r#"
-project_name: test
-signs:
-  - cmd: gpg
-    env:
-      GPG_KEY: ABCDEF
-      GPG_TTY: /dev/pts/0
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let s = &cfg.signs[0];
-        let env = s
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("GPG_KEY").unwrap(), "ABCDEF");
-        assert_eq!(env.get("GPG_TTY").unwrap(), "/dev/pts/0");
-    }
-
-    // -----------------------------------------------------------------------
-    // PublisherConfig.env — map format test (list already covered above)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_publisher_env_map_format() {
-        let yaml = r#"
-project_name: test
-publishers:
-  - name: mypub
-    cmd: publish.sh
-    env:
-      API_TOKEN: secret123
-      DEPLOY_ENV: staging
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let p = &cfg.publishers.as_ref().unwrap()[0];
-        let env = p
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(env.get("API_TOKEN").unwrap(), "secret123");
-        assert_eq!(env.get("DEPLOY_ENV").unwrap(), "staging");
-    }
-
-    // -----------------------------------------------------------------------
-    // SbomConfig.env — list and map format tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_sbom_config_env_map_format() {
-        let yaml = r#"
-project_name: test
-sboms:
-  - cmd: syft
-    env:
-      SYFT_FILE_METADATA_CATALOGER_ENABLED: "true"
-      SYFT_SCOPE: all-layers
-"#;
-        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let s = &cfg.sboms[0];
-        let env = s
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
-        assert_eq!(
-            env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(),
-            "true"
-        );
-        assert_eq!(env.get("SYFT_SCOPE").unwrap(), "all-layers");
     }
 
     #[test]
@@ -10836,15 +10655,14 @@ sboms:
 "#;
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.sboms[0];
-        let env = s
-            .env
-            .as_ref()
-            .unwrap_or_else(|| panic!("env should be Some"));
+        let env = s.env.as_ref().expect("env should be Some");
         assert_eq!(
-            env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(),
-            "true"
+            env,
+            &vec![
+                "SYFT_FILE_METADATA_CATALOGER_ENABLED=true",
+                "SYFT_SCOPE=all-layers"
+            ]
         );
-        assert_eq!(env.get("SYFT_SCOPE").unwrap(), "all-layers");
     }
 
     #[test]
