@@ -1,9 +1,9 @@
 pub mod artifactory;
 pub mod aur;
 pub mod aur_source;
+pub mod cargo;
 pub mod chocolatey;
 pub mod cloudsmith;
-pub mod crates_io;
 pub mod dockerhub;
 pub mod homebrew;
 pub(crate) mod http_upload;
@@ -22,9 +22,9 @@ use anyhow::Result;
 use artifactory::publish_to_artifactory;
 use aur::publish_to_aur;
 use aur_source::{publish_to_aur_source, publish_top_level_aur_sources};
+use cargo::publish_to_cargo;
 use chocolatey::publish_to_chocolatey;
 use cloudsmith::publish_to_cloudsmith;
-use crates_io::publish_to_crates_io;
 use dockerhub::publish_to_dockerhub;
 use homebrew::{publish_to_homebrew, publish_top_level_homebrew_casks};
 use krew::publish_to_krew;
@@ -103,8 +103,8 @@ impl Stage for PublishStage {
         // must succeed before anything downstream runs. `aur_source`/`aur_sources`
         // run last to match GoReleaser.
 
-        // 1. crates.io — fatal (authoritative registry).
-        publish_to_crates_io(ctx, &selected, &log)?;
+        // 1. crates.io (cargo) — fatal (authoritative registry).
+        publish_to_cargo(ctx, &selected, &log)?;
 
         // ---- Infrastructure publishers (run before package managers) ----
 
@@ -121,57 +121,94 @@ impl Stage for PublishStage {
         try_publish!("upload", publish_to_upload(ctx, &log));
 
         // ---- Package-manager publishers (consume URLs from releases above) ----
+        //
+        // Each block honors a CLI-level `--skip=<name>` flag (FOLL-1).
+        // Names match the GoReleaser convention: `brew`, `scoop`, `choco`,
+        // `winget`, `aur`, `krew`, `nix` (cargo is honored inside
+        // `publish_to_cargo` itself).
 
         // 8. Homebrew — one call per crate that has a homebrew config.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.homebrew.is_some()) {
-            try_publish!("homebrew", publish_to_homebrew(ctx, crate_name, &log));
+        if !ctx.should_skip("brew") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.homebrew.is_some()) {
+                try_publish!("homebrew", publish_to_homebrew(ctx, crate_name, &log));
+            }
+        } else {
+            log.status("homebrew: skipped via --skip=brew");
         }
 
         // 9. Scoop — one call per crate that has a scoop config.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.scoop.is_some()) {
-            try_publish!("scoop", publish_to_scoop(ctx, crate_name, &log));
+        if !ctx.should_skip("scoop") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.scoop.is_some()) {
+                try_publish!("scoop", publish_to_scoop(ctx, crate_name, &log));
+            }
+        } else {
+            log.status("scoop: skipped via --skip=scoop");
         }
 
         // 10. Chocolatey — one call per crate that has a chocolatey config.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.chocolatey.is_some()) {
-            try_publish!("chocolatey", publish_to_chocolatey(ctx, crate_name, &log));
+        if !ctx.should_skip("choco") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.chocolatey.is_some()) {
+                try_publish!("chocolatey", publish_to_chocolatey(ctx, crate_name, &log));
+            }
+        } else {
+            log.status("chocolatey: skipped via --skip=choco");
         }
 
         // 11. WinGet — one call per crate that has a winget config.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.winget.is_some()) {
-            try_publish!("winget", publish_to_winget(ctx, crate_name, &log));
+        if !ctx.should_skip("winget") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.winget.is_some()) {
+                try_publish!("winget", publish_to_winget(ctx, crate_name, &log));
+            }
+        } else {
+            log.status("winget: skipped via --skip=winget");
         }
 
         // 12. AUR — one call per crate that has an aur config.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur.is_some()) {
-            try_publish!("aur", publish_to_aur(ctx, crate_name, &log));
+        if !ctx.should_skip("aur") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur.is_some()) {
+                try_publish!("aur", publish_to_aur(ctx, crate_name, &log));
+            }
+        } else {
+            log.status("aur: skipped via --skip=aur");
         }
 
         // 13. Krew — one call per crate that has a krew config.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.krew.is_some()) {
-            try_publish!("krew", publish_to_krew(ctx, crate_name, &log));
+        if !ctx.should_skip("krew") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.krew.is_some()) {
+                try_publish!("krew", publish_to_krew(ctx, crate_name, &log));
+            }
+        } else {
+            log.status("krew: skipped via --skip=krew");
         }
 
         // 14. Nix — one call per crate that has a nix config.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.nix.is_some()) {
-            try_publish!("nix", publish_to_nix(ctx, crate_name, &log));
+        if !ctx.should_skip("nix") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.nix.is_some()) {
+                try_publish!("nix", publish_to_nix(ctx, crate_name, &log));
+            }
+        } else {
+            log.status("nix: skipped via --skip=nix");
         }
 
         // 15. Homebrew Casks — top-level publisher (GoReleaser parity).
-        try_publish!(
-            "homebrew-casks",
-            publish_top_level_homebrew_casks(ctx, &log)
-        );
+        if !ctx.should_skip("brew") {
+            try_publish!(
+                "homebrew-casks",
+                publish_top_level_homebrew_casks(ctx, &log)
+            );
+        }
 
         // ---- AUR source last (GoReleaser parity) ----
 
         // 16. AUR source packages — per-crate publisher.
-        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur_source.is_some()) {
-            try_publish!("aur-source", publish_to_aur_source(ctx, crate_name, &log));
-        }
+        if !ctx.should_skip("aur") {
+            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur_source.is_some()) {
+                try_publish!("aur-source", publish_to_aur_source(ctx, crate_name, &log));
+            }
 
-        // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
-        try_publish!("aur-sources", publish_top_level_aur_sources(ctx, &log));
+            // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
+            try_publish!("aur-sources", publish_top_level_aur_sources(ctx, &log));
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -200,8 +237,8 @@ impl Stage for PublishStage {
 mod tests {
     use super::*;
     use anodizer_core::config::{
-        AurConfig, BucketConfig, ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig,
-        CratesPublishConfig, HomebrewConfig, KrewConfig, KrewManifestsRepoConfig, PublishConfig,
+        AurConfig, BucketConfig, CargoPublishConfig, ChocolateyConfig, ChocolateyRepoConfig,
+        Config, CrateConfig, HomebrewConfig, KrewConfig, KrewManifestsRepoConfig, PublishConfig,
         ScoopConfig, TapConfig, WingetConfig, WingetManifestsRepoConfig,
     };
     use anodizer_core::context::{Context, ContextOptions};
@@ -229,14 +266,14 @@ mod tests {
     }
 
     #[test]
-    fn test_run_dry_run_crates_io() {
+    fn test_run_dry_run_cargo() {
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                crates: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig::default()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -305,7 +342,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                crates: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig::default()),
                 homebrew: Some(HomebrewConfig {
                     tap: Some(TapConfig {
                         owner: "org".to_string(),
@@ -343,7 +380,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                crates: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig::default()),
                 homebrew: Some(HomebrewConfig {
                     tap: Some(TapConfig {
                         owner: "org".to_string(),
@@ -455,7 +492,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                crates: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig::default()),
                 homebrew: Some(HomebrewConfig {
                     tap: Some(TapConfig {
                         owner: "org".to_string(),
@@ -572,7 +609,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                crates: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig::default()),
                 homebrew: Some(HomebrewConfig {
                     tap: Some(TapConfig {
                         owner: "org".to_string(),
@@ -742,7 +779,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
-                crates: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig::default()),
                 homebrew: Some(HomebrewConfig {
                     tap: Some(TapConfig {
                         owner: "org".to_string(),

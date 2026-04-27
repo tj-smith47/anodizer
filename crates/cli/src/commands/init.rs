@@ -317,8 +317,11 @@ fn render_yaml(project_name: &str, crates: &[&CrateInfo]) -> Result<String> {
             out.push_str("      draft: false\n");
             out.push_str("      prerelease: auto\n");
         } else {
+            // Library crates opt in to crates.io publishing via `cargo: {}`.
+            // Presence is the on-switch (DEC-6 / ITEM-3 — no `enabled` field,
+            // no bool shorthand).
             out.push_str("    publish:\n");
-            out.push_str("      crates: true\n");
+            out.push_str("      cargo: {}\n");
         }
         out.push('\n');
     }
@@ -372,8 +375,8 @@ path = "src/main.rs"
         assert!(yaml.contains("binary: myapp"));
         assert!(yaml.contains("archives:"));
         assert!(yaml.contains("release:"));
-        // Should not have publish.crates since it's a binary
-        assert!(!yaml.contains("crates: true"));
+        // Should not have publish.cargo since it's a binary
+        assert!(!yaml.contains("cargo: {}"));
     }
 
     #[test]
@@ -392,7 +395,7 @@ edition = "2024"
 
         let yaml = generate_config(tmp.path().to_str().unwrap()).unwrap();
         assert!(yaml.contains("project_name: mylib"));
-        assert!(yaml.contains("crates: true"));
+        assert!(yaml.contains("cargo: {}"));
         // Library crates should not have builds
         assert!(!yaml.contains("builds:"));
     }
@@ -444,8 +447,8 @@ mylib = { path = "../mylib" }
 
         let yaml = generate_config(tmp.path().to_str().unwrap()).unwrap();
         assert!(yaml.contains("project_name: myproject"));
-        // mylib is a library: should have publish.crates
-        assert!(yaml.contains("crates: true"));
+        // mylib is a library: should have publish.cargo
+        assert!(yaml.contains("cargo: {}"));
         // mybin is a binary: should have builds
         assert!(yaml.contains("builds:"));
         assert!(yaml.contains("binary: mybin"));

@@ -102,7 +102,7 @@ crates:
     path: crates/cfgd-core
     tag_template: "cfgd-core-v{{ Version }}"
     publish:
-      crates: true
+      cargo: {}
 
   - name: cfgd
     path: crates/cfgd
@@ -159,11 +159,12 @@ crates:
       replace_existing_draft: true
       replace_existing_artifacts: true
     publish:
-      crates: true
+      cargo: {}
       # Object form with options:
-      # crates:
-      #   enabled: true
+      # cargo:
       #   index_timeout: 300
+      #   no_verify: false
+      #   features: [telemetry]
       homebrew:
         tap:
           owner: tj-smith47
@@ -191,7 +192,8 @@ crates:
           - aarch64-unknown-linux-gnu
     archives: false
     publish:
-      crates: false
+      cargo:
+        skip: true
     docker:
       - image_templates:
           - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}"

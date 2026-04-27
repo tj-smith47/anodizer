@@ -973,14 +973,12 @@ pub struct Defaults {
 pub struct PublishDefaults {
     /// Default Homebrew formula settings.
     pub homebrew: Option<HomebrewConfig>,
-    /// Default crates.io publish settings, merged into per-crate `publish.crates`.
+    /// Default crates.io publish settings, merged into per-crate `publish.cargo`.
     ///
-    /// WAVE 3 will rename the type from `CratesPublishConfig` to
-    /// `CargoPublishConfig` and expose it under the `cargo:` key; for now the
-    /// existing type is reused verbatim.
-    // TODO(WAVE-3): rename CratesPublishConfig → CargoPublishConfig and align
-    // the per-crate field name (PublishConfig.crates → PublishConfig.cargo).
-    pub cargo: Option<CratesPublishConfig>,
+    /// TODO(WAVE-?): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>`
+    /// once we expand the OneOrMany pattern across all publishers; today every
+    /// per-crate publisher field is single-struct, so defaults are too.
+    pub cargo: Option<CargoPublishConfig>,
     /// Default Scoop manifest settings.
     pub scoop: Option<ScoopConfig>,
     /// Default WinGet manifest settings.
@@ -2215,9 +2213,8 @@ pub struct CommitSigningConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PublishConfig {
-    #[schemars(schema_with = "crates_publish_schema")]
-    /// Publish to crates.io: true/false or object with enabled and index_timeout fields.
-    pub crates: Option<CratesPublishConfig>,
+    /// Publish to crates.io. Presence opts in; use `cargo: { skip: true }` to opt out.
+    pub cargo: Option<CargoPublishConfig>,
     /// Homebrew formula publishing configuration.
     pub homebrew: Option<HomebrewConfig>,
     /// Scoop manifest publishing configuration.
@@ -2236,62 +2233,70 @@ pub struct PublishConfig {
     pub nix: Option<NixConfig>,
 }
 
-/// Schema for crates publish config (bool or object).
-fn crates_publish_schema(
-    _generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
-    schemars::schema::Schema::Bool(true)
-}
+/// `cargo publish` flag surface (DEC-10 — WAVE 3).
+///
+/// Presence under `publish:` opts the crate in; use `skip: true` (or a
+/// truthy template) to opt out. There is no `enabled` field — presence is
+/// the on-switch (DEC-6 / ITEM-3 hard-break).
+///
+/// Fields intentionally omitted because anodizer owns them (DEC-10):
+/// - `--package` / `--workspace` / `--exclude`: the top-level `crates[]`
+///   axis owns crate selection.
+/// - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`).
+/// - `-v` / `-q` / `--color`: CLI ergonomics, not config.
+/// - `--config` / `-Z`: cargo CLI escape hatches; out of scope.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct CargoPublishConfig {
+    // ----- Registry selection -----
+    /// Alternate registry name from `~/.cargo/config.toml` (`--registry`).
+    pub registry: Option<String>,
+    /// Registry index URL (`--index`).
+    pub index: Option<String>,
+    /// Seconds to wait for the crates.io sparse index to publish a crate
+    /// before its dependents are pushed (anodizer-original — no `cargo
+    /// publish` equivalent).
+    pub index_timeout: Option<u64>,
 
-impl PublishConfig {
-    pub fn crates_config(&self) -> CratesPublishSettings {
-        match &self.crates {
-            None => CratesPublishSettings::default(),
-            Some(CratesPublishConfig::Bool(enabled)) => CratesPublishSettings {
-                enabled: *enabled,
-                index_timeout: 300,
-            },
-            Some(CratesPublishConfig::Object {
-                enabled,
-                index_timeout,
-            }) => CratesPublishSettings {
-                enabled: *enabled,
-                index_timeout: *index_timeout,
-            },
-        }
-    }
-}
+    // ----- Verify / dirty -----
+    /// Skip the local `cargo build --release` verification step (`--no-verify`).
+    pub no_verify: Option<bool>,
+    /// Allow publishing with an uncommitted working tree (`--allow-dirty`).
+    pub allow_dirty: Option<bool>,
 
-/// The `crates` field inside `publish` accepts either a bool or an object.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum CratesPublishConfig {
-    Bool(bool),
-    Object {
-        enabled: bool,
-        #[serde(default = "default_index_timeout")]
-        index_timeout: u64,
-    },
-}
+    // ----- Feature selection -----
+    /// Crate features to activate (`--features`).
+    pub features: Option<Vec<String>>,
+    /// Activate every feature, including `default` (`--all-features`).
+    pub all_features: Option<bool>,
+    /// Disable the `default` feature set (`--no-default-features`).
+    pub no_default_features: Option<bool>,
 
-fn default_index_timeout() -> u64 {
-    300
-}
+    // ----- Compilation -----
+    /// Build target triple for the verification step (`--target`).
+    pub target: Option<String>,
+    /// Override the cargo target directory (`--target-dir`).
+    pub target_dir: Option<PathBuf>,
+    /// Number of parallel compile jobs for verification (`--jobs`).
+    pub jobs: Option<u32>,
+    /// Continue on errors when verifying multiple crates (`--keep-going`).
+    pub keep_going: Option<bool>,
 
-/// Resolved settings after interpreting `CratesPublishConfig`.
-#[derive(Debug, Clone)]
-pub struct CratesPublishSettings {
-    pub enabled: bool,
-    pub index_timeout: u64,
-}
+    // ----- Manifest -----
+    /// Path to the crate's `Cargo.toml` (`--manifest-path`).
+    pub manifest_path: Option<PathBuf>,
+    /// Require an up-to-date `Cargo.lock` matching the resolver (`--locked`).
+    pub locked: Option<bool>,
+    /// Require offline resolution; never hit the network (`--offline`).
+    pub offline: Option<bool>,
+    /// Both `--locked` and `--offline` (`--frozen`).
+    pub frozen: Option<bool>,
 
-impl Default for CratesPublishSettings {
-    fn default() -> Self {
-        CratesPublishSettings {
-            enabled: false,
-            index_timeout: 300,
-        }
-    }
+    // ----- Peer-publisher pattern -----
+    /// Skip this publisher; supports template strings or bool.
+    /// Truthy renders disable the publisher without removing the block.
+    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
+    pub skip: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -6343,25 +6348,20 @@ crates:
     }
 
     #[test]
-    fn test_publish_crates_bool_and_object() {
-        let yaml_bool = r#"
+    fn test_publish_cargo_present_and_with_options() {
+        // Presence of `cargo:` opts the crate in (DEC-6 / ITEM-3 — no
+        // `enabled` field, no bool shorthand).
+        let yaml_present = r#"
 project_name: test
 crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
     publish:
-      crates: true
+      cargo: {}
 "#;
-        let config: Config = serde_yaml_ng::from_str(yaml_bool).unwrap();
-        assert!(
-            config.crates[0]
-                .publish
-                .as_ref()
-                .unwrap()
-                .crates_config()
-                .enabled
-        );
+        let config: Config = serde_yaml_ng::from_str(yaml_present).unwrap();
+        assert!(config.crates[0].publish.as_ref().unwrap().cargo.is_some());
 
         let yaml_obj = r#"
 project_name: test
@@ -6370,14 +6370,66 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     publish:
-      crates:
-        enabled: true
+      cargo:
         index_timeout: 120
+        no_verify: true
+        allow_dirty: true
+        features: [foo, bar]
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml_obj).unwrap();
-        let crates_cfg = config.crates[0].publish.as_ref().unwrap().crates_config();
-        assert!(crates_cfg.enabled);
-        assert_eq!(crates_cfg.index_timeout, 120);
+        let cargo = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .cargo
+            .as_ref()
+            .unwrap();
+        assert_eq!(cargo.index_timeout, Some(120));
+        assert_eq!(cargo.no_verify, Some(true));
+        assert_eq!(cargo.allow_dirty, Some(true));
+        assert_eq!(
+            cargo.features,
+            Some(vec!["foo".to_string(), "bar".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_publish_cargo_bool_shorthand_rejected() {
+        // ITEM-3 hard-break: `cargo: true` is no longer a valid shorthand.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      cargo: true
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "publish.cargo: true must fail to parse (no bool shorthand)"
+        );
+    }
+
+    #[test]
+    fn test_publish_cargo_legacy_crates_key_rejected() {
+        // ITEM-3 hard-break: the old `publish.crates:` key was renamed to
+        // `publish.cargo:` with no alias (DEC-5).
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      crates: true
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "publish.crates is no longer a valid key (renamed to cargo); deny_unknown_fields must reject it"
+        );
     }
 
     // ---- MakeLatestConfig tests ----
@@ -8670,7 +8722,7 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     publish:
-      crates: true
+      cargo: {}
       homebrew:
         tap:
           owner: org
@@ -8698,7 +8750,7 @@ crates:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let publish = config.crates[0].publish.as_ref().unwrap();
 
-        assert!(publish.crates.is_some());
+        assert!(publish.cargo.is_some());
         assert!(publish.homebrew.is_some());
         assert!(publish.scoop.is_some());
         assert!(publish.chocolatey.is_some());

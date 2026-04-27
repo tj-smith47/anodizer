@@ -447,7 +447,7 @@ fn docker_v2_identity(c: &DockerV2Config) -> Option<String> {
 
 fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults) {
     deep_merge_option(&mut target.homebrew, defaults.homebrew.as_ref());
-    deep_merge_option(&mut target.crates, defaults.cargo.as_ref());
+    deep_merge_option(&mut target.cargo, defaults.cargo.as_ref());
     deep_merge_option(&mut target.scoop, defaults.scoop.as_ref());
     deep_merge_option(&mut target.winget, defaults.winget.as_ref());
     deep_merge_option(&mut target.chocolatey, defaults.chocolatey.as_ref());
@@ -708,12 +708,15 @@ mod tests {
     // --------------- Cargo (crates.io) publisher defaults ---------------
 
     #[test]
-    fn cargo_defaults_merge_into_per_crate_publish_crates_when_unset() {
-        use crate::config::CratesPublishConfig;
+    fn cargo_defaults_merge_into_per_crate_publish_cargo_when_unset() {
+        use crate::config::CargoPublishConfig;
 
         let defaults = Defaults {
             publish: Some(PublishDefaults {
-                cargo: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig {
+                    index_timeout: Some(600),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -724,40 +727,54 @@ mod tests {
         apply_to_crate(&defaults, &mut crate_cfg);
 
         let publish = crate_cfg.publish.expect("publish block should be created");
-        let crates_field = publish
-            .crates
-            .expect("publish.crates should be inherited from defaults");
-        assert!(
-            matches!(crates_field, CratesPublishConfig::Bool(true)),
-            "expected Bool(true) inherited from defaults.cargo"
+        let cargo = publish
+            .cargo
+            .expect("publish.cargo should be inherited from defaults");
+        assert_eq!(
+            cargo.index_timeout,
+            Some(600),
+            "expected index_timeout=600 inherited from defaults.cargo"
         );
     }
 
     #[test]
-    fn cargo_defaults_do_not_override_per_crate_publish_crates() {
-        use crate::config::CratesPublishConfig;
+    fn cargo_defaults_fill_missing_fields_but_per_crate_wins_on_collision() {
+        use crate::config::CargoPublishConfig;
 
         let defaults = Defaults {
             publish: Some(PublishDefaults {
-                cargo: Some(CratesPublishConfig::Bool(true)),
+                cargo: Some(CargoPublishConfig {
+                    index_timeout: Some(600),
+                    no_verify: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
         };
-        // Per-crate explicitly sets publish.crates = false — should win.
+        // Per-crate explicitly sets index_timeout=120 and no other fields.
         let mut crate_cfg = make_crate("mycrate");
         crate_cfg.publish = Some(PublishConfig {
-            crates: Some(CratesPublishConfig::Bool(false)),
+            cargo: Some(CargoPublishConfig {
+                index_timeout: Some(120),
+                ..Default::default()
+            }),
             ..Default::default()
         });
 
         apply_to_crate(&defaults, &mut crate_cfg);
 
         let publish = crate_cfg.publish.unwrap();
-        let crates_field = publish.crates.unwrap();
-        assert!(
-            matches!(crates_field, CratesPublishConfig::Bool(false)),
-            "per-crate value should win over defaults"
+        let cargo = publish.cargo.unwrap();
+        assert_eq!(
+            cargo.index_timeout,
+            Some(120),
+            "per-crate index_timeout should win over defaults"
+        );
+        assert_eq!(
+            cargo.no_verify,
+            Some(true),
+            "no_verify should be filled from defaults (per-crate left it unset)"
         );
     }
 

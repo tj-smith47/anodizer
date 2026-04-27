@@ -2226,6 +2226,160 @@
         }
       }
     },
+    "CargoPublishConfig": {
+      "description": "`cargo publish` flag surface (DEC-10 — WAVE 3).\n\nPresence under `publish:` opts the crate in; use `skip: true` (or a truthy template) to opt out. There is no `enabled` field — presence is the on-switch (DEC-6 / ITEM-3 hard-break).\n\nFields intentionally omitted because anodizer owns them (DEC-10): - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.",
+      "type": "object",
+      "properties": {
+        "all_features": {
+          "description": "Activate every feature, including `default` (`--all-features`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "allow_dirty": {
+          "description": "Allow publishing with an uncommitted working tree (`--allow-dirty`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "features": {
+          "description": "Crate features to activate (`--features`).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "frozen": {
+          "description": "Both `--locked` and `--offline` (`--frozen`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Registry index URL (`--index`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index_timeout": {
+          "description": "Seconds to wait for the crates.io sparse index to publish a crate before its dependents are pushed (anodizer-original — no `cargo publish` equivalent).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "jobs": {
+          "description": "Number of parallel compile jobs for verification (`--jobs`).",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "keep_going": {
+          "description": "Continue on errors when verifying multiple crates (`--keep-going`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "locked": {
+          "description": "Require an up-to-date `Cargo.lock` matching the resolver (`--locked`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "manifest_path": {
+          "description": "Path to the crate's `Cargo.toml` (`--manifest-path`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "no_default_features": {
+          "description": "Disable the `default` feature set (`--no-default-features`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "no_verify": {
+          "description": "Skip the local `cargo build --release` verification step (`--no-verify`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "offline": {
+          "description": "Require offline resolution; never hit the network (`--offline`).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "registry": {
+          "description": "Alternate registry name from `~/.cargo/config.toml` (`--registry`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this publisher; supports template strings or bool. Truthy renders disable the publisher without removing the block.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target": {
+          "description": "Build target triple for the verification step (`--target`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_dir": {
+          "description": "Override the cargo target directory (`--target-dir`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "ChangelogAiConfig": {
       "description": "AI-powered changelog enhancement configuration.",
       "type": "object",
@@ -3388,31 +3542,6 @@
           ]
         }
       }
-    },
-    "CratesPublishConfig": {
-      "description": "The `crates` field inside `publish` accepts either a bool or an object.",
-      "anyOf": [
-        {
-          "type": "boolean"
-        },
-        {
-          "type": "object",
-          "required": [
-            "enabled"
-          ],
-          "properties": {
-            "enabled": {
-              "type": "boolean"
-            },
-            "index_timeout": {
-              "default": 300,
-              "type": "integer",
-              "format": "uint64",
-              "minimum": 0.0
-            }
-          }
-        }
-      ]
     },
     "CrossStrategy": {
       "type": "string",
@@ -8874,6 +9003,18 @@
             }
           ]
         },
+        "cargo": {
+          "description": "Publish to crates.io. Presence opts in; use `cargo: { skip: true }` to opt out.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CargoPublishConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "chocolatey": {
           "description": "Chocolatey package publishing configuration.",
           "default": null,
@@ -8885,10 +9026,6 @@
               "type": "null"
             }
           ]
-        },
-        "crates": {
-          "description": "Publish to crates.io: true/false or object with enabled and index_timeout fields.",
-          "default": null
         },
         "homebrew": {
           "description": "Homebrew formula publishing configuration.",
@@ -8982,11 +9119,11 @@
           ]
         },
         "cargo": {
-          "description": "Default crates.io publish settings, merged into per-crate `publish.crates`.\n\nWAVE 3 will rename the type from `CratesPublishConfig` to `CargoPublishConfig` and expose it under the `cargo:` key; for now the existing type is reused verbatim.",
+          "description": "Default crates.io publish settings, merged into per-crate `publish.cargo`.\n\nTODO(WAVE-?): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>` once we expand the OneOrMany pattern across all publishers; today every per-crate publisher field is single-struct, so defaults are too.",
           "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/CratesPublishConfig"
+              "$ref": "#/definitions/CargoPublishConfig"
             },
             {
               "type": "null"

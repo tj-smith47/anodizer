@@ -13,16 +13,52 @@ Publish your crate to [crates.io](https://crates.io) with dependency-aware order
 crates:
   - name: myapp
     publish:
-      crates: true
+      cargo: {}     # presence opts in (no `enabled` field, no bool shorthand)
+```
+
+To opt out without removing the block, use `skip:` (peer-publisher convention):
+
+```yaml
+publish:
+  cargo:
+    skip: true
 ```
 
 ## Config options
 
 ```yaml
 publish:
-  crates:
-    enabled: true
-    index_timeout: 300    # seconds to wait for crates.io index update
+  cargo:
+    # ----- crates.io–specific (anodizer-original) -----
+    index_timeout: 300        # seconds to wait for crates.io index update
+
+    # ----- registry selection -----
+    registry: my-alt-registry # name from ~/.cargo/config.toml
+    index: https://...        # registry index URL
+
+    # ----- verify / dirty -----
+    no_verify: false          # skip the local cargo build verification
+    allow_dirty: true         # default: true (anodize tag dirties the tree)
+
+    # ----- features -----
+    features: ["telemetry"]
+    all_features: false
+    no_default_features: false
+
+    # ----- compilation -----
+    target: x86_64-unknown-linux-gnu
+    target_dir: ./target
+    jobs: 4
+    keep_going: false
+
+    # ----- manifest -----
+    manifest_path: ./Cargo.toml
+    locked: true
+    offline: false
+    frozen: false
+
+    # ----- peer-publisher pattern -----
+    skip: false               # template-aware: bool, "true"/"false", or "auto"
 ```
 
 ## Workspace ordering

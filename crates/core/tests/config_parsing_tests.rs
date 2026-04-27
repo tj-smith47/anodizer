@@ -1711,7 +1711,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     publish:
-      crates: true
+      cargo: {}
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(
@@ -1797,10 +1797,11 @@ crates:
     assert!(config.crates[0].publish.as_ref().unwrap().scoop.is_none());
 }
 
-// ---- publish.crates edge cases ----
+// ---- publish.cargo edge cases (WAVE 3 — DEC-10 / ITEM-3) ----
 
 #[test]
-fn test_parse_publish_crates_false() {
+fn test_parse_publish_cargo_skip_true() {
+    // Opt-out via the peer-publisher `skip` field (DEC-6).
     let yaml = r#"
 project_name: test
 crates:
@@ -1808,16 +1809,23 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     publish:
-      crates: false
+      cargo:
+        skip: true
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let settings = config.crates[0].publish.as_ref().unwrap().crates_config();
-    assert!(!settings.enabled);
-    assert_eq!(settings.index_timeout, 300);
+    let cargo = config.crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .cargo
+        .as_ref()
+        .unwrap();
+    assert_eq!(cargo.skip, Some(StringOrBool::Bool(true)));
 }
 
 #[test]
-fn test_parse_publish_crates_object_default_timeout() {
+fn test_parse_publish_cargo_empty_object_opts_in() {
+    // Presence of `cargo: {}` is the canonical opt-in (no `enabled` field).
     let yaml = r#"
 project_name: test
 crates:
@@ -1825,17 +1833,19 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     publish:
-      crates:
-        enabled: true
+      cargo: {}
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let settings = config.crates[0].publish.as_ref().unwrap().crates_config();
-    assert!(settings.enabled);
-    assert_eq!(settings.index_timeout, 300);
+    let publish = config.crates[0].publish.as_ref().unwrap();
+    assert!(publish.cargo.is_some());
+    let cargo = publish.cargo.as_ref().unwrap();
+    assert_eq!(cargo.index_timeout, None);
+    assert_eq!(cargo.skip, None);
 }
 
 #[test]
-fn test_parse_publish_crates_omitted_defaults() {
+fn test_parse_publish_cargo_omitted_means_disabled() {
+    // Omitting `cargo:` means "do not publish to crates.io".
     let yaml = r#"
 project_name: test
 crates:
@@ -1845,9 +1855,8 @@ crates:
     publish: {}
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let settings = config.crates[0].publish.as_ref().unwrap().crates_config();
-    assert!(!settings.enabled);
-    assert_eq!(settings.index_timeout, 300);
+    let publish = config.crates[0].publish.as_ref().unwrap();
+    assert!(publish.cargo.is_none());
 }
 
 #[test]
@@ -3377,8 +3386,7 @@ crates:
       header: "## Release"
       footer: "---"
     publish:
-      crates:
-        enabled: true
+      cargo:
         index_timeout: 60
       homebrew:
         tap:
@@ -3480,7 +3488,7 @@ crates:
     let publish = app.publish.as_ref().unwrap();
     assert!(publish.homebrew.is_some());
     assert!(publish.scoop.is_some());
-    assert_eq!(publish.crates_config().index_timeout, 60);
+    assert_eq!(publish.cargo.as_ref().unwrap().index_timeout, Some(60));
 
     // App docker
     let docker = &app.docker.as_ref().unwrap()[0];
@@ -3730,7 +3738,7 @@ crates:
     }
 }
 
-// ---- Publish config — combined homebrew+scoop+crates ----
+// ---- Publish config — combined homebrew+scoop+cargo ----
 
 #[test]
 fn test_parse_publish_all_providers() {
@@ -3741,8 +3749,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     publish:
-      crates:
-        enabled: true
+      cargo:
         index_timeout: 600
       homebrew:
         tap:
@@ -3757,8 +3764,8 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let publish = config.crates[0].publish.as_ref().unwrap();
-    assert!(publish.crates_config().enabled);
-    assert_eq!(publish.crates_config().index_timeout, 600);
+    let cargo = publish.cargo.as_ref().unwrap();
+    assert_eq!(cargo.index_timeout, Some(600));
     assert!(publish.homebrew.is_some());
     assert!(publish.scoop.is_some());
 }
@@ -3804,13 +3811,18 @@ crates: []
     assert_eq!(ds.args.as_ref().unwrap().len(), 3);
 }
 
-// ---- CratesPublishSettings default ----
+// ---- CargoPublishConfig default ----
 
 #[test]
-fn test_crates_publish_settings_default() {
-    let settings = CratesPublishSettings::default();
-    assert!(!settings.enabled);
-    assert_eq!(settings.index_timeout, 300);
+fn test_cargo_publish_config_default() {
+    // Default-constructed config has every flag unset; presence in the
+    // parent `publish.cargo:` is what opts the crate in (DEC-6 / ITEM-3).
+    let cfg = CargoPublishConfig::default();
+    assert_eq!(cfg.index_timeout, None);
+    assert_eq!(cfg.no_verify, None);
+    assert_eq!(cfg.allow_dirty, None);
+    assert_eq!(cfg.skip, None);
+    assert_eq!(cfg.features, None);
 }
 
 // ---- Webhook headers empty map ----

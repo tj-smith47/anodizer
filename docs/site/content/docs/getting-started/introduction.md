@@ -45,7 +45,7 @@ crates:
         owner: myorg
         name: myapp
     publish:
-      crates: true
+      cargo: {}
       homebrew:
         tap:
           owner: myorg

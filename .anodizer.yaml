@@ -80,8 +80,7 @@ crates:
     path: crates/core
     tag_template: "v{{ Version }}"
     publish:
-      crates:
-        enabled: true
+      cargo:
         index_timeout: 300
 
   # --- Tier 2: stage crates (depend on core) ---
@@ -90,151 +89,151 @@ crates:
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-archive
     path: crates/stage-archive
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-nfpm
     path: crates/stage-nfpm
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-checksum
     path: crates/stage-checksum
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-changelog
     path: crates/stage-changelog
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-release
     path: crates/stage-release
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-publish
     path: crates/stage-publish
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-docker
     path: crates/stage-docker
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-sign
     path: crates/stage-sign
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-announce
     path: crates/stage-announce
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-source
     path: crates/stage-source
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-upx
     path: crates/stage-upx
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-snapcraft
     path: crates/stage-snapcraft
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-dmg
     path: crates/stage-dmg
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-msi
     path: crates/stage-msi
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-pkg
     path: crates/stage-pkg
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-blob
     path: crates/stage-blob
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-nsis
     path: crates/stage-nsis
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-appbundle
     path: crates/stage-appbundle
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-flatpak
     path: crates/stage-flatpak
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-notarize
     path: crates/stage-notarize
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-templatefiles
     path: crates/stage-templatefiles
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-makeself
     path: crates/stage-makeself
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-srpm
     path: crates/stage-srpm
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
   - name: anodizer-stage-sbom
     path: crates/stage-sbom
     tag_template: "v{{ Version }}"
     depends_on: [anodizer-core]
     publish:
-      crates: { enabled: true }
+      cargo: {}
 
   # --- Tier 3: CLI binary (depends on all stages) ---
   - name: anodizer
@@ -302,8 +301,7 @@ crates:
         Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀
       include_meta: true
     publish:
-      crates:
-        enabled: true
+      cargo:
         index_timeout: 300
       homebrew:
         tap:

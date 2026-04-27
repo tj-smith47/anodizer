@@ -1,10 +1,15 @@
-use anodizer_core::config::CrateConfig;
+use anodizer_core::config::{CargoPublishConfig, CrateConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::util::topological_sort;
 use anyhow::{Context as _, Result};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
+
+/// Default seconds to wait for a freshly-published crate to appear in the
+/// crates.io sparse index. Mirrors the historical anodizer default; only
+/// matters when the crate has dependents that need it published first.
+const DEFAULT_INDEX_TIMEOUT_SECS: u64 = 300;
 
 /// Walk `depends_on` from each crate in `seed` to produce a de-duplicated
 /// list containing every seed crate plus every transitive dependency that
@@ -46,15 +51,95 @@ fn expand_with_transitive_deps(all_crates: &[CrateConfig], seed: &[String]) -> V
 // publish_command
 // ---------------------------------------------------------------------------
 
-/// Build the argument list for `cargo publish -p <crate_name> --allow-dirty`.
-pub fn publish_command(crate_name: &str) -> Vec<String> {
-    vec![
+/// Build the argument list for `cargo publish` with the given config flags.
+///
+/// `--allow-dirty` is implicit: the pipeline runs after the tag step, which
+/// ALWAYS leaves a dirty tree (Cargo.lock + version bump), so requiring a
+/// clean tree would block every release. Users can still set
+/// `cargo.allow_dirty: false` to opt out, but that's surprising enough we
+/// always force-on by default.
+pub fn publish_command(crate_name: &str, cfg: Option<&CargoPublishConfig>) -> Vec<String> {
+    let mut cmd = vec![
         "cargo".to_string(),
         "publish".to_string(),
         "-p".to_string(),
         crate_name.to_string(),
-        "--allow-dirty".to_string(),
-    ]
+    ];
+
+    let Some(c) = cfg else {
+        // No config block — preserve historical default of allow-dirty.
+        cmd.push("--allow-dirty".to_string());
+        return cmd;
+    };
+
+    // Registry selection
+    if let Some(ref reg) = c.registry {
+        cmd.push("--registry".to_string());
+        cmd.push(reg.clone());
+    }
+    if let Some(ref idx) = c.index {
+        cmd.push("--index".to_string());
+        cmd.push(idx.clone());
+    }
+
+    // Verify / dirty
+    if c.no_verify == Some(true) {
+        cmd.push("--no-verify".to_string());
+    }
+    // allow_dirty defaults to ON when unset (anodize tag bumps Cargo.toml +
+    // updates Cargo.lock, so the tree is always dirty by the time publish
+    // runs). Setting `allow_dirty: false` explicitly disables it.
+    if c.allow_dirty != Some(false) {
+        cmd.push("--allow-dirty".to_string());
+    }
+
+    // Feature selection
+    if let Some(ref feats) = c.features
+        && !feats.is_empty()
+    {
+        cmd.push("--features".to_string());
+        cmd.push(feats.join(","));
+    }
+    if c.all_features == Some(true) {
+        cmd.push("--all-features".to_string());
+    }
+    if c.no_default_features == Some(true) {
+        cmd.push("--no-default-features".to_string());
+    }
+
+    // Compilation
+    if let Some(ref t) = c.target {
+        cmd.push("--target".to_string());
+        cmd.push(t.clone());
+    }
+    if let Some(ref td) = c.target_dir {
+        cmd.push("--target-dir".to_string());
+        cmd.push(td.display().to_string());
+    }
+    if let Some(j) = c.jobs {
+        cmd.push("--jobs".to_string());
+        cmd.push(j.to_string());
+    }
+    if c.keep_going == Some(true) {
+        cmd.push("--keep-going".to_string());
+    }
+
+    // Manifest
+    if let Some(ref mp) = c.manifest_path {
+        cmd.push("--manifest-path".to_string());
+        cmd.push(mp.display().to_string());
+    }
+    if c.locked == Some(true) {
+        cmd.push("--locked".to_string());
+    }
+    if c.offline == Some(true) {
+        cmd.push("--offline".to_string());
+    }
+    if c.frozen == Some(true) {
+        cmd.push("--frozen".to_string());
+    }
+
+    cmd
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +323,7 @@ fn poll_crates_io_index(
 }
 
 // ---------------------------------------------------------------------------
-// publish_to_crates_io
+// publish_to_cargo
 // ---------------------------------------------------------------------------
 
 /// Read the `version = "X.Y.Z"` from a crate's Cargo.toml.
@@ -277,11 +362,12 @@ fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
     None
 }
 
-pub fn publish_to_crates_io(
-    ctx: &mut Context,
-    selected: &[String],
-    log: &StageLogger,
-) -> Result<()> {
+pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogger) -> Result<()> {
+    // Honor the CLI-level `--skip=cargo` flag (FOLL-1).
+    if ctx.should_skip("cargo") {
+        log.status("cargo: skipped via --skip=cargo");
+        return Ok(());
+    }
     // When a crate depends on another crate in the same workspace that
     // isn't yet on crates.io, `cargo publish` for the dependent will fail
     // with "no matching package named X found" because cargo verifies path
@@ -317,18 +403,41 @@ pub fn publish_to_crates_io(
     let selected_set: std::collections::HashSet<&str> =
         expanded_selection.iter().map(|s| s.as_str()).collect();
 
-    // Collect (name, depends_on) for all crates with crates.io publishing enabled,
-    // filtered to the expanded selection when non-empty. Uses all_crates (the
-    // flattened universe) so transitive deps from other workspaces are included.
+    // Resolve the per-crate `publish.cargo` block to a (selected, cfg) pair.
+    // - None       → publisher omitted; not eligible.
+    // - Some(cfg)  → eligible unless `cfg.skip` evaluates truthy.
+    // Templated `skip:` is honored here so the same render-once pass populates
+    // both the eligibility list and the per-crate timeout/flag lookups.
+    let cargo_cfgs: HashMap<String, CargoPublishConfig> = {
+        let mut m = HashMap::new();
+        for c in &all_crates {
+            let Some(ref publish) = c.publish else {
+                continue;
+            };
+            let Some(ref cargo_cfg) = publish.cargo else {
+                continue;
+            };
+            // Honor the peer-publisher `skip:` field (DEC-6).
+            if let Some(ref d) = cargo_cfg.skip {
+                let off = d
+                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                    .with_context(|| format!("cargo: render skip template for '{}'", c.name))?;
+                if off {
+                    log.status(&format!("cargo: skipped for '{}' (skip=true)", c.name));
+                    continue;
+                }
+            }
+            m.insert(c.name.clone(), cargo_cfg.clone());
+        }
+        m
+    };
+
+    // Collect (name, depends_on) for crates with cargo publishing eligible,
+    // filtered to the expanded selection when non-empty.
     let publishable: Vec<(String, Vec<String>)> = all_crates
         .iter()
         .filter(|c| selected.is_empty() || selected_set.contains(c.name.as_str()))
-        .filter(|c| {
-            c.publish
-                .as_ref()
-                .map(|p| p.crates_config().enabled)
-                .unwrap_or(false)
-        })
+        .filter(|c| cargo_cfgs.contains_key(&c.name))
         .map(|c| {
             let deps = c.depends_on.clone().unwrap_or_default();
             (c.name.clone(), deps)
@@ -342,16 +451,6 @@ pub fn publish_to_crates_io(
 
     let sorted_names = topological_sort(&publishable);
 
-    // Build a quick lookup: name → index_timeout
-    let timeout_map: HashMap<String, u64> = all_crates
-        .iter()
-        .filter_map(|c| {
-            c.publish
-                .as_ref()
-                .map(|p| (c.name.clone(), p.crates_config().index_timeout))
-        })
-        .collect();
-
     // Build a quick lookup: name → depends_on
     let deps_map: HashMap<String, Vec<String>> = all_crates
         .iter()
@@ -360,7 +459,7 @@ pub fn publish_to_crates_io(
 
     if ctx.is_dry_run() {
         for name in &sorted_names {
-            let cmd = publish_command(name);
+            let cmd = publish_command(name, cargo_cfgs.get(name));
             log.status(&format!("(dry-run) would run: {}", cmd.join(" ")));
         }
         return Ok(());
@@ -451,7 +550,8 @@ pub fn publish_to_crates_io(
             }
         }
 
-        let cmd = publish_command(name);
+        let cargo_cfg = cargo_cfgs.get(name);
+        let cmd = publish_command(name, cargo_cfg);
         log.status(&format!("running: {}", cmd.join(" ")));
 
         let output = Command::new(&cmd[0])
@@ -472,7 +572,9 @@ pub fn publish_to_crates_io(
         });
 
         if has_dependents && !crate_version.is_empty() {
-            let timeout = timeout_map.get(name).copied().unwrap_or(300);
+            let timeout = cargo_cfg
+                .and_then(|c| c.index_timeout)
+                .unwrap_or(DEFAULT_INDEX_TIMEOUT_SECS);
             if timeout == 0 {
                 log.warn(&format!(
                     "index_timeout is 0 for '{}'; skipping index poll (dependents may fail)",
@@ -518,11 +620,81 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_command() {
-        let cmd = publish_command("my-crate");
-        assert!(cmd.contains(&"publish".to_string()));
-        assert!(cmd.contains(&"-p".to_string()));
-        assert!(cmd.contains(&"my-crate".to_string()));
+    fn test_publish_command_default() {
+        // No config block — historical behaviour preserved (--allow-dirty on).
+        let cmd = publish_command("my-crate", None);
+        assert_eq!(
+            cmd,
+            vec![
+                "cargo".to_string(),
+                "publish".to_string(),
+                "-p".to_string(),
+                "my-crate".to_string(),
+                "--allow-dirty".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_publish_command_full_flag_surface() {
+        let cfg = CargoPublishConfig {
+            registry: Some("alt-registry".to_string()),
+            index: Some("https://example.com/idx".to_string()),
+            no_verify: Some(true),
+            allow_dirty: Some(true),
+            features: Some(vec!["a".to_string(), "b".to_string()]),
+            all_features: Some(true),
+            no_default_features: Some(true),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            target_dir: Some(std::path::PathBuf::from("/tmp/td")),
+            jobs: Some(4),
+            keep_going: Some(true),
+            manifest_path: Some(std::path::PathBuf::from("./Cargo.toml")),
+            locked: Some(true),
+            offline: Some(true),
+            frozen: Some(true),
+            ..Default::default()
+        };
+        let cmd = publish_command("my-crate", Some(&cfg));
+        // Sanity: every flag is present.
+        for flag in [
+            "--registry",
+            "--index",
+            "--no-verify",
+            "--allow-dirty",
+            "--features",
+            "--all-features",
+            "--no-default-features",
+            "--target",
+            "--target-dir",
+            "--jobs",
+            "--keep-going",
+            "--manifest-path",
+            "--locked",
+            "--offline",
+            "--frozen",
+        ] {
+            assert!(
+                cmd.iter().any(|s| s == flag),
+                "missing flag {flag}: {cmd:?}"
+            );
+        }
+        // Features are comma-joined.
+        let features_idx = cmd.iter().position(|s| s == "--features").unwrap();
+        assert_eq!(cmd[features_idx + 1], "a,b");
+    }
+
+    #[test]
+    fn test_publish_command_allow_dirty_explicit_false() {
+        let cfg = CargoPublishConfig {
+            allow_dirty: Some(false),
+            ..Default::default()
+        };
+        let cmd = publish_command("my-crate", Some(&cfg));
+        assert!(
+            !cmd.iter().any(|s| s == "--allow-dirty"),
+            "explicit allow_dirty=false should suppress the flag: {cmd:?}"
+        );
     }
 
     fn crate_with_deps(name: &str, deps: &[&str]) -> CrateConfig {
