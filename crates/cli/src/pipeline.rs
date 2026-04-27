@@ -364,6 +364,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate release block does not configure multiple SCM backends.
     anodizer_core::config::validate_release_backends(&config)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Validate defaults.crates / defaults.workspaces axis matches top-level (DEC-4).
+    anodizer_core::config::validate_defaults_axis(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Apply monorepo defaults: when monorepo.dir is set and a crate's path
     // is empty or ".", default it to monorepo.dir.
@@ -374,6 +376,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // for empty name/email so error messages referencing author identity at
     // config-validation time see non-empty strings.
     normalize_commit_author_defaults(&mut config);
+
+    // Fold workspace-level `defaults` into every per-crate config so
+    // downstream stages can read from `crate_cfg.<field>` regardless of
+    // whether the value was set per-crate or hoisted to defaults (WAVE 2).
+    anodizer_core::defaults_merge::apply_defaults(&mut config);
 
     Ok(config)
 }
@@ -1396,6 +1403,8 @@ mod tests {
 
     #[test]
     fn test_load_config_with_ignore_and_overrides() {
+        // After WAVE 2, defaults.ignore / defaults.overrides moved under
+        // defaults.builds (path-mirror BuildConfig).
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
@@ -1405,20 +1414,22 @@ project_name: test
 defaults:
   targets:
     - x86_64-unknown-linux-gnu
-  ignore:
-    - os: windows
-      arch: arm64
-  overrides:
-    - targets: ["x86_64-*"]
-      features: [simd]
+  builds:
+    binary: ""
+    ignore:
+      - os: windows
+        arch: arm64
+    overrides:
+      - targets: ["x86_64-*"]
+        features: [simd]
 crates: []
 "#,
         )
         .unwrap();
         let config = load_config(&cfg_path).unwrap();
-        let defaults = config.defaults.unwrap();
-        assert_eq!(defaults.ignore.unwrap().len(), 1);
-        assert_eq!(defaults.overrides.unwrap().len(), 1);
+        let builds = config.defaults.unwrap().builds.unwrap();
+        assert_eq!(builds.ignore.unwrap().len(), 1);
+        assert_eq!(builds.overrides.unwrap().len(), 1);
     }
 
     // -----------------------------------------------------------------------

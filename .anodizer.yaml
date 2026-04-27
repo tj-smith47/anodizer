@@ -51,7 +51,10 @@ defaults:
     - x86_64-pc-windows-msvc
     - aarch64-pc-windows-msvc
   cross: auto
-  flags: --release
+  # WAVE 2: per-build settings (flags/ignore/overrides) live under defaults.builds.*
+  builds:
+    binary: ""
+    flags: --release
   archives:
     format: tar.gz
     format_overrides:

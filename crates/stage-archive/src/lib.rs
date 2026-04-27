@@ -2162,8 +2162,7 @@ crates:
     #[test]
     fn test_archive_stage_default_config_inheritance() {
         use anodizer_core::config::{
-            ArchiveConfig, ArchivesConfig, Config, CrateConfig, DefaultArchiveConfig, Defaults,
-            FormatOverride,
+            ArchiveConfig, ArchivesConfig, Config, CrateConfig, Defaults, FormatOverride,
         };
         use anodizer_core::context::{Context, ContextOptions};
 
@@ -2188,13 +2187,14 @@ crates:
         config.crates = vec![crate_cfg];
         // Global defaults: format_overrides windows -> zip
         config.defaults = Some(Defaults {
-            archives: Some(DefaultArchiveConfig {
+            archives: Some(ArchiveConfig {
                 format: Some("tar.gz".to_string()),
                 format_overrides: Some(vec![FormatOverride {
                     os: "windows".to_string(),
                     format: Some("zip".to_string()),
                     formats: None,
                 }]),
+                ..Default::default()
             }),
             ..Default::default()
         });

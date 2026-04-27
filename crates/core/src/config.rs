@@ -432,6 +432,68 @@ pub fn validate_release_backends(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Marker tag for the axis-mismatch validation error class. Existing
+/// validators in this module return `Result<(), String>` rather than a
+/// typed enum, so we expose this constant (instead of a `ConfigError`
+/// variant) for callers that want to recognise the error class
+/// programmatically. Future error-type unification can rename to
+/// `ConfigError::DefaultsAxisMismatch` without changing call-sites that
+/// match on this prefix.
+pub const ERR_DEFAULTS_AXIS_MISMATCH: &str = "DefaultsAxisMismatch";
+
+/// Validate that `defaults.crates:` and `defaults.workspaces:` match the
+/// top-level axis (DEC-4).
+///
+/// Rules:
+/// - `defaults.crates:` is set → top-level `crates:` MUST be present.
+/// - `defaults.workspaces:` is set → top-level `workspaces:` MUST be present.
+/// - Both `defaults.crates` and `defaults.workspaces` set simultaneously → error
+///   (mutually exclusive).
+/// - Wrong-axis (e.g. `defaults.crates:` while top-level uses `workspaces:`) → error.
+pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
+    let Some(ref defaults) = config.defaults else {
+        return Ok(());
+    };
+    let has_crate_block = defaults.crates.is_some();
+    let has_workspace_block = defaults.workspaces.is_some();
+
+    if has_crate_block && has_workspace_block {
+        return Err(
+            "defaults.crates and defaults.workspaces are mutually exclusive — \
+             pick the axis that matches the top-level config (`crates:` or `workspaces:`)"
+                .to_string(),
+        );
+    }
+
+    let top_uses_workspaces = config.workspaces.as_ref().is_some_and(|w| !w.is_empty());
+    let top_uses_crates = !config.crates.is_empty();
+
+    if has_crate_block && !top_uses_crates {
+        return Err(format!(
+            "defaults.crates is set but top-level `crates:` is {}; \
+             move defaults under `defaults.workspaces:` or remove the block",
+            if top_uses_workspaces {
+                "absent (top-level uses `workspaces:`)"
+            } else {
+                "absent"
+            },
+        ));
+    }
+    if has_workspace_block && !top_uses_workspaces {
+        return Err(format!(
+            "defaults.workspaces is set but top-level `workspaces:` is {}; \
+             move defaults under `defaults.crates:` or remove the block",
+            if top_uses_crates {
+                "absent (top-level uses `crates:`)"
+            } else {
+                "absent"
+            },
+        ));
+    }
+
+    Ok(())
+}
+
 /// Validate `archives[].format_overrides[].goos` values reject unknown OSes.
 /// GoReleaser silently no-ops unknown overrides, which has burned users typing
 /// Rust triples like `apple` or `pc-windows-msvc`.
@@ -799,33 +861,132 @@ where
 // Defaults
 // ---------------------------------------------------------------------------
 
+/// Workspace-level defaults that path-mirror the `CrateConfig` (and select
+/// top-level `Config`) shape. Each field here is folded into every resolved
+/// crate by `defaults_merge::apply_defaults` according to the deep-merge /
+/// merge-by-identity semantics documented in `defaults_merge`.
+///
+/// Multi-publisher fields are single-struct here (one default per publisher);
+/// per-crate `publish.*` fields accept either a single struct or a list. The
+/// merge engine reconciles the two shapes when populating the resolved crate.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
+    // --- Build axis ---
+    /// Default build settings applied to every crate's builds (deep-merged
+    /// into each `CrateConfig.builds[]` entry by identity on `id`/`binary`).
+    pub builds: Option<BuildConfig>,
+    /// Default archive settings applied to all crates.
+    pub archives: Option<ArchiveConfig>,
+    /// Default source-archive settings applied to all crates.
+    pub source: Option<SourceConfig>,
+    /// Default UPX compression settings applied to all crates.
+    pub upx: Option<UpxConfig>,
+
+    // --- Packaging axis ---
+    /// Default nfpm (deb/rpm/apk) settings applied to all crates.
+    pub nfpms: Option<NfpmConfig>,
+    /// Default snapcraft settings applied to all crates.
+    pub snapcrafts: Option<SnapcraftConfig>,
+    /// Default flatpak settings applied to all crates.
+    pub flatpaks: Option<FlatpakConfig>,
+    /// Default app-bundle settings applied to all crates.
+    pub app_bundles: Option<AppBundleConfig>,
+    /// Default DMG settings applied to all crates.
+    pub dmgs: Option<DmgConfig>,
+    /// Default macOS PKG settings applied to all crates.
+    pub pkgs: Option<PkgConfig>,
+    /// Default MSI settings applied to all crates.
+    pub msis: Option<MsiConfig>,
+    /// Default NSIS settings applied to all crates.
+    pub nsis: Option<NsisConfig>,
+    /// Default makeself settings applied to all crates.
+    pub makeselves: Option<MakeselfConfig>,
+    /// Default SRPM settings applied to all crates.
+    pub srpms: Option<SrpmConfig>,
+    /// Default Docker (V2 API) image settings applied to all crates.
+    pub docker_v2: Option<DockerV2Config>,
+
+    // --- Publish axis ---
+    /// Default publisher configurations (single-struct per publisher).
+    /// Per-crate `publish.*` entries are merged into these by identity.
+    pub publish: Option<PublishDefaults>,
+
+    // --- Sign / notarize / sbom ---
+    /// Default artifact signing settings.
+    pub sign: Option<SignConfig>,
+    /// Default binary-signing settings.
+    pub binary_signs: Option<SignConfig>,
+    /// Default Docker image signing settings.
+    pub docker_signs: Option<DockerSignConfig>,
+    /// Default macOS notarization settings.
+    pub notarize: Option<NotarizeConfig>,
+    /// Default SBOM generation settings.
+    pub sbom: Option<SbomConfig>,
+
+    // --- Cross-cutting ---
     /// Default build targets (e.g., ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]).
     pub targets: Option<Vec<String>>,
+    /// Default environment variables (`KEY=VALUE` strings) hoisted across crates.
+    pub env: Option<Vec<String>>,
     /// Default cross-compilation strategy: auto, zigbuild, cross, or cargo.
+    /// Mirrors `CrateConfig.cross` so the strategy can be hoisted to defaults.
     pub cross: Option<CrossStrategy>,
-    /// Default extra flags passed to cargo build.
-    pub flags: Option<String>,
-    /// Default archive settings applied to all crates.
-    pub archives: Option<DefaultArchiveConfig>,
     /// Default checksum settings applied to all crates.
+    /// Mirrors `CrateConfig.checksum` so checksum config can be hoisted to defaults.
     pub checksum: Option<ChecksumConfig>,
-    /// Exclude specific os/arch combinations from builds.
-    pub ignore: Option<Vec<BuildIgnore>>,
-    /// Per-target overrides for env, flags, and features.
-    pub overrides: Option<Vec<BuildOverride>>,
+
+    // --- Crate-axis vs workspace-axis (mutually exclusive — DEC-4) ---
+    /// Crate-axis defaults marker. Only valid when top-level `crates:` is set.
+    /// Reserved for per-crate overrides keyed by crate id (future waves).
+    pub crates: Option<DefaultsCrateBlock>,
+    /// Workspace-axis defaults marker. Only valid when top-level `workspaces:` is set.
+    /// Reserved for per-workspace overrides keyed by workspace name (future waves).
+    pub workspaces: Option<DefaultsWorkspaceBlock>,
 }
 
+/// Workspace-default publishers (DEC-3). Each publisher is single-struct in
+/// defaults; per-crate `publish.*` may be either a single struct or a list,
+/// reconciled by the merge engine.
+///
+/// NOTE: the `cargo` publisher (crates.io) is not yet present here — the
+/// `crates: → cargo:` rename lands in WAVE 3. For now the legacy
+/// `CratesPublishConfig` is reachable via the per-crate `publish.crates` field.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
-pub struct DefaultArchiveConfig {
-    /// Default archive format for all crates: tar.gz, tar.xz, tar.zst, zip, or binary.
-    pub format: Option<String>,
-    /// Per-OS format overrides applied by default to all crates.
-    pub format_overrides: Option<Vec<FormatOverride>>,
+pub struct PublishDefaults {
+    /// Default Homebrew formula settings.
+    pub homebrew: Option<HomebrewConfig>,
+    /// Default Scoop manifest settings.
+    pub scoop: Option<ScoopConfig>,
+    /// Default WinGet manifest settings.
+    pub winget: Option<WingetConfig>,
+    /// Default Chocolatey package settings.
+    pub chocolatey: Option<ChocolateyConfig>,
+    /// Default Krew (kubectl plugin manager) settings.
+    pub krew: Option<KrewConfig>,
+    /// Default Nix derivation settings.
+    pub nix: Option<NixConfig>,
+    /// Default AUR (binary) settings.
+    pub aur: Option<AurConfig>,
+    /// Default AUR (source) settings.
+    pub aur_source: Option<AurSourceConfig>,
 }
+
+/// Marker block under `defaults.crates:` that signals crate-axis defaults
+/// scope. Required to drive the DEC-4 axis-mismatch validator. Empty for
+/// WAVE 2; future waves will populate it with per-crate-id overrides.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct DefaultsCrateBlock {}
+
+/// Marker block under `defaults.workspaces:` that signals workspace-axis
+/// defaults scope. Required to drive the DEC-4 axis-mismatch validator.
+/// Empty for WAVE 2; future waves will populate it with per-workspace-name
+/// overrides.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct DefaultsWorkspaceBlock {}
 
 // ---------------------------------------------------------------------------
 // BuildIgnore — exclude specific os/arch combos from builds
@@ -1042,10 +1203,10 @@ pub struct BuildConfig {
     /// Per-build hooks executed before and after compilation.
     pub hooks: Option<BuildHooksConfig>,
     /// Exclude specific os/arch combinations from this build's target matrix.
-    /// Falls back to `defaults.ignore` when not set.
+    /// Falls back to `defaults.builds.ignore` when not set.
     pub ignore: Option<Vec<BuildIgnore>>,
     /// Per-target overrides for env, flags, and features for this build.
-    /// Falls back to `defaults.overrides` when not set.
+    /// Falls back to `defaults.builds.overrides` when not set.
     pub overrides: Option<Vec<BuildOverride>>,
     /// Override the cross-compilation tool binary path (e.g., a custom `cross` wrapper).
     /// When set, this binary is used instead of cargo/cross/zigbuild.
@@ -8947,22 +9108,26 @@ gitlab_token = "/etc/tokens/gitlab"
 
     #[test]
     fn test_build_ignore_parses() {
+        // After WAVE 2, defaults.ignore moved to defaults.builds.ignore
+        // (path-mirror of BuildConfig).
         let yaml = r#"
 project_name: test
 defaults:
   targets:
     - x86_64-unknown-linux-gnu
     - aarch64-unknown-linux-gnu
-  ignore:
-    - os: windows
-      arch: arm64
-    - os: linux
-      arch: "386"
+  builds:
+    binary: ""
+    ignore:
+      - os: windows
+        arch: arm64
+      - os: linux
+        arch: "386"
 crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let defaults = config.defaults.unwrap();
-        let ignores = defaults.ignore.unwrap();
+        let ignores = defaults.builds.unwrap().ignore.unwrap();
         assert_eq!(ignores.len(), 2);
         assert_eq!(ignores[0].os, "windows");
         assert_eq!(ignores[0].arch, "arm64");
@@ -8981,33 +9146,37 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let defaults = config.defaults.unwrap();
-        assert!(defaults.ignore.is_none());
+        assert!(defaults.builds.is_none());
     }
 
     // ---- BuildOverride tests ----
 
     #[test]
     fn test_build_override_parses() {
+        // After WAVE 2, defaults.overrides moved to defaults.builds.overrides
+        // (path-mirror of BuildConfig).
         let yaml = r#"
 project_name: test
 defaults:
-  overrides:
-    - targets:
-        - "x86_64-*"
-      features:
-        - simd
-      flags: "--release"
-      env:
-        - CC=gcc
-    - targets:
-        - "*-apple-darwin"
-      features:
-        - metal
+  builds:
+    binary: ""
+    overrides:
+      - targets:
+          - "x86_64-*"
+        features:
+          - simd
+        flags: "--release"
+        env:
+          - CC=gcc
+      - targets:
+          - "*-apple-darwin"
+        features:
+          - metal
 crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let defaults = config.defaults.unwrap();
-        let overrides = defaults.overrides.unwrap();
+        let overrides = defaults.builds.unwrap().overrides.unwrap();
         assert_eq!(overrides.len(), 2);
         assert_eq!(overrides[0].targets, vec!["x86_64-*"]);
         assert_eq!(overrides[0].features, Some(vec!["simd".to_string()]));
@@ -9035,7 +9204,7 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let defaults = config.defaults.unwrap();
-        assert!(defaults.overrides.is_none());
+        assert!(defaults.builds.is_none());
     }
 
     // ---- JSON Schema generation test ----
@@ -9394,6 +9563,125 @@ git:
             err.contains("-version:refname"),
             "error should list accepted values: {}",
             err
+        );
+    }
+
+    // ---- defaults axis-mismatch validation tests (DEC-4) ----
+
+    #[test]
+    fn test_validate_defaults_axis_no_defaults_is_ok() {
+        let config = Config::default();
+        assert!(validate_defaults_axis(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_defaults_axis_crates_block_with_top_level_crates_is_ok() {
+        let yaml = r#"
+project_name: test
+defaults:
+  crates: {}
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(validate_defaults_axis(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_defaults_axis_workspaces_block_with_top_level_workspaces_is_ok() {
+        let yaml = r#"
+project_name: test
+defaults:
+  workspaces: {}
+workspaces:
+  - name: ws1
+    crates:
+      - name: a
+        path: "."
+        tag_template: "v{{ .Version }}"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(validate_defaults_axis(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_defaults_axis_crates_block_without_top_level_crates_errors() {
+        let yaml = r#"
+project_name: test
+defaults:
+  crates: {}
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = validate_defaults_axis(&config).unwrap_err();
+        assert!(
+            err.contains("defaults.crates"),
+            "error should mention defaults.crates: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_defaults_axis_workspaces_block_without_top_level_workspaces_errors() {
+        let yaml = r#"
+project_name: test
+defaults:
+  workspaces: {}
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = validate_defaults_axis(&config).unwrap_err();
+        assert!(
+            err.contains("defaults.workspaces"),
+            "error should mention defaults.workspaces: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_defaults_axis_both_blocks_set_errors() {
+        let yaml = r#"
+project_name: test
+defaults:
+  crates: {}
+  workspaces: {}
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = validate_defaults_axis(&config).unwrap_err();
+        assert!(
+            err.contains("mutually exclusive"),
+            "error should mention mutual exclusion: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_defaults_axis_wrong_axis_errors() {
+        // defaults.crates set but top-level uses workspaces
+        let yaml = r#"
+project_name: test
+defaults:
+  crates: {}
+workspaces:
+  - name: ws1
+    crates:
+      - name: a
+        path: "."
+        tag_template: "v{{ .Version }}"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = validate_defaults_axis(&config).unwrap_err();
+        assert!(
+            err.contains("workspaces"),
+            "error should mention top-level workspaces: {err}"
         );
     }
 
@@ -10627,16 +10915,18 @@ project_name: test
 defaults:
   targets:
     - x86_64-unknown-linux-gnu
-  overrides:
-    - targets:
-        - "x86_64-*"
-      env:
-        - CC=gcc-12
-        - CFLAGS=-O2 -Wall
+  builds:
+    binary: ""
+    overrides:
+      - targets:
+          - "x86_64-*"
+        env:
+          - CC=gcc-12
+          - CFLAGS=-O2 -Wall
 crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let overrides = config.defaults.unwrap().overrides.unwrap();
+        let overrides = config.defaults.unwrap().builds.unwrap().overrides.unwrap();
         let env = overrides[0].env.as_ref().expect("env should be Some");
         assert_eq!(env, &vec!["CC=gcc-12", "CFLAGS=-O2 -Wall"]);
     }
@@ -10724,6 +11014,7 @@ env:
 
     #[test]
     fn test_build_override_env_map_form_rejected() {
+        // After WAVE 2, defaults.overrides moved under defaults.builds.overrides.
         let yaml = r#"
 project_name: test
 crates:
@@ -10733,10 +11024,12 @@ crates:
     builds:
       - binary: app
 defaults:
-  overrides:
-    - targets: ["x86_64-unknown-linux-gnu"]
-      env:
-        MY_VAR: hello
+  builds:
+    binary: ""
+    overrides:
+      - targets: ["x86_64-unknown-linux-gnu"]
+        env:
+          MY_VAR: hello
 "#;
         assert_env_map_rejected(yaml, "BuildOverride");
     }

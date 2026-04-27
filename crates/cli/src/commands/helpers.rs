@@ -49,7 +49,7 @@ fn resolve_force_token(config: &Config) -> Option<ForceTokenKind> {
 /// Iterates `config.crates` plus every `config.workspaces[].crates` so monorepos
 /// with multi-root workspaces are covered. Per-crate `builds[].targets` entries
 /// are collected first, then `defaults.targets`. Duplicates are filtered, and
-/// `defaults.ignore` (os/arch pairs) removes matching targets.
+/// `defaults.builds.ignore` (os/arch pairs) removes matching targets.
 ///
 /// `selected_crates` filters the iteration: when empty, all crates are used;
 /// otherwise only crates whose `name` is in the slice contribute.
@@ -93,8 +93,11 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
         }
     }
 
-    if let Some(ref defaults) = config.defaults
-        && let Some(ref ignores) = defaults.ignore
+    if let Some(ignores) = config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.builds.as_ref())
+        .and_then(|b| b.ignore.as_ref())
     {
         targets.retain(|t| {
             let (os, arch) = anodizer_core::target::map_target(t);

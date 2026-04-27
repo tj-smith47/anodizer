@@ -2051,7 +2051,7 @@
           ]
         },
         "ignore": {
-          "description": "Exclude specific os/arch combinations from this build's target matrix. Falls back to `defaults.ignore` when not set.",
+          "description": "Exclude specific os/arch combinations from this build's target matrix. Falls back to `defaults.builds.ignore` when not set.",
           "default": null,
           "type": [
             "array",
@@ -2090,7 +2090,7 @@
           ]
         },
         "overrides": {
-          "description": "Per-target overrides for env, flags, and features for this build. Falls back to `defaults.overrides` when not set.",
+          "description": "Per-target overrides for env, flags, and features for this build. Falls back to `defaults.builds.overrides` when not set.",
           "default": null,
           "type": [
             "array",
@@ -3395,39 +3395,52 @@
         "cargo"
       ]
     },
-    "DefaultArchiveConfig": {
+    "Defaults": {
+      "description": "Workspace-level defaults that path-mirror the `CrateConfig` (and select top-level `Config`) shape. Each field here is folded into every resolved crate by `defaults_merge::apply_defaults` according to the deep-merge / merge-by-identity semantics documented in `defaults_merge`.\n\nMulti-publisher fields are single-struct here (one default per publisher); per-crate `publish.*` fields accept either a single struct or a list. The merge engine reconciles the two shapes when populating the resolved crate.",
       "type": "object",
       "properties": {
-        "format": {
-          "description": "Default archive format for all crates: tar.gz, tar.xz, tar.zst, zip, or binary.",
+        "app_bundles": {
+          "description": "Default app-bundle settings applied to all crates.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AppBundleConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
-        "format_overrides": {
-          "description": "Per-OS format overrides applied by default to all crates.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/FormatOverride"
-          }
-        }
-      }
-    },
-    "Defaults": {
-      "type": "object",
-      "properties": {
         "archives": {
           "description": "Default archive settings applied to all crates.",
           "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/DefaultArchiveConfig"
+              "$ref": "#/definitions/ArchiveConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "binary_signs": {
+          "description": "Default binary-signing settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SignConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "builds": {
+          "description": "Default build settings applied to every crate's builds (deep-merged into each `CrateConfig.builds[]` entry by identity on `id`/`binary`).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BuildConfig"
             },
             {
               "type": "null"
@@ -3435,7 +3448,7 @@
           ]
         },
         "checksum": {
-          "description": "Default checksum settings applied to all crates.",
+          "description": "Default checksum settings applied to all crates. Mirrors `CrateConfig.checksum` so checksum config can be hoisted to defaults.",
           "default": null,
           "anyOf": [
             {
@@ -3446,8 +3459,20 @@
             }
           ]
         },
+        "crates": {
+          "description": "Crate-axis defaults marker. Only valid when top-level `crates:` is set. Reserved for per-crate overrides keyed by crate id (future waves).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DefaultsCrateBlock"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cross": {
-          "description": "Default cross-compilation strategy: auto, zigbuild, cross, or cargo.",
+          "description": "Default cross-compilation strategy: auto, zigbuild, cross, or cargo. Mirrors `CrateConfig.cross` so the strategy can be hoisted to defaults.",
           "default": null,
           "anyOf": [
             {
@@ -3458,35 +3483,208 @@
             }
           ]
         },
-        "flags": {
-          "description": "Default extra flags passed to cargo build.",
+        "dmgs": {
+          "description": "Default DMG settings applied to all crates.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DmgConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
-        "ignore": {
-          "description": "Exclude specific os/arch combinations from builds.",
+        "docker_signs": {
+          "description": "Default Docker image signing settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DockerSignConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "docker_v2": {
+          "description": "Default Docker (V2 API) image settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DockerV2Config"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "env": {
+          "description": "Default environment variables (`KEY=VALUE` strings) hoisted across crates.",
           "default": null,
           "type": [
             "array",
             "null"
           ],
           "items": {
-            "$ref": "#/definitions/BuildIgnore"
+            "type": "string"
           }
         },
-        "overrides": {
-          "description": "Per-target overrides for env, flags, and features.",
+        "flatpaks": {
+          "description": "Default flatpak settings applied to all crates.",
           "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/BuildOverride"
-          }
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FlatpakConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "makeselves": {
+          "description": "Default makeself settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MakeselfConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "msis": {
+          "description": "Default MSI settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MsiConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nfpms": {
+          "description": "Default nfpm (deb/rpm/apk) settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notarize": {
+          "description": "Default macOS notarization settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NotarizeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nsis": {
+          "description": "Default NSIS settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NsisConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pkgs": {
+          "description": "Default macOS PKG settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PkgConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "publish": {
+          "description": "Default publisher configurations (single-struct per publisher). Per-crate `publish.*` entries are merged into these by identity.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PublishDefaults"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sbom": {
+          "description": "Default SBOM generation settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SbomConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sign": {
+          "description": "Default artifact signing settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SignConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snapcrafts": {
+          "description": "Default snapcraft settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SnapcraftConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "description": "Default source-archive settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "srpms": {
+          "description": "Default SRPM settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SrpmConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "targets": {
           "description": "Default build targets (e.g., [\"x86_64-unknown-linux-gnu\", \"aarch64-apple-darwin\"]).",
@@ -3498,8 +3696,40 @@
           "items": {
             "type": "string"
           }
+        },
+        "upx": {
+          "description": "Default UPX compression settings applied to all crates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UpxConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "workspaces": {
+          "description": "Workspace-axis defaults marker. Only valid when top-level `workspaces:` is set. Reserved for per-workspace overrides keyed by workspace name (future waves).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/DefaultsWorkspaceBlock"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
+    },
+    "DefaultsCrateBlock": {
+      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Empty for WAVE 2; future waves will populate it with per-crate-id overrides.",
+      "type": "object"
+    },
+    "DefaultsWorkspaceBlock": {
+      "description": "Marker block under `defaults.workspaces:` that signals workspace-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Empty for WAVE 2; future waves will populate it with per-workspace-name overrides.",
+      "type": "object"
     },
     "DiscordAnnounce": {
       "type": "object",
@@ -8694,6 +8924,108 @@
         }
       },
       "additionalProperties": false
+    },
+    "PublishDefaults": {
+      "description": "Workspace-default publishers (DEC-3). Each publisher is single-struct in defaults; per-crate `publish.*` may be either a single struct or a list, reconciled by the merge engine.\n\nNOTE: the `cargo` publisher (crates.io) is not yet present here — the `crates: → cargo:` rename lands in WAVE 3. For now the legacy `CratesPublishConfig` is reachable via the per-crate `publish.crates` field.",
+      "type": "object",
+      "properties": {
+        "aur": {
+          "description": "Default AUR (binary) settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AurConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "aur_source": {
+          "description": "Default AUR (source) settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AurSourceConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "chocolatey": {
+          "description": "Default Chocolatey package settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChocolateyConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "homebrew": {
+          "description": "Default Homebrew formula settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HomebrewConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "krew": {
+          "description": "Default Krew (kubectl plugin manager) settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/KrewConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nix": {
+          "description": "Default Nix derivation settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NixConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scoop": {
+          "description": "Default Scoop manifest settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScoopConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "winget": {
+          "description": "Default WinGet manifest settings.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WingetConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
     },
     "PublisherConfig": {
       "type": "object",

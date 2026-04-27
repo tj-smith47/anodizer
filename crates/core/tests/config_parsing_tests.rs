@@ -241,19 +241,23 @@ fn test_parse_defaults_cross_case_sensitive() {
     assert!(result.is_err());
 }
 
-// ---- defaults.flags tests ----
+// ---- defaults.builds.flags tests ----
+// (After WAVE 2, per-build settings live under defaults.builds.* rather than
+// flat on defaults — this mirrors BuildConfig's shape.)
 
 #[test]
 fn test_parse_defaults_flags_valid() {
     let yaml = r#"
 project_name: test
 defaults:
-  flags: "--release --locked"
+  builds:
+    binary: ""
+    flags: "--release --locked"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
-        config.defaults.unwrap().flags,
+        config.defaults.unwrap().builds.unwrap().flags,
         Some("--release --locked".to_string())
     );
 }
@@ -262,14 +266,18 @@ crates: []
 fn test_parse_defaults_flags_omitted() {
     let yaml = "project_name: test\ndefaults:\n  cross: auto\ncrates: []";
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.defaults.unwrap().flags, None);
+    assert!(config.defaults.unwrap().builds.is_none());
 }
 
 #[test]
 fn test_parse_defaults_flags_empty_string() {
-    let yaml = "project_name: test\ndefaults:\n  flags: \"\"\ncrates: []";
+    let yaml =
+        "project_name: test\ndefaults:\n  builds:\n    binary: \"\"\n    flags: \"\"\ncrates: []";
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.defaults.unwrap().flags, Some(String::new()));
+    assert_eq!(
+        config.defaults.unwrap().builds.unwrap().flags,
+        Some(String::new())
+    );
 }
 
 // ---- defaults.archives tests ----
@@ -2775,7 +2783,7 @@ fn test_parse_defaults_empty_object() {
     let defaults = config.defaults.as_ref().unwrap();
     assert!(defaults.targets.is_none());
     assert!(defaults.cross.is_none());
-    assert!(defaults.flags.is_none());
+    assert!(defaults.builds.is_none());
     assert!(defaults.archives.is_none());
     assert!(defaults.checksum.is_none());
 }
@@ -2845,6 +2853,7 @@ crates:
 
 #[test]
 fn test_parse_toml_full_defaults() {
+    // After WAVE 2, flags moved to defaults.builds.flags (path-mirror BuildConfig).
     let toml_str = r#"
 project_name = "test"
 dist = "./output"
@@ -2852,6 +2861,9 @@ dist = "./output"
 [defaults]
 targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
 cross = "auto"
+
+[defaults.builds]
+binary = ""
 flags = "--release"
 
 [defaults.archives]
@@ -2874,7 +2886,10 @@ tag_template = "v{{ .Version }}"
     let defaults = config.defaults.unwrap();
     assert_eq!(defaults.targets.as_ref().unwrap().len(), 2);
     assert_eq!(defaults.cross, Some(CrossStrategy::Auto));
-    assert_eq!(defaults.flags, Some("--release".to_string()));
+    assert_eq!(
+        defaults.builds.as_ref().unwrap().flags,
+        Some("--release".to_string())
+    );
     let archives = defaults.archives.unwrap();
     assert_eq!(archives.format, Some("tar.gz".to_string()));
     assert_eq!(archives.format_overrides.as_ref().unwrap().len(), 1);
@@ -3294,7 +3309,9 @@ defaults:
     - x86_64-unknown-linux-gnu
     - aarch64-apple-darwin
   cross: zigbuild
-  flags: "--release --locked"
+  builds:
+    binary: ""
+    flags: "--release --locked"
   archives:
     format: tar.gz
     format_overrides:
@@ -3418,7 +3435,10 @@ crates:
     let defaults = config.defaults.as_ref().unwrap();
     assert_eq!(defaults.targets.as_ref().unwrap().len(), 2);
     assert_eq!(defaults.cross, Some(CrossStrategy::Zigbuild));
-    assert_eq!(defaults.flags, Some("--release --locked".to_string()));
+    assert_eq!(
+        defaults.builds.as_ref().unwrap().flags,
+        Some("--release --locked".to_string())
+    );
 
     // Changelog
     let cl = config.changelog.as_ref().unwrap();

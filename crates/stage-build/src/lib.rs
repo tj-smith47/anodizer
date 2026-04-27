@@ -1239,8 +1239,11 @@ impl Stage for BuildStage {
 
         let parallelism = ctx.options.parallelism.max(1);
 
-        // Collect global defaults
+        // Collect global defaults. After WAVE 2 the per-build settings
+        // (`flags`, `ignore`, `overrides`) live under `defaults.builds.*`
+        // rather than flat on `defaults`, mirroring `BuildConfig`'s shape.
         let defaults = ctx.config.defaults.as_ref();
+        let default_builds = defaults.and_then(|d| d.builds.as_ref());
         let default_targets: Vec<String> = defaults
             .and_then(|d| d.targets.clone())
             .filter(|t| !t.is_empty())
@@ -1248,11 +1251,12 @@ impl Stage for BuildStage {
         let default_strategy = defaults
             .and_then(|d| d.cross.clone())
             .unwrap_or(CrossStrategy::Auto);
-        let default_flags: Option<String> = defaults.and_then(|d| d.flags.clone());
-        let default_ignores: Vec<BuildIgnore> =
-            defaults.and_then(|d| d.ignore.clone()).unwrap_or_default();
-        let default_overrides: Vec<BuildOverride> = defaults
-            .and_then(|d| d.overrides.clone())
+        let default_flags: Option<String> = default_builds.and_then(|b| b.flags.clone());
+        let default_ignores: Vec<BuildIgnore> = default_builds
+            .and_then(|b| b.ignore.clone())
+            .unwrap_or_default();
+        let default_overrides: Vec<BuildOverride> = default_builds
+            .and_then(|b| b.overrides.clone())
             .unwrap_or_default();
 
         // Collect crates to process (cloned to avoid borrow conflict with ctx.artifacts)

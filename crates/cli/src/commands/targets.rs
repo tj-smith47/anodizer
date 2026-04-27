@@ -192,10 +192,14 @@ mod tests {
                 &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
             )],
             defaults: Some(Defaults {
-                ignore: Some(vec![anodizer_core::config::BuildIgnore {
-                    os: "windows".to_string(),
-                    arch: "amd64".to_string(),
-                }]),
+                builds: Some(anodizer_core::config::BuildConfig {
+                    binary: String::new(),
+                    ignore: Some(vec![anodizer_core::config::BuildIgnore {
+                        os: "windows".to_string(),
+                        arch: "amd64".to_string(),
+                    }]),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..base_config()

@@ -1,6 +1,7 @@
 pub mod artifact;
 pub mod config;
 pub mod context;
+pub mod defaults_merge;
 pub mod env_expand;
 pub mod extrafiles;
 pub mod git;

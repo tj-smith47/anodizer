@@ -230,15 +230,38 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `version_sync` | VersionSyncConfig | — | Automatic version number synchronization configuration for this crate. |
 
 ## `defaults`
+Workspace-level defaults that path-mirror the `CrateConfig` (and select top-level `Config`) shape. Each field here is folded into every resolved crate by `defaults_merge::apply_defaults` according to the deep-merge / merge-by-identity semantics documented in `defaults_merge`.
+
+Multi-publisher fields are single-struct here (one default per publisher); per-crate `publish.*` fields accept either a single struct or a list. The merge engine reconciles the two shapes when populating the resolved crate.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `archives` | DefaultArchiveConfig | — | Default archive settings applied to all crates. |
-| `checksum` | ChecksumConfig | — | Default checksum settings applied to all crates. |
-| `cross` | CrossStrategy | — | Default cross-compilation strategy: auto, zigbuild, cross, or cargo. |
-| `flags` | string | — | Default extra flags passed to cargo build. |
-| `ignore` | list of BuildIgnore | — | Exclude specific os/arch combinations from builds. |
-| `overrides` | list of BuildOverride | — | Per-target overrides for env, flags, and features. |
+| `app_bundles` | AppBundleConfig | — | Default app-bundle settings applied to all crates. |
+| `archives` | ArchiveConfig | — | Default archive settings applied to all crates. |
+| `binary_signs` | SignConfig | — | Default binary-signing settings. |
+| `builds` | BuildConfig | — | Default build settings applied to every crate's builds (deep-merged into each `CrateConfig.builds[]` entry by identity on `id`/`binary`). |
+| `checksum` | ChecksumConfig | — | Default checksum settings applied to all crates. Mirrors `CrateConfig.checksum` so checksum config can be hoisted to defaults. |
+| `crates` | DefaultsCrateBlock | — | Crate-axis defaults marker. Only valid when top-level `crates:` is set. Reserved for per-crate overrides keyed by crate id (future waves). |
+| `cross` | CrossStrategy | — | Default cross-compilation strategy: auto, zigbuild, cross, or cargo. Mirrors `CrateConfig.cross` so the strategy can be hoisted to defaults. |
+| `dmgs` | DmgConfig | — | Default DMG settings applied to all crates. |
+| `docker_signs` | DockerSignConfig | — | Default Docker image signing settings. |
+| `docker_v2` | DockerV2Config | — | Default Docker (V2 API) image settings applied to all crates. |
+| `env` | list of string | — | Default environment variables (`KEY=VALUE` strings) hoisted across crates. |
+| `flatpaks` | FlatpakConfig | — | Default flatpak settings applied to all crates. |
+| `makeselves` | MakeselfConfig | — | Default makeself settings applied to all crates. |
+| `msis` | MsiConfig | — | Default MSI settings applied to all crates. |
+| `nfpms` | NfpmConfig | — | Default nfpm (deb/rpm/apk) settings applied to all crates. |
+| `notarize` | NotarizeConfig | — | Default macOS notarization settings. |
+| `nsis` | NsisConfig | — | Default NSIS settings applied to all crates. |
+| `pkgs` | PkgConfig | — | Default macOS PKG settings applied to all crates. |
+| `publish` | PublishDefaults | — | Default publisher configurations (single-struct per publisher). Per-crate `publish.*` entries are merged into these by identity. |
+| `sbom` | SbomConfig | — | Default SBOM generation settings. |
+| `sign` | SignConfig | — | Default artifact signing settings. |
+| `snapcrafts` | SnapcraftConfig | — | Default snapcraft settings applied to all crates. |
+| `source` | SourceConfig | — | Default source-archive settings applied to all crates. |
+| `srpms` | SrpmConfig | — | Default SRPM settings applied to all crates. |
 | `targets` | list of string | — | Default build targets (e.g., ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]). |
+| `upx` | UpxConfig | — | Default UPX compression settings applied to all crates. |
+| `workspaces` | DefaultsWorkspaceBlock | — | Workspace-axis defaults marker. Only valid when top-level `workspaces:` is set. Reserved for per-workspace overrides keyed by workspace name (future waves). |
 
 ## `docker_signs`
 | Field | Type | Default | Description |
