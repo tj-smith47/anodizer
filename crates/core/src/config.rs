@@ -2315,8 +2315,6 @@ pub struct PublishConfig {
     ///
     /// Uses the unified `HomebrewCaskConfig` which carries all fields from both
     /// the per-crate cask config and the top-level `homebrew_casks:` config.
-    ///
-    /// TODO(WAVE-6): expand to OneOrMany<HomebrewCaskConfig>
     pub homebrew_cask: Option<HomebrewCaskConfig>,
     /// Scoop manifest publishing configuration.
     pub scoop: Option<ScoopConfig>,
@@ -3146,16 +3144,16 @@ pub struct DockerRetryConfig {
 // DockerV2Config
 // ---------------------------------------------------------------------------
 
-/// Docker V2 configuration — the newer, cleaner Docker build API.
+/// Docker V2 configuration — the canonical Docker build API.
 ///
-/// Key differences from the legacy [`DockerConfig`]:
-/// - `images` + `tags` instead of `image_templates` (cleaner separation)
-/// - `annotations` map (OCI annotations via `--annotation`)
-/// - `build_args` as a map instead of `build_flag_templates`
-/// - `disable` as [`StringOrBool`] template
-/// - `sbom` as [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx
-/// - `flags` for arbitrary extra flags
-/// - No `goos`/`goarch`/`goarm` fields — uses `platforms` only
+/// Notable surface:
+/// - `images` + `tags` (cleaner separation than a single `image_templates` list)
+/// - `annotations` map for OCI annotations (`--annotation`)
+/// - `build_args` map for build-time variables
+/// - `skip` as a [`StringOrBool`] template for conditional opt-out
+/// - `sbom` as a [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx
+/// - `flags` for arbitrary extra `docker build` flags
+/// - `platforms` is the only target selector — no per-arch field overrides
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct DockerV2Config {

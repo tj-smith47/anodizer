@@ -185,7 +185,7 @@ Reused across rows below:
 | vendor / homepage / maintainer / description / license | ✅ | OSS | cfgd + anodizer configs populate all five; visible in live nfpm assets. |
 | umask / bindir / libdirs | ✅ | OSS | cfgd sets `bindir: /usr/bin` live. |
 | epoch / prerelease / version_metadata / release / section / priority | ✅ | OSS | `stage-nfpm` unit tests. |
-| meta / changelog / goamd64 / mtime | ✅ | OSS | `stage-nfpm` unit tests. |
+| meta / changelog / amd64_variant / mtime | ✅ | OSS | `stage-nfpm` unit tests. |
 | dependencies / provides / recommends / suggests / conflicts / replaces | ✅ | OSS | `stage-nfpm` unit tests. |
 | contents[] with file_info | ✅ | OSS | cfgd maps `LICENSE`, `README` into `/usr/share/doc/cfgd/` live. |
 | scripts (preinstall / postinstall / preremove / postremove) | ✅ | OSS | `stage-nfpm` unit tests. |
@@ -231,7 +231,7 @@ Reused across rows below:
 | nsis[] (Windows NSIS installer) | ⚠ | Pro | `stage-nsis` unit tests; **no live NSIS `.exe`** on any release. |
 | app_bundles[] (macOS .app) | ⚠ | Pro | `stage-appbundle` unit tests; **no live `.app`** on any release. |
 | dmgs[].if / msis[].if / pkgs[].if / nsis[].if / app_bundles[].if | ❌ | Pro | Missing on all five. [known-bugs A1-rev #41–49](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| msis[].goamd64 / msis[].hooks.before/after / nsis[].goamd64 | ❌ | Pro | Absent. |
+| msis[].amd64_variant / msis[].hooks.before/after / nsis[].amd64_variant | ❌ | Pro | Absent. |
 
 ## Notarize
 
