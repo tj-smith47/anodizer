@@ -2116,7 +2116,7 @@
           ]
         },
         "targets": {
-          "description": "Target triples to build for (overrides defaults.targets for this build).",
+          "description": "Target triples to build for. When set, REPLACES `defaults.targets` for this build (override semantics — the per-build value wins outright, no concat). When `None`, this build inherits `defaults.targets` verbatim. Both `cli::commands::helpers:: collect_build_targets` and `stage-build` enforce this rule.",
           "default": null,
           "type": [
             "array",

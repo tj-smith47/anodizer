@@ -257,7 +257,16 @@ pub(crate) fn build_lib_command(
 // detect_crate_type
 // ---------------------------------------------------------------------------
 
-/// Check if a crate has a binary target (src/main.rs or [[bin]] in Cargo.toml).
+/// Check if a crate has a binary target.
+///
+/// Three probes, ordered cheapest-first:
+/// 1. `src/main.rs` exists (the cargo default-bin convention).
+/// 2. `[[bin]]` section in `Cargo.toml`.
+/// 3. Any `*.rs` file under `src/bin/` (cargo auto-discovers these as
+///    additional bin targets even when `[[bin]]` is omitted — common in
+///    multi-binary crates and a real-world miss before this branch was
+///    added).
+///
 /// Returns false for library-only crates.
 fn crate_has_binary_target(crate_path: &str) -> bool {
     let path = Path::new(crate_path);
@@ -271,8 +280,18 @@ fn crate_has_binary_target(crate_path: &str) -> bool {
         && let Ok(doc) = content.parse::<toml_edit::DocumentMut>()
         && let Some(bins) = doc.get("bin")
         && let Some(arr) = bins.as_array_of_tables()
+        && !arr.is_empty()
     {
-        return !arr.is_empty();
+        return true;
+    }
+    // Check for src/bin/<name>.rs auto-discovered targets.
+    if let Ok(mut entries) = path.join("src/bin").read_dir()
+        && entries.any(|e| {
+            e.ok()
+                .is_some_and(|x| x.path().extension().is_some_and(|ext| ext == "rs"))
+        })
+    {
+        return true;
     }
     false
 }
@@ -4182,6 +4201,68 @@ edition = "2021"
             binaries.is_empty(),
             "library crate must not produce any binary artifacts; got {} entries",
             binaries.len()
+        );
+    }
+
+    /// Regression: a crate that has no `src/main.rs` and no `[[bin]]`
+    /// section but DOES have `src/bin/<name>.rs` files is still a
+    /// binary crate (cargo auto-discovers each file as a bin target).
+    /// Before the third probe, this layout was misclassified as
+    /// library-only and the build was skipped.
+    #[test]
+    fn test_crate_has_binary_target_detects_src_bin_layout() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("multi-bin");
+        fs::create_dir_all(crate_dir.join("src/bin")).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "multi-bin"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        // No src/main.rs, no [[bin]], just src/bin/foo.rs.
+        fs::write(crate_dir.join("src/bin/foo.rs"), "fn main() {}\n").unwrap();
+
+        assert!(
+            crate_has_binary_target(crate_dir.to_str().unwrap()),
+            "crate with src/bin/<name>.rs should be detected as a binary crate"
+        );
+    }
+
+    /// Negative control for the src/bin probe: an empty `src/bin/`
+    /// directory (created but with no .rs files) should NOT count as
+    /// having a binary target.
+    #[test]
+    fn test_crate_has_binary_target_rejects_empty_src_bin_dir() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("no-bin");
+        fs::create_dir_all(crate_dir.join("src/bin")).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "no-bin"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+"#,
+        )
+        .unwrap();
+        fs::write(crate_dir.join("src/lib.rs"), "// library only\n").unwrap();
+        // src/bin exists but is empty.
+
+        assert!(
+            !crate_has_binary_target(crate_dir.to_str().unwrap()),
+            "empty src/bin directory should not count as a binary target"
         );
     }
 

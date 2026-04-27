@@ -342,13 +342,13 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     });
     let homepage = ctx
         .render_template(&homepage_raw)
-        .unwrap_or_else(|_| homepage_raw.clone());
+        .with_context(|| format!("krew: render homepage template for '{}'", crate_name))?;
     // GoReleaser krew.go:154-160 templates Caveats alongside the other
     // narrative fields; anodizer was passing it through verbatim.
     let caveats_raw = krew_cfg.caveats.clone().unwrap_or_default();
     let caveats = ctx
         .render_template(&caveats_raw)
-        .unwrap_or_else(|_| caveats_raw.clone());
+        .with_context(|| format!("krew: render caveats template for '{}'", crate_name))?;
 
     // Find artifacts across all platforms, applying IDs + amd64_variant/arm_variant filter.
     let ids_filter = krew_cfg.ids.as_deref();

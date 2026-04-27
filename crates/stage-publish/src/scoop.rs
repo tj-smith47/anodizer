@@ -395,8 +395,13 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .homepage
         .as_deref()
         .or_else(|| ctx.config.meta_homepage());
-    let homepage_rendered =
-        homepage_raw.map(|h| ctx.render_template(h).unwrap_or_else(|_| h.to_string()));
+    let homepage_rendered = match homepage_raw {
+        Some(h) => Some(
+            ctx.render_template(h)
+                .with_context(|| format!("scoop: render homepage template for '{crate_name}'"))?,
+        ),
+        None => None,
+    };
     let opts = ManifestOptions {
         homepage: homepage_rendered.as_deref(),
         github_slug,

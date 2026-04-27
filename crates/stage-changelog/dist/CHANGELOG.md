@@ -1,5 +1,7 @@
 ## Changelog
 
+* 4ce2f9040ea9ee0160849ab30f512690969025c7 sweep pre-Session-B vocabulary out of publisher + packaging guides
+* c496fe8fd039d7754abff3a5adfebced6d915a52 lift Command::new sites out of cli/commands per module-boundaries.md + update allow-list
 * 891c4a9535278e3bda8925b0c8c5d3d2803322f5 wire defaults.env into per-crate env resolution
 * 98429c93b12f1a3a32a799d124f986517ffd2e66 close validation gaps in defaults block (format_overrides + deny_unknown_fields)
 * 01c7926050434362f5b8861848ff51c220157f52 hoist tokio runtime out of loop to eliminate Option-init dance

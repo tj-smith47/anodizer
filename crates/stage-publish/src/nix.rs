@@ -760,7 +760,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .unwrap_or("");
     let homepage_rendered = ctx
         .render_template(homepage_raw)
-        .unwrap_or_else(|_| homepage_raw.to_string());
+        .with_context(|| format!("nix: render homepage template for '{}'", crate_name))?;
     let homepage = homepage_rendered.as_str();
     let license = nix_cfg
         .license

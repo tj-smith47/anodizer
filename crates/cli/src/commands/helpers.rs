@@ -48,13 +48,21 @@ fn resolve_force_token(config: &Config) -> Option<ForceTokenKind> {
 ///
 /// Iterates `config.crates` plus every `config.workspaces[].crates` so monorepos
 /// with multi-root workspaces are covered. Per-crate `builds[].targets` entries
-/// are collected first, then `defaults.targets`. Duplicates are filtered, and
-/// `defaults.builds.ignore` (os/arch pairs) removes matching targets.
+/// REPLACE `defaults.targets` for that build (override semantics — matching
+/// the `BuildConfig.targets` rustdoc and the stage-build runtime). Builds
+/// whose `targets` field is `None` fall back to `defaults.targets`.
+/// Duplicates are filtered across all builds, and `defaults.builds.ignore`
+/// (os/arch pairs) removes matching targets.
 ///
 /// `selected_crates` filters the iteration: when empty, all crates are used;
 /// otherwise only crates whose `name` is in the slice contribute.
 pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec<String> {
     let mut targets: Vec<String> = Vec::new();
+    let default_targets = config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.targets.as_deref())
+        .unwrap_or(&[]);
 
     let all_crates = config.crates.iter().chain(
         config
@@ -65,6 +73,7 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
             .flat_map(|w| w.crates.iter()),
     );
 
+    let mut have_any_build = false;
     for krate in all_crates {
         if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {
             continue;
@@ -72,23 +81,31 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
 
         if let Some(ref builds) = krate.builds {
             for build in builds {
-                if let Some(ref build_targets) = build.targets {
-                    for t in build_targets {
-                        if !targets.contains(t) {
-                            targets.push(t.clone());
-                        }
+                have_any_build = true;
+                // Override semantics: when a per-build `targets` is set,
+                // it REPLACES `defaults.targets` for that build. Only when
+                // it is None does the build fall through to the defaults.
+                let chosen = match build.targets.as_deref() {
+                    Some(ts) => ts,
+                    None => default_targets,
+                };
+                for t in chosen {
+                    if !targets.contains(t) {
+                        targets.push(t.clone());
                     }
                 }
             }
         }
+    }
 
-        if let Some(ref defaults) = config.defaults
-            && let Some(ref default_targets) = defaults.targets
-        {
-            for t in default_targets {
-                if !targets.contains(t) {
-                    targets.push(t.clone());
-                }
+    // No builds at all (e.g. lib-only crates inheriting nothing); the
+    // defaults.targets list is the canonical fallback set so callers like
+    // `anodizer release --single-target` still see something to filter
+    // against.
+    if !have_any_build {
+        for t in default_targets {
+            if !targets.contains(t) {
+                targets.push(t.clone());
             }
         }
     }
@@ -1478,6 +1495,68 @@ mod tests {
             );
             assert_eq!(ctx.options.token.as_deref(), Some("glpat-detected"));
         });
+    }
+
+    // ---- collect_build_targets override semantics ---------------------
+
+    #[test]
+    fn test_collect_build_targets_per_build_overrides_defaults() {
+        use anodizer_core::config::{BuildConfig, Defaults};
+
+        let config = Config {
+            project_name: "test".to_string(),
+            defaults: Some(Defaults {
+                targets: Some(vec!["a".to_string(), "b".to_string()]),
+                ..Default::default()
+            }),
+            crates: vec![CrateConfig {
+                name: "k1".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ Version }}".to_string(),
+                builds: Some(vec![BuildConfig {
+                    targets: Some(vec!["c".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let result = collect_build_targets(&config, &[]);
+        assert_eq!(
+            result,
+            vec!["c".to_string()],
+            "per-build targets should REPLACE defaults.targets, not concat",
+        );
+    }
+
+    #[test]
+    fn test_collect_build_targets_per_build_none_falls_back_to_defaults() {
+        use anodizer_core::config::{BuildConfig, Defaults};
+
+        let config = Config {
+            project_name: "test".to_string(),
+            defaults: Some(Defaults {
+                targets: Some(vec!["a".to_string(), "b".to_string()]),
+                ..Default::default()
+            }),
+            crates: vec![CrateConfig {
+                name: "k1".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ Version }}".to_string(),
+                builds: Some(vec![BuildConfig {
+                    targets: None, // not set; should inherit defaults
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let result = collect_build_targets(&config, &[]);
+        assert_eq!(
+            result,
+            vec!["a".to_string(), "b".to_string()],
+            "build with targets=None should inherit defaults.targets",
+        );
     }
 
     // ---- merge_env_with_defaults --------------------------------------

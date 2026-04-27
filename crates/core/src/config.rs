@@ -1303,7 +1303,11 @@ pub struct BuildConfig {
     /// When true (or template evaluating to "true"), skip this build entirely.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub skip: Option<StringOrBool>,
-    /// Target triples to build for (overrides defaults.targets for this build).
+    /// Target triples to build for. When set, REPLACES `defaults.targets`
+    /// for this build (override semantics — the per-build value wins
+    /// outright, no concat). When `None`, this build inherits
+    /// `defaults.targets` verbatim. Both `cli::commands::helpers::
+    /// collect_build_targets` and `stage-build` enforce this rule.
     pub targets: Option<Vec<String>>,
     /// Cargo features to enable for this build.
     pub features: Option<Vec<String>>,
