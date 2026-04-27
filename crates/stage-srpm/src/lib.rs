@@ -118,6 +118,45 @@ impl Stage for SrpmStage {
             if let Some(ref packager) = srpm_cfg.packager {
                 ctx.template_vars_mut().set("Packager", packager);
             }
+            // SCH-12 (WAVE 5.3) — surface the new RPM-spec fields as
+            // template vars so user-supplied spec files can reference them.
+            if let Some(ref import_path) = srpm_cfg.import_path {
+                ctx.template_vars_mut().set("ImportPath", import_path);
+            }
+            if let Some(ref build_host) = srpm_cfg.build_host {
+                ctx.template_vars_mut().set("BuildHost", build_host);
+            }
+            if let Some(ref prerelease) = srpm_cfg.prerelease {
+                ctx.template_vars_mut().set("Prerelease", prerelease);
+            }
+            if let Some(ref version_metadata) = srpm_cfg.version_metadata {
+                ctx.template_vars_mut()
+                    .set("VersionMetadata", version_metadata);
+            }
+            if let Some(ref pretrans) = srpm_cfg.pretrans {
+                ctx.template_vars_mut().set("Pretrans", pretrans);
+            }
+            if let Some(ref posttrans) = srpm_cfg.posttrans {
+                ctx.template_vars_mut().set("Posttrans", posttrans);
+            }
+            if let Some(prefixes) = srpm_cfg.prefixes.as_deref()
+                && !prefixes.is_empty()
+            {
+                // Concatenate one Prefix: per line so the spec template can
+                // splat the value verbatim — matches `Prefix:` directive
+                // semantics in RPM headers.
+                let joined = prefixes
+                    .iter()
+                    .map(|p| format!("Prefix: {p}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ctx.template_vars_mut().set("Prefixes", &joined);
+            }
+            if let Some(bins) = srpm_cfg.bins.as_deref()
+                && !bins.is_empty()
+            {
+                ctx.template_vars_mut().set("Bins", &bins.join(","));
+            }
 
             ctx.render_template(&template)
                 .with_context(|| format!("srpm: render spec template '{}'", spec_file))?
@@ -397,5 +436,46 @@ crates:
         assert_eq!(srpm.package_name.as_deref(), Some("myapp"));
         assert_eq!(srpm.spec_file.as_deref(), Some("myapp.spec"));
         assert_eq!(srpm.summary.as_deref(), Some("My application"));
+    }
+
+    #[test]
+    fn test_srpm_new_rpm_spec_fields_parse() {
+        // SCH-12 (WAVE 5.3): the 8 newly-added RPM-spec fields parse and
+        // surface on the SrpmConfig struct.
+        use anodizer_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+srpm:
+  enabled: true
+  package_name: myapp
+  bins:
+    - myapp-cli
+  import_path: github.com/me/myapp
+  prefixes:
+    - /opt/myapp
+  build_host: build.local
+  pretrans: scripts/pretrans.sh
+  posttrans: scripts/posttrans.sh
+  prerelease: rc1
+  version_metadata: g1234abc
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let srpm = config.srpm.as_ref().unwrap();
+        assert_eq!(srpm.bins.as_ref().unwrap(), &vec!["myapp-cli".to_string()]);
+        assert_eq!(srpm.import_path.as_deref(), Some("github.com/me/myapp"));
+        assert_eq!(
+            srpm.prefixes.as_ref().unwrap(),
+            &vec!["/opt/myapp".to_string()]
+        );
+        assert_eq!(srpm.build_host.as_deref(), Some("build.local"));
+        assert_eq!(srpm.pretrans.as_deref(), Some("scripts/pretrans.sh"));
+        assert_eq!(srpm.posttrans.as_deref(), Some("scripts/posttrans.sh"));
+        assert_eq!(srpm.prerelease.as_deref(), Some("rc1"));
+        assert_eq!(srpm.version_metadata.as_deref(), Some("g1234abc"));
     }
 }

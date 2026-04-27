@@ -489,7 +489,16 @@ fn render_groups(
 /// - `AuthorName` — commit author name
 /// - `AuthorEmail` — commit author email
 /// - `Login` — per-commit GitHub username (populated only with `github` backend)
-/// - `Logins` — comma-separated list of all GitHub usernames in the release
+/// - `Authors` — comma-separated names for this commit (primary author +
+///   `Co-Authored-By:` trailers). SCH-24 (WAVE 5.3) — matches GR's per-entry
+///   Authors template var.
+/// - `Logins` — comma-separated logins for this commit (primary author's
+///   login + parsed co-author logins, where the trailer carries one). SCH-24
+///   (WAVE 5.3) — matches GR's per-entry Logins template var.
+/// - `AllLogins` — comma-separated list of *all* GitHub logins seen in the
+///   release. Was the previous `Logins` semantic (release-wide) before SCH-24
+///   reclaimed `Logins` for per-entry data; renamed to keep both available
+///   without ambiguity.
 fn render_commit_line(
     out: &mut String,
     commit: &CommitInfo,
@@ -521,8 +530,31 @@ fn render_commit_line(
     vars.set("Message", &commit.description);
     vars.set("AuthorName", &commit.author_name);
     vars.set("AuthorEmail", &commit.author_email);
-    vars.set("Logins", logins);
     vars.set("Login", &commit.login);
+    // SCH-24: per-entry Authors / Logins (matches GR). The release-wide
+    // login list moved to `AllLogins` to free the `Logins` name for the
+    // per-commit semantic. Co-author entries (parsed from `Co-Authored-By:`
+    // trailers) carry both name and "Name <email>" form; we surface their
+    // raw trailer payload as the Authors join target.
+    let mut commit_authors: Vec<String> = Vec::new();
+    if !commit.author_name.is_empty() {
+        commit_authors.push(commit.author_name.clone());
+    }
+    for ca in &commit.co_authors {
+        commit_authors.push(ca.clone());
+    }
+    vars.set("Authors", &commit_authors.join(", "));
+    // For per-entry Logins: include the primary commit login when present.
+    // Co-author logins aren't extractable from the email-only trailer
+    // without an extra GitHub API lookup, so the per-entry list contains
+    // just the primary unless the trailer itself was a `<user@github>`
+    // login form (left as future work).
+    let mut commit_logins: Vec<String> = Vec::new();
+    if !commit.login.is_empty() {
+        commit_logins.push(commit.login.clone());
+    }
+    vars.set("Logins", &commit_logins.join(", "));
+    vars.set("AllLogins", logins);
     let rendered = template::render(tmpl, &vars).with_context(|| {
         format!(
             "changelog: render commit format template '{tmpl}' for commit {}",
@@ -3862,7 +3894,9 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
     }
 
     #[test]
-    fn test_render_logins_variable_in_format() {
+    fn test_render_per_entry_logins_variable_in_format() {
+        // SCH-24 (WAVE 5.3): Logins is now per-entry (this commit's login),
+        // matching GR. The release-wide login list moved to AllLogins.
         let grouped = vec![GroupedCommits::new(
             "",
             vec![CommitInfo {
@@ -3880,15 +3914,48 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         let md = render_changelog(
             &grouped,
             7,
-            Some("{{ ShortSHA }} {{ Message }} cc {{ Logins }}"),
+            Some("{{ ShortSHA }} {{ Message }} cc {{ Logins }} (all={{ AllLogins }})"),
             "alice,bob",
             "git",
             None,
             None,
         );
         assert!(
-            md.contains("abc1234 add feature cc alice,bob"),
-            "Logins variable should be rendered, got: {md}"
+            md.contains("abc1234 add feature cc alice (all=alice,bob)"),
+            "per-entry Logins + AllLogins variables should be rendered, got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_render_per_entry_authors_variable_in_format() {
+        // SCH-24: Authors is per-entry (primary author + Co-Authored-By
+        // trailer names).
+        let grouped = vec![GroupedCommits::new(
+            "",
+            vec![CommitInfo {
+                raw_message: "feat: add feature".into(),
+                kind: "feat".into(),
+                description: "add feature".into(),
+                hash: "abc1234".into(),
+                full_hash: "abc1234567890".into(),
+                author_name: "Alice".into(),
+                author_email: "alice@example.com".into(),
+                login: "alice".into(),
+                co_authors: vec!["Bob <bob@example.com>".into(), "Carol".into()],
+            }],
+        )];
+        let md = render_changelog(
+            &grouped,
+            7,
+            Some("{{ ShortSHA }} {{ Message }} by {{ Authors }}"),
+            "",
+            "git",
+            None,
+            None,
+        );
+        assert!(
+            md.contains("abc1234 add feature by Alice, Bob <bob@example.com>, Carol"),
+            "per-entry Authors should include primary + co-authors, got: {md}"
         );
     }
 

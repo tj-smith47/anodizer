@@ -115,6 +115,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 ## `aur_sources`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `amd64_variant` | string | — | `x86_64` micro-architecture variant — `"v1"` (baseline), `"v2"`, `"v3"` (AVX2), `"v4"`. Equivalent to GR `AurSource.Goamd64`. Surfaced as a template var (`Amd64`) when present so user-supplied `prepare`/`build`/`package` script bodies can branch on the variant. When unset, defaults to `"v1"` at template-render time. |
 | `arches` | list of string | — | Explicit architecture list (default: auto-detect from artifacts). |
 | `backup` | list of string | — | Backup files to preserve on upgrade. |
 | `build` | string | — | Custom `build()` function body for PKGBUILD. |
@@ -530,6 +531,8 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 ## `srpm`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `bins` | list of string | — | Build IDs whose binaries are bundled into the source RPM. When set, only artifacts produced by builds with these IDs are packaged. Mirrors GR `NFPM.Builds`. |
+| `build_host` | string | — | Override the build host recorded in the RPM header. Useful for reproducible builds where the actual hostname leaks build-env detail. |
 | `compression` | string | — | Compression algorithm (gzip, xz, zstd, none). |
 | `contents` | list of NfpmContentConfig | — | Additional contents to include in the source RPM. |
 | `description` | string | — | Package description. |
@@ -538,11 +541,16 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `epoch` | string | — | RPM epoch. |
 | `file_name_template` | string | — | Output filename template. |
 | `group` | string | — | RPM group. |
+| `import_path` | string | — | Project import path (Go-style; for Rust this is the canonical repository URL, e.g. `github.com/owner/repo`). Used in spec file generation for downstream tooling that expects a vcs-rooted path. |
 | `license` | string | — | License identifier. |
 | `license_file_name` | string | — | License file name to include. |
 | `maintainer` | string | — | Package maintainer. |
 | `package_name` | string | — | Package name (default: project_name). |
 | `packager` | string | — | RPM packager field. |
+| `posttrans` | string | — | `%posttrans` scriptlet — executed *after* all packages in the transaction have been installed. Path to a script file. |
+| `prefixes` | list of string | — | Filesystem prefixes the package may install to (RPM `Prefix:` tag). Each entry becomes one `Prefix:` directive — relocatable RPMs need at least one prefix declared. |
+| `prerelease` | string | — | Prerelease suffix appended to the version (e.g. `rc1`, `beta2`). Mirrors GR `NFPM.Prerelease`. |
+| `pretrans` | string | — | `%pretrans` scriptlet — executed on the package transaction *before* any package in the transaction is installed. Path to a script file. |
 | `section` | string | — | RPM section. |
 | `signature` | SrpmSignatureConfig | — | RPM signature configuration. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
@@ -550,6 +558,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `summary` | string | — | Summary line. |
 | `url` | string | — | Homepage URL. |
 | `vendor` | string | — | Package vendor. |
+| `version_metadata` | string | — | Build metadata appended to the version (e.g. git commit hash). Mirrors GR `NFPM.VersionMetadata`. |
 
 ## `tag`
 | Field | Type | Default | Description |

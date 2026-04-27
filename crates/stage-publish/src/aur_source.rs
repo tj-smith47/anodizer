@@ -40,6 +40,13 @@ fn publish_aur_source_entry(
 
     let pkgrel: u32 = cfg.rel.as_deref().and_then(|r| r.parse().ok()).unwrap_or(1);
 
+    // SCH-17: surface the configured x86_64 micro-architecture variant as a
+    // template var (default `v1`) so user-supplied `prepare` / `build` /
+    // `package` scripts can branch on the variant when the source builds
+    // need to pick CPU-feature-specific cargo flags.
+    let amd64_variant = cfg.amd64_variant.as_deref().unwrap_or("v1");
+    ctx.template_vars_mut().set("Amd64", amd64_variant);
+
     // Source URL — use url_template or default release URL
     let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
 
@@ -635,5 +642,36 @@ crates:
         assert_eq!(aur_src.name.as_deref(), Some("myapp"));
         assert_eq!(aur_src.makedepends.as_ref().unwrap(), &["rust", "cargo"]);
         assert_eq!(aur_src.depends.as_ref().unwrap(), &["openssl"]);
+    }
+
+    #[test]
+    fn test_aur_source_amd64_variant_field_parses() {
+        // SCH-17 (WAVE 5.3): amd64_variant lands on AurSourceConfig and is
+        // surfaced as the `Amd64` template var when the source pkg is built.
+        use anodizer_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur_source:
+        name: myapp
+        description: "My application"
+        license: MIT
+        amd64_variant: v3
+        git_url: "ssh://aur@aur.archlinux.org/myapp.git"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let aur_src = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur_source
+            .as_ref()
+            .unwrap();
+        assert_eq!(aur_src.amd64_variant.as_deref(), Some("v3"));
     }
 }
