@@ -2560,6 +2560,14 @@
             }
           ]
         },
+        "snapshot": {
+          "description": "SCH-26 (WAVE 5.7): when `true`, render the changelog even in snapshot mode. Anodizer-original opt-in — GR's changelog pipe short-circuits on `ctx.Snapshot` (see GR `internal/pipe/changelog/ changelog.go:46`); anodizer keeps the GR default (skip on snapshot) but lets users opt back in here when they want a draft changelog surfaced during local snapshot testing. The behavior wiring lands in Session C; only the schema field is introduced in this commit.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "sort": {
           "description": "Sort order for changelog entries: \"asc\" or \"desc\" (default: \"asc\").",
           "default": null,

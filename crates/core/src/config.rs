@@ -4658,6 +4658,14 @@ pub struct ChangelogConfig {
     pub divider: Option<String>,
     /// AI-powered changelog enhancement configuration.
     pub ai: Option<ChangelogAiConfig>,
+    /// SCH-26 (WAVE 5.7): when `true`, render the changelog even in
+    /// snapshot mode. Anodizer-original opt-in — GR's changelog pipe
+    /// short-circuits on `ctx.Snapshot` (see GR `internal/pipe/changelog/
+    /// changelog.go:46`); anodizer keeps the GR default (skip on snapshot)
+    /// but lets users opt back in here when they want a draft changelog
+    /// surfaced during local snapshot testing. The behavior wiring lands
+    /// in Session C; only the schema field is introduced in this commit.
+    pub snapshot: Option<bool>,
 }
 
 /// AI-powered changelog enhancement configuration.
@@ -8638,6 +8646,37 @@ name = "tool"
         assert_eq!(choco.description, Some("A tool".to_string()));
         let repo = choco.repository.as_ref().unwrap();
         assert_eq!(repo.owner.as_deref(), Some("org"));
+    }
+
+    // ---- WAVE 5.7 behavior-toggle test (SCH-26) ----
+
+    #[test]
+    fn test_changelog_snapshot_field_parses() {
+        // SCH-26: schema field exists and round-trips. The behavior wiring
+        // (default snapshot-skip vs always-on) is a Session C concern;
+        // this commit only proves the field parses.
+        let yaml = r#"
+project_name: test
+changelog:
+  snapshot: true
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cl = config.changelog.as_ref().unwrap();
+        assert_eq!(cl.snapshot, Some(true));
+    }
+
+    #[test]
+    fn test_changelog_snapshot_omitted_is_none() {
+        let yaml = r#"
+project_name: test
+changelog:
+  sort: asc
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cl = config.changelog.as_ref().unwrap();
+        assert_eq!(cl.snapshot, None);
     }
 
     // ---- WAVE 5.6 alias tests (SCH-5/11/34) ----
