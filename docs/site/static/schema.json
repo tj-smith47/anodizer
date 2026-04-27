@@ -2507,7 +2507,7 @@
           ]
         },
         "format": {
-          "description": "Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (comma-separated list of all GitHub usernames in the release, `github` backend only). Default: `\"{{ ShortSHA }} {{ Message }}\"`",
+          "description": "Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only). Default: `\"{{ ShortSHA }} {{ Message }}\"`",
           "default": null,
           "type": [
             "string",
@@ -2585,7 +2585,7 @@
           ]
         },
         "use": {
-          "description": "Changelog source: `\"git\"` (default), `\"github\"`, or `\"github-native\"`. `\"github\"` fetches commits via the GitHub API, enriching entries with author login information (available as the `Logins` template variable). `\"github-native\"` delegates entirely to GitHub's auto-generated notes.",
+          "description": "Changelog source: `\"git\"` (default), `\"github\"`, or `\"github-native\"`. `\"github\"` fetches commits via the GitHub API, enriching entries with author login information (available as the `{{ Logins }}` per-entry template variable and the `{{ AllLogins }}` release-wide variable). `\"github-native\"` delegates entirely to GitHub's auto-generated notes.",
           "default": null,
           "type": [
             "string",
@@ -6543,7 +6543,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "MacOSNotarizeApiConfig": {
       "description": "App Store Connect API key configuration for `rcodesign notary-submit`.",
@@ -6684,7 +6685,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "MakeselfConfig": {
       "type": "object",
@@ -8544,7 +8546,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "NsisConfig": {
       "type": "object",

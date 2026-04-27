@@ -19,6 +19,10 @@ violations, user-reported issues.
 
 ## Active
 
+### WAVE 5.5 follow-up — 2026-04-27 (1 SUGGEST)
+
+- [ ] 2026-04-27 code-review (WAVE 5.5): SCH-13 cascade — `ScoopConfig.commit_author_name` and `commit_author_email` (crates/core/src/config.rs:2797-2800) are the same legacy doubled surface that SCH-13 dropped from `HomebrewConfig`. Spec literally said Homebrew-only so the W5.5 batch was technically compliant, but the DRY gap should be drained. Drop these two fields and migrate consumers to read structured `commit_author: CommitAuthorConfig` only.
+
 ### WAVE 3 deferred — 2026-04-27 (1 SUGGEST)
 
 - [ ] 2026-04-27 code-review (WAVE 3): publisher dispatch in `crates/stage-publish/src/lib.rs::crates_with_publisher` iterates only `ctx.config.crates`, but `crates/stage-publish/src/cargo.rs::publish_to_cargo` flattens `crates + workspaces[]` (see the `all_crates` walker around the `cargo_cfgs` build). Net effect: a workspace-only crate carrying a `homebrew:` / `scoop:` / etc. publisher block is invisible to every non-cargo publisher, even though cargo would publish it. Unify so all per-crate publishers walk the same universe — either lift `publish_to_cargo`'s `all_crates` flatten into a shared helper next to `crates_with_publisher`, or have `crates_with_publisher` itself fall back to the workspace fan-out when `ctx.config.workspaces` is set. Likely scope: WAVE 6 or a follow-up dedicated-publisher-dispatch fix.

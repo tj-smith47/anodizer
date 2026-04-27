@@ -4255,7 +4255,7 @@ pub struct BinstallConfig {
 /// Top-level notarization configuration supporting both cross-platform
 /// (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NotarizeConfig {
     /// Skip all notarization. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -4268,7 +4268,7 @@ pub struct NotarizeConfig {
 
 /// Cross-platform macOS signing and notarization via `rcodesign`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MacOSSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
@@ -4330,7 +4330,7 @@ pub enum MacOSNativeArtifactKind {
 
 /// Native macOS signing and notarization via `codesign` + `xcrun notarytool`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MacOSNativeSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
@@ -4635,7 +4635,8 @@ pub struct ChangelogConfig {
     pub skip: Option<StringOrBool>,
     /// Changelog source: `"git"` (default), `"github"`, or `"github-native"`.
     /// `"github"` fetches commits via the GitHub API, enriching entries with
-    /// author login information (available as the `Logins` template variable).
+    /// author login information (available as the `{{ Logins }}` per-entry
+    /// template variable and the `{{ AllLogins }}` release-wide variable).
     /// `"github-native"` delegates entirely to GitHub's auto-generated notes.
     #[serde(rename = "use")]
     pub use_source: Option<String>,
@@ -4644,7 +4645,9 @@ pub struct ChangelogConfig {
     /// Template for each changelog commit line.
     /// Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject),
     /// AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only),
-    /// Logins (comma-separated list of all GitHub usernames in the release, `github` backend only).
+    /// Logins (per-entry comma-separated list of GitHub usernames for that commit,
+    /// `github` backend only), AllLogins (comma-separated list of all GitHub usernames
+    /// across the entire release, `github` backend only).
     /// Default: `"{{ ShortSHA }} {{ Message }}"`
     pub format: Option<String>,
     /// File paths to filter commits by. Only commits touching files under these
@@ -8965,11 +8968,9 @@ crates:
     }
 
     #[test]
-    fn test_notarize_macos_legacy_enabled_rejected() {
-        // SCH-30: per-config `enabled:` was renamed to `skip:` (DEC-6
-        // canonical). NotarizeConfig blocks have deny_unknown_fields via
-        // serde default, so legacy `enabled:` would silently parse on
-        // structs without deny — assert via field reads instead.
+    fn test_notarize_macos_skip_roundtrip() {
+        // SCH-30: `skip:` is the canonical field (DEC-6). Verify known-good
+        // YAML with `skip: false` still parses correctly.
         let yaml = r#"
 notarize:
   macos:
@@ -8981,8 +8982,61 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let macos = config.notarize.unwrap().macos.unwrap();
-        // The per-config gating field is now `skip` (DEC-6 canonical name).
         assert_eq!(macos[0].skip, Some(StringOrBool::Bool(false)));
+    }
+
+    #[test]
+    fn test_notarize_macos_legacy_enabled_rejected() {
+        // SCH-30: `deny_unknown_fields` must reject legacy `enabled: true`
+        // on MacOSSignNotarizeConfig now that the field has been renamed to
+        // `skip:` (DEC-6). Without deny_unknown_fields this would silently
+        // drop the field and produce a confusing no-op.
+        let yaml = r#"
+notarize:
+  macos:
+    - enabled: true
+      sign:
+        certificate: /tmp/cert.p12
+        password: pw
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "legacy `enabled:` on MacOSSignNotarizeConfig must be rejected by deny_unknown_fields"
+        );
+    }
+
+    #[test]
+    fn test_notarize_macos_native_legacy_enabled_rejected() {
+        // SCH-30: same check for MacOSNativeSignNotarizeConfig.
+        let yaml = r#"
+notarize:
+  macos_native:
+    - enabled: true
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "legacy `enabled:` on MacOSNativeSignNotarizeConfig must be rejected by deny_unknown_fields"
+        );
+    }
+
+    #[test]
+    fn test_notarize_top_level_unknown_field_rejected() {
+        // SCH-30: unknown fields on the top-level NotarizeConfig are also
+        // rejected via deny_unknown_fields.
+        let yaml = r#"
+notarize:
+  enabled: true
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "unknown field `enabled` on NotarizeConfig must be rejected"
+        );
     }
 
     // ---- WAVE 5.4 DRY-merge tests ----
