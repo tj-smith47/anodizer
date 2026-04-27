@@ -1136,7 +1136,7 @@ publishers:
     extra_files:
       - glob: "docs/*.md"
       - glob: "LICENSE"
-        name: "LICENSE.txt"
+        name_template: "LICENSE.txt"
 crates:
   - name: a
     path: "."

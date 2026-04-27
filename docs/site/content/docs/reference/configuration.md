@@ -374,6 +374,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `compression` | string | — | Compression algorithm: gzip, bzip2, xz, lzo, compress, or none. |
 | `description` | string | — | Description for LSM metadata. |
 | `extra_args` | list of string | — | Extra arguments passed to the makeself command. |
+| `filename` | string | — | Output filename template (default includes project, version, os, arch). |
 | `files` | list of MakeselfFile | — | Additional files to include in the archive. |
 | `goarch` | list of string | — | Target architecture filter. |
 | `goos` | list of string | — | Target OS filter (default: ["linux", "darwin"]). |
@@ -384,7 +385,6 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `license` | string | — | License for LSM metadata. |
 | `maintainer` | string | — | Maintainer for LSM metadata. |
 | `name` | string | — | Display name embedded in the self-extracting archive. |
-| `name_template` | string | — | Output filename template (default includes project, version, os, arch). Accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling. |
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 
@@ -517,7 +517,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 ## `snapshot`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `version_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). Primary field is `version_template` (GoReleaser convention); `name_template` is the deprecated alias kept for backwards compatibility. |
+| `version_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). |
 
 ## `source`
 | Field | Type | Default | Description |

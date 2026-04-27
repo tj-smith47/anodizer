@@ -84,7 +84,7 @@ pub struct Config {
     /// Changelog generation configuration.
     pub changelog: Option<ChangelogConfig>,
     /// Signing configurations for binaries, archives, and checksums.
-    #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
+    #[serde(default, deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
     /// Binary-specific signing configs (same shape as `signs` but only for
@@ -92,11 +92,7 @@ pub struct Config {
     /// at parse time to `binary` / `none` (or omitted) — a broader filter on
     /// `binary_signs` would silently match nothing because the loop only
     /// iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.
-    #[serde(
-        default,
-        alias = "binary_sign",
-        deserialize_with = "deserialize_binary_signs"
-    )]
+    #[serde(default, deserialize_with = "deserialize_binary_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,
     /// Docker image signing configurations.
@@ -152,7 +148,7 @@ pub struct Config {
     /// Source archive configuration.
     pub source: Option<SourceConfig>,
     /// Software bill of materials (SBOM) generation configurations.
-    #[serde(default, alias = "sbom", deserialize_with = "deserialize_sboms")]
+    #[serde(default, deserialize_with = "deserialize_sboms")]
     #[schemars(schema_with = "sboms_schema")]
     pub sboms: Vec<SbomConfig>,
     /// GitHub release configuration shared by all crates.
@@ -178,11 +174,7 @@ pub struct Config {
     /// directory is scoped to dir.
     pub monorepo: Option<MonorepoConfig>,
     /// Makeself self-extracting archive configurations.
-    #[serde(
-        default,
-        alias = "makeself",
-        deserialize_with = "deserialize_makeselfs"
-    )]
+    #[serde(default, deserialize_with = "deserialize_makeselfs")]
     #[schemars(schema_with = "makeselfs_schema")]
     pub makeselfs: Vec<MakeselfConfig>,
     /// Source RPM configuration.
@@ -1342,35 +1334,25 @@ pub struct BuildConfig {
 /// hooks). The name is kept for backward compatibility with existing configs.
 /// **Not** to be confused with the top-level `HooksConfig` (which carries a
 /// flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).
-///
-/// archive hooks in GoReleaser use `before`/`after`
-/// (not `pre`/`post`). Anodizer accepts both spellings via serde aliases so
-/// configs copied from GoReleaser docs don't silently drop their hooks.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BuildHooksConfig {
-    /// Commands to run before the build (or archive) step.
-    #[serde(alias = "before")]
+    /// Commands to run before the build step.
     pub pre: Option<Vec<HookEntry>>,
-    /// Commands to run after the build (or archive) step.
-    #[serde(alias = "after")]
+    /// Commands to run after the build step.
     pub post: Option<Vec<HookEntry>>,
 }
 
 /// Pre/post archive hook configuration.
 ///
-/// Archive hooks in GoReleaser's YAML use `before`/`after` (not the
-/// build-stage's `pre`/`post`). `ArchiveHooksConfig` serializes with those
-/// field names so `dist/config.yaml` round-trips user-supplied spelling;
-/// `pre`/`post` are accepted as aliases so migrated configs still parse.
+/// Archive hooks use `before`/`after` (matching GoReleaser's archive pipe);
+/// build hooks use `pre`/`post` (matching GoReleaser's build pipe).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ArchiveHooksConfig {
     /// Commands to run before the archive step.
-    #[serde(alias = "pre")]
     pub before: Option<Vec<HookEntry>>,
     /// Commands to run after the archive step.
-    #[serde(alias = "post")]
     pub after: Option<Vec<HookEntry>>,
 }
 
@@ -1592,9 +1574,8 @@ pub struct ArchiveConfig {
     pub id: Option<String>,
     /// Archive filename template (supports templates, e.g., "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}").
     pub name_template: Option<String>,
-    /// Archive format: tar.gz, tar.xz, tar.zst, zip, or binary.
-    pub format: Option<String>,
-    /// Produce multiple archive formats per config (plural, in addition to singular `format`).
+    /// Archive formats: tar.gz, tar.xz, tar.zst, zip, or binary. Plural list;
+    /// one archive per format is produced for each target.
     pub formats: Option<Vec<String>>,
     /// Per-OS format overrides for this archive config.
     pub format_overrides: Option<Vec<FormatOverride>>,
@@ -1607,10 +1588,6 @@ pub struct ArchiveConfig {
     /// or a string template for a custom directory name.
     pub wrap_in_directory: Option<WrapInDirectory>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
-    ///
-    /// Also accepts the deprecated `builds` alias for GoReleaser pre-v1
-    /// compatibility (consistent with nfpm + docker manifests).
-    #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// When true, create archive with no binaries (metadata-only).
     pub meta: Option<bool>,
@@ -1620,19 +1597,15 @@ pub struct ArchiveConfig {
     pub strip_binary_directory: Option<bool>,
     /// Allow different binary counts across targets. Default false (warn on mismatch).
     pub allow_different_binary_count: Option<bool>,
-    /// Pre/post archive hooks (`before`/`after`; `pre`/`post` accepted as aliases).
+    /// Pre/post archive hooks (`before`/`after`).
     pub hooks: Option<ArchiveHooksConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FormatOverride {
     /// Operating system this override applies to (e.g., "windows", "darwin", "linux").
-    /// GoReleaser uses `goos` as the YAML key; both `os` and `goos` are accepted.
-    #[serde(alias = "goos")]
     pub os: String,
-    /// Archive format override for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.
-    pub format: Option<String>,
-    /// Plural format overrides (v2.6+). Takes priority over singular format.
+    /// Plural format overrides for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.
     pub formats: Option<Vec<String>>,
 }
 
@@ -1722,9 +1695,8 @@ pub enum ExtraFileSpec {
     Glob(String),
     Detailed {
         glob: String,
-        /// Optional override for the upload filename. Accepts `name_template` or
-        /// `name` in YAML (aliased for ergonomics with older configs).
-        #[serde(alias = "name", default)]
+        /// Optional override for the upload filename.
+        #[serde(default)]
         name_template: Option<String>,
     },
 }
@@ -2500,11 +2472,9 @@ pub struct HomebrewConfig {
     pub cask: Option<HomebrewCaskConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
     /// variant are included.
-    #[serde(alias = "goarm")]
     pub arm_variant: Option<String>,
 }
 
@@ -2805,7 +2775,6 @@ pub struct ScoopConfig {
     pub use_artifact: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
 }
 
@@ -2882,7 +2851,6 @@ pub struct ChocolateyConfig {
     pub use_artifact: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
 }
 
@@ -2967,7 +2935,6 @@ pub struct WingetConfig {
     pub use_artifact: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
 }
 
@@ -2989,7 +2956,6 @@ pub struct WingetDependency {
 #[serde(default, deny_unknown_fields)]
 pub struct AurConfig {
     /// Override the package name (default: crate name + "-bin").
-    #[serde(alias = "package_name")]
     pub name: Option<String>,
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
@@ -3026,7 +2992,6 @@ pub struct AurConfig {
     /// Package release number (default: "1").
     pub rel: Option<String>,
     /// Custom PKGBUILD `package()` function body.
-    #[serde(alias = "install_template")]
     pub package: Option<String>,
     /// AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).
     pub git_url: Option<String>,
@@ -3049,7 +3014,6 @@ pub struct AurConfig {
     pub replaces: Option<Vec<String>>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
 }
 
@@ -3096,11 +3060,9 @@ pub struct KrewConfig {
     pub skip: Option<StringOrBool>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
     /// variant are included.
-    #[serde(alias = "goarm")]
     pub arm_variant: Option<String>,
 }
 
@@ -3155,7 +3117,6 @@ pub struct NixConfig {
     pub formatter: Option<String>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<String>,
 }
 
@@ -3335,7 +3296,6 @@ pub struct NfpmConfig {
     /// Virtual packages provided by this package.
     pub provides: Option<Vec<String>>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
-    #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// Package epoch for versioning (integer as string).
     pub epoch: Option<String>,
@@ -3429,13 +3389,9 @@ pub type NfpmFileInfo = FileInfo;
 /// them explicitly prevents accidentally packaging empty paths.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NfpmContent {
-    /// Source path on the build machine (supports glob patterns). Aliased
-    /// as `source` for SRPM-style call sites.
-    #[serde(alias = "source")]
+    /// Source path on the build machine (supports glob patterns).
     pub src: String,
-    /// Destination path inside the package (absolute path). Aliased as
-    /// `destination` for SRPM-style call sites.
-    #[serde(alias = "destination")]
+    /// Destination path inside the package (absolute path).
     pub dst: String,
     /// Content entry type: "config", "config|noreplace", "doc", "dir", "symlink", "ghost", or empty for regular file.
     #[serde(rename = "type")]
@@ -3686,9 +3642,7 @@ pub struct NfpmSignatureConfig {
     /// Key ID to use for signing.
     pub key_id: Option<String>,
     /// Passphrase for the signing key. Falls back to `NFPM_PASSPHRASE` /
-    /// `SRPM_PASSPHRASE` env vars in their respective stages. The legacy
-    /// SRPM `passphrase:` key is accepted as an alias.
-    #[serde(alias = "passphrase")]
+    /// `SRPM_PASSPHRASE` env vars in their respective stages.
     pub key_passphrase: Option<String>,
     /// Public key name for APK signatures (defaults to `<maintainer email>.rsa.pub`).
     pub key_name: Option<String>,
@@ -3707,7 +3661,6 @@ pub struct SnapcraftConfig {
     /// Unique identifier for this snapcraft config.
     pub id: Option<String>,
     /// Build IDs to include. Empty means all builds.
-    #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// Snap package name in the store.
     pub name: Option<String>,
@@ -4915,10 +4868,7 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotConfig {
     /// Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT").
-    /// Primary field is `version_template` (GoReleaser convention); `name_template` is the
-    /// deprecated alias kept for backwards compatibility.
-    #[serde(alias = "name_template", rename = "version_template")]
-    pub name_template: String,
+    pub version_template: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -5271,8 +5221,7 @@ pub struct EmailAnnounce {
     pub to: Vec<String>,
     /// Email subject template. Default: "{{ .ProjectName }} {{ .Tag }} is out!"
     pub subject_template: Option<String>,
-    /// Body template (called body_template in GoReleaser, message_template here for consistency).
-    #[serde(alias = "body_template")]
+    /// Email body template.
     pub message_template: Option<String>,
     /// Skip TLS certificate verification (default: false).
     pub insecure_skip_verify: Option<bool>,
@@ -5779,7 +5728,7 @@ pub struct WorkspaceConfig {
     /// Changelog configuration for this workspace.
     pub changelog: Option<ChangelogConfig>,
     /// Signing configurations for binaries, archives, and checksums.
-    #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
+    #[serde(default, deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
     /// Binary-specific signing configs (same shape as `signs` but only for
@@ -5787,11 +5736,7 @@ pub struct WorkspaceConfig {
     /// at parse time to `binary` / `none` (or omitted) — a broader filter on
     /// `binary_signs` would silently match nothing because the loop only
     /// iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.
-    #[serde(
-        default,
-        alias = "binary_sign",
-        deserialize_with = "deserialize_binary_signs"
-    )]
+    #[serde(default, deserialize_with = "deserialize_binary_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub binary_signs: Vec<SignConfig>,
     /// Hooks run before this workspace's pipeline starts.
@@ -6189,10 +6134,7 @@ pub struct MakeselfConfig {
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Output filename template (default includes project, version, os, arch).
-    /// Accepts the GR-canonical `filename:` key as an alias for the historical
-    /// anodizer `name_template:` spelling.
-    #[serde(alias = "filename")]
-    pub name_template: Option<String>,
+    pub filename: Option<String>,
     /// Display name embedded in the self-extracting archive.
     pub name: Option<String>,
     /// Startup script to run when the archive is extracted and executed.
@@ -6227,10 +6169,8 @@ pub struct MakeselfConfig {
 #[serde(default)]
 pub struct MakeselfFile {
     /// Source file path (relative to project root).
-    #[serde(alias = "src")]
     pub source: String,
     /// Destination path inside the archive.
-    #[serde(alias = "dst")]
     pub destination: Option<String>,
     /// Strip the parent directory from the source path.
     pub strip_parent: Option<bool>,
@@ -6454,7 +6394,6 @@ pub struct UploadConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AurSourceConfig {
     /// Override the package name (default: crate name, no -bin suffix).
-    #[serde(alias = "package_name")]
     pub name: Option<String>,
     /// Build IDs filter.
     pub ids: Option<Vec<String>>,
@@ -6518,7 +6457,6 @@ pub struct AurSourceConfig {
     /// `package:` script bodies — typos must fail at parse time, not
     /// silently render an invalid string into the PKGBUILD.
     /// When unset, defaults to `v1` at template-render time.
-    #[serde(alias = "goamd64")]
     pub amd64_variant: Option<Amd64Variant>,
 }
 
@@ -6601,10 +6539,10 @@ defaults:
   cross: auto
   flags: --release
   archives:
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - os: windows
-        format: zip
+        formats: [zip]
   checksum:
     algorithm: sha256
 crates:
@@ -6640,7 +6578,7 @@ crates:
         let yaml = r#"
 project_name: test
 snapshot:
-  name_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
+  version_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
 crates:
   - name: test
     path: "."
@@ -6648,7 +6586,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
-            config.snapshot.unwrap().name_template,
+            config.snapshot.unwrap().version_template,
             "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
         );
     }
@@ -7519,10 +7457,10 @@ crates:
     // ---- SignConfig / signs migration tests ----
 
     #[test]
-    fn test_signs_single_object_backward_compat() {
+    fn test_signs_single_object() {
         let yaml = r#"
 project_name: test
-sign:
+signs:
   artifacts: all
   cmd: gpg
   args:
@@ -7636,7 +7574,7 @@ crates:
     fn test_signs_single_object_with_new_fields() {
         let yaml = r#"
 project_name: test
-sign:
+signs:
   id: default
   artifacts: package
   cmd: gpg
@@ -7664,7 +7602,7 @@ crates:
         let toml_str = r#"
 project_name = "test"
 
-[sign]
+[signs]
 artifacts = "checksum"
 cmd = "gpg"
 
@@ -8732,9 +8670,8 @@ crates: []
     }
 
     #[test]
-    fn test_makeself_filename_alias_for_name_template() {
-        // GR-canonical `filename:` aliases anodizer's `name_template:`
-        // so configs copied from GR docs parse without rewrites.
+    fn test_makeself_filename_field() {
+        // SCH-11 (DEC-5 hard-break): `filename:` is the canonical field name.
         let yaml = r#"
 project_name: test
 makeselfs:
@@ -8745,25 +8682,8 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
-            config.makeselfs[0].name_template.as_deref(),
+            config.makeselfs[0].filename.as_deref(),
             Some("myapp-{{ .Version }}.run")
-        );
-    }
-
-    #[test]
-    fn test_makeself_canonical_name_template_still_works() {
-        let yaml = r#"
-project_name: test
-makeselfs:
-  - id: default
-    name_template: "myapp.run"
-    script: install.sh
-crates: []
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(
-            config.makeselfs[0].name_template.as_deref(),
-            Some("myapp.run")
         );
     }
 
@@ -8782,7 +8702,7 @@ announce:
     from: from@example.com
     to: ["to@example.com"]
     subject_template: "Release {{ .Version }}"
-    body_template: "Body"
+    message_template: "Body"
 crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -8805,7 +8725,7 @@ announce:
     from: from@example.com
     to: ["to@example.com"]
     subject_template: "Release {{ .Version }}"
-    body_template: "Body"
+    message_template: "Body"
 crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -9086,17 +9006,16 @@ crates: []
     // ---- Unified nFPM/SRPM content + signature tests ----
 
     #[test]
-    fn test_nfpm_content_unified_with_srpm_aliases() {
-        // SRPM contents share [`NfpmContent`]; SRPM-style `source` /
-        // `destination` keys are accepted as serde aliases so existing
-        // srpm contents YAML still parses.
+    fn test_nfpm_content_canonical_keys_in_srpm_full() {
+        // SRPM contents share [`NfpmContent`]; canonical `src`/`dst` keys
+        // are required (DEC-5 dropped the `source`/`destination` aliases).
         let yaml = r#"
 project_name: test
 srpm:
   enabled: true
   contents:
-    - source: ./LICENSE
-      destination: /usr/share/doc/myapp/LICENSE
+    - src: ./LICENSE
+      dst: /usr/share/doc/myapp/LICENSE
       type: doc
 crates:
   - name: a
@@ -9132,17 +9051,17 @@ crates:
     }
 
     #[test]
-    fn test_nfpm_signature_unified_passphrase_alias() {
-        // SRPM signatures share [`NfpmSignatureConfig`]; the SRPM-style
-        // `passphrase:` key is accepted as a serde alias for the canonical
-        // `key_passphrase:` so existing YAML keeps working.
+    fn test_nfpm_signature_canonical_passphrase() {
+        // SRPM signatures share [`NfpmSignatureConfig`]; canonical
+        // `key_passphrase:` is the only accepted spelling (DEC-5 dropped
+        // the `passphrase:` alias).
         let yaml = r#"
 project_name: test
 srpm:
   enabled: true
   signature:
     key_file: /keys/srpm.gpg
-    passphrase: "s3cret"
+    key_passphrase: "s3cret"
 crates:
   - name: a
     path: "."
@@ -9169,7 +9088,7 @@ crates:
     publish:
       aur:
         git_url: "ssh://aur@aur.archlinux.org/mytool.git"
-        package_name: mytool-bin
+        name: mytool-bin
         description: "A great tool"
         license: MIT
         maintainers:

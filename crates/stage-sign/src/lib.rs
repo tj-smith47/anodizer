@@ -1819,10 +1819,10 @@ crates: []
     }
 
     #[test]
-    fn test_binary_signs_singular_alias() {
+    fn test_binary_signs_single_object() {
         let yaml = r#"
 project_name: test
-binary_sign:
+binary_signs:
   cmd: gpg
   artifacts: binary
 crates: []

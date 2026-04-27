@@ -720,15 +720,9 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         return Ok(());
     }
 
-    // Resolve repository config (no legacy field — nix is post-RepositoryConfig).
-    let (repo_owner_raw, repo_name_raw) = crate::util::resolve_repo_owner_name(
-        "nix",
-        "repository",
-        nix_cfg.repository.as_ref(),
-        None,
-        None,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
+    let (repo_owner_raw, repo_name_raw) =
+        crate::util::resolve_repo_owner_name("nix", nix_cfg.repository.as_ref())?
+            .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
     let repo_owner = ctx
         .render_template(&repo_owner_raw)
         .unwrap_or(repo_owner_raw);
@@ -1123,7 +1117,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         &previous_tag,
         "nix",
     );
-    let commit_opts = util::resolve_commit_opts(nix_cfg.commit_author.as_ref(), None, None);
+    let commit_opts = util::resolve_commit_opts(nix_cfg.commit_author.as_ref());
     let branch = util::resolve_branch(nix_cfg.repository.as_ref());
     util::commit_and_push_with_opts(
         repo_path,

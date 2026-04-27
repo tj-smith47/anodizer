@@ -1641,14 +1641,14 @@ blobs:
     }
 
     #[test]
-    fn test_blob_config_extra_files_with_name() {
+    fn test_blob_config_extra_files_with_name_template() {
         let yaml = r#"
 blobs:
   - provider: s3
     bucket: b
     extra_files:
       - glob: "./LICENSE"
-        name: "LICENSE.txt"
+        name_template: "LICENSE.txt"
       - glob: "./README.md"
 "#;
         let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();

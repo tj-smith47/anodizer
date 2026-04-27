@@ -206,14 +206,9 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
-        "scoop",
-        "bucket",
-        scoop_cfg.repository.as_ref(),
-        None,
-        None,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("scoop: no repository config for '{}'", crate_name))?;
+    let (repo_owner, repo_name) =
+        crate::util::resolve_repo_owner_name("scoop", scoop_cfg.repository.as_ref())?
+            .ok_or_else(|| anyhow::anyhow!("scoop: no repository config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -475,7 +470,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     );
 
     let manifest_lossy = manifest_path.to_string_lossy();
-    let commit_opts = util::resolve_commit_opts(scoop_cfg.commit_author.as_ref(), None, None);
+    let commit_opts = util::resolve_commit_opts(scoop_cfg.commit_author.as_ref());
     let branch = util::resolve_branch(scoop_cfg.repository.as_ref());
     util::commit_and_push_with_opts(
         repo_path,

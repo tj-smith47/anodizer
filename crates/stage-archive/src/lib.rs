@@ -52,9 +52,8 @@ pub(crate) fn archive_log() -> StageLogger {
 // ---------------------------------------------------------------------------
 
 /// Determine the archive format(s) for a target, applying OS-based overrides.
-/// When a FormatOverride has `formats` (plural), returns all of them.
-/// Otherwise uses the singular `format` field.
-/// Falls back to `default_format` when no override matches.
+/// Returns the override's `formats` list when an override matches the target's OS,
+/// otherwise falls back to `default_format`.
 pub fn formats_for_target(
     target: &str,
     default_format: &str,
@@ -62,16 +61,11 @@ pub fn formats_for_target(
 ) -> Vec<String> {
     let (os, _arch) = map_target(target);
     for ov in overrides {
-        if ov.os == os {
-            // Plural takes priority over singular
-            if let Some(ref fmts) = ov.formats
-                && !fmts.is_empty()
-            {
-                return fmts.clone();
-            }
-            if let Some(ref fmt) = ov.format {
-                return vec![fmt.clone()];
-            }
+        if ov.os == os
+            && let Some(ref fmts) = ov.formats
+            && !fmts.is_empty()
+        {
+            return fmts.clone();
         }
     }
     vec![default_format.to_string()]
@@ -120,13 +114,15 @@ impl Stage for ArchiveStage {
         let dry_run = ctx.options.dry_run;
         let template_vars = ctx.template_vars().clone();
 
-        // Global archive defaults
+        // Global archive defaults: first entry of `defaults.archives.formats`
+        // is the singular default; falls back to "tar.gz" when neither is set.
         let global_default_format = ctx
             .config
             .defaults
             .as_ref()
             .and_then(|d| d.archives.as_ref())
-            .and_then(|a| a.format.clone())
+            .and_then(|a| a.formats.as_ref())
+            .and_then(|fmts| fmts.first().cloned())
             .unwrap_or_else(|| "tar.gz".to_string());
         let global_format_overrides: Vec<FormatOverride> = ctx
             .config
@@ -207,14 +203,6 @@ impl Stage for ArchiveStage {
         // any I/O so typos are surfaced immediately.
         for (_crate_name, _crate_dir, archive_cfgs) in &work {
             for cfg in archive_cfgs {
-                if let Some(ref fmt) = cfg.format
-                    && !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str())
-                {
-                    bail!(
-                        "unsupported archive format: {fmt} (valid: {})",
-                        VALID_ARCHIVE_FORMATS.join(", ")
-                    );
-                }
                 if let Some(ref fmts) = cfg.formats {
                     for fmt in fmts {
                         if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
@@ -232,18 +220,8 @@ impl Stage for ArchiveStage {
                         if ov.os.is_empty() {
                             log.warn("format_override has empty goos/os value");
                         }
-                        if ov.format.as_deref().is_none_or(str::is_empty)
-                            && ov.formats.as_ref().is_none_or(|f| f.is_empty())
-                        {
-                            log.warn("format_override has empty format value");
-                        }
-                        if let Some(ref fmt) = ov.format
-                            && !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str())
-                        {
-                            bail!(
-                                "unsupported archive format: {fmt} (valid: {})",
-                                VALID_ARCHIVE_FORMATS.join(", ")
-                            );
+                        if ov.formats.as_ref().is_none_or(|f| f.is_empty()) {
+                            log.warn("format_override has empty formats value");
                         }
                         if let Some(ref fmts) = ov.formats {
                             for fmt in fmts {
@@ -343,14 +321,12 @@ impl Stage for ArchiveStage {
                 // (matches GoReleaser behavior which errors, not warns).
                 // GoReleaser archive/archive.go:129 exempts the "binary"
                 // format from this check via `slices.Contains(archive.Formats,
-                // "binary")` — plural-form `formats: ["binary"]` must exempt
-                // the check the same way singular `format: "binary"` does.
-                let is_binary_format = archive_cfg.format.as_deref() == Some("binary")
-                    || archive_cfg
-                        .formats
-                        .as_ref()
-                        .map(|fs| fs.iter().any(|f| f == "binary"))
-                        .unwrap_or(false);
+                // "binary")`.
+                let is_binary_format = archive_cfg
+                    .formats
+                    .as_ref()
+                    .map(|fs| fs.iter().any(|f| f == "binary"))
+                    .unwrap_or(false);
                 if !is_binary_format
                     && !archive_cfg.allow_different_binary_count.unwrap_or(false)
                     && by_target.len() > 1
@@ -369,10 +345,11 @@ impl Stage for ArchiveStage {
                     }
                 }
 
-                // Determine singular default format (per-config > global default)
+                // Determine singular default format (per-config first entry > global default)
                 let singular_format = archive_cfg
-                    .format
-                    .as_deref()
+                    .formats
+                    .as_ref()
+                    .and_then(|fs| fs.first().map(|s| s.as_str()))
                     .unwrap_or(&global_default_format);
 
                 // Determine format overrides (per-config > global)
@@ -423,14 +400,24 @@ impl Stage for ArchiveStage {
                     }
 
                     // Determine the list of formats to produce for this target.
-                    // If `formats` (plural) is set and non-empty, use it exactly as
-                    // specified (ignore both singular `format` and `format_overrides`).
-                    // Otherwise, fall back to the singular format with per-target
-                    // overrides (which may themselves produce multiple formats via
-                    // FormatOverride.formats plural).
-                    let formats_to_produce: Vec<String> = match &archive_cfg.formats {
-                        Some(fmts) if !fmts.is_empty() => fmts.clone(),
-                        _ => formats_for_target(target, singular_format, &format_overrides),
+                    // If a `format_overrides[]` entry matches this OS, its `formats`
+                    // list takes priority. Otherwise, fall back to the archive's
+                    // own `formats` list (or the global default).
+                    let formats_to_produce: Vec<String> = {
+                        let (os, _arch) = map_target(target);
+                        let override_match = format_overrides
+                            .iter()
+                            .find(|ov| ov.os == os)
+                            .and_then(|ov| ov.formats.as_ref().filter(|f| !f.is_empty()).cloned());
+                        match override_match {
+                            Some(fmts) => fmts,
+                            None => archive_cfg
+                                .formats
+                                .as_ref()
+                                .filter(|f| !f.is_empty())
+                                .cloned()
+                                .unwrap_or_else(|| vec![global_default_format.clone()]),
+                        }
                     };
 
                     let (os, arch) = map_target(target);
@@ -1067,8 +1054,7 @@ mod tests {
                 "tar.gz",
                 &[FormatOverride {
                     os: "windows".to_string(),
-                    format: Some("zip".to_string()),
-                    formats: None,
+                    formats: Some(vec!["zip".to_string()]),
                 }]
             ),
             "zip"
@@ -1384,7 +1370,7 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
         wrap_in_directory: "myapp-{{ .Version }}"
         files:
           - LICENSE
@@ -1399,7 +1385,10 @@ crates:
                         "myapp-{{ .Version }}".to_string()
                     ))
                 );
-                assert_eq!(cfgs[0].format, Some("tar.gz".to_string()));
+                assert_eq!(
+                    cfgs[0].formats.as_deref(),
+                    Some(&["tar.gz".to_string()][..])
+                );
             }
             _ => panic!("expected Configs variant"),
         }
@@ -1433,7 +1422,7 @@ crates:
                     name_template: Some(
                         "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
                     ),
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     format_overrides: None,
                     files: None,
                     binaries: None,
@@ -1530,11 +1519,10 @@ crates:
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
                 ),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 format_overrides: Some(vec![FormatOverride {
                     os: "windows".to_string(),
-                    format: Some("zip".to_string()),
-                    formats: None,
+                    formats: Some(vec!["zip".to_string()]),
                 }]),
                 files: None,
                 binaries: None,
@@ -1599,7 +1587,7 @@ crates:
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
                 ),
-                format: Some("tar.xz".to_string()),
+                formats: Some(vec!["tar.xz".to_string()]),
                 format_overrides: None,
                 files: None,
                 binaries: None,
@@ -1665,7 +1653,7 @@ crates:
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
                 ),
-                format: Some("binary".to_string()),
+                formats: Some(vec!["binary".to_string()]),
                 format_overrides: None,
                 files: None,
                 binaries: None,
@@ -2037,13 +2025,11 @@ crates:
         let overrides = vec![
             FormatOverride {
                 os: "windows".to_string(),
-                format: Some("zip".to_string()),
-                formats: None,
+                formats: Some(vec!["zip".to_string()]),
             },
             FormatOverride {
                 os: "darwin".to_string(),
-                format: Some("tar.gz".to_string()),
-                formats: None,
+                formats: Some(vec!["tar.gz".to_string()]),
             },
         ];
         // Default is tar.xz but windows should get zip
@@ -2085,7 +2071,7 @@ crates:
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
                 ),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 format_overrides: None,
                 files: None,
                 binaries: None, // Include all binaries
@@ -2188,11 +2174,10 @@ crates:
         // Global defaults: format_overrides windows -> zip
         config.defaults = Some(Defaults {
             archives: Some(ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 format_overrides: Some(vec![FormatOverride {
                     os: "windows".to_string(),
-                    format: Some("zip".to_string()),
-                    formats: None,
+                    formats: Some(vec!["zip".to_string()]),
                 }]),
                 ..Default::default()
             }),
@@ -2249,7 +2234,7 @@ crates:
                 name_template: Some(
                     "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}".to_string(),
                 ),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 format_overrides: None,
                 files: None,
                 binaries: None,
@@ -2318,7 +2303,7 @@ crates:
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some("myapp-1.0.0-linux-amd64".to_string()),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 format_overrides: None,
                 files: Some(vec![
                     ArchiveFileSpec::Glob(license_pattern),
@@ -2390,7 +2375,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("zip".to_string()),
+                formats: Some(vec!["zip".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -2453,7 +2438,7 @@ crates:
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some("myapp-linux-amd64".to_string()),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 wrap_in_directory: Some(anodizer_core::config::WrapInDirectory::Name(
                     "{{ .ProjectName }}-{{ .Version }}".to_string(),
                 )),
@@ -2627,7 +2612,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: anodizer_core::config::ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("unsupported_format".to_string()),
+                formats: Some(vec!["unsupported_format".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -2814,7 +2799,7 @@ crates:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     ids: Some(vec!["linux-build".to_string()]),
                     ..Default::default()
                 }]),
@@ -2883,7 +2868,7 @@ crates:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     ids: Some(vec!["nonexistent-id".to_string()]),
                     ..Default::default()
                 }]),
@@ -2937,7 +2922,7 @@ crates:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     // ids is None (default) — all binaries should be included
                     ..Default::default()
                 }]),
@@ -3006,7 +2991,7 @@ crates:
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                     id: Some("linux-archive".to_string()),
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     ..Default::default()
                 }]),
                 ..Default::default()
@@ -3056,7 +3041,7 @@ crates:
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                     // id is None (default)
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     ..Default::default()
                 }]),
                 ..Default::default()
@@ -3191,7 +3176,6 @@ crates:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.xz".to_string()), // should be ignored
                     formats: Some(vec!["tar.gz".to_string(), "zip".to_string()]),
                     ..Default::default()
                 }]),
@@ -3225,110 +3209,6 @@ crates:
             vec!["tar.gz", "zip"],
             "should use formats (plural), not singular format"
         );
-    }
-
-    #[test]
-    fn test_archive_formats_empty_falls_back_to_singular() {
-        // When formats is Some but empty, fall back to singular format
-        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodizer_core::test_helpers::TestContextBuilder;
-
-        let tmp = TempDir::new().unwrap();
-        let dist = tmp.path().join("dist");
-
-        let bin_path = tmp.path().join("myapp");
-        fs::write(&bin_path, b"binary content").unwrap();
-
-        let mut ctx = TestContextBuilder::new()
-            .project_name("myapp")
-            .tag("v1.0.0")
-            .dist(dist)
-            .crates(vec![CrateConfig {
-                name: "myapp".to_string(),
-                path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
-                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.xz".to_string()),
-                    formats: Some(vec![]), // empty — should fall back to singular
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }])
-            .build();
-
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Binary,
-            name: String::new(),
-            path: bin_path,
-            target: Some("x86_64-unknown-linux-gnu".to_string()),
-            crate_name: "myapp".to_string(),
-            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
-            size: None,
-        });
-
-        let stage = ArchiveStage;
-        stage.run(&mut ctx).unwrap();
-
-        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
-        assert_eq!(archives.len(), 1);
-        assert_eq!(
-            archives[0].metadata.get("format").unwrap(),
-            "tar.xz",
-            "empty formats should fall back to singular format"
-        );
-    }
-
-    #[test]
-    fn test_archive_singular_format_still_works_when_formats_absent() {
-        // Backward compat: when formats is None, singular format works as before
-        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodizer_core::test_helpers::TestContextBuilder;
-
-        let tmp = TempDir::new().unwrap();
-        let dist = tmp.path().join("dist");
-
-        let bin_path = tmp.path().join("myapp");
-        fs::write(&bin_path, b"binary content").unwrap();
-
-        let mut ctx = TestContextBuilder::new()
-            .project_name("myapp")
-            .tag("v1.0.0")
-            .dist(dist)
-            .crates(vec![CrateConfig {
-                name: "myapp".to_string(),
-                path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
-                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("zip".to_string()),
-                    // formats is None (default)
-                    ..Default::default()
-                }]),
-                ..Default::default()
-            }])
-            .build();
-
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Binary,
-            name: String::new(),
-            path: bin_path,
-            target: Some("x86_64-unknown-linux-gnu".to_string()),
-            crate_name: "myapp".to_string(),
-            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
-            size: None,
-        });
-
-        let stage = ArchiveStage;
-        stage.run(&mut ctx).unwrap();
-
-        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
-        assert_eq!(archives.len(), 1);
-        assert_eq!(
-            archives[0].metadata.get("format").unwrap(),
-            "zip",
-            "singular format should work when formats is absent"
-        );
-        assert!(archives[0].path.exists());
-        assert!(archives[0].path.to_string_lossy().ends_with(".zip"));
     }
 
     // ---------------------------------------------------------------------------
@@ -3377,7 +3257,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("tgz".to_string()),
+                formats: Some(vec!["tgz".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -3426,7 +3306,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("txz".to_string()),
+                formats: Some(vec!["txz".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -3475,7 +3355,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("tzst".to_string()),
+                formats: Some(vec!["tzst".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -3527,7 +3407,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("tar".to_string()),
+                formats: Some(vec!["tar".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -3576,7 +3456,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("rar".to_string()),
+                formats: Some(vec!["rar".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -3704,21 +3584,22 @@ crates:
               - zip
               - tar.gz
           - os: darwin
-            format: tar.xz
+            formats: [tar.xz]
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
             let overrides = cfgs[0].format_overrides.as_ref().unwrap();
             assert_eq!(overrides.len(), 2);
-            // First override: windows with plural formats
+            // First override: windows with multiple formats
             assert_eq!(overrides[0].os, "windows");
-            assert!(overrides[0].format.is_none());
             let fmts = overrides[0].formats.as_ref().unwrap();
             assert_eq!(fmts, &["zip", "tar.gz"]);
-            // Second override: darwin with singular format
+            // Second override: darwin with one format
             assert_eq!(overrides[1].os, "darwin");
-            assert_eq!(overrides[1].format, Some("tar.xz".to_string()));
-            assert!(overrides[1].formats.is_none());
+            assert_eq!(
+                overrides[1].formats.as_deref(),
+                Some(&["tar.xz".to_string()][..])
+            );
         } else {
             panic!("expected Configs variant");
         }
@@ -3759,40 +3640,7 @@ crates:
     #[test]
     fn test_config_parse_archive_hooks() {
         use anodizer_core::config::Config;
-        let yaml = r#"
-project_name: test
-crates:
-  - name: myapp
-    path: "."
-    tag_template: "v{{ .Version }}"
-    archives:
-      - hooks:
-          pre:
-            - echo pre-archive
-          post:
-            - echo post-archive
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
-            let hooks = cfgs[0].hooks.as_ref().unwrap();
-            let pre = hooks.before.as_ref().unwrap();
-            assert_eq!(pre.len(), 1);
-            assert_eq!(pre[0], "echo pre-archive");
-            let post = hooks.after.as_ref().unwrap();
-            assert_eq!(post.len(), 1);
-            assert_eq!(post[0], "echo post-archive");
-        } else {
-            panic!("expected Configs variant");
-        }
-    }
-
-    #[test]
-    fn test_config_parse_archive_hooks_goreleaser_spelling() {
-        // docs use `before:` / `after:` for archive hooks.
-        // Serde aliases on BuildHooksConfig mean both spellings land on the
-        // same fields. Regression guard: before 2026-04-16, configs copied
-        // from GoReleaser docs silently parsed but hooks never ran.
-        use anodizer_core::config::Config;
+        // Archive hooks use `before:` / `after:` (matching GoReleaser's archive pipe).
         let yaml = r#"
 project_name: test
 crates:
@@ -3802,25 +3650,19 @@ crates:
     archives:
       - hooks:
           before:
-            - echo pre-archive-goreleaser-spelling
+            - echo pre-archive
           after:
-            - echo post-archive-goreleaser-spelling
+            - echo post-archive
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
             let hooks = cfgs[0].hooks.as_ref().unwrap();
-            let pre = hooks
-                .before
-                .as_ref()
-                .expect("`before:` yaml should populate `before` via serde alias");
-            assert_eq!(pre.len(), 1);
-            assert_eq!(pre[0], "echo pre-archive-goreleaser-spelling");
-            let post = hooks
-                .after
-                .as_ref()
-                .expect("`after:` yaml should populate `after` via serde alias");
-            assert_eq!(post.len(), 1);
-            assert_eq!(post[0], "echo post-archive-goreleaser-spelling");
+            let before = hooks.before.as_ref().unwrap();
+            assert_eq!(before.len(), 1);
+            assert_eq!(before[0], "echo pre-archive");
+            let after = hooks.after.as_ref().unwrap();
+            assert_eq!(after.len(), 1);
+            assert_eq!(after[0], "echo post-archive");
         } else {
             panic!("expected Configs variant");
         }
@@ -3876,7 +3718,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                format: Some("gz".to_string()),
+                formats: Some(vec!["gz".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -3938,7 +3780,7 @@ crates:
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 meta: Some(true),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 files: Some(vec![ArchiveFileSpec::Glob(license_path)]),
                 ..Default::default()
             }]),
@@ -3988,7 +3830,6 @@ crates:
         // FormatOverride with plural formats should produce multiple formats
         let overrides = vec![FormatOverride {
             os: "windows".to_string(),
-            format: None,
             formats: Some(vec!["zip".to_string(), "tar.gz".to_string()]),
         }];
         let result = formats_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides);
@@ -3996,26 +3837,24 @@ crates:
     }
 
     #[test]
-    fn test_format_override_formats_plural_priority_over_singular() {
-        // When both format and formats are set, formats takes priority
+    fn test_format_override_empty_formats_falls_back_to_default() {
+        // Empty formats falls back to default_format
         let overrides = vec![FormatOverride {
             os: "windows".to_string(),
-            format: Some("tar.gz".to_string()),
-            formats: Some(vec!["zip".to_string()]),
-        }];
-        let result = formats_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides);
-        assert_eq!(result, vec!["zip"]);
-    }
-
-    #[test]
-    fn test_format_override_formats_empty_falls_back_to_singular() {
-        // Empty formats falls back to singular format
-        let overrides = vec![FormatOverride {
-            os: "windows".to_string(),
-            format: Some("zip".to_string()),
             formats: Some(vec![]),
         }];
         let result = formats_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides);
+        assert_eq!(result, vec!["tar.xz"]);
+    }
+
+    #[test]
+    fn test_format_override_no_match_falls_back_to_default() {
+        // No matching override falls back to default_format
+        let overrides = vec![FormatOverride {
+            os: "linux".to_string(),
+            formats: Some(vec!["tar.gz".to_string()]),
+        }];
+        let result = formats_for_target("x86_64-pc-windows-msvc", "zip", &overrides);
         assert_eq!(result, vec!["zip"]);
     }
 
@@ -4049,7 +3888,7 @@ crates:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     // allow_different_binary_count is None (default false) - should error
                     ..Default::default()
                 }]),
@@ -4199,7 +4038,7 @@ crates:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 archives: ArchivesConfig::Configs(vec![ArchiveConfig {
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     strip_binary_directory: Some(true),
                     ..Default::default()
                 }]),
@@ -4667,7 +4506,7 @@ crates:
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some("filtered-archive".to_string()),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 binaries: Some(vec!["app-a".to_string()]),
                 ..Default::default()
             }]),
@@ -4791,7 +4630,7 @@ crates:
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
                 ),
-                format: Some("binary".to_string()),
+                formats: Some(vec!["binary".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -4847,7 +4686,7 @@ crates:
             tag_template: "v{{ .Version }}".to_string(),
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some("{{ .ProjectName }}-meta".to_string()),
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 meta: Some(true),
                 // No files configured — auto-include is also disabled for meta.
                 files: Some(vec![]),
@@ -4892,7 +4731,7 @@ crates:
                 name_template: Some(
                     "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
                 ),
-                format: Some("binary".to_string()),
+                formats: Some(vec!["binary".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()

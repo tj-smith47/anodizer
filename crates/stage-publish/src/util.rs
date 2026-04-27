@@ -656,40 +656,20 @@ pub(crate) struct CommitOptions<'a> {
     pub signing: Option<&'a anodizer_core::config::CommitSigningConfig>,
 }
 
-/// Resolve repository owner/name from a RepositoryConfig, falling back to a
-/// legacy config's owner/name pair.
+/// Resolve repository owner/name from a RepositoryConfig.
 ///
-/// Refuses two-source-of-truth: if BOTH the modern `repository` and the
-/// legacy `<legacy_field>` are set with a complete owner/name pair, the
-/// caller has written the same data twice and we cannot know which they
-/// meant. The previous behavior silently dropped the legacy value, which
-/// produced surprising "I changed `tap.owner` but the wrong repo got
-/// updated" failures. Bail with both values shown so the user picks one.
+/// Returns `Some((owner, name))` when both fields are populated, `None`
+/// when neither is set, and bails when the publisher has no owner/name
+/// configured at all (callers .ok_or_else()).
 pub(crate) fn resolve_repo_owner_name(
-    publisher: &str,
-    legacy_field: &str,
+    _publisher: &str,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
-    legacy_owner: Option<&str>,
-    legacy_name: Option<&str>,
 ) -> Result<Option<(String, String)>> {
     let modern = repo.and_then(|r| match (r.owner.as_deref(), r.name.as_deref()) {
         (Some(o), Some(n)) => Some((o.to_string(), n.to_string())),
         _ => None,
     });
-    let legacy = match (legacy_owner, legacy_name) {
-        (Some(o), Some(n)) => Some((o.to_string(), n.to_string())),
-        _ => None,
-    };
-    match (modern, legacy) {
-        (Some((mo, mn)), Some((lo, ln))) => {
-            anyhow::bail!(
-                "{publisher}: configure either `repository.owner`/`name` (\"{mo}/{mn}\") \
-                 or legacy `{legacy_field}.owner`/`name` (\"{lo}/{ln}\"), not both"
-            );
-        }
-        (Some((o, n)), None) | (None, Some((o, n))) => Ok(Some((o, n))),
-        (None, None) => Ok(None),
-    }
+    Ok(modern)
 }
 
 /// Resolve `skip_upload` to a boolean for publisher entry-points.
@@ -775,8 +755,7 @@ const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodizer";
 const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 
 /// Resolve commit author name/email from a CommitAuthorConfig, falling back
-/// to legacy per-publisher fields, then to the local `git config user.{name,
-/// email}`, then to built-in defaults.
+/// to the local `git config user.{name, email}`, then to built-in defaults.
 ///
 /// The `git config` step exists so that publisher PRs (Homebrew tap, AUR,
 /// krew-index, winget-pkgs, ...) carry the release engineer's identity
@@ -789,17 +768,11 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 /// alongside borrowed config values.
 pub(crate) fn resolve_commit_opts<'a>(
     commit_author: Option<&'a anodizer_core::config::CommitAuthorConfig>,
-    legacy_name: Option<&'a str>,
-    legacy_email: Option<&'a str>,
 ) -> CommitOptions<'a> {
     let (cfg_name, cfg_email, signing) = if let Some(ca) = commit_author {
-        (
-            ca.name.as_deref().or(legacy_name),
-            ca.email.as_deref().or(legacy_email),
-            ca.signing.as_ref(),
-        )
+        (ca.name.as_deref(), ca.email.as_deref(), ca.signing.as_ref())
     } else {
-        (legacy_name, legacy_email, None)
+        (None, None, None)
     };
 
     let name = cfg_name
@@ -1042,7 +1015,7 @@ pub(crate) fn commit_and_push_with_opts(
 }
 
 // ---------------------------------------------------------------------------
-// PR submission via `gh` CLI (legacy wrapper)
+// PR submission via `gh` CLI
 // ---------------------------------------------------------------------------
 
 /// Submit a pull request via the GitHub CLI. Logs a warning instead of failing
@@ -1338,7 +1311,7 @@ pub(crate) fn find_artifacts_by_os_filtered(
 /// Find artifacts by OS with optional amd64_variant/arm_variant microarchitecture filtering.
 ///
 /// When `amd64_variant` is `Some`, only amd64 artifacts whose metadata `amd64_variant`
-/// matches (or have no amd64_variant metadata, for backward compat) are included.
+/// matches (or have no amd64_variant metadata) are included.
 /// Similarly for `arm_variant` and arm artifacts.
 pub(crate) fn find_artifacts_by_os_with_variant(
     ctx: &Context,
@@ -1406,7 +1379,7 @@ pub(crate) fn find_all_platform_artifacts_filtered(
 /// filtering.
 ///
 /// When `amd64_variant` is `Some`, only amd64 artifacts whose metadata `amd64_variant`
-/// matches (or have no amd64_variant metadata, for backward compat) are included.
+/// matches (or have no amd64_variant metadata) are included.
 /// Similarly for `arm_variant` and arm artifacts.
 pub(crate) fn find_all_platform_artifacts_with_variant(
     ctx: &Context,
@@ -1440,7 +1413,7 @@ pub(crate) fn find_all_platform_artifacts_with_variant(
 ///
 /// For amd64 artifacts: when `amd64_variant` is set, keep only artifacts whose
 /// `amd64_variant` metadata matches the config value or that have no amd64_variant
-/// metadata (backward compat).
+/// metadata.
 ///
 /// For arm artifacts (armv6, armv7): when `arm_variant` is set, keep only artifacts
 /// whose `arm_variant` metadata matches or that have no arm_variant metadata.
@@ -2004,7 +1977,7 @@ mod tests {
 
     #[test]
     fn test_filter_by_variant_amd64_no_metadata_passes() {
-        // Artifacts without amd64_variant metadata pass through (backward compat).
+        // Artifacts without amd64_variant metadata pass through.
         let artifacts = vec![OsArtifact {
             url: "u1".into(),
             sha256: "s".into(),
@@ -2207,53 +2180,24 @@ mod tests {
             name: Some("b".into()),
             ..Default::default()
         };
-        let got = resolve_repo_owner_name("homebrew", "tap", Some(&repo), None, None).unwrap();
-        assert_eq!(got, Some(("a".to_string(), "b".to_string())));
-    }
-
-    #[test]
-    fn test_resolve_repo_owner_name_legacy_only() {
-        let got = resolve_repo_owner_name("homebrew", "tap", None, Some("a"), Some("b")).unwrap();
+        let got = resolve_repo_owner_name("homebrew", Some(&repo)).unwrap();
         assert_eq!(got, Some(("a".to_string(), "b".to_string())));
     }
 
     #[test]
     fn test_resolve_repo_owner_name_neither() {
-        let got = resolve_repo_owner_name("homebrew", "tap", None, None, None).unwrap();
+        let got = resolve_repo_owner_name("homebrew", None).unwrap();
         assert_eq!(got, None);
     }
 
     #[test]
-    fn test_resolve_repo_owner_name_partial_modern_falls_back_to_legacy() {
+    fn test_resolve_repo_owner_name_partial_returns_none() {
         use anodizer_core::config::RepositoryConfig;
         let repo = RepositoryConfig {
             branch: Some("main".into()),
             ..Default::default()
         };
-        let got =
-            resolve_repo_owner_name("homebrew", "tap", Some(&repo), Some("a"), Some("b")).unwrap();
-        assert_eq!(got, Some(("a".to_string(), "b".to_string())));
-    }
-
-    #[test]
-    fn test_resolve_repo_owner_name_both_full_bails() {
-        use anodizer_core::config::RepositoryConfig;
-        let repo = RepositoryConfig {
-            owner: Some("modern_o".into()),
-            name: Some("modern_n".into()),
-            ..Default::default()
-        };
-        let err = resolve_repo_owner_name(
-            "homebrew",
-            "tap",
-            Some(&repo),
-            Some("legacy_o"),
-            Some("legacy_n"),
-        )
-        .unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("homebrew"));
-        assert!(msg.contains("modern_o/modern_n"));
-        assert!(msg.contains("legacy_o/legacy_n"));
+        let got = resolve_repo_owner_name("homebrew", Some(&repo)).unwrap();
+        assert_eq!(got, None);
     }
 }

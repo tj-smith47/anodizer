@@ -98,6 +98,79 @@ are appended.
 
 ---
 
+## Hard-break alias removal (post-WAVE 6 cleanup)
+
+DEC-5 says "no aliases, no deprecation shims." Below is the full set of
+serde aliases removed in this batch. Configs that still use the left-hand
+spelling will fail to parse with `unknown field` from serde — rewrite them
+to the right-hand spelling before upgrading.
+
+### Top-level field aliases dropped
+
+| Before (alias) | After (canonical) | Container |
+|---|---|---|
+| `sign:` | `signs:` | `Config`, `WorkspaceConfig` |
+| `binary_sign:` | `binary_signs:` | `Config`, `WorkspaceConfig` |
+| `sbom:` | `sboms:` | `Config` |
+| `makeself:` | `makeselfs:` | `Config` |
+
+### Field renames inside structs
+
+| Struct | Before (alias) | After (canonical) |
+|---|---|---|
+| `BuildHooksConfig` | `before:` / `after:` | `pre:` / `post:` |
+| `ArchiveHooksConfig` | `pre:` / `post:` | `before:` / `after:` |
+| `ArchiveConfig` | `format: tar.gz` | `formats: [tar.gz]` (singular `format` field deleted) |
+| `ArchiveConfig` | `builds: [...]` | `ids: [...]` |
+| `FormatOverride` | `goos: windows` | `os: windows` |
+| `FormatOverride` | `format: zip` | `formats: [zip]` (singular `format` field deleted) |
+| `ExtraFileSpec::Detailed` | `name: "..."` | `name_template: "..."` |
+| `MakeselfConfig` | `name_template: "..."` | `filename: "..."` (per SCH-11; field renamed) |
+| `MakeselfFile` | `src:` / `dst:` | `source:` / `destination:` |
+| `SnapshotConfig` | `name_template: "..."` | `version_template: "..."` |
+| `EmailAnnounce` | `body_template:` | `message_template:` |
+| `HomebrewConfig` (and Scoop / Chocolatey / Winget / Aur / AurSource / Nix / Krew) | `goamd64:` / `goarm:` | `amd64_variant:` / `arm_variant:` |
+| `AurConfig` | `package_name:` | `name:` |
+| `AurConfig` | `install_template:` | `package:` |
+| `AurSourceConfig` | `package_name:` | `name:` |
+| `AurSourceConfig` | `goamd64:` | `amd64_variant:` |
+| `NfpmConfig` | `builds: [...]` | `ids: [...]` |
+| `NfpmContent` | `source:` / `destination:` | `src:` / `dst:` |
+| `NfpmSignatureConfig` | `passphrase:` | `key_passphrase:` |
+| `SnapcraftConfig` | `builds: [...]` | `ids: [...]` |
+
+### Aliases intentionally KEPT
+
+| Alias | Canonical | Rationale |
+|---|---|---|
+| `announce.smtp:` | `announce.email:` | GoReleaser keeps both — anodizer mirrors so configs copied from GR docs parse without rewrites (SCH-34). |
+| Snapcraft hyphen-aliases (`stop-mode`, `restart-condition`, `bus-name`, …) | underscore-form Rust field names | The hyphen form is snap.yaml's canonical spelling; the underscore form is needed because Rust identifiers can't contain hyphens. Both keep parsing because users write hyphens in snap.yaml. |
+
+### Deprecation infrastructure removed
+
+`detect_deprecated_aliases`, `load_config_with_deprecations`, the
+`Context.deprecated` field, the `Context.deprecate()` method, the per-key
+detection branches and their unit tests, and the `DEPRECATED:` print in
+`anodizer check` were all deleted. The CLI is now strictly
+"parse → validate → run"; there is no warning surface for legacy keys.
+Unknown fields error from serde directly with the list of accepted
+spellings (no migration hint).
+
+### Other cleanups bundled in this batch
+
+- `resolve_repo_owner_name(publisher, legacy_field, modern, legacy_owner, legacy_name)` →
+  `resolve_repo_owner_name(publisher, modern)`. The legacy-field bail path
+  (modern + legacy both set with full owner/name pairs → error) was dead
+  surface — every call site already passed `None, None` for the legacy
+  pair. Dropped the param + 3 dead unit tests.
+- `resolve_commit_opts(commit_author, legacy_name, legacy_email)` →
+  `resolve_commit_opts(commit_author)`. Same story — every call site
+  passed `None, None` for the legacy pair.
+- `Format` template var on archive hooks now derives from `formats[0]`
+  (or the global default) instead of the deleted `archive.format` field.
+- `defaults.archives` identity key now uses `formats[0]` instead of `format`
+  for the archive-merge engine.
+
 ## Verification gate
 
 ```bash

@@ -576,7 +576,7 @@ crates:
           - {host}
     archives:
       - name_template: "{{{{ .ProjectName }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -612,7 +612,7 @@ crates:
           - {host}
     archives:
       - name_template: "myapp-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -805,10 +805,10 @@ defaults:
     - aarch64-unknown-linux-gnu
   cross: auto
   archives:
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - os: windows
-        format: zip
+        formats: [zip]
   checksum:
     algorithm: sha256
 
@@ -837,7 +837,7 @@ crates:
           - x86_64-unknown-linux-gnu
     archives:
       - name_template: "test-project-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -1428,7 +1428,7 @@ crates:
           - {host}
     archives:
       - name_template: "{{{{ .ProjectName }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
 "#,
@@ -2100,13 +2100,13 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-targz"
-        format: tar.gz
+        formats: [tar.gz]
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-tarxz"
-        format: tar.xz
+        formats: [tar.xz]
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-zipped"
-        format: zip
+        formats: [zip]
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-raw"
-        format: binary
+        formats: [binary]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -2243,7 +2243,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -2329,7 +2329,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -2744,7 +2744,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -2807,7 +2807,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     docker_v2:
       - images:
           - "myregistry/test-project"
@@ -2869,10 +2869,10 @@ fn test_e2e_cross_platform_format_overrides_check() {
         r#"project_name: test-project
 defaults:
   archives:
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - os: windows
-        format: zip
+        formats: [zip]
 crates:
   - name: test-project
     path: "."
@@ -2928,7 +2928,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Version }}}}-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -3034,7 +3034,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256
@@ -3128,7 +3128,7 @@ crates:
           - x86_64-unknown-linux-gnu
     archives:
       - name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
 "#,
@@ -3288,7 +3288,7 @@ crates:
           - {host}
     archives:
       - name_template: "app-one-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "app-one-checksums.txt"
       algorithm: sha256
@@ -3302,7 +3302,7 @@ crates:
           - {host}
     archives:
       - name_template: "app-two-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "app-two-checksums.txt"
       algorithm: sha256
@@ -3450,7 +3450,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
 "##,
@@ -3550,7 +3550,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
 "#,
@@ -3717,7 +3717,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
 "#,
@@ -3786,7 +3786,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
 "#,
@@ -3890,7 +3890,7 @@ crates:
           - {host}
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
-        format: tar.gz
+        formats: [tar.gz]
     checksum:
       name_template: "checksums.txt"
       algorithm: sha256

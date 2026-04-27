@@ -835,14 +835,6 @@
             "$ref": "#/definitions/ArchiveFileSpec"
           }
         },
-        "format": {
-          "description": "Archive format: tar.gz, tar.xz, tar.zst, zip, or binary.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "format_overrides": {
           "description": "Per-OS format overrides for this archive config.",
           "default": null,
@@ -855,7 +847,7 @@
           }
         },
         "formats": {
-          "description": "Produce multiple archive formats per config (plural, in addition to singular `format`).",
+          "description": "Archive formats: tar.gz, tar.xz, tar.zst, zip, or binary. Plural list; one archive per format is produced for each target.",
           "default": null,
           "type": [
             "array",
@@ -866,7 +858,7 @@
           }
         },
         "hooks": {
-          "description": "Pre/post archive hooks (`before`/`after`; `pre`/`post` accepted as aliases).",
+          "description": "Pre/post archive hooks (`before`/`after`).",
           "default": null,
           "anyOf": [
             {
@@ -886,7 +878,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list.\n\nAlso accepts the deprecated `builds` alias for GoReleaser pre-v1 compatibility (consistent with nfpm + docker manifests).",
+          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list.",
           "default": null,
           "type": [
             "array",
@@ -977,7 +969,7 @@
       ]
     },
     "ArchiveHooksConfig": {
-      "description": "Pre/post archive hook configuration.\n\nArchive hooks in GoReleaser's YAML use `before`/`after` (not the build-stage's `pre`/`post`). `ArchiveHooksConfig` serializes with those field names so `dist/config.yaml` round-trips user-supplied spelling; `pre`/`post` are accepted as aliases so migrated configs still parse.",
+      "description": "Pre/post archive hook configuration.\n\nArchive hooks use `before`/`after` (matching GoReleaser's archive pipe); build hooks use `pre`/`post` (matching GoReleaser's build pipe).",
       "type": "object",
       "properties": {
         "after": {
@@ -2137,11 +2129,11 @@
       }
     },
     "BuildHooksConfig": {
-      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).\n\narchive hooks in GoReleaser use `before`/`after` (not `pre`/`post`). Anodizer accepts both spellings via serde aliases so configs copied from GoReleaser docs don't silently drop their hooks.",
+      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).",
       "type": "object",
       "properties": {
         "post": {
-          "description": "Commands to run after the build (or archive) step.",
+          "description": "Commands to run after the build step.",
           "default": null,
           "type": [
             "array",
@@ -2152,7 +2144,7 @@
           }
         },
         "pre": {
-          "description": "Commands to run before the build (or archive) step.",
+          "description": "Commands to run before the build step.",
           "default": null,
           "type": [
             "array",
@@ -4695,7 +4687,7 @@
           ]
         },
         "message_template": {
-          "description": "Body template (called body_template in GoReleaser, message_template here for consistency).",
+          "description": "Email body template.",
           "default": null,
           "type": [
             "string",
@@ -4838,7 +4830,7 @@
               "type": "string"
             },
             "name_template": {
-              "description": "Optional override for the upload filename. Accepts `name_template` or `name` in YAML (aliased for ergonomics with older configs).",
+              "description": "Optional override for the upload filename.",
               "default": null,
               "type": [
                 "string",
@@ -5026,15 +5018,8 @@
         "os"
       ],
       "properties": {
-        "format": {
-          "description": "Archive format override for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "formats": {
-          "description": "Plural format overrides (v2.6+). Takes priority over singular format.",
+          "description": "Plural format overrides for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.",
           "type": [
             "array",
             "null"
@@ -5044,7 +5029,7 @@
           }
         },
         "os": {
-          "description": "Operating system this override applies to (e.g., \"windows\", \"darwin\", \"linux\"). GoReleaser uses `goos` as the YAML key; both `os` and `goos` are accepted.",
+          "description": "Operating system this override applies to (e.g., \"windows\", \"darwin\", \"linux\").",
           "type": "string"
         }
       }
@@ -6733,6 +6718,14 @@
             "type": "string"
           }
         },
+        "filename": {
+          "description": "Output filename template (default includes project, version, os, arch).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "files": {
           "description": "Additional files to include in the archive.",
           "default": null,
@@ -6822,14 +6815,6 @@
         },
         "name": {
           "description": "Display name embedded in the self-extracting archive.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "name_template": {
-          "description": "Output filename template (default includes project, version, os, arch). Accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling.",
           "default": null,
           "type": [
             "string",
@@ -7748,7 +7733,7 @@
       ],
       "properties": {
         "dst": {
-          "description": "Destination path inside the package (absolute path). Aliased as `destination` for SRPM-style call sites.",
+          "description": "Destination path inside the package (absolute path).",
           "type": "string"
         },
         "expand": {
@@ -7777,7 +7762,7 @@
           ]
         },
         "src": {
-          "description": "Source path on the build machine (supports glob patterns). Aliased as `source` for SRPM-style call sites.",
+          "description": "Source path on the build machine (supports glob patterns).",
           "type": "string"
         },
         "type": {
@@ -8294,7 +8279,7 @@
           ]
         },
         "key_passphrase": {
-          "description": "Passphrase for the signing key. Falls back to `NFPM_PASSPHRASE` / `SRPM_PASSPHRASE` env vars in their respective stages. The legacy SRPM `passphrase:` key is accepted as an alias.",
+          "description": "Passphrase for the signing key. Falls back to `NFPM_PASSPHRASE` / `SRPM_PASSPHRASE` env vars in their respective stages.",
           "default": null,
           "type": [
             "string",
@@ -10826,7 +10811,7 @@
       ],
       "properties": {
         "version_template": {
-          "description": "Version string template for snapshot builds (e.g., \"{{ .Commit }}-SNAPSHOT\"). Primary field is `version_template` (GoReleaser convention); `name_template` is the deprecated alias kept for backwards compatibility.",
+          "description": "Version string template for snapshot builds (e.g., \"{{ .Commit }}-SNAPSHOT\").",
           "type": "string"
         }
       }

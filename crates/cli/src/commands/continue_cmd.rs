@@ -26,7 +26,7 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
     );
 
     let config_path = pipeline::find_config(opts.config_override.as_deref())?;
-    let (mut config, deprecations) = pipeline::load_config_with_deprecations(&config_path)?;
+    let mut config = pipeline::load_config(&config_path)?;
     helpers::infer_project_name(&mut config, &log);
     helpers::auto_detect_github(&mut config, &log);
 
@@ -41,9 +41,6 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
-    for (prop, msg) in &deprecations {
-        ctx.deprecate(prop, msg);
-    }
     helpers::setup_context(&mut ctx, &config, &log)?;
     ctx.populate_metadata_var()?;
 

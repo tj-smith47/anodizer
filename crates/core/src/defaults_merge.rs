@@ -14,9 +14,9 @@
 //!   merge uniformly without per-type boilerplate.
 //! - **List-typed fields (append + merge-by-identity)**: each defaults
 //!   entry merges into the crate entry that shares its identity key
-//!   (`format` for archives, `id`/`name`/`package_name` for packagers,
-//!   etc.). Defaults entries with no identity-match are appended after the
-//!   crate's own entries.
+//!   (first entry of `formats` for archives, `id`/`name`/`package_name`
+//!   for packagers, etc.). Defaults entries with no identity-match are
+//!   appended after the crate's own entries.
 //! - **Empty map at per-crate position**: written as `{}` in YAML, parses
 //!   to `Some(default)` and inherits all fields from defaults.
 //! - **`skip: true` at per-crate position**: suppresses the inherited
@@ -342,7 +342,7 @@ fn merge_archives(target: &mut ArchivesConfig, defaults: Option<&ArchiveConfig>)
 }
 
 fn archive_identity(a: &ArchiveConfig) -> Option<String> {
-    a.format.clone()
+    a.formats.as_ref().and_then(|f| f.first().cloned())
 }
 
 // ---------------------------------------------------------------------------
@@ -544,14 +544,14 @@ mod tests {
     fn list_append_keeps_both_when_identity_differs() {
         let defaults = Defaults {
             archives: Some(ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 ..Default::default()
             }),
             ..Default::default()
         };
         let mut crate_cfg = make_crate("a");
         crate_cfg.archives = ArchivesConfig::Configs(vec![ArchiveConfig {
-            format: Some("zip".to_string()),
+            formats: Some(vec!["zip".to_string()]),
             ..Default::default()
         }]);
 
@@ -559,7 +559,10 @@ mod tests {
 
         if let ArchivesConfig::Configs(list) = &crate_cfg.archives {
             assert_eq!(list.len(), 2);
-            let formats: Vec<_> = list.iter().map(|a| a.format.clone()).collect();
+            let formats: Vec<_> = list
+                .iter()
+                .map(|a| a.formats.as_ref().and_then(|f| f.first().cloned()))
+                .collect();
             assert!(formats.contains(&Some("tar.gz".to_string())));
             assert!(formats.contains(&Some("zip".to_string())));
         } else {
@@ -573,7 +576,7 @@ mod tests {
     fn list_merge_by_identity_combines_fields_crate_wins() {
         let defaults = Defaults {
             archives: Some(ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 name_template: Some("DEFAULT".to_string()),
                 ..Default::default()
             }),
@@ -581,7 +584,7 @@ mod tests {
         };
         let mut crate_cfg = make_crate("a");
         crate_cfg.archives = ArchivesConfig::Configs(vec![ArchiveConfig {
-            format: Some("tar.gz".to_string()),
+            formats: Some(vec!["tar.gz".to_string()]),
             // crate sets a name_template — wins over defaults
             name_template: Some("CRATE".to_string()),
             ..Default::default()
@@ -592,7 +595,10 @@ mod tests {
         if let ArchivesConfig::Configs(list) = &crate_cfg.archives {
             assert_eq!(list.len(), 1, "should merge into single entry");
             assert_eq!(list[0].name_template, Some("CRATE".to_string()));
-            assert_eq!(list[0].format, Some("tar.gz".to_string()));
+            assert_eq!(
+                list[0].formats.as_deref(),
+                Some(&["tar.gz".to_string()][..])
+            );
         } else {
             panic!("expected Configs variant");
         }
@@ -602,7 +608,7 @@ mod tests {
     fn list_merge_by_identity_fills_unset_fields_from_defaults() {
         let defaults = Defaults {
             archives: Some(ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 name_template: Some("DEFAULT".to_string()),
                 ..Default::default()
             }),
@@ -610,7 +616,7 @@ mod tests {
         };
         let mut crate_cfg = make_crate("a");
         crate_cfg.archives = ArchivesConfig::Configs(vec![ArchiveConfig {
-            format: Some("tar.gz".to_string()),
+            formats: Some(vec!["tar.gz".to_string()]),
             // crate leaves name_template unset — should inherit from defaults
             ..Default::default()
         }]);
@@ -714,7 +720,7 @@ mod tests {
             defaults: Some(Defaults {
                 cross: Some(CrossStrategy::Auto),
                 archives: Some(ArchiveConfig {
-                    format: Some("tar.gz".to_string()),
+                    formats: Some(vec!["tar.gz".to_string()]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -925,7 +931,7 @@ mod tests {
         // re-run with matching identity to confirm only the first absorbs.
         let defaults = Defaults {
             archives: Some(ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 name_template: Some("DEFAULT".to_string()),
                 ..Default::default()
             }),
@@ -934,11 +940,11 @@ mod tests {
         let mut crate_cfg = make_crate("a");
         crate_cfg.archives = ArchivesConfig::Configs(vec![
             ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 ..Default::default()
             },
             ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 name_template: Some("EXISTING".to_string()),
                 ..Default::default()
             },
@@ -966,7 +972,7 @@ mod tests {
         // the defaults entry should append once, not merge into either.
         let defaults = Defaults {
             archives: Some(ArchiveConfig {
-                format: Some("tar.gz".to_string()),
+                formats: Some(vec!["tar.gz".to_string()]),
                 ..Default::default()
             }),
             ..Default::default()
@@ -974,12 +980,10 @@ mod tests {
         let mut crate_cfg = make_crate("a");
         crate_cfg.archives = ArchivesConfig::Configs(vec![
             ArchiveConfig {
-                format: None,
                 name_template: Some("FIRST".to_string()),
                 ..Default::default()
             },
             ArchiveConfig {
-                format: None,
                 name_template: Some("SECOND".to_string()),
                 ..Default::default()
             },
@@ -992,7 +996,10 @@ mod tests {
             assert_eq!(list.len(), 3, "unkeyed entries must stay distinct");
             assert_eq!(list[0].name_template, Some("FIRST".to_string()));
             assert_eq!(list[1].name_template, Some("SECOND".to_string()));
-            assert_eq!(list[2].format, Some("tar.gz".to_string()));
+            assert_eq!(
+                list[2].formats.as_deref(),
+                Some(&["tar.gz".to_string()][..])
+            );
         } else {
             panic!("expected Configs variant");
         }

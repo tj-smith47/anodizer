@@ -145,10 +145,6 @@ pub struct Context {
     pub changelogs: HashMap<String, String>,
     /// The resolved SCM token type (GitHub, GitLab, or Gitea).
     pub token_type: ScmTokenType,
-    /// set to true when any deprecated config field is used.
-    pub deprecated: bool,
-    /// Tracks which deprecation notices have already been shown (dedup).
-    notified_deprecations: std::collections::HashSet<String>,
     /// Aggregated skips from per-sub-config loops (signs, docker_signs,
     /// publishers, …). Drained by the pipeline runner at end-of-pipeline so
     /// the summary shows what was intentionally skipped — mirroring
@@ -170,8 +166,6 @@ impl Context {
             git_info: None,
             changelogs: HashMap::new(),
             token_type: ScmTokenType::GitHub,
-            deprecated: false,
-            notified_deprecations: std::collections::HashSet::new(),
             skip_memento: crate::pipe_skip::SkipMemento::new(),
         }
     }
@@ -184,21 +178,6 @@ impl Context {
     /// N copies of the same skip message.
     pub fn remember_skip(&self, stage: &str, label: &str, reason: &str) {
         self.skip_memento.remember(stage, label, reason);
-    }
-
-    /// Log a deprecation warning for a config property.
-    /// Each property is only warned about once (GoReleaser parity: deprecate.go).
-    pub fn deprecate(&mut self, property: &str, message: &str) {
-        if self.notified_deprecations.contains(property) {
-            return;
-        }
-        self.notified_deprecations.insert(property.to_string());
-        self.deprecated = true;
-        eprintln!(
-            "DEPRECATED: {} — see https://anodizer.dev/deprecations#{}",
-            message,
-            property.replace('.', "-").to_lowercase()
-        );
     }
 
     pub fn template_vars(&self) -> &TemplateVars {

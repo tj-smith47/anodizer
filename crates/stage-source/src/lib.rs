@@ -1535,7 +1535,7 @@ source:
   enabled: true
   format: tar.gz
   name_template: "{{ .ProjectName }}-source-{{ .Version }}"
-sbom:
+sboms:
   cmd: syft
   artifacts: archive
 "#;

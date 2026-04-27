@@ -199,10 +199,7 @@ impl Stage for MakeselfStage {
                 "{% if Mips %}_{{ Mips }}{% endif %}",
                 "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.run",
             );
-            let name_template = cfg
-                .name_template
-                .as_deref()
-                .unwrap_or(default_name_template);
+            let name_template = cfg.filename.as_deref().unwrap_or(default_name_template);
 
             let script = cfg.script.as_deref().unwrap_or("");
             if script.is_empty() {
@@ -752,7 +749,7 @@ crates:
 
         let yaml = r#"
 project_name: test
-makeself:
+makeselfs:
   script: install.sh
 crates:
   - name: a

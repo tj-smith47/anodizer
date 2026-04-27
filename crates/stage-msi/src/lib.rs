@@ -2218,9 +2218,8 @@ crates:
     }
 
     #[test]
-    fn test_config_parse_msi_hooks_before_after_aliases() {
-        // Serde aliases on BuildHooksConfig mean `before:`/`after:` (GoReleaser
-        // docs) and `pre:`/`post:` both populate the same fields.
+    fn test_config_parse_msi_hooks_pre_post() {
+        // BuildHooksConfig uses `pre:` / `post:` (matching GoReleaser's build pipe).
         use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
@@ -2231,9 +2230,9 @@ crates:
     msis:
       - wxs: installer.wxs
         hooks:
-          before:
+          pre:
             - echo pre-msi-build
-          after:
+          post:
             - echo post-msi-build
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -2242,13 +2241,13 @@ crates:
         let pre = hooks
             .pre
             .as_ref()
-            .expect("`before:` yaml should populate `pre`");
+            .expect("`pre:` yaml should populate `pre`");
         assert_eq!(pre.len(), 1);
         assert_eq!(pre[0], "echo pre-msi-build");
         let post = hooks
             .post
             .as_ref()
-            .expect("`after:` yaml should populate `post`");
+            .expect("`post:` yaml should populate `post`");
         assert_eq!(post.len(), 1);
         assert_eq!(post[0], "echo post-msi-build");
     }

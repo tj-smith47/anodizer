@@ -85,7 +85,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     }
 
     let config_path = pipeline::find_config(opts.config_override.as_deref())?;
-    let (mut config, deprecations) = pipeline::load_config_with_deprecations(&config_path)?;
+    let mut config = pipeline::load_config(&config_path)?;
 
     // If --workspace is specified, resolve the workspace and overlay its config
     // onto the top-level config (replacing crates, changelog, signs, etc.).
@@ -307,9 +307,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         strict: opts.strict,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
-    for (prop, msg) in &deprecations {
-        ctx.deprecate(prop, msg);
-    }
     helpers::resolve_scm_token_type(&mut ctx, &config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
@@ -430,7 +427,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         let snapshot_tmpl = config
             .snapshot
             .as_ref()
-            .map(|s| s.name_template.as_str())
+            .map(|s| s.version_template.as_str())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("{{ Version }}-SNAPSHOT-{{ ShortCommit }}");
         let rendered_name =

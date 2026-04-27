@@ -490,14 +490,9 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         return Ok(());
     }
 
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
-        "winget",
-        "manifests_repo",
-        winget_cfg.repository.as_ref(),
-        None,
-        None,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;
+    let (repo_owner, repo_name) =
+        crate::util::resolve_repo_owner_name("winget", winget_cfg.repository.as_ref())?
+            .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;
 
     let name_raw = winget_cfg.name.as_deref().unwrap_or(crate_name);
     let name_rendered = ctx
@@ -924,7 +919,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     // Use repository.branch if set, otherwise auto-generate from package_id + version.
     let auto_branch = format!("{}-{}", package_id, version);
     let branch_name = util::resolve_branch(winget_cfg.repository.as_ref()).unwrap_or(&auto_branch);
-    let commit_opts = util::resolve_commit_opts(winget_cfg.commit_author.as_ref(), None, None);
+    let commit_opts = util::resolve_commit_opts(winget_cfg.commit_author.as_ref());
     util::commit_and_push_with_opts(
         repo_path,
         &["."],

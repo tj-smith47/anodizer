@@ -292,12 +292,12 @@ fn test_parse_defaults_archives_format() {
 project_name: test
 defaults:
   archives:
-    format: zip
+    formats: [zip]
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let archives = config.defaults.unwrap().archives.unwrap();
-    assert_eq!(archives.format, Some("zip".to_string()));
+    assert_eq!(archives.formats.as_deref(), Some(&["zip".to_string()][..]));
 }
 
 #[test]
@@ -306,12 +306,12 @@ fn test_parse_defaults_archives_format_overrides() {
 project_name: test
 defaults:
   archives:
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - os: windows
-        format: zip
+        formats: [zip]
       - os: darwin
-        format: tar.xz
+        formats: [tar.xz]
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -319,9 +319,15 @@ crates: []
     let overrides = archives.format_overrides.unwrap();
     assert_eq!(overrides.len(), 2);
     assert_eq!(overrides[0].os, "windows");
-    assert_eq!(overrides[0].format, Some("zip".to_string()));
+    assert_eq!(
+        overrides[0].formats.as_deref(),
+        Some(&["zip".to_string()][..])
+    );
     assert_eq!(overrides[1].os, "darwin");
-    assert_eq!(overrides[1].format, Some("tar.xz".to_string()));
+    assert_eq!(
+        overrides[1].formats.as_deref(),
+        Some(&["tar.xz".to_string()][..])
+    );
 }
 
 #[test]
@@ -331,11 +337,9 @@ fn test_parse_defaults_archives_omitted() {
     assert!(config.defaults.unwrap().archives.is_none());
 }
 
-/// Regression: pre-v1 GoReleaser used `builds:` on archives (renamed to `ids:`
-/// in v1). The deprecated alias must still parse so migrating users don't hit
-/// "unknown field" errors (consistent with nfpm + docker_manifests).
+/// `archives[].ids` accepts the canonical key (DEC-5 dropped the `builds:` alias).
 #[test]
-fn test_parse_archives_accepts_deprecated_builds_alias() {
+fn test_parse_archives_ids_canonical() {
     use anodizer_core::config::ArchivesConfig;
     let yaml = r#"
 project_name: test
@@ -344,8 +348,8 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     archives:
-      - format: tar.gz
-        builds: [myid, otherid]
+      - formats: [tar.gz]
+        ids: [myid, otherid]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let archives = &config.crates[0].archives;
@@ -908,7 +912,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
@@ -948,11 +952,14 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
-        assert_eq!(configs[0].format, Some("tar.gz".to_string()));
+        assert_eq!(
+            configs[0].formats.as_deref(),
+            Some(&["tar.gz".to_string()][..])
+        );
     } else {
         panic!("expected ArchivesConfig::Configs");
     }
@@ -967,11 +974,14 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: zip
+      - formats: [zip]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
-        assert_eq!(configs[0].format, Some("zip".to_string()));
+        assert_eq!(
+            configs[0].formats.as_deref(),
+            Some(&["zip".to_string()][..])
+        );
     } else {
         panic!("expected ArchivesConfig::Configs");
     }
@@ -986,11 +996,14 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.xz
+      - formats: [tar.xz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
-        assert_eq!(configs[0].format, Some("tar.xz".to_string()));
+        assert_eq!(
+            configs[0].formats.as_deref(),
+            Some(&["tar.xz".to_string()][..])
+        );
     } else {
         panic!("expected ArchivesConfig::Configs");
     }
@@ -1006,11 +1019,14 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: not-a-real-format
+      - formats: [not-a-real-format]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
-        assert_eq!(configs[0].format, Some("not-a-real-format".to_string()));
+        assert_eq!(
+            configs[0].formats.as_deref(),
+            Some(&["not-a-real-format".to_string()][..])
+        );
     } else {
         panic!("expected ArchivesConfig::Configs");
     }
@@ -1027,23 +1043,29 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
         format_overrides:
           - os: windows
-            format: zip
+            formats: [zip]
           - os: darwin
-            format: tar.xz
+            formats: [tar.xz]
           - os: linux
-            format: tar.zst
+            formats: [tar.zst]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         let overrides = configs[0].format_overrides.as_ref().unwrap();
         assert_eq!(overrides.len(), 3);
         assert_eq!(overrides[0].os, "windows");
-        assert_eq!(overrides[0].format, Some("zip".to_string()));
+        assert_eq!(
+            overrides[0].formats.as_deref(),
+            Some(&["zip".to_string()][..])
+        );
         assert_eq!(overrides[2].os, "linux");
-        assert_eq!(overrides[2].format, Some("tar.zst".to_string()));
+        assert_eq!(
+            overrides[2].formats.as_deref(),
+            Some(&["tar.zst".to_string()][..])
+        );
     } else {
         panic!("expected ArchivesConfig::Configs");
     }
@@ -1060,7 +1082,7 @@ crates:
     archives:
       - format_overrides:
           - os: freebsd
-            format: tar.gz
+            formats: [tar.gz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
@@ -1080,7 +1102,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
@@ -1145,7 +1167,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
@@ -1188,7 +1210,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
@@ -1209,16 +1231,22 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
         name_template: "{{ project_name }}-{{ version }}"
-      - format: zip
+      - formats: [zip]
         name_template: "{{ project_name }}-{{ version }}"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
         assert_eq!(configs.len(), 2);
-        assert_eq!(configs[0].format, Some("tar.gz".to_string()));
-        assert_eq!(configs[1].format, Some("zip".to_string()));
+        assert_eq!(
+            configs[0].formats.as_deref(),
+            Some(&["tar.gz".to_string()][..])
+        );
+        assert_eq!(
+            configs[1].formats.as_deref(),
+            Some(&["zip".to_string()][..])
+        );
     } else {
         panic!("expected ArchivesConfig::Configs");
     }
@@ -2246,12 +2274,12 @@ fn test_parse_snapshot_valid() {
     let yaml = r#"
 project_name: test
 snapshot:
-  name_template: "{{ version }}-next"
+  version_template: "{{ version }}-next"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
-        config.snapshot.as_ref().unwrap().name_template,
+        config.snapshot.as_ref().unwrap().version_template,
         "{{ version }}-next"
     );
 }
@@ -2589,12 +2617,10 @@ binary = ""
 flags = ["--release"]
 
 [defaults.archives]
-format = "tar.gz"
-
+formats = ["tar.gz"]
 [[defaults.archives.format_overrides]]
 os = "windows"
-format = "zip"
-
+formats = ["zip"]
 [defaults.checksum]
 algorithm = "sha256"
 
@@ -2613,7 +2639,10 @@ tag_template = "v{{ .Version }}"
         Some(vec!["--release".to_string()])
     );
     let archives = defaults.archives.unwrap();
-    assert_eq!(archives.format, Some("tar.gz".to_string()));
+    assert_eq!(
+        archives.formats.as_deref(),
+        Some(&["tar.gz".to_string()][..])
+    );
     assert_eq!(archives.format_overrides.as_ref().unwrap().len(), 1);
     assert_eq!(
         defaults.checksum.unwrap().algorithm,
@@ -3023,7 +3052,7 @@ fn test_build_config_default_struct() {
 fn test_archive_config_default_struct() {
     let config = ArchiveConfig::default();
     assert!(config.name_template.is_none());
-    assert!(config.format.is_none());
+    assert!(config.formats.is_none());
     assert!(config.format_overrides.is_none());
     assert!(config.files.is_none());
     assert!(config.binaries.is_none());
@@ -3151,7 +3180,7 @@ crates:
     path: "."
     tag_template: "v{{ version }}"
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     if let ArchivesConfig::Configs(configs) = &config.crates[0].archives {
@@ -3525,10 +3554,10 @@ defaults:
       - "--release"
       - "--locked"
   archives:
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - os: windows
-        format: zip
+        formats: [zip]
   checksum:
     algorithm: sha256
     name_template: "checksums.txt"
@@ -3545,7 +3574,7 @@ changelog:
       regexp: "^feat"
       order: 0
 snapshot:
-  name_template: "{{ version }}-SNAPSHOT"
+  version_template: "{{ version }}-SNAPSHOT"
 signs:
   - id: gpg
     artifacts: all
@@ -3573,7 +3602,7 @@ crates:
         features:
           - full
     archives:
-      - format: tar.gz
+      - formats: [tar.gz]
         files:
           - LICENSE
           - README.md

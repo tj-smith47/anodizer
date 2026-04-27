@@ -278,14 +278,9 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
 
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
     // GoReleaser applies TemplateRef() to repository fields (krew.go:292-296).
-    let (repo_owner_raw, repo_name_raw) = crate::util::resolve_repo_owner_name(
-        "krew",
-        "manifests_repo",
-        krew_cfg.repository.as_ref(),
-        None,
-        None,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("krew: no repository config for '{}'", crate_name))?;
+    let (repo_owner_raw, repo_name_raw) =
+        crate::util::resolve_repo_owner_name("krew", krew_cfg.repository.as_ref())?
+            .ok_or_else(|| anyhow::anyhow!("krew: no repository config for '{}'", crate_name))?;
     let repo_owner = ctx
         .render_template(&repo_owner_raw)
         .unwrap_or(repo_owner_raw);
@@ -474,7 +469,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         "plugin",
     );
     let branch_name = format!("{}-v{}", plugin_name, version);
-    let commit_opts = util::resolve_commit_opts(krew_cfg.commit_author.as_ref(), None, None);
+    let commit_opts = util::resolve_commit_opts(krew_cfg.commit_author.as_ref());
     // Always create a versioned branch for Krew PRs.
     let branch = Some(branch_name.as_str());
     util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, branch, "krew", &commit_opts)?;
@@ -484,9 +479,10 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         repo_owner, repo_name, branch_name
     ));
 
-    // Submit a PR.  When `repository.pull_request` is configured, use
-    // the unified PR helper (which respects `base`, `draft`, `body`).
-    // Otherwise fall back to the legacy `upstream_repo` field.
+    // Submit a PR. When `repository.pull_request` is configured, use the
+    // unified PR helper (which respects `base`, `draft`, `body`); otherwise
+    // submit a PR via `gh` CLI against the canonical kubernetes-sigs/krew-index
+    // (or `repository.pull_request.base` when set).
     let has_pr_config = krew_cfg
         .repository
         .as_ref()
@@ -510,14 +506,11 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             log,
         );
     } else {
-        // Legacy path: always submit a PR. Upstream is the canonical
-        // krew-index repository unless explicitly overridden. Falling back
-        // to the user's own repo (the prior behavior) silently created
-        // useless intra-fork PRs against the user's empty `main` branch
-        // instead of against the real upstream. The upstream PR target now
-        // comes from `repository.pull_request.base` (a `RepositoryRef` with
-        // owner/name); when absent fall back to the canonical
-        // kubernetes-sigs/krew-index slug.
+        // No `repository.pull_request:` block — always submit a PR against the
+        // canonical kubernetes-sigs/krew-index slug (or the override in
+        // `repository.pull_request.base`). Submitting against the user's own
+        // fork would silently create useless intra-fork PRs against the user's
+        // empty `main` branch instead of against the real upstream.
         let upstream_slug = krew_cfg
             .repository
             .as_ref()

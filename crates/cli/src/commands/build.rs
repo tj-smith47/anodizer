@@ -26,7 +26,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     );
 
     let config_path = pipeline::find_config(opts.config_override.as_deref())?;
-    let (mut config, deprecations) = pipeline::load_config_with_deprecations(&config_path)?;
+    let mut config = pipeline::load_config(&config_path)?;
 
     // Resolve workspace if specified
     if let Some(ref ws_name) = opts.workspace {
@@ -57,9 +57,6 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
-    for (prop, msg) in &deprecations {
-        ctx.deprecate(prop, msg);
-    }
     helpers::setup_context(&mut ctx, &config, &log)?;
 
     // Run before-hooks (GoReleaser's BuildCmdPipeline includes before.Pipe).

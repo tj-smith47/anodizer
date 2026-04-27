@@ -722,14 +722,11 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
     }
 
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
-        "homebrew_cask",
-        "tap",
-        hb_cfg.repository.as_ref(),
-        None,
-        None,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("homebrew cask: no repository config for '{}'", crate_name))?;
+    let (repo_owner, repo_name) =
+        crate::util::resolve_repo_owner_name("homebrew_cask", hb_cfg.repository.as_ref())?
+            .ok_or_else(|| {
+                anyhow::anyhow!("homebrew cask: no repository config for '{}'", crate_name)
+            })?;
 
     let version = ctx.version();
     let cask_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
@@ -781,7 +778,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
     );
 
     let cask_lossy = cask_path.to_string_lossy();
-    let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref(), None, None);
+    let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref());
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(
         repo_path,
@@ -1286,14 +1283,10 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         return Ok(());
     }
 
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
-        "homebrew",
-        "tap",
-        hb_cfg.repository.as_ref(),
-        None,
-        None,
-    )?
-    .ok_or_else(|| anyhow::anyhow!("homebrew: no repository config for '{}'", crate_name))?;
+    let (repo_owner, repo_name) =
+        crate::util::resolve_repo_owner_name("homebrew", hb_cfg.repository.as_ref())?.ok_or_else(
+            || anyhow::anyhow!("homebrew: no repository config for '{}'", crate_name),
+        )?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -1630,7 +1623,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         kind,
     );
 
-    let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref(), None, None);
+    let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref());
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(
         repo_path,
@@ -1722,13 +1715,12 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
         // Repository is required for top-level cask.
         let repo_cfg = cask_cfg.repository.as_ref();
         let (repo_owner, repo_name) =
-            crate::util::resolve_repo_owner_name("homebrew_casks", "tap", repo_cfg, None, None)?
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "homebrew_casks: no repository config for cask '{}'",
-                        cask_name
-                    )
-                })?;
+            crate::util::resolve_repo_owner_name("homebrew_casks", repo_cfg)?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "homebrew_casks: no repository config for cask '{}'",
+                    cask_name
+                )
+            })?;
 
         // Directory defaults to "Casks" (GoReleaser default).
         // GoReleaser templates the directory field.
@@ -1912,8 +1904,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
         );
 
         let cask_lossy = cask_path.to_string_lossy();
-        let commit_opts =
-            crate::util::resolve_commit_opts(cask_cfg.commit_author.as_ref(), None, None);
+        let commit_opts = crate::util::resolve_commit_opts(cask_cfg.commit_author.as_ref());
         let branch = crate::util::resolve_branch(repo_cfg);
         crate::util::commit_and_push_with_opts(
             repo_path,
