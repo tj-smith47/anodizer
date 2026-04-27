@@ -1967,7 +1967,7 @@ impl Stage for DockerStage {
                 // Check disable — skip when template evaluates to true
                 if is_docker_v2_disabled(&v2_cfg.skip, ctx)? {
                     log.status(&format!(
-                        "docker_v2[{}]: skipping disabled config for crate {}",
+                        "docker_v2[{}]: skipping config for crate {} (skip=true)",
                         idx, krate.name
                     ));
                     continue;

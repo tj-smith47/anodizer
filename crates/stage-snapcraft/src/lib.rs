@@ -524,7 +524,7 @@ impl Stage for SnapcraftStage {
                         })?;
                     if off {
                         log.status(&format!(
-                            "skipping disabled snapcraft config for crate {}",
+                            "skipping snapcraft config for crate {} (skip=true)",
                             krate.name
                         ));
                         continue;

@@ -72,11 +72,11 @@ pub fn run_publishers(
                 .with_context(|| format!("[publisher] render skip template for {}", label))?;
             if off {
                 log.verbose(&format!(
-                    "[publisher] skipping {} -- disabled by template",
+                    "[publisher] skipping {} -- skip=true (template)",
                     label
                 ));
                 if let Some(sm) = skip_memento {
-                    sm.remember("publisher", label, "disabled by template");
+                    sm.remember("publisher", label, "skipped by template");
                 }
                 continue;
             }

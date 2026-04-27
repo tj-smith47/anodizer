@@ -736,10 +736,7 @@ impl Stage for ReleaseStage {
                         )
                     })?;
                 if off {
-                    log.status(&format!(
-                        "release disabled for crate '{}', skipping",
-                        crate_cfg.name
-                    ));
+                    log.status(&format!("release skipped for crate '{}'", crate_cfg.name));
                     continue;
                 }
             }

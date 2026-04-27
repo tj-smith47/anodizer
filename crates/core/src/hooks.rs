@@ -68,18 +68,14 @@ pub fn run_hooks(
 
         let expanded_env: Option<Vec<(String, String)>> = match env {
             Some(envs) => {
-                let parsed = config::parse_env_entries(envs)
-                    .with_context(|| format!("{label} hook: parse env entries"))?;
-                let mut out = Vec::with_capacity(parsed.len());
-                for (k, v) in parsed {
-                    let expanded_v = if let Some(tv) = template_vars {
-                        render_hook_template(&v, tv, label)?
-                    } else {
-                        v
-                    };
-                    out.push((k, expanded_v));
-                }
-                Some(out)
+                let pairs = if let Some(tv) = template_vars {
+                    config::render_env_entries(envs, |s| render_hook_template(s, tv, label))
+                        .with_context(|| format!("{label} hook: render env entries"))?
+                } else {
+                    config::parse_env_entries(envs)
+                        .with_context(|| format!("{label} hook: parse env entries"))?
+                };
+                Some(pairs)
             }
             None => None,
         };

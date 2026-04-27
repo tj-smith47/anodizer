@@ -243,7 +243,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             || cl.abbrev.is_some();
         if has_other {
             warnings.push(
-                "changelog: disable is true but other changelog fields are also set (they will be ignored)".to_string(),
+                "changelog: skip is true but other changelog fields are also set (they will be ignored)".to_string(),
             );
         }
     }
@@ -271,7 +271,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             || cksum.ids.is_some();
         if has_other {
             warnings.push(
-                "defaults.checksum: disable is true but other checksum fields are also set (they will be ignored)".to_string(),
+                "defaults.checksum: skip is true but other checksum fields are also set (they will be ignored)".to_string(),
             );
         }
     }
@@ -287,7 +287,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
                 || cksum.ids.is_some();
             if has_other {
                 warnings.push(format!(
-                    "crate '{}': checksum disable is true but other checksum fields are also set (they will be ignored)",
+                    "crate '{}': checksum skip is true but other checksum fields are also set (they will be ignored)",
                     c.name,
                 ));
             }

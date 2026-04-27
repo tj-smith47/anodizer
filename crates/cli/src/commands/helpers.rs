@@ -401,11 +401,11 @@ pub fn setup_env(
     // Populate user-defined env vars into template context (highest priority).
     // GoReleaser renders env values through the template engine.
     if let Some(ref env_list) = config.env {
-        let parsed = anodizer_core::config::parse_env_entries(env_list)
-            .with_context(|| "config.env: parse entries")?;
-        for (key, value) in &parsed {
-            let rendered = ctx.render_template(value).unwrap_or_else(|_| value.clone());
-            ctx.template_vars_mut().set_config_env(key, &rendered);
+        let rendered_pairs =
+            anodizer_core::config::render_env_entries(env_list, |v| ctx.render_template(v))
+                .with_context(|| "config.env: parse and render entries")?;
+        for (key, rendered) in rendered_pairs {
+            ctx.template_vars_mut().set_config_env(&key, &rendered);
             // Also set in the process environment so that child processes which
             // inherit env (docker, lipo, rustup, git, hook scripts) see these
             // values. Some commands use explicit `.envs()`, but many rely on
@@ -414,7 +414,7 @@ pub fn setup_env(
             // SAFETY: This is called during single-threaded pipeline setup in
             // `setup_env`, before any worker threads are spawned. No concurrent
             // readers of the process environment exist at this point.
-            set_env_var_single_threaded(key, &rendered);
+            set_env_var_single_threaded(&key, &rendered);
         }
     }
 

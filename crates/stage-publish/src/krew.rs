@@ -257,7 +257,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             .with_context(|| format!("krew: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!(
-                "krew: skipping disabled config for '{}' (disable=true)",
+                "krew: skipping config for '{}' (skip=true)",
                 crate_name
             ));
             return Ok(());
