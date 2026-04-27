@@ -712,7 +712,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         .skip_upload
         .as_ref()
         .or(hb_cfg.skip_upload.as_ref());
-    if crate::util::should_skip_upload(effective_skip, ctx) {
+    if crate::util::should_skip_upload(effective_skip, ctx, log) {
         log.status(&format!(
             "homebrew cask: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -1269,7 +1269,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx) {
+    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "homebrew: skipping upload for '{}' (skip_upload={})",
             crate_name,
@@ -1571,7 +1571,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     let mut cask_path_lossy: Option<String> = None;
 
     if let Some(cask_cfg) = hb_cfg.cask.as_ref() {
-        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
+        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
             log.status(&format!(
                 "homebrew cask: skipping upload for '{}' (skip_upload={})",
                 crate_name,
@@ -1701,7 +1701,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
         let version = ctx.version();
 
         // Check skip_upload.
-        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
+        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
             log.status(&format!(
                 "homebrew_casks: skipping upload for '{}' (skip_upload)",
                 cask_name

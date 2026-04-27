@@ -684,6 +684,7 @@ pub(crate) fn resolve_repo_owner_name(
 pub(crate) fn should_skip_upload(
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
     ctx: &Context,
+    log: &StageLogger,
 ) -> bool {
     let raw = match skip_upload {
         Some(v) => v.as_str(),
@@ -702,10 +703,9 @@ pub(crate) fn should_skip_upload(
         }
         "false" | "" => false,
         other => {
-            eprintln!(
-                "  ⚠ unrecognized skip_upload value {:?} (expected \"true\", \"false\", or \"auto\"); treating as false",
-                other
-            );
+            log.warn(&format!(
+                "unrecognized skip_upload value {other:?} (expected \"true\", \"false\", or \"auto\"); treating as false"
+            ));
             false
         }
     }
@@ -1466,8 +1466,13 @@ mod tests {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{Config, CrateConfig};
     use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::Verbosity;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    fn test_log() -> StageLogger {
+        StageLogger::new("publish-test", Verbosity::Quiet)
+    }
 
     /// Helper: build a Context with mock Archive artifacts for a given crate.
     fn ctx_with_artifacts(crate_name: &str, artifacts: Vec<(&str, &str, &str)>) -> Context {
@@ -2079,7 +2084,7 @@ mod tests {
         use anodizer_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
         let val = StringOrBool::String("true".to_string());
-        assert!(should_skip_upload(Some(&val), &ctx));
+        assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2088,7 +2093,7 @@ mod tests {
         use anodizer_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
         let val = StringOrBool::Bool(true);
-        assert!(should_skip_upload(Some(&val), &ctx));
+        assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2096,7 +2101,7 @@ mod tests {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!should_skip_upload(None, &ctx));
+        assert!(!should_skip_upload(None, &ctx, &test_log()));
     }
 
     #[test]
@@ -2105,7 +2110,7 @@ mod tests {
         use anodizer_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
         let val = StringOrBool::String("false".to_string());
-        assert!(!should_skip_upload(Some(&val), &ctx));
+        assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2114,7 +2119,7 @@ mod tests {
         use anodizer_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
         let val = StringOrBool::Bool(false);
-        assert!(!should_skip_upload(Some(&val), &ctx));
+        assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2124,7 +2129,7 @@ mod tests {
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("Prerelease", "rc.1");
         let val = StringOrBool::String("auto".to_string());
-        assert!(should_skip_upload(Some(&val), &ctx));
+        assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2134,7 +2139,7 @@ mod tests {
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("Prerelease", "");
         let val = StringOrBool::String("auto".to_string());
-        assert!(!should_skip_upload(Some(&val), &ctx));
+        assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2143,7 +2148,7 @@ mod tests {
         use anodizer_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
         let val = StringOrBool::String("auto".to_string());
-        assert!(!should_skip_upload(Some(&val), &ctx));
+        assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2153,7 +2158,7 @@ mod tests {
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set_env("SKIP", "true");
         let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-        assert!(should_skip_upload(Some(&val), &ctx));
+        assert!(should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     #[test]
@@ -2163,7 +2168,7 @@ mod tests {
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set_env("SKIP", "false");
         let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-        assert!(!should_skip_upload(Some(&val), &ctx));
+        assert!(!should_skip_upload(Some(&val), &ctx, &test_log()));
     }
 
     // -----------------------------------------------------------------------

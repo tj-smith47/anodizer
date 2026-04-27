@@ -1,5 +1,7 @@
 ## Changelog
 
+* f4d41c85d81b714f3e4ccdb8801f98d7788ed51a drop residual journal comments + GR-historical vocab in dogfooding matrix
+* c49b1550c5ef6230bf2aeba180f4a3971d2f4305 skip default-inherited builds for library crates with no bin target
 * 43fa1b4cbe55685b6e842f4e5a6181b7fdeec57e collapse resolve_repo_owner_name to single arg + drop dead Result wrapper
 * 13958767306d39f28f4d1c2063cddb8622d80c6f DEC-5 hard-break — drop GR back-compat aliases + deprecation surface
 * 08a2abc6b2758982d2c6f7f591e419f9f4bc8a4d rephrase WAVE 6 archive-collision row

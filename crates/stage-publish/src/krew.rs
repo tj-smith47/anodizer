@@ -263,7 +263,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             return Ok(());
         }
     }
-    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx) {
+    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "krew: skipping upload for '{}' (skip_upload={})",
             crate_name,

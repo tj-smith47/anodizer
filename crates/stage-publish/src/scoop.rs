@@ -193,7 +193,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if util::should_skip_upload(scoop_cfg.skip_upload.as_ref(), ctx) {
+    if util::should_skip_upload(scoop_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "scoop: skipping upload for '{}' (skip_upload={})",
             crate_name,

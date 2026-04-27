@@ -105,6 +105,7 @@ dependencies = [
  "tera",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]

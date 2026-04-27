@@ -707,7 +707,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             return Ok(());
         }
     }
-    if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx) {
+    if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "nix: skipping upload for '{}' (skip_upload={})",
             crate_name,

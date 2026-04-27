@@ -39,3 +39,4 @@ md-5.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
 tokio.workspace = true
+tracing.workspace = true

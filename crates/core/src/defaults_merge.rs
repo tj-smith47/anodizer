@@ -257,16 +257,19 @@ fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
 ///
 /// Defaults merging is best-effort by design — a serialise / deserialise
 /// failure here leaves `target` unchanged rather than failing the whole
-/// pipeline. We still surface the failure on stderr so that genuinely broken
-/// configs surface in CI rather than silently dropping defaults.
+/// pipeline. We still surface the failure via `tracing::warn!` so that
+/// genuinely broken configs surface in CI rather than silently dropping
+/// defaults.
 fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, defaults: &T) {
     let type_name = std::any::type_name::<T>();
     let mut crate_json = match serde_json::to_value(&*target) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!(
-                "[defaults_merge] WARNING: failed to serialize target of type {type_name}: \
-                 {err}; defaults inheritance skipped for this field"
+            tracing::warn!(
+                target = "defaults_merge",
+                type_name,
+                error = %err,
+                "failed to serialize target; defaults inheritance skipped for this field"
             );
             return;
         }
@@ -274,9 +277,11 @@ fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, de
     let defaults_json = match serde_json::to_value(defaults) {
         Ok(v) => v,
         Err(err) => {
-            eprintln!(
-                "[defaults_merge] WARNING: failed to serialize defaults of type {type_name}: \
-                 {err}; defaults inheritance skipped for this field"
+            tracing::warn!(
+                target = "defaults_merge",
+                type_name,
+                error = %err,
+                "failed to serialize defaults; defaults inheritance skipped for this field"
             );
             return;
         }
@@ -285,9 +290,11 @@ fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, de
     match serde_json::from_value::<T>(crate_json) {
         Ok(merged) => *target = merged,
         Err(err) => {
-            eprintln!(
-                "[defaults_merge] WARNING: failed to deserialize merged value of type \
-                 {type_name}: {err}; defaults inheritance skipped for this field"
+            tracing::warn!(
+                target = "defaults_merge",
+                type_name,
+                error = %err,
+                "failed to deserialize merged value; defaults inheritance skipped for this field"
             );
         }
     }
