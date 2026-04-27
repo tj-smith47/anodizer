@@ -956,10 +956,10 @@ where
 ///
 /// Multi-publisher fields are single-struct on both sides today: defaults
 /// supplies one struct per publisher, and per-crate `publish.*` fields are
-/// also single-struct. WAVE 3 will introduce list-or-scalar via
+/// also single-struct. A future change may introduce list-or-scalar via
 /// `OneOrMany<T>` on the per-crate side so a crate can declare multiple
-/// homebrew taps / scoop buckets / etc.; the defaults side stays single-
-/// struct and merges into the first per-crate entry by identity.
+/// homebrew taps / scoop buckets / etc.; the defaults side would stay
+/// single-struct and merge into the first per-crate entry by identity.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
@@ -1046,15 +1046,11 @@ pub struct PublishDefaults {
     pub homebrew: Option<HomebrewConfig>,
     /// Default Homebrew Cask settings, merged into per-crate `publish.homebrew_cask`.
     ///
-    /// Uses the unified `HomebrewCaskConfig` (WAVE 4). Single-struct per DEC-3;
-    /// TODO(WAVE-6): expand to OneOrMany<HomebrewCaskConfig>.
+    /// Single-struct per DEC-3.
     pub homebrew_cask: Option<HomebrewCaskConfig>,
     /// Default crates.io publish settings, merged into per-crate `publish.cargo`.
     ///
-    /// TODO(WAVE-6): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>`
-    /// once WAVE 6 (YAML migration / defaults block expansion) generalises the
-    /// `OneOrMany` pattern across all publishers; today every per-crate publisher
-    /// field is single-struct, so defaults are too.
+    /// Single-struct per DEC-3.
     pub cargo: Option<CargoPublishConfig>,
     /// Default Scoop manifest settings.
     pub scoop: Option<ScoopConfig>,
@@ -1073,16 +1069,15 @@ pub struct PublishDefaults {
 }
 
 /// Marker block under `defaults.crates:` that signals crate-axis defaults
-/// scope. Required to drive the DEC-4 axis-mismatch validator. Empty for
-/// WAVE 2; future waves will populate it with per-crate-id overrides.
+/// scope. Required to drive the DEC-4 axis-mismatch validator. Currently
+/// empty; future per-crate-id overrides will live here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct DefaultsCrateBlock {}
 
 /// Marker block under `defaults.workspaces:` that signals workspace-axis
 /// defaults scope. Required to drive the DEC-4 axis-mismatch validator.
-/// Empty for WAVE 2; future waves will populate it with per-workspace-name
-/// overrides.
+/// Currently empty; future per-workspace-name overrides will live here.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct DefaultsWorkspaceBlock {}
@@ -2763,9 +2758,9 @@ pub struct ScoopConfig {
     pub skip_upload: Option<StringOrBool>,
     /// Custom commit message template.
     pub commit_msg_template: Option<String>,
-    // Legacy flat `commit_author_name` / `commit_author_email` fields removed
-    // in the WAVE 5 mop-up (drained from the WAVE 5.5 follow-up known-bug);
-    // use the structured `commit_author: { name, email, signing }` form.
+    // Use the structured `commit_author: { name, email, signing }` form for
+    // commit author identity (legacy flat `commit_author_name` /
+    // `commit_author_email` fields are not accepted).
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Custom URL template for download URLs (overrides release URL).
@@ -3130,12 +3125,7 @@ pub struct NixDependency {
     pub os: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
-// DockerConfig — REMOVED in WAVE 5.5 (SCH-4 / DEC-5 hard-break)
-// ---------------------------------------------------------------------------
-//
-// The legacy `DockerConfig` struct was dropped along with `CrateConfig.docker`.
-// Use [`DockerV2Config`] (canonical) for all docker image builds.
+// Use `DockerV2Config` (canonical) for docker image builds.
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]

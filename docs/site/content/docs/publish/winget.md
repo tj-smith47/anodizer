@@ -70,7 +70,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `dependencies` | list of objects | none | Package dependencies (see below) |
 | `product_code` | string | none | Product code for Add/Remove Programs |
 | `use` | string | `archive` | Artifact type: `archive`, `msi`, or `nsis` |
-| `goamd64` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
+| `amd64_variant` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
 
 ## Repository config
 

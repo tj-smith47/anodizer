@@ -659,17 +659,15 @@ pub(crate) struct CommitOptions<'a> {
 /// Resolve repository owner/name from a RepositoryConfig.
 ///
 /// Returns `Some((owner, name))` when both fields are populated, `None`
-/// when neither is set, and bails when the publisher has no owner/name
-/// configured at all (callers .ok_or_else()).
+/// when neither is set or only one is set. Callers chain `.ok_or_else()`
+/// to surface a missing-repository error.
 pub(crate) fn resolve_repo_owner_name(
-    _publisher: &str,
     repo: Option<&anodizer_core::config::RepositoryConfig>,
-) -> Result<Option<(String, String)>> {
-    let modern = repo.and_then(|r| match (r.owner.as_deref(), r.name.as_deref()) {
+) -> Option<(String, String)> {
+    repo.and_then(|r| match (r.owner.as_deref(), r.name.as_deref()) {
         (Some(o), Some(n)) => Some((o.to_string(), n.to_string())),
         _ => None,
-    });
-    Ok(modern)
+    })
 }
 
 /// Resolve `skip_upload` to a boolean for publisher entry-points.
@@ -2180,13 +2178,13 @@ mod tests {
             name: Some("b".into()),
             ..Default::default()
         };
-        let got = resolve_repo_owner_name("homebrew", Some(&repo)).unwrap();
+        let got = resolve_repo_owner_name(Some(&repo));
         assert_eq!(got, Some(("a".to_string(), "b".to_string())));
     }
 
     #[test]
     fn test_resolve_repo_owner_name_neither() {
-        let got = resolve_repo_owner_name("homebrew", None).unwrap();
+        let got = resolve_repo_owner_name(None);
         assert_eq!(got, None);
     }
 
@@ -2197,7 +2195,7 @@ mod tests {
             branch: Some("main".into()),
             ..Default::default()
         };
-        let got = resolve_repo_owner_name("homebrew", Some(&repo)).unwrap();
+        let got = resolve_repo_owner_name(Some(&repo));
         assert_eq!(got, None);
     }
 }

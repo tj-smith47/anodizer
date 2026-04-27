@@ -491,7 +491,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     }
 
     let (repo_owner, repo_name) =
-        crate::util::resolve_repo_owner_name("winget", winget_cfg.repository.as_ref())?
+        crate::util::resolve_repo_owner_name(winget_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;
 
     let name_raw = winget_cfg.name.as_deref().unwrap_or(crate_name);

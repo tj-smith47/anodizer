@@ -59,18 +59,6 @@ CLI flag rename: `--skip=crates` → `--skip=cargo`.
 |---|---|
 | top-level `snapcrafts[].slots` | `snapcrafts[].apps.<name>.slots` |
 
-## Snapshot (deprecated alias, opportunistically migrated this wave)
-
-| Before | After |
-|---|---|
-| `snapshot: { name_template: "..." }` | `snapshot: { version_template: "..." }` |
-
-`name_template` still parses via `#[serde(alias = "name_template")]`
-deprecation; the dogfood YAML now uses the canonical `version_template` to
-silence the deprecation warning at `anodizer check` time.
-
----
-
 ## DEC-9 inheritance (the new defaults block)
 
 Both YAMLs now hoist shared publisher / archive / sign config to a top-level
@@ -91,7 +79,7 @@ no other crate uses.
 
 For list-typed defaults (archives, nfpms, snapcrafts, dmgs, pkgs, msis,
 nsis, app_bundles, flatpaks, docker_v2): the defaults entry deep-merges
-into the per-crate entry that shares its identity key (`format` for
+into the per-crate entry that shares its identity key (`formats[0]` for
 archives, `id`/`name`/`package_name` for packagers). Per-crate entries
 without a matching identity stand alone; defaults entries without a match
 are appended.
@@ -146,6 +134,32 @@ to the right-hand spelling before upgrading.
 | `announce.smtp:` | `announce.email:` | GoReleaser keeps both — anodizer mirrors so configs copied from GR docs parse without rewrites (SCH-34). |
 | Snapcraft hyphen-aliases (`stop-mode`, `restart-condition`, `bus-name`, …) | underscore-form Rust field names | The hyphen form is snap.yaml's canonical spelling; the underscore form is needed because Rust identifiers can't contain hyphens. Both keep parsing because users write hyphens in snap.yaml. |
 
+### Naming hazards (look near-identical, are not interchangeable)
+
+`NfpmContent` and `MakeselfFile` both describe "a file to copy into the
+package," but they use different key names because each mirrors its own
+upstream tool's config:
+
+| Struct | Source key | Destination key | Mirrors |
+|---|---|---|---|
+| `NfpmContent` | `src:` | `dst:` | nfpm.yaml |
+| `MakeselfFile` | `source:` | `destination:` | makeself published spec |
+
+Each struct rejects the other's key names with a serde "unknown field"
+error and **does not suggest the cross-tool spelling** in the error
+message. If you copy a content block from one publisher to the other,
+re-key it by hand:
+
+```yaml
+# nfpms[].contents[]
+- src: target/release/myapp
+  dst: /usr/bin/myapp
+
+# makeselfs[].files[]
+- source: target/release/myapp
+  destination: /opt/myapp/bin/myapp
+```
+
 ### Deprecation infrastructure removed
 
 `detect_deprecated_aliases`, `load_config_with_deprecations`, the
@@ -159,10 +173,13 @@ spellings (no migration hint).
 ### Other cleanups bundled in this batch
 
 - `resolve_repo_owner_name(publisher, legacy_field, modern, legacy_owner, legacy_name)` →
-  `resolve_repo_owner_name(publisher, modern)`. The legacy-field bail path
+  `resolve_repo_owner_name(modern)`. The legacy-field bail path
   (modern + legacy both set with full owner/name pairs → error) was dead
   surface — every call site already passed `None, None` for the legacy
-  pair. Dropped the param + 3 dead unit tests.
+  pair. The `publisher: &str` param survived the first cleanup but was
+  also dead (every call site passed a string-literal that never reached
+  any branch); dropped in the post-DEC-5 cleanup along with the
+  `Result<>` wrapper (the function never returned `Err`).
 - `resolve_commit_opts(commit_author, legacy_name, legacy_email)` →
   `resolve_commit_opts(commit_author)`. Same story — every call site
   passed `None, None` for the legacy pair.

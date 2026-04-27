@@ -207,7 +207,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     }
 
     let (repo_owner, repo_name) =
-        crate::util::resolve_repo_owner_name("scoop", scoop_cfg.repository.as_ref())?
+        crate::util::resolve_repo_owner_name(scoop_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("scoop: no repository config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {

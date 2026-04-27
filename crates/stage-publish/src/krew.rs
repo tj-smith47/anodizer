@@ -279,7 +279,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
     // GoReleaser applies TemplateRef() to repository fields (krew.go:292-296).
     let (repo_owner_raw, repo_name_raw) =
-        crate::util::resolve_repo_owner_name("krew", krew_cfg.repository.as_ref())?
+        crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("krew: no repository config for '{}'", crate_name))?;
     let repo_owner = ctx
         .render_template(&repo_owner_raw)

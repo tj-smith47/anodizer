@@ -721,7 +721,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     let (repo_owner_raw, repo_name_raw) =
-        crate::util::resolve_repo_owner_name("nix", nix_cfg.repository.as_ref())?
+        crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref())
             .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
     let repo_owner = ctx
         .render_template(&repo_owner_raw)

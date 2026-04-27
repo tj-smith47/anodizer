@@ -3536,7 +3536,7 @@
       ]
     },
     "Defaults": {
-      "description": "Workspace-level defaults that path-mirror the `CrateConfig` (and select top-level `Config`) shape. Each field here is folded into every resolved crate by `defaults_merge::apply_defaults` according to the deep-merge / merge-by-identity semantics documented in `defaults_merge`.\n\nMulti-publisher fields are single-struct on both sides today: defaults supplies one struct per publisher, and per-crate `publish.*` fields are also single-struct. WAVE 3 will introduce list-or-scalar via `OneOrMany<T>` on the per-crate side so a crate can declare multiple homebrew taps / scoop buckets / etc.; the defaults side stays single- struct and merges into the first per-crate entry by identity.",
+      "description": "Workspace-level defaults that path-mirror the `CrateConfig` (and select top-level `Config`) shape. Each field here is folded into every resolved crate by `defaults_merge::apply_defaults` according to the deep-merge / merge-by-identity semantics documented in `defaults_merge`.\n\nMulti-publisher fields are single-struct on both sides today: defaults supplies one struct per publisher, and per-crate `publish.*` fields are also single-struct. A future change may introduce list-or-scalar via `OneOrMany<T>` on the per-crate side so a crate can declare multiple homebrew taps / scoop buckets / etc.; the defaults side would stay single-struct and merge into the first per-crate entry by identity.",
       "type": "object",
       "properties": {
         "app_bundles": {
@@ -3864,11 +3864,11 @@
       }
     },
     "DefaultsCrateBlock": {
-      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Empty for WAVE 2; future waves will populate it with per-crate-id overrides.",
+      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-crate-id overrides will live here.",
       "type": "object"
     },
     "DefaultsWorkspaceBlock": {
-      "description": "Marker block under `defaults.workspaces:` that signals workspace-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Empty for WAVE 2; future waves will populate it with per-workspace-name overrides.",
+      "description": "Marker block under `defaults.workspaces:` that signals workspace-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-workspace-name overrides will live here.",
       "type": "object"
     },
     "DiscordAnnounce": {
@@ -8975,7 +8975,7 @@
           ]
         },
         "cargo": {
-          "description": "Default crates.io publish settings, merged into per-crate `publish.cargo`.\n\nTODO(WAVE-6): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>` once WAVE 6 (YAML migration / defaults block expansion) generalises the `OneOrMany` pattern across all publishers; today every per-crate publisher field is single-struct, so defaults are too.",
+          "description": "Default crates.io publish settings, merged into per-crate `publish.cargo`.\n\nSingle-struct per DEC-3.",
           "default": null,
           "anyOf": [
             {
@@ -9011,7 +9011,7 @@
           ]
         },
         "homebrew_cask": {
-          "description": "Default Homebrew Cask settings, merged into per-crate `publish.homebrew_cask`.\n\nUses the unified `HomebrewCaskConfig` (WAVE 4). Single-struct per DEC-3; TODO(WAVE-6): expand to OneOrMany<HomebrewCaskConfig>.",
+          "description": "Default Homebrew Cask settings, merged into per-crate `publish.homebrew_cask`.\n\nSingle-struct per DEC-3.",
           "default": null,
           "anyOf": [
             {

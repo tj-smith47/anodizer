@@ -40,8 +40,8 @@ Both `manifests_repo` (or `repository`) and `short_description` are required. Th
 | `caveats` | string | none | Post-install message shown to users after `kubectl krew install` |
 | `skip_upload` | bool or string | `false` | Skip publishing; `true` always skips, `"auto"` skips for pre-releases |
 | `upstream_repo` | object | none | Legacy PR target repo (`owner`/`name`). Prefer `repository.pull_request.base` |
-| `goamd64` | string | `"v1"` | amd64 microarchitecture variant filter (`"v1"`, `"v2"`, `"v3"`, `"v4"`) |
-| `goarm` | string | none | ARM version filter (`"6"`, `"7"`) |
+| `amd64_variant` | string | `"v1"` | amd64 microarchitecture variant filter (`"v1"`, `"v2"`, `"v3"`, `"v4"`) |
+| `arm_variant` | string | none | ARM version filter (`"6"`, `"7"`) |
 
 All string fields support Tera template rendering (e.g. `{{ ProjectName }}`, `{{ Version }}`).
 
@@ -77,7 +77,7 @@ Anodizer resolves a GitHub token from the `repository.token` field, or falls bac
 
 ## How plugin manifests are generated
 
-Anodizer discovers all build artifacts for the crate (filtered by `ids`, `goamd64`, and `goarm` if set), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.
+Anodizer discovers all build artifacts for the crate (filtered by `ids`, `amd64_variant`, and `arm_variant` if set), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.
 
 Each artifact becomes a platform entry with:
 - **selector**: `matchLabels` for `os` (linux, darwin, windows) and `arch` (amd64, arm64)
@@ -152,7 +152,7 @@ crates:
           email: "bot@example.com"
         ids:
           - mytool
-        goamd64: "v1"
+        amd64_variant: "v1"
         skip_upload: auto
 ```
 

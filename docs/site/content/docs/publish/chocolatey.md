@@ -52,7 +52,7 @@ crates:
 | `skip_publish` | bool | `false` | Skip pushing the `.nupkg` to the Chocolatey repository |
 | `disable` | bool or string | `false` | Disable this publisher entirely. Accepts a bool or a template string that evaluates to a truthy value |
 | `use` | string | `archive` | Artifact type to package: `archive`, `msi`, or `nsis` |
-| `goamd64` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
+| `amd64_variant` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
 
 ### Dependencies
 
@@ -76,7 +76,7 @@ The environment variable is used as a fallback when `api_key` is not set in the 
 
 When the publish stage runs for Chocolatey, Anodizer:
 
-1. **Finds Windows artifacts** from the build stage, filtering by `ids` and `goamd64` if configured. It looks for both 32-bit (i686/i386/x86) and 64-bit artifacts.
+1. **Finds Windows artifacts** from the build stage, filtering by `ids` and `amd64_variant` if configured. It looks for both 32-bit (i686/i386/x86) and 64-bit artifacts.
 2. **Generates a `.nuspec` XML manifest** containing all package metadata (name, version, authors, description, license, tags, dependencies, etc.). All XML special characters are properly escaped.
 3. **Generates a `chocolateyInstall.ps1` PowerShell script** placed in a `tools/` directory. The script uses `Install-ChocolateyZipPackage` with SHA-256 checksums. If both 32-bit and 64-bit artifacts are found, a dual-architecture script is generated that passes both URLs; otherwise a single-architecture script is produced.
 4. **Runs `choco pack`** to create the `.nupkg` file from the nuspec and tools directory.

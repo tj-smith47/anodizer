@@ -941,10 +941,10 @@ crates:
     }
 }
 
-// ---- archive.format tests ----
+// ---- archive.formats tests ----
 
 #[test]
-fn test_parse_archive_format_tar_gz() {
+fn test_parse_archive_formats_tar_gz() {
     let yaml = r#"
 project_name: test
 crates:
@@ -966,7 +966,7 @@ crates:
 }
 
 #[test]
-fn test_parse_archive_format_zip() {
+fn test_parse_archive_formats_zip() {
     let yaml = r#"
 project_name: test
 crates:
@@ -988,7 +988,7 @@ crates:
 }
 
 #[test]
-fn test_parse_archive_format_tar_xz() {
+fn test_parse_archive_formats_tar_xz() {
     let yaml = r#"
 project_name: test
 crates:
@@ -1010,7 +1010,7 @@ crates:
 }
 
 #[test]
-fn test_parse_archive_format_invalid_accepted_at_parse_time() {
+fn test_parse_archive_formats_invalid_accepted_at_parse_time() {
     // Config parsing accepts any string; validation happens later
     let yaml = r#"
 project_name: test
