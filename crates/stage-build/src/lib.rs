@@ -1419,6 +1419,20 @@ impl Stage for BuildStage {
             );
 
             for build in &builds {
+                // If this build has no explicit `binary:` and the crate has
+                // no binary target on disk (no `src/main.rs`, no `[[bin]]`),
+                // skip it. This protects library-only crates that inherited
+                // a `defaults.builds:` template — the template's missing
+                // `binary:` field would otherwise fall back to the crate
+                // name and `cargo build --bin <library-name>` would fail.
+                if build.binary.is_none() && !crate_has_binary_target(&crate_cfg.path) {
+                    log.status(&format!(
+                        "skipping build for crate '{}' — no explicit binary, no binary target found",
+                        crate_cfg.name
+                    ));
+                    continue;
+                }
+
                 // Resolve binary name template — falls back to the crate's
                 // `name` field when not set so `defaults.builds` (the
                 // path-mirrored template) can omit it.
@@ -4093,6 +4107,81 @@ crates:
         assert!(
             binaries.is_empty(),
             "skipped build should produce no artifacts"
+        );
+    }
+
+    /// Regression: a library-only crate (no `src/main.rs`, no `[[bin]]`)
+    /// that inherited a `defaults.builds:` template must NOT trigger a
+    /// `cargo build --bin <library-name>` invocation. Before the
+    /// `crate_has_binary_target` guard inside the per-build loop, the
+    /// inherited template (with `binary:` left None) would fall back to
+    /// the crate name and `cargo build --bin <library-name>` would fail
+    /// with `no bin target named '<library-name>'`.
+    #[test]
+    fn test_library_crate_with_inherited_builds_skipped() {
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use std::fs;
+
+        // Build a fake library-only crate on disk: a Cargo.toml with a
+        // [lib] section, no [[bin]], and no src/main.rs.
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("mylib");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+"#,
+        )
+        .unwrap();
+        fs::write(crate_dir.join("src/lib.rs"), "// library crate\n").unwrap();
+
+        // Sanity: confirm the helper agrees there's no binary target.
+        assert!(!crate_has_binary_target(crate_dir.to_str().unwrap()));
+
+        // Simulate the post-`apply_defaults` shape: the crate's `builds`
+        // field carries an inherited template with NO `binary:` set.
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "mylib".to_string(),
+            path: crate_dir.to_string_lossy().into_owned(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                // Inherited from defaults.builds — binary intentionally None.
+                binary: None,
+                targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        let stage = BuildStage;
+        let result = stage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "library crate with inherited defaults.builds should not error, got: {result:?}"
+        );
+
+        // No binary artifacts should be registered: the per-build loop
+        // must skip when `build.binary` is None and the crate has no
+        // binary target on disk.
+        let binaries = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert!(
+            binaries.is_empty(),
+            "library crate must not produce any binary artifacts; got {} entries",
+            binaries.len()
         );
     }
 

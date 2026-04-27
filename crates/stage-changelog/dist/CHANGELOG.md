@@ -1,5 +1,6 @@
 ## Changelog
 
+* 43fa1b4cbe55685b6e842f4e5a6181b7fdeec57e collapse resolve_repo_owner_name to single arg + drop dead Result wrapper
 * 13958767306d39f28f4d1c2063cddb8622d80c6f DEC-5 hard-break — drop GR back-compat aliases + deprecation surface
 * 08a2abc6b2758982d2c6f7f591e419f9f4bc8a4d rephrase WAVE 6 archive-collision row
 * a8103a67690fc0cab9d07a31995798667b9f47a6 WAVE 6 (anodizer) — migrate .anodizer.yaml to final Session B schema with defaults block
