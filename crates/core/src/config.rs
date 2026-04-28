@@ -1890,6 +1890,74 @@ pub struct ReleaseConfig {
     pub tag: Option<String>,
 }
 
+impl ReleaseConfig {
+    /// Default release-name template. Mirrors GoReleaser
+    /// `internal/pipe/release/release.go` (`cfg.NameTemplate = "{{.Tag}}"`).
+    /// Anodize uses Tera-style `{{ Tag }}` (no dot prefix); the rendered
+    /// value is identical for any tag the project produces.
+    pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";
+
+    /// Default release `mode`. Mirrors GoReleaser default
+    /// (`internal/pipe/release/release.go`: empty string is treated as
+    /// "keep-existing" — keep current release notes, don't overwrite).
+    pub const DEFAULT_MODE: &'static str = "keep-existing";
+
+    /// Valid `mode:` values. Anything else is a config error.
+    pub const VALID_MODES: &[&'static str] = &["keep-existing", "append", "prepend", "replace"];
+
+    /// Resolve the `name_template`, falling back to
+    /// [`Self::DEFAULT_NAME_TEMPLATE`].
+    pub fn resolved_name_template(&self) -> &str {
+        self.name_template
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_NAME_TEMPLATE)
+    }
+
+    /// Resolve the release `mode`, validating and falling back to
+    /// [`Self::DEFAULT_MODE`] when unset or empty. Returns an error when
+    /// the user supplied a value outside [`Self::VALID_MODES`] so the
+    /// invalid mode surfaces at the call site instead of producing a
+    /// silent no-op publish.
+    pub fn resolved_mode(&self) -> anyhow::Result<&str> {
+        match self.mode.as_deref() {
+            None | Some("") => Ok(Self::DEFAULT_MODE),
+            Some(m) if Self::VALID_MODES.contains(&m) => Ok(m),
+            Some(other) => Err(anyhow::anyhow!(
+                "release: invalid mode '{}', must be one of: {}",
+                other,
+                Self::VALID_MODES.join(", ")
+            )),
+        }
+    }
+
+    /// Resolve `draft`, falling back to `false`.
+    pub fn resolved_draft(&self) -> bool {
+        self.draft.unwrap_or(false)
+    }
+
+    /// Resolve `replace_existing_draft`, falling back to `false`.
+    pub fn resolved_replace_existing_draft(&self) -> bool {
+        self.replace_existing_draft.unwrap_or(false)
+    }
+
+    /// Resolve `replace_existing_artifacts`, falling back to `false`.
+    pub fn resolved_replace_existing_artifacts(&self) -> bool {
+        self.replace_existing_artifacts.unwrap_or(false)
+    }
+
+    /// Resolve `include_meta`, falling back to `false` (don't upload
+    /// metadata.json / artifacts.json as release assets by default).
+    pub fn resolved_include_meta(&self) -> bool {
+        self.include_meta.unwrap_or(false)
+    }
+
+    /// Resolve `use_existing_draft`, falling back to `false` (always
+    /// create a fresh draft when one isn't found by default).
+    pub fn resolved_use_existing_draft(&self) -> bool {
+        self.use_existing_draft.unwrap_or(false)
+    }
+}
+
 /// Schema for prerelease: "auto" or boolean.
 fn prerelease_schema(
     _generator: &mut schemars::r#gen::SchemaGenerator,
@@ -7072,6 +7140,96 @@ crates:
     #[test]
     fn test_sbom_default_syft_env_non_syft_empty() {
         assert!(SbomConfig::default_syft_env_for("trivy", "archive").is_empty());
+    }
+
+    // ---- ReleaseConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+
+    #[test]
+    fn test_release_resolved_name_template_default() {
+        assert_eq!(
+            ReleaseConfig::default().resolved_name_template(),
+            "{{ Tag }}"
+        );
+    }
+
+    #[test]
+    fn test_release_resolved_name_template_user_value_wins() {
+        let cfg = ReleaseConfig {
+            name_template: Some("{{ ProjectName }} {{ Version }}".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_name_template(),
+            "{{ ProjectName }} {{ Version }}"
+        );
+    }
+
+    #[test]
+    fn test_release_resolved_mode_default() {
+        assert_eq!(
+            ReleaseConfig::default().resolved_mode().unwrap(),
+            "keep-existing"
+        );
+    }
+
+    #[test]
+    fn test_release_resolved_mode_empty_string_falls_back() {
+        let cfg = ReleaseConfig {
+            mode: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_mode().unwrap(), "keep-existing");
+    }
+
+    #[test]
+    fn test_release_resolved_mode_valid_values() {
+        for mode in ["keep-existing", "append", "prepend", "replace"] {
+            let cfg = ReleaseConfig {
+                mode: Some(mode.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(cfg.resolved_mode().unwrap(), mode);
+        }
+    }
+
+    #[test]
+    fn test_release_resolved_mode_invalid_value_errors() {
+        let cfg = ReleaseConfig {
+            mode: Some("clobber".to_string()),
+            ..Default::default()
+        };
+        let err = cfg.resolved_mode().unwrap_err();
+        assert!(
+            err.to_string().contains("invalid mode 'clobber'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_release_resolved_bool_defaults_false() {
+        let cfg = ReleaseConfig::default();
+        assert!(!cfg.resolved_draft());
+        assert!(!cfg.resolved_replace_existing_draft());
+        assert!(!cfg.resolved_replace_existing_artifacts());
+        assert!(!cfg.resolved_include_meta());
+        assert!(!cfg.resolved_use_existing_draft());
+    }
+
+    #[test]
+    fn test_release_resolved_bool_user_values_win() {
+        let cfg = ReleaseConfig {
+            draft: Some(true),
+            replace_existing_draft: Some(true),
+            replace_existing_artifacts: Some(true),
+            include_meta: Some(true),
+            use_existing_draft: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.resolved_draft());
+        assert!(cfg.resolved_replace_existing_draft());
+        assert!(cfg.resolved_replace_existing_artifacts());
+        assert!(cfg.resolved_include_meta());
+        assert!(cfg.resolved_use_existing_draft());
     }
 
     // ---- ChecksumConfig disable tests ----

@@ -143,29 +143,6 @@ where
     })
 }
 
-/// The valid release `mode` values that control how existing release notes
-/// are handled when a release already exists.
-const VALID_RELEASE_MODES: &[&str] = &["keep-existing", "append", "prepend", "replace"];
-
-/// Resolve and validate the release mode from config.
-/// Returns `"keep-existing"` when `None` or empty (matches GoReleaser default).
-pub(crate) fn resolve_release_mode(mode: Option<&str>) -> Result<String> {
-    match mode {
-        None | Some("") => Ok("keep-existing".to_string()),
-        Some(m) => {
-            if VALID_RELEASE_MODES.contains(&m) {
-                Ok(m.to_string())
-            } else {
-                anyhow::bail!(
-                    "release: invalid mode '{}', must be one of: {}",
-                    m,
-                    VALID_RELEASE_MODES.join(", ")
-                );
-            }
-        }
-    }
-}
-
 /// Resolve a `ContentSource` for the release block (header/footer/body).
 /// Thin wrapper that hands off to [`anodizer_core::content_source::resolve`]
 /// with a release-specific label so error messages identify the source.

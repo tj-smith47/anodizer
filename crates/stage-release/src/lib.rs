@@ -28,8 +28,7 @@ mod release_body;
 
 use release_body::{
     GITHUB_RELEASE_BODY_MAX_CHARS, build_release_body, build_release_json, collect_extra_files,
-    compose_body_for_mode, resolve_content_source, resolve_make_latest, resolve_release_mode,
-    resolve_release_tag,
+    compose_body_for_mode, resolve_content_source, resolve_make_latest, resolve_release_tag,
 };
 
 /// Percent-encode a URL query value (for `?q=...` search parameters).
@@ -488,8 +487,9 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 }
 
 // build_release_body, collect_extra_files, resolve_make_latest,
-// resolve_release_mode, resolve_content_source, compose_body_for_mode,
-// build_release_json, resolve_release_tag live in `release_body.rs`.
+// resolve_content_source, compose_body_for_mode, build_release_json,
+// resolve_release_tag live in `release_body.rs`. Mode-resolution is on
+// `ReleaseConfig::resolved_mode` (Session C lazy-defaults policy).
 
 // ---------------------------------------------------------------------------
 // build_octocrab_client — GitHub Enterprise URL support
@@ -744,8 +744,8 @@ impl Stage for ReleaseStage {
             let crate_name = crate_cfg.name.clone();
 
             // Validate conflicting draft options.
-            if release_cfg.replace_existing_draft.unwrap_or(false)
-                && release_cfg.use_existing_draft.unwrap_or(false)
+            if release_cfg.resolved_replace_existing_draft()
+                && release_cfg.resolved_use_existing_draft()
             {
                 bail!(
                     "release: crate '{}': cannot set both replace_existing_draft and \
@@ -796,9 +796,11 @@ impl Stage for ReleaseStage {
             }
 
             // Resolve and validate release mode.
-            let release_mode = resolve_release_mode(release_cfg.mode.as_deref())
+            let release_mode = release_cfg
+                .resolved_mode()
+                .map(|m| m.to_string())
                 .with_context(|| format!("release: invalid mode for crate '{}'", crate_name))?;
-            if release_mode != "keep-existing" {
+            if release_mode != anodizer_core::config::ReleaseConfig::DEFAULT_MODE {
                 log.status(&format!(
                     "release mode '{}' for crate '{}'",
                     release_mode, crate_name
@@ -870,7 +872,7 @@ impl Stage for ReleaseStage {
             // is the equivalent `"{{ Tag }}"`. The two render to the same
             // string for any user-supplied template; this only affects the
             // surface form (no leading dot) when introspecting the default.
-            let name_tmpl = release_cfg.name_template.as_deref().unwrap_or("{{ Tag }}");
+            let name_tmpl = release_cfg.resolved_name_template();
             let release_name = ctx.render_template(name_tmpl).with_context(|| {
                 format!(
                     "release: render name_template for crate '{}'",
@@ -878,7 +880,7 @@ impl Stage for ReleaseStage {
                 )
             })?;
 
-            let draft = release_cfg.draft.unwrap_or(false);
+            let draft = release_cfg.resolved_draft();
             let prerelease = should_mark_prerelease(&release_cfg.prerelease, &tag);
             let skip_upload = match release_cfg.skip_upload.as_ref() {
                 Some(s) => {
@@ -908,9 +910,8 @@ impl Stage for ReleaseStage {
                 }
                 None => false,
             };
-            let replace_existing_draft = release_cfg.replace_existing_draft.unwrap_or(false);
-            let replace_existing_artifacts =
-                release_cfg.replace_existing_artifacts.unwrap_or(false);
+            let replace_existing_draft = release_cfg.resolved_replace_existing_draft();
+            let replace_existing_artifacts = release_cfg.resolved_replace_existing_artifacts();
             let make_latest =
                 resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?;
             let ids_filter = release_cfg.ids.as_ref();
@@ -926,8 +927,8 @@ impl Stage for ReleaseStage {
                     )
                 })?;
             let discussion_category_name = release_cfg.discussion_category_name.clone();
-            let include_meta = release_cfg.include_meta.unwrap_or(false);
-            let use_existing_draft = release_cfg.use_existing_draft.unwrap_or(false);
+            let include_meta = release_cfg.resolved_include_meta();
+            let use_existing_draft = release_cfg.resolved_use_existing_draft();
 
             // Collect uploadable artifacts for this crate, applying ids filter.
             // Each entry is (path, optional_custom_name). The custom name is only
@@ -3741,55 +3742,10 @@ draft: true
         assert!(stage.run(&mut ctx).is_ok());
     }
 
-    // ---- resolve_release_mode tests ----
-
-    #[test]
-    fn test_resolve_release_mode_defaults_to_keep_existing() {
-        assert_eq!(resolve_release_mode(None).unwrap(), "keep-existing");
-    }
-
-    #[test]
-    fn test_resolve_release_mode_empty_string_defaults_to_keep_existing() {
-        assert_eq!(resolve_release_mode(Some("")).unwrap(), "keep-existing");
-    }
-
-    #[test]
-    fn test_resolve_release_mode_keep_existing() {
-        assert_eq!(
-            resolve_release_mode(Some("keep-existing")).unwrap(),
-            "keep-existing"
-        );
-    }
-
-    #[test]
-    fn test_resolve_release_mode_append() {
-        assert_eq!(resolve_release_mode(Some("append")).unwrap(), "append");
-    }
-
-    #[test]
-    fn test_resolve_release_mode_prepend() {
-        assert_eq!(resolve_release_mode(Some("prepend")).unwrap(), "prepend");
-    }
-
-    #[test]
-    fn test_resolve_release_mode_replace() {
-        assert_eq!(resolve_release_mode(Some("replace")).unwrap(), "replace");
-    }
-
-    #[test]
-    fn test_resolve_release_mode_invalid() {
-        let result = resolve_release_mode(Some("invalid-mode"));
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("invalid mode 'invalid-mode'"),
-            "error should name the invalid mode, got: {err}"
-        );
-        assert!(
-            err.contains("keep-existing") && err.contains("append"),
-            "error should list valid modes, got: {err}"
-        );
-    }
+    // resolve_release_mode tests moved to anodizer-core's
+    // test_release_resolved_mode_* (Session C lazy-defaults migration).
+    // The release-mode default and validation logic now lives on
+    // ReleaseConfig::resolved_mode in core/config.rs.
 
     #[test]
     fn test_release_mode_stored_in_config() {
@@ -3816,8 +3772,8 @@ draft: true
             let yaml = format!("mode: {}", mode);
             let cfg: ReleaseConfig = serde_yaml_ng::from_str(&yaml).unwrap();
             assert_eq!(cfg.mode.as_deref(), Some(*mode));
-            // Verify it passes validation
-            assert!(resolve_release_mode(cfg.mode.as_deref()).is_ok());
+            // Verify it passes validation through the accessor.
+            assert!(cfg.resolved_mode().is_ok());
         }
     }
 
