@@ -648,9 +648,13 @@ fn resolve_digest_config(
 /// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
 /// `--attest=type=sbom` flag is added to the buildx command. Surfaces template
 /// render errors instead of silently treating them as "not enabled".
+///
+/// Default-on: matches GoReleaser `internal/pipe/docker/v2/docker.go:85-87`,
+/// which sets `SBOM = "true"` at `Default()` time. Users opt out with
+/// `sbom: false` (or a templated string evaluating to `"false"`).
 pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
     match sbom {
-        None => Ok(false),
+        None => Ok(true),
         Some(s) => s
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| "docker_v2: render sbom template"),
@@ -4129,12 +4133,15 @@ crates:
     }
 
     #[test]
-    fn test_is_docker_v2_sbom_enabled_none() {
+    fn test_is_docker_v2_sbom_enabled_none_defaults_on() {
+        // GR-aligned default: when `sbom` is unset, SBOM attestation is
+        // enabled. Mirrors `internal/pipe/docker/v2/docker.go:85-87` which
+        // assigns `SBOM = "true"` at Default() time. Pins C-new-7.
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_sbom_enabled(&None, &ctx).unwrap());
+        assert!(is_docker_v2_sbom_enabled(&None, &ctx).unwrap());
     }
 
     #[test]

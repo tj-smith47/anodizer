@@ -424,14 +424,15 @@ pub fn generate_nfpm_yaml_with_env(
     // When actual library artifacts are provided (from the artifact registry),
     // use their paths directly. Otherwise, derive from the first binary stem
     // for backward compatibility.
-    let has_library_artifacts = !library_paths.headers.is_empty()
-        || !library_paths.c_archives.is_empty()
-        || !library_paths.c_shared.is_empty();
-    if has_library_artifacts || config.libdirs.is_some() {
+    //
+    // Apply GoReleaser-aligned libdirs defaults unconditionally (matching
+    // `internal/pipe/nfpm/nfpm.go:59-67`, which sets these in `Default()`
+    // regardless of whether any library artifacts exist). The inner emit-loop
+    // still iterates the actual library artifact paths, so when none are
+    // present this block is a no-op for the resulting package — the change
+    // only affects resolved-config introspection.
+    {
         let libdirs = config.libdirs.as_ref();
-
-        // Apply GoReleaser defaults when a libdirs block exists but individual
-        // directories are not explicitly set.
         let header_dir = libdirs
             .and_then(|l| l.header.clone())
             .or_else(|| Some("/usr/include".to_string()));
@@ -442,7 +443,6 @@ pub fn generate_nfpm_yaml_with_env(
             .and_then(|l| l.cshared.clone())
             .or_else(|| Some("/usr/lib".to_string()));
 
-        //
         // unconditionally prefix libdirs for termux.deb — the prefix is never
         // guarded by /usr or /etc; any non-empty path is prefixed.
         let (header_dir, carchive_dir, cshared_dir) = if format == Some("termux.deb") {
