@@ -3508,6 +3508,163 @@ crates:
     );
 }
 
+/// E2E: Session C cross-axis smoke test — exercises three Session C streams
+/// in one binary invocation:
+///
+///   * Group A — `milestones[*].close: true` triggers the validate-time
+///     pre-flight; the resolved-target log line is asserted on stderr.
+///   * Group B — the SBOM stage emits an `Sbom` artifact; the checksum
+///     stage's source-list (cross-linked to `release_uploadable_kinds()`)
+///     must include it in `checksums.txt`.
+///   * Group F — `release.changelog.header` propagates into
+///     `dist/CHANGELOG.md` (the rendered release-notes body).
+///
+/// Runs under `--strict --snapshot` so any silently-skipped resolution would
+/// fail loudly. The fourth axis (a synthetic DiskImage / Signature artifact
+/// fed directly into the source-list) lives at the unit level in
+/// `stage-checksum::test_checksum_source_list_cross_links_release_uploadable_kinds`
+/// because registering bare artifact metadata is impractical from a
+/// black-box binary test; the SBOM artifact path here exercises the same
+/// cross-link without needing docker / cosign / hdiutil.
+#[test]
+fn test_strict_mode_cross_axis_session_c_smoke() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_test_project(tmp.path());
+
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("git command failed");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+
+    // Group F: changelog.header set so the rendered body must contain it.
+    // Group A: milestones[].close=true with an explicit repo so pre-flight
+    // can resolve owner/name without a token or git remote.
+    // Group B: a single sbom block triggers the builtin Cargo.lock-based
+    // SBOM emitter (no syft dependency) so the Sbom artifact lands in the
+    // checksum source-list.
+    let config = format!(
+        r##"project_name: test-project
+changelog:
+  snapshot: true
+  sort: asc
+  header: "# Cross-Axis Header"
+sboms:
+  - id: archive
+    documents: ["{{{{ .ArtifactName }}}}.cdx.json"]
+milestones:
+  - close: true
+    name_template: "{{{{ Tag }}}}"
+    repo:
+      owner: cross-axis-owner
+      name: cross-axis-repo
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    builds:
+      - binary: test-project
+        targets:
+          - {host}
+    archives:
+      - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
+        formats: [tar.gz]
+    checksum:
+      name_template: "checksums.txt"
+"##,
+        host = host
+    );
+    create_config(tmp.path(), &config);
+
+    git(&["init"]);
+    git(&["config", "user.email", "test@test.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "initial"]);
+    git(&["tag", "v0.1.0"]);
+
+    fs::write(
+        tmp.path().join("src/main.rs"),
+        r#"fn main() { println!("cross-axis"); }"#,
+    )
+    .unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-m", "feat: cross-axis smoke"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "--strict",
+            "release",
+            "--snapshot",
+            "--skip=release,publish,docker,sign,announce,nfpm",
+            "--timeout",
+            "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "strict + snapshot release should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    // Group A: milestone pre-flight emits the resolved target on stderr.
+    assert!(
+        stderr.contains("milestone:") && stderr.contains("cross-axis-owner/cross-axis-repo"),
+        "stderr should log the milestone pre-flight target, got:\n{}",
+        stderr
+    );
+
+    // Group F: the rendered release notes body must contain the configured
+    // changelog.header verbatim.
+    let dist = tmp.path().join("dist");
+    let notes = fs::read_to_string(dist.join("CHANGELOG.md"))
+        .expect("dist/CHANGELOG.md should exist after release");
+    assert!(
+        notes.contains("# Cross-Axis Header"),
+        "release notes should contain changelog.header, got:\n{}",
+        notes
+    );
+
+    // Group B: the SBOM artifact landed in the checksums source-list. The
+    // checksum filename is parsed structurally to avoid substring
+    // false-positives between e.g. `foo.cdx.json` and `foo.cdx.json.sig`.
+    let checksums = fs::read_to_string(dist.join("checksums.txt"))
+        .expect("dist/checksums.txt should exist after release");
+    let filenames: std::collections::HashSet<&str> = checksums
+        .lines()
+        .filter_map(|l| l.split_once("  ").map(|(_, name)| name))
+        .collect();
+    assert!(
+        filenames.iter().any(|n| n.ends_with(".cdx.json")),
+        "checksums.txt should list the SBOM artifact (Group B cross-link), got: {:?}",
+        filenames
+    );
+
+    // Strict-mode sentinel: no `strict_guard` rejection slipped through. A
+    // strict-mode escalation would have failed the run; we assert the
+    // stderr is free of the canonical strict bail-out so a future
+    // regression that demotes a strict error to a warn still trips.
+    assert!(
+        !stderr.contains("strict mode: refusing"),
+        "strict mode should not reject a well-formed config, got:\n{}",
+        stderr
+    );
+}
+
 /// E2E #17: Changelog with exclude filters — verify that commits matching
 /// exclude patterns are omitted from the changelog.
 #[test]

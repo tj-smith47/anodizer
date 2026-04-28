@@ -1459,7 +1459,15 @@ impl Stage for BuildStage {
             amd64_variant: Option<String>,
         }
 
-        /// Build artifact metadata, always including "binary" and optionally "id".
+        /// Builds the metadata map for build-output artifacts. Always populates
+        /// the `id` invariant — every artifact created via this helper carries
+        /// `id`, defaulting to the binary name when `build.id` is unset.
+        ///
+        /// Other artifact kinds (Snap, DockerImage, Sbom, …) are constructed
+        /// elsewhere and may not carry `id`, so consumers reading
+        /// `metadata.get("id")` (e.g. `stage-publish/util.rs`,
+        /// `cli/commands/publisher.rs`, `stage-upx`) should still
+        /// `Option`-handle unless they know the artifact source kind.
         fn artifact_meta(
             binary: &str,
             build_id: &Option<String>,

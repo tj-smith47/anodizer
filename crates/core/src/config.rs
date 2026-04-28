@@ -4721,20 +4721,7 @@ pub struct ChangelogConfig {
     /// to N chars. Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s
     /// `abbrevEntry`.
     pub abbrev: Option<i32>,
-    /// Template for each changelog commit line.
-    /// Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject),
-    /// AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only),
-    /// Logins (per-entry comma-separated list of GitHub usernames for that commit,
-    /// `github` backend only), AllLogins (comma-separated list of all GitHub usernames
-    /// across the entire release, `github` backend only).
-    ///
-    /// Default depends on backend. Uses the full SHA to match GoReleaser
-    /// (`internal/pipe/changelog/changelog.go:54-61`):
-    /// - `git` backend (default): `"{{ SHA }} {{ Message }}"`
-    /// - `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"`
-    ///   Falls back to `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
-    ///
-    /// When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
+    /// Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).<br><br>Default depends on backend (mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `formatEntry`, which uses the full SHA):<br>&bull; `git` backend (default): `"{{ SHA }} {{ Message }}"`<br>&bull; `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
     pub format: Option<String>,
     /// File paths to filter commits by. Only commits touching files under these
     /// paths are included. Works with `use: git` for precise per-commit filtering.
