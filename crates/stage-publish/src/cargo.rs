@@ -207,7 +207,21 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<Option<String
     }
 
     let body = resp.text().unwrap_or_default();
-    let cksum = body.lines().find_map(|line| {
+    Ok(parse_index_cksum_for_version(&body, version))
+}
+
+/// Parse the crates.io sparse-index body (JSON-lines, one entry per
+/// published version) and return the `cksum` for `version` when present.
+///
+/// - Returns `None` when no line matches the requested version.
+/// - Returns `Some("")` when the version exists but the line is missing its
+///   `cksum` field — caller must treat this as "version present, drift
+///   undetectable" rather than "not published".
+///
+/// Extracted from `is_already_published` so the JSONL shape can be unit
+/// tested without performing a network call to crates.io.
+fn parse_index_cksum_for_version(body: &str, version: &str) -> Option<String> {
+    body.lines().find_map(|line| {
         let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
         if v.get("vers")?.as_str()? != version {
             return None;
@@ -218,8 +232,7 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<Option<String
                 .unwrap_or("")
                 .to_string(),
         )
-    });
-    Ok(cksum)
+    })
 }
 
 /// Package the crate locally (`cargo package -p <name>`) and return the
@@ -782,5 +795,104 @@ mod tests {
         // cfgd-core isn't in the config, so it won't appear
         assert!(!expanded.contains(&"cfgd-core".to_string()));
         assert!(!expanded.contains(&"serde".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // crates.io idempotency (C-new-11 / C-new-13)
+    //
+    // The hash-match short-circuit in publish_to_cargo (cf. cargo.rs
+    // ~line 489) avoids redundant `cargo publish` calls — and the bogus
+    // 422-with-stale-bytes problem they create — when the version already
+    // exists on crates.io and the local .crate cksum matches the index. The
+    // tests below pin (a) the sparse-index URL shape so we hit the same
+    // path cargo itself uses, and (b) the JSONL parser so we keep treating
+    // "version present, no cksum" as a fall-back-to-skip rather than a
+    // silently-missed publish.
+    // -----------------------------------------------------------------------
+
+    /// Sparse-index URL must follow the cargo registry layout:
+    /// 1-char names live under `/1/<name>`, 2-char under `/2/<name>`,
+    /// 3-char under `/3/<first>/<name>`, 4+ under `/<first2>/<next2>/<name>`.
+    /// Mismatch here means we'd query a URL that always 404s and silently
+    /// re-publish every release.
+    #[test]
+    fn test_sparse_index_url_shape() {
+        // 1-char crate name.
+        assert_eq!(sparse_index_url("a"), "https://index.crates.io/1/a");
+        // 2-char.
+        assert_eq!(sparse_index_url("ab"), "https://index.crates.io/2/ab");
+        // 3-char — `/3/<first>/<name>`.
+        assert_eq!(sparse_index_url("abc"), "https://index.crates.io/3/a/abc");
+        // 4-char — `/<first2>/<next2>/<name>`.
+        assert_eq!(
+            sparse_index_url("abcd"),
+            "https://index.crates.io/ab/cd/abcd"
+        );
+        // Real-world case (5+ char): `cfgd-core`.
+        assert_eq!(
+            sparse_index_url("cfgd-core"),
+            "https://index.crates.io/cf/gd/cfgd-core"
+        );
+        // Uppercase normalises to lowercase per cargo registry spec.
+        assert_eq!(
+            sparse_index_url("MyTool"),
+            "https://index.crates.io/my/to/mytool"
+        );
+    }
+
+    /// Parser returns the cksum only when a line matches the requested
+    /// version; mismatched-version lines and absent fields short-circuit
+    /// to None/empty respectively.
+    #[test]
+    fn test_parse_index_cksum_for_version_matches_requested_version() {
+        // Two versions on the index; only 1.2.3's cksum should come back.
+        let body = r#"{"name":"foo","vers":"1.2.2","cksum":"old","yanked":false}
+{"name":"foo","vers":"1.2.3","cksum":"newhash","yanked":false}
+{"name":"foo","vers":"1.2.4","cksum":"newer","yanked":false}"#;
+        assert_eq!(
+            parse_index_cksum_for_version(body, "1.2.3"),
+            Some("newhash".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_index_cksum_for_version_returns_none_when_absent() {
+        // Index has 1.2.2 but caller asked for 1.2.3 — must return None so
+        // publish_to_cargo proceeds with the publish.
+        let body = r#"{"name":"foo","vers":"1.2.2","cksum":"old","yanked":false}"#;
+        assert_eq!(parse_index_cksum_for_version(body, "1.2.3"), None);
+    }
+
+    #[test]
+    fn test_parse_index_cksum_for_version_empty_string_when_cksum_missing() {
+        // Index entry has the requested version but no `cksum` field
+        // (malformed/legacy entry). Returning Some("") signals "present but
+        // drift undetectable" so the caller falls back to the historical
+        // skip behaviour rather than mis-treating it as "not published".
+        let body = r#"{"name":"foo","vers":"1.2.3","yanked":false}"#;
+        assert_eq!(
+            parse_index_cksum_for_version(body, "1.2.3"),
+            Some(String::new())
+        );
+    }
+
+    #[test]
+    fn test_parse_index_cksum_for_version_empty_body() {
+        // Defensive: an empty/whitespace body parses to None (the function
+        // is invoked after a 200-OK status but before further validation,
+        // so we mustn't panic on malformed bodies).
+        assert_eq!(parse_index_cksum_for_version("", "1.0.0"), None);
+        assert_eq!(parse_index_cksum_for_version("   \n  ", "1.0.0"), None);
+    }
+
+    #[test]
+    fn test_parse_index_cksum_for_version_skips_garbage_lines() {
+        // A non-JSON line in the middle must not abort the scan — cargo's
+        // own client tolerates trailing newlines and similar.
+        let body = "not-json\n{\"name\":\"foo\",\"vers\":\"1.2.3\",\"cksum\":\"abcd\"}\n";
+        assert_eq!(
+            parse_index_cksum_for_version(body, "1.2.3"),
+            Some("abcd".to_string())
+        );
     }
 }
