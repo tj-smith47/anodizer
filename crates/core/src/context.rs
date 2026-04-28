@@ -143,6 +143,14 @@ pub struct Context {
     template_vars: TemplateVars,
     pub git_info: Option<GitInfo>,
     pub changelogs: HashMap<String, String>,
+    /// Rendered `changelog.header` value, populated by the changelog stage.
+    /// The release stage uses it as a fallback when `release.header` is unset
+    /// so YAML-configured changelog headers reach the GitHub release body
+    /// (matching GoReleaser's `loadContent(ReleaseHeader…)` behaviour).
+    pub changelog_header: Option<String>,
+    /// Rendered `changelog.footer` value, populated by the changelog stage.
+    /// Same fallback semantics as `changelog_header`.
+    pub changelog_footer: Option<String>,
     /// The resolved SCM token type (GitHub, GitLab, or Gitea).
     pub token_type: ScmTokenType,
     /// Aggregated skips from per-sub-config loops (signs, docker_signs,
@@ -165,6 +173,8 @@ impl Context {
             template_vars: vars,
             git_info: None,
             changelogs: HashMap::new(),
+            changelog_header: None,
+            changelog_footer: None,
             token_type: ScmTokenType::GitHub,
             skip_memento: crate::pipe_skip::SkipMemento::new(),
         }

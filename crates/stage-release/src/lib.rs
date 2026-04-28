@@ -28,7 +28,8 @@ mod release_body;
 
 use release_body::{
     GITHUB_RELEASE_BODY_MAX_CHARS, build_release_body, build_release_json, collect_extra_files,
-    compose_body_for_mode, resolve_content_source, resolve_make_latest, resolve_release_tag,
+    compose_body_for_mode, resolve_content_source, resolve_header_footer, resolve_make_latest,
+    resolve_release_tag,
 };
 
 /// Percent-encode a URL query value (for `?q=...` search parameters).
@@ -827,7 +828,16 @@ impl Stage for ReleaseStage {
             // Resolve and template-render header/footer before building release body.
             // resolve_content_source now template-renders the from_file path and the
             // from_url URL + header values internally; body still rendered here.
-            let rendered_header = release_cfg
+            //
+            // Precedence (matching GoReleaser): `release.header` is the more
+            // specific override and wins; otherwise the `changelog.header`
+            // value (rendered and stashed by the changelog stage in
+            // `ctx.changelog_header`) is used. Same for the footer. This
+            // mirrors GoReleaser's `loadContent(ReleaseHeader…)` flow where
+            // both `changelog.header` and the `--release-header` / explicit
+            // `release.header` paths feed `ctx.ReleaseNotes` and reach the
+            // GitHub release body.
+            let release_header = release_cfg
                 .header
                 .as_ref()
                 .map(|src| {
@@ -839,7 +849,7 @@ impl Stage for ReleaseStage {
                     })
                 })
                 .transpose()?;
-            let rendered_footer = release_cfg
+            let release_footer = release_cfg
                 .footer
                 .as_ref()
                 .map(|src| {
@@ -851,6 +861,12 @@ impl Stage for ReleaseStage {
                     })
                 })
                 .transpose()?;
+            let rendered_header =
+                resolve_header_footer(release_header.as_deref(), ctx.changelog_header.as_deref())
+                    .map(str::to_owned);
+            let rendered_footer =
+                resolve_header_footer(release_footer.as_deref(), ctx.changelog_footer.as_deref())
+                    .map(str::to_owned);
 
             let release_body = build_release_body(
                 &changelog_body,
@@ -3163,6 +3179,98 @@ mod tests {
         // as distinct paragraphs
         assert!(body.contains("## Release v2.0\n\n- Fixed bug A"));
         assert!(body.contains("Added feature B\n\n---"));
+    }
+
+    // ---- C-new-18: changelog.header / changelog.footer fall back into release body ----
+
+    #[test]
+    fn test_resolve_header_footer_release_only_wins() {
+        // When only release.header is set, it is used.
+        let chosen = resolve_header_footer(Some("release-h"), None);
+        assert_eq!(chosen, Some("release-h"));
+    }
+
+    #[test]
+    fn test_resolve_header_footer_changelog_fallback() {
+        // When release.header is unset but changelog.header is set,
+        // the changelog value reaches the release body.
+        let chosen = resolve_header_footer(None, Some("changelog-h"));
+        assert_eq!(chosen, Some("changelog-h"));
+    }
+
+    #[test]
+    fn test_resolve_header_footer_release_overrides_changelog() {
+        // When BOTH are set, release.header wins (more specific override).
+        let chosen = resolve_header_footer(Some("release-h"), Some("changelog-h"));
+        assert_eq!(chosen, Some("release-h"));
+    }
+
+    #[test]
+    fn test_resolve_header_footer_neither_set() {
+        let chosen = resolve_header_footer(None, None);
+        assert_eq!(chosen, None);
+    }
+
+    #[test]
+    fn test_changelog_header_reaches_release_body_via_helper() {
+        // Integration: simulate the precedence flow inside the release stage.
+        // changelog.header is set in YAML → context.changelog_header is populated
+        // by the changelog stage → release stage uses it as a fallback.
+        let release_header: Option<&str> = None;
+        let changelog_header = Some("# v1.0.0 release notes");
+        let chosen = resolve_header_footer(release_header, changelog_header);
+        let body = build_release_body("- bug fix", chosen, None);
+        assert!(body.starts_with("# v1.0.0 release notes\n\n- bug fix"));
+    }
+
+    #[test]
+    fn test_release_header_takes_precedence_over_changelog_header() {
+        // Both set → release.header wins.
+        let chosen = resolve_header_footer(Some("RELEASE-H"), Some("CHANGELOG-H"));
+        let body = build_release_body("body", chosen, None);
+        assert!(body.starts_with("RELEASE-H\n\nbody"));
+        assert!(!body.contains("CHANGELOG-H"));
+    }
+
+    #[test]
+    fn test_changelog_footer_reaches_release_body_via_helper() {
+        let chosen = resolve_header_footer(None, Some("--- changelog footer"));
+        let body = build_release_body("body", None, chosen);
+        assert!(body.contains("body\n\n--- changelog footer"));
+    }
+
+    #[test]
+    fn test_release_footer_takes_precedence_over_changelog_footer() {
+        let chosen = resolve_header_footer(Some("RELEASE-F"), Some("CHANGELOG-F"));
+        let body = build_release_body("body", None, chosen);
+        assert!(body.contains("body\n\nRELEASE-F"));
+        assert!(!body.contains("CHANGELOG-F"));
+    }
+
+    #[test]
+    fn test_dry_run_changelog_header_falls_through_to_release() {
+        // End-to-end smoke test: when changelog stage stashes a rendered
+        // header/footer on the context AND release.header / release.footer
+        // are unset, the release stage should still succeed and the precedence
+        // helper picks the changelog values.
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig::default()),
+                ..Default::default()
+            }])
+            .build();
+        ctx.changelogs
+            .insert("testcrate".to_string(), "- a fix".to_string());
+        ctx.changelog_header = Some("# Header from changelog".to_string());
+        ctx.changelog_footer = Some("Footer from changelog".to_string());
+
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
     }
 
     #[test]

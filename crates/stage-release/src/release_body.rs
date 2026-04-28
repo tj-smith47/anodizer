@@ -11,6 +11,23 @@ use anodizer_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig};
 use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 
+/// Resolve header/footer precedence for the GitHub release body.
+///
+/// GoReleaser parity: both `release.header` (the more specific override) and
+/// `changelog.header` feed `ctx.ReleaseNotes`. When both are set, the
+/// `release.*` value wins because it is the more specific override; otherwise
+/// the `changelog.*` value is used.
+///
+/// `release_value` is the already-rendered `release.header` / `release.footer`
+/// string; `changelog_value` is the rendered `changelog.header` /
+/// `changelog.footer` value stashed on the context by the changelog stage.
+pub(crate) fn resolve_header_footer<'a>(
+    release_value: Option<&'a str>,
+    changelog_value: Option<&'a str>,
+) -> Option<&'a str> {
+    release_value.or(changelog_value)
+}
+
 /// Construct the release body by wrapping the changelog with optional
 /// header and footer from the release config.
 pub(crate) fn build_release_body(

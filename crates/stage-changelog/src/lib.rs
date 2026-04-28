@@ -1285,11 +1285,15 @@ impl Stage for ChangelogStage {
         // Prepend header and append footer if configured, rendering through
         // the template engine so variables like {{ .ProjectName }} are expanded.
         //
-        // NOTE: These changelog header/footer values only affect the disk file
-        // (dist/CHANGELOG.md). They do NOT affect the GitHub release body.
-        // The release stage has its own separate header/footer (in ReleaseConfig)
-        // that wraps the per-crate changelog body for the GitHub release.
+        // The rendered header/footer are also stashed in `ctx.changelog_header`
+        // / `ctx.changelog_footer` so the release stage can wrap the GitHub
+        // release body with them when no `release.header` / `release.footer`
+        // override is configured. This mirrors GoReleaser's
+        // `loadContent(ReleaseHeader…)` flow where `changelog.header` and
+        // `changelog.footer` are prepended/appended to `ctx.ReleaseNotes`,
+        // which becomes the release body uploaded to GitHub.
         let mut final_markdown = String::new();
+        let mut rendered_header: Option<String> = None;
         if let Some(ref h) = header {
             let rendered = ctx.render_template_strict(h, "changelog header", &log)?;
             if rendered.trim().is_empty() {
@@ -1297,9 +1301,11 @@ impl Stage for ChangelogStage {
             } else {
                 final_markdown.push_str(&rendered);
                 final_markdown.push_str("\n\n");
+                rendered_header = Some(rendered);
             }
         }
         final_markdown.push_str(&combined_markdown);
+        let mut rendered_footer: Option<String> = None;
         if let Some(ref f) = footer {
             let rendered = ctx.render_template_strict(f, "changelog footer", &log)?;
             if rendered.trim().is_empty() {
@@ -1308,8 +1314,11 @@ impl Stage for ChangelogStage {
                 final_markdown.push('\n');
                 final_markdown.push_str(&rendered);
                 final_markdown.push('\n');
+                rendered_footer = Some(rendered);
             }
         }
+        ctx.changelog_header = rendered_header;
+        ctx.changelog_footer = rendered_footer;
 
         // Write to dist/CHANGELOG.md (GoReleaser writes this even in dry-run mode).
         std::fs::create_dir_all(&dist)
