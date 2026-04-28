@@ -18,7 +18,6 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::target::map_target;
 
-use crate::DEFAULT_BINARY_SIGNATURE_TEMPLATE;
 use crate::helpers::{
     default_sign_cmd, expand_shell_vars, prepare_stdin_from, resolve_sign_args,
     resolve_signature_path, should_sign_artifact,
@@ -205,9 +204,9 @@ pub(crate) fn process_sign_configs(
             }
         }
 
-        let config_filter = sign_cfg.artifacts.as_deref().unwrap_or(match filter_mode {
-            ArtifactFilter::FromConfig => "none",
-            ArtifactFilter::BinaryOnly => "binary",
+        let config_filter = sign_cfg.resolved_artifacts(match filter_mode {
+            ArtifactFilter::FromConfig => SignConfig::DEFAULT_ARTIFACTS,
+            ArtifactFilter::BinaryOnly => SignConfig::DEFAULT_ARTIFACTS_BINARY,
         });
 
         if sign_cfg.ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
@@ -240,14 +239,7 @@ pub(crate) fn process_sign_configs(
             ));
         }
 
-        let args = sign_cfg.args.clone().unwrap_or_else(|| {
-            vec![
-                "--output".to_string(),
-                "{{ .Signature }}".to_string(),
-                "--detach-sign".to_string(),
-                "{{ .Artifact }}".to_string(),
-            ]
-        });
+        let args = sign_cfg.resolved_args();
 
         type ArtifactEntry = (
             std::path::PathBuf,
@@ -297,9 +289,9 @@ pub(crate) fn process_sign_configs(
 
         let mut sign_jobs: Vec<SignJob> = Vec::new();
 
-        let default_sig_template: Option<&str> = match filter_mode {
-            ArtifactFilter::BinaryOnly => Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
-            ArtifactFilter::FromConfig => None,
+        let default_sig_template: &str = match filter_mode {
+            ArtifactFilter::BinaryOnly => SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
+            ArtifactFilter::FromConfig => SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
         };
 
         for (artifact_path, artifact_crate_name, artifact_metadata, artifact_target) in
@@ -502,7 +494,7 @@ pub(crate) fn process_sign_configs(
                 stdin_data,
                 env: rendered_env,
                 label: label.to_string(),
-                id_label: sign_cfg.id.as_deref().unwrap_or("default").to_string(),
+                id_label: sign_cfg.resolved_id().to_string(),
                 artifact_display: artifact_str.to_string(),
                 signature_display: signature_str.clone(),
                 output_flag: match sign_cfg.output.as_ref() {

@@ -17,19 +17,6 @@ use helpers::{prepare_stdin_from, resolve_sign_args};
 use helpers::{resolve_signature_path, should_sign_artifact};
 use process::{ArtifactFilter, process_sign_configs};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/// Default signature template for `binary_signs`, matching GoReleaser's
-/// architecture-aware naming.
-///
-/// Uses `{{ .Artifact }}` (Go-compat syntax, replaced before Tera rendering)
-/// for the artifact path, and Tera syntax for Os/Arch/Arm/Mips/Amd64
-/// conditionals that are set per-artifact from the target triple.
-// Matches GoReleaser sign_binary.go:16 default — no trailing `.sig` suffix.
-pub(crate) const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &str = "{{ .Artifact }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
-
 // Helpers (should_sign_artifact, resolve_signature_path, prepare_stdin_from,
 // default_sign_cmd, expand_shell_vars, resolve_sign_args) live in `helpers.rs`.
 
@@ -64,7 +51,7 @@ impl Stage for BinarySignStage {
         // Validate binary_signs IDs unique — same check SignStage does.
         let mut seen = std::collections::HashSet::new();
         for cfg in &ctx.config.binary_signs {
-            let id = cfg.id.as_deref().unwrap_or("default");
+            let id = cfg.resolved_id();
             if !seen.insert(id.to_string()) {
                 anyhow::bail!("found 2 binary_signs with the ID '{}'", id);
             }
@@ -94,14 +81,14 @@ impl Stage for SignStage {
         {
             let mut seen = std::collections::HashSet::new();
             for cfg in &ctx.config.signs {
-                let id = cfg.id.as_deref().unwrap_or("default");
+                let id = cfg.resolved_id();
                 if !seen.insert(id.to_string()) {
                     anyhow::bail!("found 2 signs with the ID '{}'", id);
                 }
             }
             let mut seen_bin = std::collections::HashSet::new();
             for cfg in &ctx.config.binary_signs {
-                let id = cfg.id.as_deref().unwrap_or("default");
+                let id = cfg.resolved_id();
                 if !seen_bin.insert(id.to_string()) {
                     anyhow::bail!("found 2 binary_signs with the ID '{}'", id);
                 }
@@ -155,7 +142,7 @@ impl Stage for DockerSignStage {
             {
                 let mut seen_docker = std::collections::HashSet::new();
                 for cfg in &docker_signs {
-                    let id = cfg.id.as_deref().unwrap_or("default");
+                    let id = cfg.resolved_id();
                     if !seen_docker.insert(id.to_string()) {
                         anyhow::bail!("found 2 docker_signs with the ID '{}'", id);
                     }
@@ -163,8 +150,7 @@ impl Stage for DockerSignStage {
             }
 
             for docker_sign_cfg in &docker_signs {
-                // Default docker sign ID to "default" (matches GoReleaser).
-                let sign_id = docker_sign_cfg.id.as_deref().unwrap_or("default");
+                let sign_id = docker_sign_cfg.resolved_id();
 
                 // Evaluate the `if` conditional template for docker signs.
                 // (See comment in process_sign_configs for why this uses
@@ -195,22 +181,11 @@ impl Stage for DockerSignStage {
                     }
                 }
 
-                let cmd = docker_sign_cfg
-                    .cmd
-                    .as_deref()
-                    .unwrap_or("cosign")
-                    .to_string();
+                let cmd = docker_sign_cfg.resolved_cmd().to_string();
 
-                let args = docker_sign_cfg.args.clone().unwrap_or_else(|| {
-                    vec![
-                        "sign".to_string(),
-                        "--key=cosign.key".to_string(),
-                        "{{ .Artifact }}@{{ .Digest }}".to_string(),
-                        "--yes".to_string(),
-                    ]
-                });
+                let args = docker_sign_cfg.resolved_args();
 
-                let docker_filter = docker_sign_cfg.artifacts.as_deref().unwrap_or("");
+                let docker_filter = docker_sign_cfg.resolved_artifacts();
 
                 if docker_filter == "none" {
                     log.verbose(&format!(
@@ -2308,24 +2283,25 @@ crates: []
     #[test]
     fn test_default_binary_signature_template_includes_arch() {
         // Verify the constant contains Os/Arch/Arm/Mips/Amd64 references
+        let tmpl = SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE;
         assert!(
-            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Os"),
+            tmpl.contains("Os"),
             "binary signature template must include Os"
         );
         assert!(
-            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Arch"),
+            tmpl.contains("Arch"),
             "binary signature template must include Arch"
         );
         assert!(
-            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Arm"),
+            tmpl.contains("Arm"),
             "binary signature template must include Arm conditional"
         );
         assert!(
-            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Amd64"),
+            tmpl.contains("Amd64"),
             "binary signature template must include Amd64 conditional"
         );
         assert!(
-            !DEFAULT_BINARY_SIGNATURE_TEMPLATE.ends_with(".sig"),
+            !tmpl.ends_with(".sig"),
             "binary signature template must NOT end with .sig (GoReleaser sign_binary.go:16 parity)"
         );
     }
@@ -2359,7 +2335,7 @@ crates: []
             "/dist/myapp",
             &ctx,
             &log,
-            Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
+            SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
         )
         .unwrap();
         assert_eq!(result, "/dist/myapp_linux_amd64");
@@ -2395,7 +2371,7 @@ crates: []
             "/dist/myapp",
             &ctx,
             &log,
-            Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
+            SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
         )
         .unwrap();
         assert_eq!(result, "/dist/myapp_linux_armv6");
@@ -2430,7 +2406,7 @@ crates: []
             "/dist/myapp",
             &ctx,
             &log,
-            Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
+            SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
         )
         .unwrap();
         assert_eq!(result, "/dist/myapp_linux_amd64v2");
@@ -2454,9 +2430,15 @@ crates: []
             if_condition: None,
         };
         let log = ctx.logger("test");
-        // Normal signs (None default) should use simple {artifact}.sig
-        let result =
-            resolve_signature_path(&sign_cfg, "/dist/myapp.tar.gz", &ctx, &log, None).unwrap();
+        // Normal signs default → simple {{ .Artifact }}.sig.
+        let result = resolve_signature_path(
+            &sign_cfg,
+            "/dist/myapp.tar.gz",
+            &ctx,
+            &log,
+            SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
+        )
+        .unwrap();
         assert_eq!(result, "/dist/myapp.tar.gz.sig");
     }
 

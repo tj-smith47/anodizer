@@ -64,34 +64,29 @@ fn is_release_uploadable(kind: ArtifactKind) -> bool {
     anodizer_core::artifact::release_uploadable_kinds().contains(&kind)
 }
 
-/// Resolve the signature output path from a `SignConfig::signature` template
-/// or fall back to `default_template`.
+/// Resolve the signature output path from a `SignConfig::signature` template,
+/// falling back to `default_template`.
 ///
-/// `default_template` is `None` for normal signs (falls back to `{artifact}.sig`)
-/// and `Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE)` for binary_signs (includes
-/// Os/Arch/Arm/Mips/Amd64 in the filename).
+/// Caller passes `SignConfig::DEFAULT_SIGNATURE_TEMPLATE` for normal signs
+/// (`{{ .Artifact }}.sig`) or `SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE`
+/// for binary_signs (per-target Os/Arch/Arm/Mips/Amd64 suffix).
 pub(crate) fn resolve_signature_path(
     sign_cfg: &SignConfig,
     artifact_path: &str,
     ctx: &Context,
     _log: &StageLogger,
-    default_template: Option<&str>,
+    default_template: &str,
 ) -> Result<String> {
-    let template = sign_cfg.signature.as_deref().or(default_template);
-
-    if let Some(sig_template) = template {
-        let preprocessed = sig_template
-            .replace("{{ .Artifact }}", artifact_path)
-            .replace("{{ Artifact }}", artifact_path);
-        ctx.render_template(&preprocessed).with_context(|| {
-            format!(
-                "sign: render signature template '{}' for artifact {}",
-                sig_template, artifact_path
-            )
-        })
-    } else {
-        Ok(format!("{}.sig", artifact_path))
-    }
+    let sig_template = sign_cfg.resolved_signature_template(default_template);
+    let preprocessed = sig_template
+        .replace("{{ .Artifact }}", artifact_path)
+        .replace("{{ Artifact }}", artifact_path);
+    ctx.render_template(&preprocessed).with_context(|| {
+        format!(
+            "sign: render signature template '{}' for artifact {}",
+            sig_template, artifact_path
+        )
+    })
 }
 
 /// Pipe `stdin_content` or the contents of `stdin_file` to a child process's
