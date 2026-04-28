@@ -355,8 +355,10 @@ fn group_commits_inner(
 ///
 /// If `format_template` is `None`, the default format depends on the SCM backend:
 /// - `git` backend (default): `{{ SHA }} {{ Message }}` (GoReleaser uses full SHA)
-/// - `github`/`gitlab`/`gitea` backend: `{{ ShortSHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)`
-///   Falls back to `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
+/// - `github`/`gitlab`/`gitea` backend: `{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)`
+///   Uses the full SHA to match GoReleaser
+///   (`internal/pipe/changelog/changelog.go:54-61`). Falls back to
+///   `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
 ///
 /// When `abbrev < 0`, the default format becomes `{{ Message }}` (no hash prefix)
 /// regardless of the backend. Available template variables:
@@ -422,8 +424,18 @@ pub(crate) fn render_changelog_with_provider(
         _ => "\n",
     };
     let mut out = String::new();
-    // GoReleaser always emits a title heading (default "Changelog") when groups
-    // are configured. When no groups are configured, the title is still emitted.
+    // Title heading. Three states:
+    //   - title == None        → emits `## Changelog` (GoReleaser-equivalent default).
+    //   - title == Some("foo") → emits `## foo`.
+    //   - title == Some("")    → suppresses the heading entirely (anodize-additive
+    //                            UX win — see divergence note below).
+    //
+    // Divergence from GoReleaser (intentional carve-out): GoReleaser emits the
+    // `## Changelog` heading unconditionally and offers no way to suppress it.
+    // Anodizer treats an explicit empty `title:` as a request to omit the
+    // heading, which lets users compose changelogs into other surfaces (release
+    // bodies, RSS feeds, embedded docs) without a redundant heading. Default
+    // behaviour still matches GoReleaser; the carve-out is opt-in.
     let changelog_title = title.unwrap_or(ChangelogConfig::DEFAULT_TITLE);
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
@@ -2226,6 +2238,42 @@ mod tests {
         // not take the snapshot-skip early-return path (this branch is only
         // reachable when ctx.is_snapshot() is true). Compiles + doesn't panic
         // on unwrap of the snapshot gate.
+    }
+
+    #[test]
+    fn test_changelog_snapshot_runs_when_opt_in_true() {
+        // Third matrix cell: snapshot mode + `changelog.snapshot: true` →
+        // changelog generation proceeds. We use --release-notes to give the
+        // stage a deterministic content path that doesn't require git history.
+        use anodizer_core::context::{Context, ContextOptions};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).expect("create dist");
+        let notes = tmp.path().join("notes.md");
+        std::fs::write(&notes, "snapshot opt-in body").expect("write notes");
+
+        let mut config = changelog_snapshot_test_config(Some(true));
+        config.dist = dist.clone();
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                release_notes_path: Some(notes),
+                ..Default::default()
+            },
+        );
+        ChangelogStage
+            .run(&mut ctx)
+            .expect("snapshot + opt-in must render");
+        assert!(
+            !ctx.changelogs.is_empty(),
+            "snapshot mode with opt-in=true must NOT skip changelog generation"
+        );
+        assert_eq!(
+            ctx.changelogs.get("test").map(String::as_str),
+            Some("snapshot opt-in body"),
+            "release-notes content should be stored verbatim"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4170,6 +4218,40 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         assert!(
             md.starts_with("* abc1234 add X"),
             "commits should start immediately: {md}"
+        );
+    }
+
+    #[test]
+    fn test_title_three_state_matrix() {
+        // Pin the three-state behaviour of the title escape-hatch:
+        //   - None        → emits the default `## Changelog` heading (matches
+        //                   GoReleaser's unconditional emission).
+        //   - Some("foo") → emits `## foo`.
+        //   - Some("")    → suppresses the heading (anodize-additive carve-out).
+        let grouped = vec![GroupedCommits::new(
+            "",
+            vec![ci("feat: add X", "feat", "add X", "abc1234")],
+        )];
+
+        // None → default "Changelog".
+        let md_default = render_changelog(&grouped, 7, None, "", "git", None, None);
+        assert!(
+            md_default.starts_with("## Changelog\n\n"),
+            "None should emit default '## Changelog' heading: {md_default}"
+        );
+
+        // Some("Custom") → "## Custom".
+        let md_custom = render_changelog(&grouped, 7, None, "", "git", Some("Custom"), None);
+        assert!(
+            md_custom.starts_with("## Custom\n\n"),
+            "Some(\"Custom\") should emit '## Custom' heading: {md_custom}"
+        );
+
+        // Some("") → no heading.
+        let md_empty = render_changelog(&grouped, 7, None, "", "git", Some(""), None);
+        assert!(
+            !md_empty.contains("## "),
+            "Some(\"\") should suppress heading entirely: {md_empty}"
         );
     }
 

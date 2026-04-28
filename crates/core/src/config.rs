@@ -4727,7 +4727,13 @@ pub struct ChangelogConfig {
     /// Logins (per-entry comma-separated list of GitHub usernames for that commit,
     /// `github` backend only), AllLogins (comma-separated list of all GitHub usernames
     /// across the entire release, `github` backend only).
-    /// Default: `"{{ ShortSHA }} {{ Message }}"`
+    ///
+    /// Default depends on backend (matches GoReleaser
+    /// `internal/pipe/changelog/changelog.go:54-61`):
+    /// - `git`: `"{{ SHA }} {{ Message }}"`
+    /// - `github`/`gitlab`/`gitea`: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"`
+    ///
+    /// When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
     pub format: Option<String>,
     /// File paths to filter commits by. Only commits touching files under these
     /// paths are included. Works with `use: git` for precise per-commit filtering.
@@ -7454,9 +7460,23 @@ crates:
     fn test_changelog_resolved_format_default_scm() {
         let cfg = ChangelogConfig::default();
         for backend in ["github", "gitlab", "gitea"] {
+            let tmpl = cfg.resolved_format(backend, 0);
             assert!(
-                cfg.resolved_format(backend, 0).contains("{% if Login %}"),
-                "expected SCM template for backend {backend}"
+                tmpl.contains("{% if Login %}"),
+                "expected SCM template for backend {backend}, got: {tmpl}"
+            );
+            // Match GoReleaser (internal/pipe/changelog/changelog.go:54-61):
+            // the SCM-mode default uses the FULL SHA, not the abbreviated
+            // ShortSHA. Pin the prefix to catch silent ShortSHA regressions.
+            assert!(
+                tmpl.starts_with("{{ SHA }}: "),
+                "SCM default must use full SHA (not ShortSHA) for backend \
+                 {backend}, got: {tmpl}"
+            );
+            assert!(
+                !tmpl.contains("ShortSHA"),
+                "SCM default must not reference ShortSHA for backend \
+                 {backend}, got: {tmpl}"
             );
         }
     }

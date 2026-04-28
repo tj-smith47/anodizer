@@ -476,6 +476,20 @@ pub(crate) fn compose_release_url(
 /// - `Auto`     – inspect the tag for common pre-release suffixes.
 /// - `Bool(b)`  – use the explicit value regardless of the tag.
 /// - `None`     – default to `false`.
+///
+/// # Divergence from GoReleaser (BY DESIGN)
+///
+/// GoReleaser evaluates `prerelease == "auto"` once at `Default()`-time
+/// (`internal/pipe/release/release.go:76-85`): it inspects
+/// `ctx.Semver.Prerelease` and stores a single `ctx.PreRelease` flag for the
+/// whole release run. Every release in the run shares that one decision.
+///
+/// Anodizer evaluates per-tag at run time. Each crate in a workspace can
+/// have an independent tag with its own prerelease suffix, so a single
+/// global decision doesn't translate to the workspace model. For example,
+/// a workspace release that bumps `core` to `v1.2.3` and `cli` to
+/// `v0.4.0-rc.1` should mark only the `cli` release as prerelease — which
+/// only works when the decision is per-tag, not per-run.
 pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &str) -> bool {
     match config {
         Some(PrereleaseConfig::Auto) => git::parse_semver_tag(tag)
