@@ -274,50 +274,70 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
 // Default resolution (GoReleaser parity: aur.go::Default)
 // ---------------------------------------------------------------------------
 
-/// Resolved AUR `Default()`-time fields: package name, conflicts, provides,
-/// and pkgrel. Extracted from `publish_to_aur` so the four GoReleaser-aligned
-/// defaults can be exercised in unit tests without standing up a full
-/// publish-to-git flow. Mirrors GoReleaser's
-/// `internal/pipe/aur/aur.go::Default()` behaviour:
+/// Resolved AUR `Default()`-time fields: conflicts, provides, and pkgrel.
+/// Extracted from `publish_to_aur` so the GoReleaser-aligned defaults can
+/// be exercised in unit tests without standing up a full publish-to-git
+/// flow. Mirrors GoReleaser's `internal/pipe/aur/aur.go::Default()`
+/// behaviour:
 ///
-/// - `name` defaults to `<crate_name>` with `-bin` suffix appended when the
-///   crate name does not already end in `-bin`.
+/// - `name` raw default is computed by `aur_default_package_name`
+///   (`<crate_name>` with `-bin` suffix appended when the crate name does
+///   not already end in `-bin`); the caller renders templates and feeds
+///   the rendered string into `aur_resolve_defaults` so `base_name` is
+///   derived from the post-template name.
 /// - `conflicts` defaults to `[base_name]` when unset/empty (GR aur.go:58-63).
 /// - `provides` defaults to `[base_name]` when unset/empty (GR aur.go:58-63).
 /// - `pkgrel` defaults to `1` when unset (GR aur.go:64-66).
 ///
-/// `base_name` is the project name when set, otherwise the package name with
-/// any trailing `-bin` stripped — see the comment block in `publish_to_aur`
-/// for the rationale (covers the edge case where `package_name="foo-bin"`
-/// and `project_name="foo-cli"`).
+/// `base_name` is the project name when set, otherwise the rendered package
+/// name with any trailing `-bin` stripped (covers the edge case where
+/// `package_name="foo-bin"` and `project_name="foo-cli"`).
 pub(crate) struct AurResolvedDefaults {
-    pub package_name: String,
-    pub conflicts: Vec<String>,
-    pub provides: Vec<String>,
-    pub pkgrel: u32,
+    pub(crate) conflicts: Vec<String>,
+    pub(crate) provides: Vec<String>,
+    pub(crate) pkgrel: u32,
 }
 
-/// Apply the four GoReleaser `Default()` rules to an `AurConfig` for
-/// `crate_name` under `project_name` (use `""` when no project name is
-/// configured). The returned struct holds the post-default values that
-/// `publish_to_aur` would feed into PKGBUILD generation.
-pub(crate) fn aur_resolve_defaults(
+/// Compute the raw (pre-template) default `aur.name`: the explicit
+/// `aur_cfg.name` if Some, otherwise `<crate_name>-bin` (without
+/// double-suffixing when the crate already ends in `-bin`).
+///
+/// This is split out from `aur_resolve_defaults` so the caller can render
+/// the result through the template engine *before* `base_name` is derived
+/// — otherwise `aur.name = "{{ .ProjectName }}-bin"` with an empty
+/// `project_name` would carry unrendered template syntax into
+/// `conflicts`/`provides`.
+pub(crate) fn aur_default_package_name(
     aur_cfg: &anodizer_core::config::AurConfig,
     crate_name: &str,
-    project_name: &str,
-) -> AurResolvedDefaults {
-    let package_name = aur_cfg.name.clone().unwrap_or_else(|| {
+) -> String {
+    aur_cfg.name.clone().unwrap_or_else(|| {
         if crate_name.ends_with("-bin") {
             crate_name.to_string()
         } else {
             format!("{}-bin", crate_name)
         }
-    });
+    })
+}
 
+/// Apply the GoReleaser `Default()` rules for `conflicts`, `provides`, and
+/// `pkgrel`, given a `rendered_package_name` (post-template) and a
+/// `project_name` (use `""` when no project name is configured). The
+/// returned struct holds the post-default values that `publish_to_aur`
+/// would feed into PKGBUILD generation.
+///
+/// `rendered_package_name` must be the template-rendered output of
+/// `aur_default_package_name` — the helper is intentionally template-free
+/// so it stays pure (no `Context` dependency).
+pub(crate) fn aur_resolve_defaults(
+    aur_cfg: &anodizer_core::config::AurConfig,
+    rendered_package_name: &str,
+    project_name: &str,
+) -> AurResolvedDefaults {
     let base_name = if project_name.is_empty() {
-        package_name
+        rendered_package_name
             .strip_suffix("-bin")
-            .unwrap_or(&package_name)
+            .unwrap_or(rendered_package_name)
             .to_string()
     } else {
         project_name.to_string()
@@ -341,7 +361,6 @@ pub(crate) fn aur_resolve_defaults(
         .unwrap_or(1);
 
     AurResolvedDefaults {
-        package_name,
         conflicts,
         provides,
         pkgrel,
@@ -402,17 +421,21 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let version = ctx.version().replace('-', "_");
 
     // GR-parity Default() resolution: name auto-suffix `-bin`, conflicts /
-    // provides default to [base_name], pkgrel default `"1"`. The first three
-    // rely on `project_name` (after defaulting), so we resolve them via
-    // `aur_resolve_defaults` for symmetry with `publish_to_aur` callers and
-    // to keep the unit tests focused on the default rules.
+    // provides default to [base_name], pkgrel default `"1"`. The defaults
+    // are split across two helpers (`aur_default_package_name` →
+    // template-render → `aur_resolve_defaults`) to expose the default
+    // rules to unit tests without standing up a full publish flow, while
+    // ensuring `base_name` is derived from the rendered package name (so
+    // `aur.name = "{{ .ProjectName }}-bin"` with an empty project_name
+    // does not leak unrendered template syntax into conflicts/provides).
     let project_name_for_defaults = ctx.config.project_name.as_str();
-    let resolved_defaults = aur_resolve_defaults(aur_cfg, crate_name, project_name_for_defaults);
+    let raw_package_name = aur_default_package_name(aur_cfg, crate_name);
     // Render the resolved name through the template engine — users who set
     // `aur.name: "{{ .ProjectName }}-bin"` rely on this.
     let package_name = ctx
-        .render_template(&resolved_defaults.package_name)
-        .unwrap_or_else(|_| resolved_defaults.package_name.clone());
+        .render_template(&raw_package_name)
+        .unwrap_or_else(|_| raw_package_name.clone());
+    let resolved_defaults = aur_resolve_defaults(aur_cfg, &package_name, project_name_for_defaults);
     // GoReleaser Pro parity: fall back to project `metadata.*` when aur config unset.
     let description_raw = aur_cfg
         .description
@@ -454,10 +477,9 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
     // conflicts / provides come from the GR-aligned default resolver above
-    // (cf. aur.go:58-63). The post-template `package_name` may differ from
-    // the raw resolved name, so we stick with the resolved-defaults output —
-    // template rendering only affects the on-PKGBUILD `pkgname=`, not the
-    // base used to derive `conflicts`/`provides` defaults.
+    // (cf. aur.go:58-63). The resolver was fed the *rendered* package name,
+    // so `base_name` reflects post-template values when `project_name` is
+    // empty.
     let conflicts = resolved_defaults.conflicts;
     let provides = resolved_defaults.provides;
     let replaces = aur_cfg.replaces.clone().unwrap_or_default();
@@ -1249,11 +1271,12 @@ mod tests {
     // GoReleaser applies four defaults at config-load time that anodizer must
     // mirror: name auto-suffixed `-bin`, conflicts/provides default to the
     // project name, and pkgrel defaults to "1". These tests pin each rule
-    // against `aur_resolve_defaults` so a regression in the helper trips a
-    // unit test instead of slipping through to a malformed PKGBUILD on disk.
+    // against the helper pair (`aur_default_package_name` →
+    // `aur_resolve_defaults`) so a regression trips a unit test instead of
+    // slipping through to a malformed PKGBUILD on disk.
     // -----------------------------------------------------------------------
 
-    /// `aur.name` unset → resolved name is `<crate>-bin`. When the crate name
+    /// `aur.name` unset → raw default is `<crate>-bin`. When the crate name
     /// already ends in `-bin` (e.g. `foo-bin`), do NOT double-suffix.
     #[test]
     fn test_aur_default_name_appends_bin_suffix() {
@@ -1262,40 +1285,41 @@ mod tests {
         let cfg = AurConfig::default();
 
         // Plain crate name → suffix appended.
-        let resolved = aur_resolve_defaults(&cfg, "mytool", "mytool");
         assert_eq!(
-            resolved.package_name, "mytool-bin",
-            "name should default to crate_name + '-bin', got {:?}",
-            resolved.package_name,
+            aur_default_package_name(&cfg, "mytool"),
+            "mytool-bin",
+            "name should default to crate_name + '-bin'",
         );
 
         // Crate name already ends in `-bin` → no double suffix.
-        let resolved_already_bin = aur_resolve_defaults(&cfg, "foo-bin", "foo-bin");
         assert_eq!(
-            resolved_already_bin.package_name, "foo-bin",
-            "name must not double-suffix when crate already ends in '-bin', got {:?}",
-            resolved_already_bin.package_name,
+            aur_default_package_name(&cfg, "foo-bin"),
+            "foo-bin",
+            "name must not double-suffix when crate already ends in '-bin'",
         );
 
-        // Explicit `aur.name` wins over the default.
+        // Explicit `aur.name` wins over the default and is returned verbatim
+        // (template rendering is the caller's responsibility).
         let cfg_explicit = AurConfig {
             name: Some("custom-name".to_string()),
             ..Default::default()
         };
-        let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool", "mytool");
-        assert_eq!(resolved_explicit.package_name, "custom-name");
+        assert_eq!(
+            aur_default_package_name(&cfg_explicit, "mytool"),
+            "custom-name",
+        );
     }
 
     /// `aur.conflicts` unset/empty → defaults to `[project_name]` (GR aur.go:58-63).
-    /// When `project_name` is empty, falls back to the package name with any
-    /// trailing `-bin` stripped.
+    /// When `project_name` is empty, falls back to the rendered package name
+    /// with any trailing `-bin` stripped.
     #[test]
     fn test_aur_default_conflicts_uses_project_name() {
         use anodizer_core::config::AurConfig;
 
         // Unset → defaults to [project_name].
         let cfg_unset = AurConfig::default();
-        let resolved = aur_resolve_defaults(&cfg_unset, "mytool", "mytool");
+        let resolved = aur_resolve_defaults(&cfg_unset, "mytool-bin", "mytool");
         assert_eq!(
             resolved.conflicts,
             vec!["mytool".to_string()],
@@ -1307,15 +1331,15 @@ mod tests {
             conflicts: Some(vec![]),
             ..Default::default()
         };
-        let resolved_empty = aur_resolve_defaults(&cfg_empty, "mytool", "mytool");
+        let resolved_empty = aur_resolve_defaults(&cfg_empty, "mytool-bin", "mytool");
         assert_eq!(
             resolved_empty.conflicts,
             vec!["mytool".to_string()],
             "conflicts should default to [project_name] when empty",
         );
 
-        // No project_name → fallback to package name with `-bin` stripped.
-        let resolved_no_project = aur_resolve_defaults(&cfg_unset, "mytool", "");
+        // No project_name → fallback to rendered package name with `-bin` stripped.
+        let resolved_no_project = aur_resolve_defaults(&cfg_unset, "mytool-bin", "");
         assert_eq!(
             resolved_no_project.conflicts,
             vec!["mytool".to_string()],
@@ -1327,7 +1351,7 @@ mod tests {
             conflicts: Some(vec!["other-pkg".to_string()]),
             ..Default::default()
         };
-        let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool", "mytool");
+        let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool-bin", "mytool");
         assert_eq!(resolved_explicit.conflicts, vec!["other-pkg".to_string()]);
     }
 
@@ -1337,7 +1361,7 @@ mod tests {
         use anodizer_core::config::AurConfig;
 
         let cfg_unset = AurConfig::default();
-        let resolved = aur_resolve_defaults(&cfg_unset, "mytool", "mytool");
+        let resolved = aur_resolve_defaults(&cfg_unset, "mytool-bin", "mytool");
         assert_eq!(
             resolved.provides,
             vec!["mytool".to_string()],
@@ -1348,7 +1372,7 @@ mod tests {
             provides: Some(vec![]),
             ..Default::default()
         };
-        let resolved_empty = aur_resolve_defaults(&cfg_empty, "mytool", "mytool");
+        let resolved_empty = aur_resolve_defaults(&cfg_empty, "mytool-bin", "mytool");
         assert_eq!(
             resolved_empty.provides,
             vec!["mytool".to_string()],
@@ -1360,7 +1384,7 @@ mod tests {
             provides: Some(vec!["virtual-pkg".to_string()]),
             ..Default::default()
         };
-        let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool", "mytool");
+        let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool-bin", "mytool");
         assert_eq!(resolved_explicit.provides, vec!["virtual-pkg".to_string()]);
     }
 
@@ -1373,7 +1397,7 @@ mod tests {
 
         // Unset → 1.
         let cfg_unset = AurConfig::default();
-        let resolved = aur_resolve_defaults(&cfg_unset, "mytool", "mytool");
+        let resolved = aur_resolve_defaults(&cfg_unset, "mytool-bin", "mytool");
         assert_eq!(resolved.pkgrel, 1, "pkgrel should default to 1 when unset");
 
         // Explicit numeric value passes through.
@@ -1381,7 +1405,7 @@ mod tests {
             rel: Some("3".to_string()),
             ..Default::default()
         };
-        let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool", "mytool");
+        let resolved_explicit = aur_resolve_defaults(&cfg_explicit, "mytool-bin", "mytool");
         assert_eq!(resolved_explicit.pkgrel, 3);
 
         // Non-numeric value falls back to 1 (defensive — GR's Default() pins
@@ -1391,7 +1415,39 @@ mod tests {
             rel: Some("not-a-number".to_string()),
             ..Default::default()
         };
-        let resolved_bad = aur_resolve_defaults(&cfg_bad, "mytool", "mytool");
+        let resolved_bad = aur_resolve_defaults(&cfg_bad, "mytool-bin", "mytool");
         assert_eq!(resolved_bad.pkgrel, 1);
+    }
+
+    /// Regression: `base_name` is derived from the *rendered* package name,
+    /// not the raw template string. Simulates `aur.name = "{{ .ProjectName }}-bin"`
+    /// rendered against an empty `project_name` (which yields just `"-bin"`).
+    /// Before the split, the helper carried the unrendered template through
+    /// to `conflicts`/`provides`, leaking `{{` into the PKGBUILD output.
+    #[test]
+    fn test_aur_resolve_defaults_uses_rendered_name_for_base() {
+        use anodizer_core::config::AurConfig;
+
+        let cfg = AurConfig::default();
+        // `"-bin"` is what `"{{ .ProjectName }}-bin"` renders to when
+        // `project_name == ""` — the caller in `publish_to_aur` performs
+        // the render *before* invoking `aur_resolve_defaults`.
+        let resolved = aur_resolve_defaults(&cfg, "-bin", "");
+
+        assert!(
+            !resolved.conflicts[0].contains("{{"),
+            "conflicts must not leak unrendered template syntax, got {:?}",
+            resolved.conflicts,
+        );
+        assert_eq!(
+            resolved.conflicts[0], "",
+            "with rendered name '-bin' and no project_name, base_name strips to ''",
+        );
+        assert!(
+            !resolved.provides[0].contains("{{"),
+            "provides must not leak unrendered template syntax, got {:?}",
+            resolved.provides,
+        );
+        assert_eq!(resolved.provides[0], "");
     }
 }
