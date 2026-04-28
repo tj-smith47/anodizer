@@ -566,6 +566,34 @@ mod tests {
         );
     }
 
+    /// Pins S3: end-to-end check that the GR-aligned always-set `id` default
+    /// (populated by stage-build's `artifact_meta` when `build.id` is unset)
+    /// flows through the publisher ids filter. A user with `build.id` unset
+    /// and `publishers[].ids: [<binary_name>]` must see their artifacts pass.
+    #[test]
+    fn test_filter_by_ids_uses_artifact_meta_default() {
+        // Simulate the stage-build artifact_meta default: when build.id is
+        // None, id is populated to the binary name.
+        let mut metadata = HashMap::new();
+        metadata.insert("binary".to_string(), "myapp".to_string());
+        metadata.insert("id".to_string(), "myapp".to_string()); // default-populated
+        let artifact = Artifact {
+            kind: ArtifactKind::UploadableBinary,
+            name: "myapp".to_string(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        };
+        // User filters by the binary name (not a custom build.id).
+        let publisher = make_publisher("echo", Some(vec!["myapp"]), None);
+        assert!(
+            matches_publisher_filter(&artifact, &publisher),
+            "default-populated id (= binary name) must pass an ids: [<binary>] filter"
+        );
+    }
+
     #[test]
     fn test_filter_by_artifact_types() {
         let publisher = make_publisher("echo", None, Some(vec!["archive", "checksum"]));

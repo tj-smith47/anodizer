@@ -620,6 +620,15 @@ fn build_universal_binary(
     // silently dropped any other metadata stage-build emits today or might
     // emit tomorrow (e.g. `DynamicallyLinked`, `amd64_variant`, future keys),
     // so anodizer was losing fidelity GR preserves.
+    //
+    // Caveat for downstream consumers: any metadata key inherited here
+    // (notably `DynamicallyLinked`) reflects the FIRST source arch only —
+    // `arm64` if both are present, otherwise `x86_64`. A lipo'd binary is a
+    // fat Mach-O carrying both slices, so a value derived from one arch's
+    // ELF/Mach-O probe does not necessarily describe the other slice.
+    // Consumers reading per-arch facts off a `UniversalBinary` artifact
+    // should treat the value as best-effort and prefer probing the
+    // underlying source `Binary` artifacts when the answer must be exact.
     let mut metadata: HashMap<String, String> = HashMap::new();
     let first_source = arm64.or(x86_64);
     if let Some(src) = first_source {
@@ -675,6 +684,40 @@ pub(crate) fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
     ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
 }
 
+/// Compile a glob pattern with consistent strict-mode-vs-warn handling
+/// across the build stage's pattern-matching call sites (per-target env
+/// keys, build override `targets`, …).
+///
+/// Returns `Ok(None)` when the pattern fails to compile in normal mode
+/// (after logging a warning); `Err` in strict mode; `Ok(Some(pat))` on
+/// success. `label` describes the configuration site that produced the
+/// pattern, e.g. `"build.env key"` or `"build override target"`.
+fn try_compile_glob(
+    key: &str,
+    label: &str,
+    log: &anodizer_core::log::StageLogger,
+    strict: bool,
+) -> anyhow::Result<Option<glob::Pattern>> {
+    match glob::Pattern::new(key) {
+        Ok(pat) => Ok(Some(pat)),
+        Err(e) => {
+            if strict {
+                anyhow::bail!(
+                    "build: invalid glob pattern in {} '{}': {} (strict mode)",
+                    label,
+                    key,
+                    e
+                );
+            }
+            log.warn(&format!(
+                "invalid glob pattern in {} '{}': {}",
+                label, key, e
+            ));
+            Ok(None)
+        }
+    }
+}
+
 /// Resolve the merged env map for a build target by interpreting each
 /// `build.env` key as a glob pattern (matching the same `glob::Pattern`
 /// semantic used by `find_matching_override` and the `targets:` filter on
@@ -685,9 +728,14 @@ pub(crate) fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
 /// every linux-gnu target instead of silently nothing. Exact target strings
 /// are valid trivial globs and continue to match exactly as before.
 ///
-/// Merge order: keys are visited in lexicographic order so the output is
-/// deterministic; later (alphabetically-greater) matching keys override
-/// earlier ones on conflicting values.
+/// **Merge order is alphabetic, not most-specific-wins.** Keys are visited in
+/// lexicographic order; later (alphabetically-greater) matching keys override
+/// earlier ones on conflicting values. With both `*-linux-gnu` and the exact
+/// target string matching, the exact key sorts later and wins coincidentally.
+/// For two glob keys (e.g. `*-linux-gnu` and `x86_64-*`), ASCII order — not
+/// pattern specificity — decides. Authors of multiple overlapping keys must
+/// keep that in mind; prefer non-overlapping patterns or rely on the exact
+/// target string to override globs.
 ///
 /// Returns `Ok(None)` when the env map is absent / empty / has no matching
 /// keys; otherwise `Ok(Some(merged))`.
@@ -706,28 +754,15 @@ pub(crate) fn resolve_target_env(
     let mut merged: HashMap<String, String> = HashMap::new();
     let mut matched_any = false;
     for key in sorted_keys {
-        match glob::Pattern::new(key) {
-            Ok(pat) if pat.matches(target) => {
-                matched_any = true;
-                if let Some(vals) = env.get(key) {
-                    for (k, v) in vals {
-                        merged.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-            Ok(_) => {}
-            Err(e) => {
-                if strict {
-                    anyhow::bail!(
-                        "build: invalid glob pattern in build.env key '{}': {} (strict mode)",
-                        key,
-                        e
-                    );
-                }
-                log.warn(&format!(
-                    "invalid glob pattern in build.env key '{}': {}",
-                    key, e
-                ));
+        let Some(pat) = try_compile_glob(key, "build.env key", log, strict)? else {
+            continue;
+        };
+        if pat.matches(target)
+            && let Some(vals) = env.get(key)
+        {
+            matched_any = true;
+            for (k, v) in vals {
+                merged.insert(k.clone(), v.clone());
             }
         }
     }
@@ -744,22 +779,11 @@ pub(crate) fn find_matching_override<'a>(
 ) -> anyhow::Result<Option<&'a BuildOverride>> {
     for ov in overrides {
         for pat_str in &ov.targets {
-            match glob::Pattern::new(pat_str) {
-                Ok(pat) => {
-                    if pat.matches(target) {
-                        return Ok(Some(ov));
-                    }
-                }
-                Err(e) => {
-                    if strict {
-                        anyhow::bail!(
-                            "build: invalid glob pattern '{}': {} (strict mode)",
-                            pat_str,
-                            e
-                        );
-                    }
-                    log.warn(&format!("invalid glob pattern '{}': {}", pat_str, e));
-                }
+            let Some(pat) = try_compile_glob(pat_str, "build override target", log, strict)? else {
+                continue;
+            };
+            if pat.matches(target) {
+                return Ok(Some(ov));
             }
         }
     }
@@ -3729,6 +3753,46 @@ crate_type = ["dylib"]
             resolve_target_env(None, "x86_64-unknown-linux-gnu", &log, false)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_env_empty_map_returns_none() {
+        // Coverage gap: env: {} (Some empty map) must behave like env: None.
+        let log = test_logger();
+        let env: HashMap<String, HashMap<String, String>> = HashMap::new();
+        assert!(
+            resolve_target_env(Some(&env), "x86_64-unknown-linux-gnu", &log, false)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_env_alphabetic_not_specific() {
+        // Pins the documented merge contract (W1): when two glob keys both
+        // legitimately apply, ASCII order — not pattern specificity — decides.
+        // Here `*-linux-*` and `*-linux-gnu` both match. ASCII: `*` is 0x2A,
+        // `g` is 0x67; so `*-linux-*` sorts before `*-linux-gnu`. The later
+        // (alphabetically-greater) key `*-linux-gnu` wins on conflict.
+        let log = test_logger();
+        let env: HashMap<String, HashMap<String, String>> = HashMap::from([
+            (
+                "*-linux-*".to_string(),
+                HashMap::from([("CC".to_string(), "less-specific".to_string())]),
+            ),
+            (
+                "*-linux-gnu".to_string(),
+                HashMap::from([("CC".to_string(), "more-specific".to_string())]),
+            ),
+        ]);
+        let merged = resolve_target_env(Some(&env), "x86_64-unknown-linux-gnu", &log, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            merged.get("CC").map(String::as_str),
+            Some("more-specific"),
+            "ASCII-order winner: `*-linux-gnu` sorts after `*-linux-*` and overrides on conflict"
         );
     }
 

@@ -61,6 +61,7 @@ pub(crate) fn render_file_info(
 
 /// A resolved extra file to include in an archive, with optional destination
 /// path override and file info (permissions/owner/group).
+#[derive(Debug)]
 pub struct ResolvedExtraFile {
     pub src: PathBuf,
     /// When Some, use this path inside the archive instead of the filename.

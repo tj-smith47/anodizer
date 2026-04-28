@@ -65,7 +65,13 @@ pub fn formats_for_target(
         // FormatOverride.os matches when the resolved target's os field starts
         // with the configured value. Same call-site rationale as the primary
         // archive run loop.
-        if os.starts_with(&ov.os)
+        //
+        // Empty `os` is rejected as a user typo (anodizer-stricter than GR,
+        // which lets `os: ""` match every target via empty-prefix). A user who
+        // accidentally writes `os:` (yaml-empty) gets a clean fallback to the
+        // default format instead of a silent global-override.
+        if !ov.os.is_empty()
+            && os.starts_with(&ov.os)
             && let Some(ref fmts) = ov.formats
             && !fmts.is_empty()
         {
@@ -445,9 +451,14 @@ impl Stage for ArchiveStage {
                         // ("linux", "darwin", "windows"); the prefix relaxation
                         // is exercised when an OS gains a sub-variant (e.g.,
                         // "linux-musl") without users having to add an override.
+                        //
+                        // Empty `ov.os` is rejected as a typo guard (mirrors
+                        // `formats_for_target`): an accidental `os:` with no
+                        // value would otherwise match every target via empty-
+                        // prefix and silently override the archive's formats.
                         let override_match = format_overrides
                             .iter()
-                            .find(|ov| os.starts_with(&ov.os))
+                            .find(|ov| !ov.os.is_empty() && os.starts_with(&ov.os))
                             .and_then(|ov| ov.formats.as_ref().filter(|f| !f.is_empty()).cloned());
                         match override_match {
                             Some(fmts) => fmts,
@@ -1200,6 +1211,27 @@ mod tests {
     // ---------------------------------------------------------------------------
     // New tests: glob pattern resolution
     // ---------------------------------------------------------------------------
+
+    /// Pins W3: a single license/readme/changelog file produces exactly one
+    /// resolved entry, regardless of which case glob hit it first. The dedup
+    /// logic in `resolve_default_extra_files` (HashSet on resolved path)
+    /// must collapse the two case-globs that resolve to the same file on
+    /// case-insensitive filesystems (macOS HFS+, Windows NTFS default).
+    #[test]
+    fn test_resolve_default_extra_files_dedup_single_file() {
+        let tmp = TempDir::new().unwrap();
+        // Just one license file. On both case-sensitive and case-insensitive
+        // filesystems, the resolver should return exactly one entry —
+        // the lowercase and uppercase globs may or may not BOTH find it,
+        // but the result must be deduped.
+        fs::write(tmp.path().join("license.txt"), b"mit").unwrap();
+        let results = resolve_default_extra_files(tmp.path());
+        assert_eq!(
+            results.len(),
+            1,
+            "exactly one entry expected for single license file; got {results:?}"
+        );
+    }
 
     /// Pins C-new-6: GR-aligned default extra-file glob order is lowercase-first
     /// for each of license / readme / changelog. On case-insensitive
@@ -4043,6 +4075,24 @@ crates:
             result,
             vec!["zip"],
             "prefix mismatch must fall through to default"
+        );
+    }
+
+    /// Pins W2: empty `FormatOverride.os` is rejected as a typo guard. A user
+    /// who accidentally writes `os:` (yaml-empty) gets a clean fallback to the
+    /// default format instead of an empty-prefix match-everything override.
+    /// Anodizer-stricter than GR.
+    #[test]
+    fn test_format_override_empty_os_rejected() {
+        let overrides = vec![FormatOverride {
+            os: String::new(),
+            formats: Some(vec!["tar.gz".to_string()]),
+        }];
+        let result = formats_for_target("x86_64-unknown-linux-gnu", "zip", &overrides);
+        assert_eq!(
+            result,
+            vec!["zip"],
+            "empty os must NOT match every target; falls through to default"
         );
     }
 
