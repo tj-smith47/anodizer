@@ -19,6 +19,10 @@ violations, user-reported issues.
 
 ## Active
 
+### Session C / Group E review deferrals — 2026-04-28 (1 MINOR)
+
+- [ ] `crates/stage-publish/src/aur.rs:435-437` — `ctx.render_template(&raw_package_name).unwrap_or_else(|_| raw_package_name.clone())` silently swallows malformed-template errors and propagates the raw string into `base_name`, defeating the rendered-vs-raw fix landed in `73d7776` for the malformed-template case. Pre-existing pattern (not introduced by `1e98536` or `73d7776`); flagged during the Group E code-quality re-review. Fix: surface render errors with `with_context()` (or `log.warn()` + fallback if the silent path is intentional). Behavior change — opening surfaces previously-swallowed errors to currently-malformed configs, so worth its own scope decision.
+
 ### Tracked migrations / scope-creep deferrals — 2026-04-27 (4 SUGGEST)
 
 
