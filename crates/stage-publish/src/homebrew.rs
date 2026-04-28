@@ -1719,12 +1719,22 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
                 )
             })?;
 
-        // Directory defaults to "Casks" (GoReleaser default).
-        // GoReleaser templates the directory field.
+        // Directory defaults to "Casks" (mirrors GR cask.go:65-67). GR warns
+        // when the resolved value is not "Casks" since a non-default cask
+        // directory typically breaks `brew install` on end-user machines
+        // (homebrew-cask only auto-discovers files under "Casks/"). Pin
+        // C-new-10: emit the same warning here.
         let directory_raw = cask_cfg.directory.as_deref().unwrap_or("Casks");
         let directory = ctx
             .render_template(directory_raw)
             .unwrap_or_else(|_| directory_raw.to_string());
+        if directory != "Casks" {
+            log.warn(&format!(
+                "homebrew_casks: directory {:?} might not work properly for end users; \
+                 the homebrew-cask convention is \"Casks\"",
+                directory
+            ));
+        }
 
         if ctx.is_dry_run() {
             log.status(&format!(
