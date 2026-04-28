@@ -11,7 +11,7 @@ use sha2::{Sha224, Sha384, Sha512};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodizer_core::config::ExtraFileSpec;
+use anodizer_core::config::{ChecksumConfig, ExtraFileSpec};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
@@ -222,9 +222,12 @@ impl Stage for ChecksumStage {
             return Ok(());
         }
 
+        // Defaults policy: route every default through the resolved_*()
+        // accessors on ChecksumConfig so the "what's the default?" answer
+        // lives in exactly one place (see lazy-vs-eager defaults policy).
         let global_algorithm = global_cksum
-            .and_then(|c| c.algorithm.clone())
-            .unwrap_or_else(|| "sha256".to_string());
+            .map(|c| c.resolved_algorithm().to_string())
+            .unwrap_or_else(|| ChecksumConfig::DEFAULT_ALGORITHM.to_string());
         let global_name_template = global_cksum.and_then(|c| c.name_template.clone());
         let global_extra_files = global_cksum.and_then(|c| c.extra_files.clone());
         let global_templated_extra_files =
@@ -564,17 +567,17 @@ impl Stage for ChecksumStage {
                 name_a.cmp(name_b)
             });
 
-            // Write combined checksums file (only when NOT in split mode)
+            // Write combined checksums file (only when NOT in split mode).
+            // Route the default through `ChecksumConfig::DEFAULT_NAME_TEMPLATE`
+            // so the GR-canonical fallback lives next to its sibling
+            // resolved_*() accessors instead of in a stage-local literal.
             if !split {
-                let combined_filename = if let Some(tmpl) = &name_template {
-                    ctx.render_template(tmpl).with_context(|| {
-                        format!("checksum: render name_template for {crate_name}")
-                    })?
-                } else {
-                    let project = &ctx.config.project_name;
-                    let version = ctx.version();
-                    format!("{project}_{version}_checksums.txt")
-                };
+                let tmpl_str: &str = name_template
+                    .as_deref()
+                    .unwrap_or(ChecksumConfig::DEFAULT_NAME_TEMPLATE);
+                let combined_filename = ctx
+                    .render_template(tmpl_str)
+                    .with_context(|| format!("checksum: render name_template for {crate_name}"))?;
 
                 let combined_path = dist.join(&combined_filename);
 
@@ -1790,6 +1793,8 @@ ids:
         };
 
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),

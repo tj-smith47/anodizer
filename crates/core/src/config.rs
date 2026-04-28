@@ -1729,6 +1729,44 @@ pub struct ChecksumConfig {
     pub split: Option<bool>,
 }
 
+impl ChecksumConfig {
+    /// Default checksum filename template (combined mode). Mirrors
+    /// `internal/pipe/checksums/checksums.go:48` in GoReleaser.
+    pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ ProjectName }}_{{ Version }}_checksums.txt";
+
+    /// Default hash algorithm. Mirrors GoReleaser
+    /// (`internal/pipe/checksums/checksums.go:42`).
+    pub const DEFAULT_ALGORITHM: &'static str = "sha256";
+
+    /// Resolve the hash algorithm, falling back to the project default
+    /// when the user did not specify one. Stages MUST call this rather
+    /// than reading `self.algorithm` directly, so a future default change
+    /// (or user-facing override resolution) lands in one place. See the
+    /// lazy-vs-eager defaults policy in `.claude/audits/2026-04-config-gaps/`.
+    pub fn resolved_algorithm(&self) -> &str {
+        self.algorithm.as_deref().unwrap_or(Self::DEFAULT_ALGORITHM)
+    }
+
+    /// Whether split-mode (one sidecar per artifact) is requested.
+    /// Defaults to `false` (combined-file mode, matching GoReleaser).
+    pub fn resolved_split(&self) -> bool {
+        self.split.unwrap_or(false)
+    }
+
+    /// Resolve the combined-mode checksum filename template, falling back
+    /// to the GoReleaser-canonical default. Returns the raw template
+    /// string; the caller still renders it through Tera.
+    ///
+    /// Split mode constructs sidecar names per-artifact at the call site
+    /// (`<artifact>.<algo>` literal format) and intentionally does NOT
+    /// route through this accessor — that path needs no template rendering.
+    pub fn resolved_combined_name_template(&self) -> &str {
+        self.name_template
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_NAME_TEMPLATE)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ContentSource — inline string, from_file, or from_url
 // ---------------------------------------------------------------------------
@@ -6555,6 +6593,59 @@ crates:
         let cl = config.changelog.as_ref().unwrap();
         assert_eq!(cl.skip, Some(StringOrBool::Bool(false)));
         assert_eq!(cl.sort, Some("desc".to_string()));
+    }
+
+    // ---- ChecksumConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+
+    #[test]
+    fn test_checksum_resolved_algorithm_default() {
+        let cfg = ChecksumConfig::default();
+        assert_eq!(cfg.resolved_algorithm(), "sha256");
+    }
+
+    #[test]
+    fn test_checksum_resolved_algorithm_user_value_wins() {
+        let cfg = ChecksumConfig {
+            algorithm: Some("sha512".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_algorithm(), "sha512");
+    }
+
+    #[test]
+    fn test_checksum_resolved_split_default() {
+        let cfg = ChecksumConfig::default();
+        assert!(!cfg.resolved_split());
+    }
+
+    #[test]
+    fn test_checksum_resolved_split_user_value_wins() {
+        let cfg = ChecksumConfig {
+            split: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.resolved_split());
+    }
+
+    #[test]
+    fn test_checksum_resolved_combined_name_template_default() {
+        let cfg = ChecksumConfig::default();
+        assert_eq!(
+            cfg.resolved_combined_name_template(),
+            "{{ ProjectName }}_{{ Version }}_checksums.txt"
+        );
+    }
+
+    #[test]
+    fn test_checksum_resolved_combined_name_template_user_value_wins() {
+        let cfg = ChecksumConfig {
+            name_template: Some("custom-{{ Version }}.txt".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_combined_name_template(),
+            "custom-{{ Version }}.txt"
+        );
     }
 
     // ---- ChecksumConfig disable tests ----
