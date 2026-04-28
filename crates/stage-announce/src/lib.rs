@@ -224,11 +224,20 @@ impl Stage for AnnounceStage {
                     }
                     _ => match cfg.webhook_url.as_deref() {
                         Some(raw) => ctx.render_template(raw)?,
-                        None => anyhow::bail!(
-                            "announce.discord: missing webhook_url \
-                             (set discord.webhook_url, or both \
-                             DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN env vars)"
-                        ),
+                        None => {
+                            // Skip-when-empty UX policy: in strict mode this
+                            // bails (collected by the closure-level wrapper
+                            // and reported at end-of-stage); in normal mode
+                            // it warns and returns Ok so unrelated announcers
+                            // still run.
+                            ctx.strict_guard(
+                                &log,
+                                "announce.discord: missing webhook_url \
+                                 (set discord.webhook_url, or both \
+                                 DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN env vars)",
+                            )?;
+                            return Ok(());
+                        }
                     },
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
@@ -317,10 +326,22 @@ impl Stage for AnnounceStage {
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
-                    None => std::env::var("SLACK_WEBHOOK")
+                    None => match std::env::var("SLACK_WEBHOOK")
                         .ok()
                         .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow::anyhow!("announce.slack: missing webhook_url (set config or SLACK_WEBHOOK env var)"))?,
+                    {
+                        Some(env) => env,
+                        None => {
+                            // Skip-when-empty UX policy: strict_guard bails in
+                            // strict mode (collected at end-of-stage); in normal
+                            // mode it warns and we skip just this announcer.
+                            ctx.strict_guard(
+                                &log,
+                                "announce.slack: missing webhook_url (set config or SLACK_WEBHOOK env var)",
+                            )?;
+                            return Ok(());
+                        }
+                    },
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
@@ -358,8 +379,15 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.webhook
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                let url =
-                    require_rendered(ctx, cfg.endpoint_url.as_deref(), "webhook", "endpoint_url")?;
+                // Skip-when-empty UX: missing endpoint_url skips this announcer
+                // in normal mode (warn) and bails in strict mode.
+                let url = match cfg.endpoint_url.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.webhook: missing endpoint_url")?;
+                        return Ok(());
+                    }
+                };
                 let parsed = reqwest::Url::parse(&url).map_err(|e| {
                     anyhow::anyhow!(
                         "announce.webhook: endpoint_url {url:?} is not a valid URL: {e}"
@@ -524,10 +552,19 @@ impl Stage for AnnounceStage {
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
-                    None => std::env::var("TEAMS_WEBHOOK")
+                    None => match std::env::var("TEAMS_WEBHOOK")
                         .ok()
                         .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow::anyhow!("announce.teams: missing webhook_url (set config or TEAMS_WEBHOOK env var)"))?,
+                    {
+                        Some(env) => env,
+                        None => {
+                            ctx.strict_guard(
+                                &log,
+                                "announce.teams: missing webhook_url (set config or TEAMS_WEBHOOK env var)",
+                            )?;
+                            return Ok(());
+                        }
+                    },
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let title_template = cfg
@@ -558,10 +595,19 @@ impl Stage for AnnounceStage {
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
-                    None => std::env::var("MATTERMOST_WEBHOOK")
+                    None => match std::env::var("MATTERMOST_WEBHOOK")
                         .ok()
                         .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow::anyhow!("announce.mattermost: missing webhook_url (set config or MATTERMOST_WEBHOOK env var)"))?,
+                    {
+                        Some(env) => env,
+                        None => {
+                            ctx.strict_guard(
+                                &log,
+                                "announce.mattermost: missing webhook_url (set config or MATTERMOST_WEBHOOK env var)",
+                            )?;
+                            return Ok(());
+                        }
+                    },
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
@@ -800,7 +846,18 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.email
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                let from = require_rendered(ctx, cfg.from.as_deref(), "email", "from")?;
+                // Skip-when-empty UX: missing `from` or empty `to` skips the
+                // email announcer in normal mode (warn) and bails in strict
+                // mode. A configured-but-malformed `from` (string set but no
+                // `@`) is a config error, not skip-when-empty, so it stays a
+                // hard bail regardless of strict mode.
+                let from = match cfg.from.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.email: missing from")?;
+                        return Ok(());
+                    }
+                };
 
                 if !from.contains('@') {
                     anyhow::bail!(
@@ -810,7 +867,8 @@ impl Stage for AnnounceStage {
                 }
 
                 if cfg.to.is_empty() {
-                    anyhow::bail!("announce.email: missing to (recipient list)");
+                    ctx.strict_guard(&log, "announce.email: missing to (recipient list)")?;
+                    return Ok(());
                 }
 
                 let subject = ctx.render_template(
@@ -1143,13 +1201,46 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.announce = Some(announce);
+        // Skip-when-empty UX: missing webhook_url only hard-errors in strict
+        // mode. Normal mode warns and skips this announcer (covered by
+        // test_missing_discord_webhook_url_warn_and_skip below).
         let opts = ContextOptions {
             dry_run: false,
+            strict: true,
             ..Default::default()
         };
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_err());
+    }
+
+    #[test]
+    fn test_missing_discord_webhook_url_warn_and_skip() {
+        // Skip-when-empty UX: in normal (non-strict) mode, a missing
+        // webhook_url should warn and skip the discord announcer cleanly
+        // (Ok result), letting unrelated announcers continue.
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: None,
+                message_template: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: false,
+            strict: false,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing webhook_url must skip cleanly, not error");
     }
 
     // ----------------------------------------------------------------
@@ -1288,7 +1379,13 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.announce = Some(announce);
-        let mut ctx = Context::new(config, ContextOptions::default());
+        // Skip-when-empty UX: missing webhook_url is a hard error only in
+        // strict mode; normal mode warns + skips.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_err());
     }
@@ -1352,7 +1449,12 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.announce = Some(announce);
-        let mut ctx = Context::new(config, ContextOptions::default());
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_err());
     }
@@ -1415,7 +1517,12 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.announce = Some(announce);
-        let mut ctx = Context::new(config, ContextOptions::default());
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_err());
     }
@@ -1434,7 +1541,12 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.announce = Some(announce);
-        let mut ctx = Context::new(config, ContextOptions::default());
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_err());
     }
