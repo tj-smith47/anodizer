@@ -1173,7 +1173,34 @@ impl Stage for ChangelogStage {
                 ));
             }
 
-            let (all_commit_infos, logins_str) = if use_github {
+            // Pre-empt the SCM API call when there is no previous tag (first
+            // release on a branch). GoReleaser's `getChangeloger` does the
+            // same: it warns "there's no previous tag, using 'git' instead of
+            // '<scm>'" and returns the git changeloger directly. This avoids
+            // a wasted compare-API call (which would 404 / yield nothing
+            // useful with no base ref) and prevents transient API errors
+            // from interrupting a first release.
+            let scm_no_prev_tag =
+                should_preempt_scm_to_git(use_github, use_gitlab, use_gitea, &prev_tag);
+            if scm_no_prev_tag {
+                let scm_label = if use_github {
+                    "github"
+                } else if use_gitlab {
+                    "gitlab"
+                } else {
+                    "gitea"
+                };
+                log.status(&format!(
+                    "no previous tag found — using 'git' instead of '{}' for crate '{}'",
+                    scm_label, crate_name
+                ));
+            }
+            let (all_commit_infos, logins_str) = if scm_no_prev_tag {
+                (
+                    fetch_git_commits(&prev_tag, &paths, &crate_name, &log)?,
+                    String::new(),
+                )
+            } else if use_github {
                 // Fetch commits via the GitHub API for enriched author login info.
                 match fetch_github_commits(ctx, &prev_tag, &paths, &log) {
                     Ok((infos, logins)) => (infos, logins),
@@ -1330,6 +1357,27 @@ impl Stage for ChangelogStage {
         log.status(&format!("wrote {}", notes_path.display()));
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: SCM pre-empt decision
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when an SCM-mode changelog should pre-empt to the git
+/// fallback because there is no previous tag to compare against.
+///
+/// Mirrors GoReleaser's `getChangeloger`: for `use: github` / `use: gitlab` /
+/// `use: gitea`, when `ctx.Git.PreviousTag == ""`, it warns and returns the
+/// git changeloger directly instead of issuing an SCM compare-API call (which
+/// would 404 / produce nothing useful with no base ref). The pre-empt also
+/// avoids transient API failures interrupting a first release.
+fn should_preempt_scm_to_git(
+    use_github: bool,
+    use_gitlab: bool,
+    use_gitea: bool,
+    prev_tag: &Option<String>,
+) -> bool {
+    (use_github || use_gitlab || use_gitea) && prev_tag.is_none()
 }
 
 // ---------------------------------------------------------------------------
@@ -4640,6 +4688,138 @@ use: gitea
             result.is_ok(),
             "gitea with no token should fall back to git: {:?}",
             result.err()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // C-new-19: SCM mode pre-empts to git fallback when no previous tag
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_should_preempt_scm_to_git_github_no_prev_tag() {
+        // GitHub mode + no previous tag → pre-empt to git fallback.
+        assert!(should_preempt_scm_to_git(true, false, false, &None));
+    }
+
+    #[test]
+    fn test_should_preempt_scm_to_git_gitlab_no_prev_tag() {
+        assert!(should_preempt_scm_to_git(false, true, false, &None));
+    }
+
+    #[test]
+    fn test_should_preempt_scm_to_git_gitea_no_prev_tag() {
+        assert!(should_preempt_scm_to_git(false, false, true, &None));
+    }
+
+    #[test]
+    fn test_should_preempt_scm_to_git_with_prev_tag_no_preempt() {
+        // With a previous tag, the SCM API path is taken — no pre-empt.
+        let prev = Some("v1.0.0".to_string());
+        assert!(!should_preempt_scm_to_git(true, false, false, &prev));
+        assert!(!should_preempt_scm_to_git(false, true, false, &prev));
+        assert!(!should_preempt_scm_to_git(false, false, true, &prev));
+    }
+
+    #[test]
+    fn test_should_preempt_scm_to_git_pure_git_mode_no_preempt() {
+        // `use: git` — no SCM at all — never pre-empts (the `else` branch
+        // already calls fetch_git_commits directly).
+        assert!(!should_preempt_scm_to_git(false, false, false, &None));
+        assert!(!should_preempt_scm_to_git(
+            false,
+            false,
+            false,
+            &Some("v1.0.0".to_string())
+        ));
+    }
+
+    #[test]
+    fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
+        // End-to-end: with `use: github` + no previous tag, the stage should
+        // succeed without making an API call (pre-empt path). This is run in
+        // a fresh tempdir as a git repo with no tags so prev_tag is None.
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use std::process::Command;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = tmp.path();
+
+        // Initialize a fresh git repo with one commit but no tags.
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        std::fs::write(repo.join("README.md"), "test").unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", "feat: initial commit"])
+            .current_dir(repo)
+            .status()
+            .unwrap();
+
+        let dist = repo.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.dist = dist.clone();
+        config.changelog = Some(ChangelogConfig {
+            use_source: Some("github".to_string()),
+            ..Default::default()
+        });
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            // The crate's tag_template never matched any tag (the repo has
+            // none), so prev_tag will be None and pre-empt should kick in.
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+
+        let opts = ContextOptions {
+            dry_run: true,
+            // No token — if the API path were taken, fetch_github_commits
+            // would attempt detect_github_repo() → likely fail, then strict_guard
+            // would log + fall back. Our pre-empt skips that entire branch.
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // Run from inside the tempdir so git commands operate on it.
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo).unwrap();
+        let stage = ChangelogStage;
+        let result = stage.run(&mut ctx);
+        std::env::set_current_dir(original_cwd).unwrap();
+
+        assert!(
+            result.is_ok(),
+            "github + no prev tag should pre-empt to git fallback: {:?}",
+            result.err()
+        );
+
+        // The git fallback should have produced a changelog entry containing
+        // the seed commit's subject.
+        let body = ctx.changelogs.get("mylib").cloned().unwrap_or_default();
+        assert!(
+            body.contains("initial commit"),
+            "git fallback should include the seed commit, got: {body}"
         );
     }
 
