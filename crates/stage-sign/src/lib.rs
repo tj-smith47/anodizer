@@ -515,8 +515,11 @@ mod tests {
     #[test]
     fn test_filter_artifacts_all() {
         // "all" matches anodizer_core::artifact::release_uploadable_kinds().
-        // Pro-equivalent: Installer (MSI/DMG/PKG/NSIS) is part of the
-        // release-uploadable set so it is signed alongside archives.
+        // GR-Pro-equivalent installers (MSI/NSIS as Installer, DMG as
+        // DiskImage, PKG as MacOsPackage) are part of the release-uploadable
+        // set so they are signed alongside archives. Dedicated filters
+        // (`installer`, `diskimage`, `macos_package`) remain available for
+        // finer-grain selection.
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
@@ -528,6 +531,8 @@ mod tests {
         assert!(should_sign_artifact(ArtifactKind::SourceRpm, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
 
         // GoReleaser includes Signature + Certificate in the "all" list — anodizer
         // matches that for parity. (On a fresh run there are no prior Signature /
@@ -535,12 +540,10 @@ mod tests {
         assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
 
-        // Kinds not in release_uploadable_kinds — users must opt in via dedicated
-        // filters (`diskimage`, `snap`, `macos_package`, `binary`).
+        // Kinds not in release_uploadable_kinds — users must opt in via the
+        // dedicated `binary` / `snap` filters.
         assert!(!should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
 
         // Internal / metadata types — never signed.
         assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
@@ -725,22 +728,24 @@ mod tests {
 
     #[test]
     fn test_artifacts_filter_selects_correct_kinds() {
-        // "all" = release_uploadable_kinds(). Pro-equivalent: Installer is
-        // included alongside archives/packages.
+        // "all" = release_uploadable_kinds(). GR-Pro-equivalent installers
+        // (MSI/NSIS as Installer, DMG as DiskImage, PKG as MacOsPackage) are
+        // all in the canonical set, so all three are signed under "all".
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
 
-        // Kinds outside release_uploadable_kinds — use dedicated filters.
+        // Kinds outside release_uploadable_kinds — use dedicated `binary` /
+        // `snap` filters to opt in.
         assert!(!should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
 
         // "all" does NOT match internal/non-uploadable types
         assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
@@ -2722,10 +2727,10 @@ crates: []
     #[test]
     fn test_all_filter_includes_release_uploadable_types() {
         // "all" = anodizer_core::artifact::release_uploadable_kinds().
-        // GoReleaser Pro parity: Installer (MSI/DMG/PKG/NSIS) is part of the
-        // release-uploadable set so it gets signed and uploaded alongside
-        // archives. GR OSS omits these formats; anodizer treats them as
-        // first-class.
+        // GoReleaser Pro mapping: MSI/NSIS (Installer), DMG (DiskImage), and
+        // PKG (MacOsPackage) are all part of the release-uploadable set so
+        // they get signed and uploaded alongside archives. GR OSS omits these
+        // formats; anodizer treats them as first-class.
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
@@ -2734,18 +2739,19 @@ crates: []
         assert!(should_sign_artifact(ArtifactKind::Flatpak, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::SourceRpm, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
 
-        // These are NOT in release_uploadable_kinds() — use dedicated filters.
+        // These are NOT in release_uploadable_kinds() — use the dedicated
+        // `binary` / `snap` filters to opt in.
         assert!(!should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::UniversalBinary, "all").unwrap());
         assert!(!should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
-        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
     }
 
     // -----------------------------------------------------------------------

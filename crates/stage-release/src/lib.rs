@@ -931,16 +931,16 @@ impl Stage for ReleaseStage {
             let use_existing_draft = release_cfg.resolved_use_existing_draft();
 
             // Collect uploadable artifacts for this crate, applying ids filter.
-            // Each entry is (path, optional_custom_name). The custom name is only
-            // set for extra_files with a name_template; regular artifacts use None.
+            // Each entry is (path, optional_custom_name). The custom name is
+            // only set for extra_files with a name_template; regular artifacts
+            // use None.
             //
-            // Reference the canonical helper `release_uploadable_kinds()` to
-            // stay in sync with GoReleaser `internal/pipe/release/release.go`
-            // which calls `artifact.ReleaseUploadableTypes()`. Previously this
-            // hardcoded 20 kinds and over-uploaded Snap + Pro-only types
-            // (CArchive/CShared/Header/DiskImage/Installer/MacOsPackage/
-            // UniversalBinary) on GitHub — Snap belongs on the Snap store,
-            // and the Pro kinds aren't in GoReleaser's release list.
+            // Source-of-truth is `release_uploadable_kinds()`. It mirrors
+            // GoReleaser's `artifact.ReleaseUploadableTypes()` (called from
+            // `internal/pipe/release/release.go`) and additionally includes
+            // the four GR-Pro installer kinds anodizer ships as OSS:
+            // Installer (MSI/NSIS), DiskImage (DMG), and MacOsPackage (PKG).
+            // Snap remains excluded — snaps publish to the snap store.
             //
             // When `IncludeMeta` is true the Metadata kind is appended, per
             // `release.go:160-167`.

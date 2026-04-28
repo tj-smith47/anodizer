@@ -1123,9 +1123,12 @@ mod tests {
         // Pins the cross-linked artifact set used by stage-checksum,
         // stage-release upload, blob storage, and stage-sign "all" filter.
         // Mirrors GoReleaser's `artifact.ReleaseUploadableTypes()` plus the
-        // four installer kinds anodizer ships as OSS (MSI/NSIS as Installer,
-        // DMG as DiskImage, PKG as MacOsPackage). A regression that drops
-        // any of these silently breaks downstream upload/checksum behavior.
+        // four installer kinds anodizer ships as OSS:
+        //   - Installer       <- GR Pro: MSI / NSIS
+        //   - DiskImage       <- GR Pro: DMG
+        //   - MacOsPackage    <- GR Pro: PKG
+        // A regression that drops any of these silently breaks downstream
+        // upload/checksum/sign behavior.
         let kinds = release_uploadable_kinds();
         let expected = [
             ArtifactKind::Archive,

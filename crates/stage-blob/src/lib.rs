@@ -594,11 +594,9 @@ fn collect_artifacts<'a>(
         return vec![];
     }
 
-    // blob upload uses the canonical
-    // release-uploadable artifact list (ArtifactByType(Archive, UploadableBinary,
-    // UploadableFile, SourceArchive, Makeself, LinuxPackage, Flatpak, SourceRpm,
-    // Sbom, Checksum, Signature, Certificate)). When
-    // `include_meta` is true, append Metadata.
+    // blob upload uses the canonical release-uploadable set — see
+    // `release_uploadable_kinds()` in `crates/core/src/artifact.rs` for the
+    // authoritative list. When `include_meta` is true, append Metadata.
     let mut uploadable_kinds: Vec<ArtifactKind> = release_uploadable_kinds().to_vec();
     if config.include_meta.unwrap_or(false) {
         uploadable_kinds.push(ArtifactKind::Metadata);

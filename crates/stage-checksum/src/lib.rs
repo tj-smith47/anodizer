@@ -2991,11 +2991,15 @@ extra_files:
         let dist = tmp.path().join("dist");
         fs::create_dir_all(&dist).unwrap();
 
-        // One file per artifact kind under test. Distinct names so a single
-        // grep over the combined file confirms inclusion/exclusion.
+        // One file per artifact kind under test. Filenames are chosen so that
+        // none is a substring suffix of another and assertions go through a
+        // line-parsed filename set (not `content.contains`) — that combination
+        // is what catches a regression like dropping Archive while Signature
+        // (which carries a filename of the form `<archive>.sig`) is still
+        // present.
         let cases: &[(ArtifactKind, &str, bool)] = &[
             // (kind, filename, must_be_in_combined_checksums)
-            (ArtifactKind::Archive, "myapp.tar.gz", true),
+            (ArtifactKind::Archive, "myapp-archive.tar.gz", true),
             (ArtifactKind::UploadableBinary, "myapp-bin", true),
             (ArtifactKind::UploadableFile, "extra.txt", true),
             (ArtifactKind::SourceArchive, "myapp-source.tar.gz", true),
@@ -3007,11 +3011,15 @@ extra_files:
             (ArtifactKind::DiskImage, "myapp.dmg", true),
             (ArtifactKind::MacOsPackage, "myapp.pkg", true),
             (ArtifactKind::Sbom, "myapp.sbom.json", true),
-            (ArtifactKind::Signature, "myapp.tar.gz.sig", true),
+            (ArtifactKind::Signature, "myapp-sig.tar.gz.sig", true),
             (ArtifactKind::Certificate, "myapp.crt", true),
             // Excluded: snap-store-bound + raw build output.
             (ArtifactKind::Snap, "myapp.snap", false),
             (ArtifactKind::Binary, "myapp-raw-bin", false),
+            // Recursion-prevention: pre-existing Checksum artifacts (from a
+            // prior pipe pass or a merge step) must be filtered out of the
+            // source list so the new combined file does not list itself.
+            (ArtifactKind::Checksum, "prior.checksums.txt", false),
         ];
 
         let mut ctx = TestContextBuilder::new()
@@ -3047,8 +3055,17 @@ extra_files:
         assert!(combined.exists(), "combined checksums file must exist");
         let content = fs::read_to_string(&combined).unwrap();
 
+        // Parse `{hash}  {filename}` lines into the set of filenames present.
+        // Structural extraction avoids substring false-positives — e.g.,
+        // `content.contains("myapp.tar.gz")` would spuriously match against a
+        // line ending in `myapp.tar.gz.sig`.
+        let filenames_in_combined: std::collections::HashSet<&str> = content
+            .lines()
+            .filter_map(|l| l.split_once("  ").map(|(_, name)| name))
+            .collect();
+
         for (kind, filename, must_be_in) in cases {
-            let present = content.contains(filename);
+            let present = filenames_in_combined.contains(filename);
             assert_eq!(
                 present,
                 *must_be_in,
