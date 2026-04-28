@@ -97,13 +97,10 @@ fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
 // Defaults
 // ---------------------------------------------------------------------------
 
-/// Apple's public RFC-3161 timestamp service. Used by rcodesign sign so the
-/// signature carries a trusted timestamp rather than the host clock. Allowed
-/// to be overridden via `notarize.macos[*].timestamp_url`.
-const DEFAULT_APPLE_TIMESTAMP_URL: &str = "http://timestamp.apple.com/ts01";
-
-/// Default notarization wait window — matches the upstream macos.go default.
-const DEFAULT_NOTARIZE_TIMEOUT: &str = "10m";
+// Default values are owned by the config impls (Session C lazy-defaults
+// policy). See `MacOSSignConfig::DEFAULT_TIMESTAMP_URL`,
+// `MacOSNotarizeApiConfig::DEFAULT_TIMEOUT`, and
+// `MacOSNativeNotarizeConfig::DEFAULT_TIMEOUT`.
 
 // ---------------------------------------------------------------------------
 // Helper: redact sensitive values from command args for safe logging
@@ -349,11 +346,8 @@ fn run_cross_platform(
             .ok_or_else(|| {
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.key_id is required when notarize block is present")
             })?;
-        let timeout = ncfg
-            .timeout
-            .map(|d| d.as_humantime_string())
-            .or_else(|| Some(DEFAULT_NOTARIZE_TIMEOUT.to_string()));
-        Some((issuer_id, key, key_id, ncfg.wait.unwrap_or(false), timeout))
+        let timeout = Some(ncfg.resolved_timeout());
+        Some((issuer_id, key, key_id, ncfg.resolved_wait(), timeout))
     } else {
         None
     };
@@ -402,12 +396,7 @@ fn run_cross_platform(
 
         // Resolve the timestamp URL once per artifact: per-config override
         // wins over the Apple default.
-        let timestamp_url = sign
-            .timestamp_url
-            .as_deref()
-            .map(|u| u.trim())
-            .filter(|u| !u.is_empty())
-            .unwrap_or(DEFAULT_APPLE_TIMESTAMP_URL);
+        let timestamp_url = sign.resolved_timestamp_url();
 
         let mut sign_args = vec![
             "rcodesign".to_string(),
@@ -541,7 +530,7 @@ fn run_native(
     }
 
     use anodizer_core::config::MacOSNativeArtifactKind;
-    let artifact_type = cfg.use_.unwrap_or(MacOSNativeArtifactKind::Dmg);
+    let artifact_type = cfg.resolved_use();
 
     // Validate sign config
     let sign = cfg.sign.as_ref().ok_or_else(|| {
@@ -575,12 +564,9 @@ fn run_native(
             anyhow::anyhow!("notarize: macos_native[{idx}] notarize.profile_name is required")
         })?;
 
-    let wait = notarize.wait.unwrap_or(false);
+    let wait = notarize.resolved_wait();
 
-    let timeout = notarize
-        .timeout
-        .map(|d| d.as_humantime_string())
-        .or_else(|| Some(DEFAULT_NOTARIZE_TIMEOUT.to_string()));
+    let timeout = Some(notarize.resolved_timeout());
 
     // Default IDs to project name when not specified (GoReleaser parity: macos.go:35)
     let ids = cfg.ids.clone().or_else(|| {

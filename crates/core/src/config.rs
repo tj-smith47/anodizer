@@ -4136,6 +4136,24 @@ pub struct MacOSSignConfig {
     pub timestamp_url: Option<String>,
 }
 
+impl MacOSSignConfig {
+    /// Apple's public RFC-3161 timestamp service. Used so the signature
+    /// carries a trusted timestamp rather than the host clock; override via
+    /// `notarize.macos[*].sign.timestamp_url` when running behind a corporate
+    /// proxy or when Apple's service is unreachable.
+    pub const DEFAULT_TIMESTAMP_URL: &'static str = "http://timestamp.apple.com/ts01";
+
+    /// Resolve the timestamp URL, ignoring whitespace-only overrides and
+    /// falling back to [`Self::DEFAULT_TIMESTAMP_URL`].
+    pub fn resolved_timestamp_url(&self) -> &str {
+        self.timestamp_url
+            .as_deref()
+            .map(|u| u.trim())
+            .filter(|u| !u.is_empty())
+            .unwrap_or(Self::DEFAULT_TIMESTAMP_URL)
+    }
+}
+
 /// App Store Connect API key configuration for `rcodesign notary-submit`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
@@ -4151,6 +4169,27 @@ pub struct MacOSNotarizeApiConfig {
     pub timeout: Option<HumanDuration>,
     /// Whether to wait for notarization to complete.
     pub wait: Option<bool>,
+}
+
+impl MacOSNotarizeApiConfig {
+    /// Default notarization wait window. Mirrors GoReleaser
+    /// `internal/pipe/notary/macos.go` (`n.Notarize.Timeout = 10 * time.Minute`).
+    pub const DEFAULT_TIMEOUT: &'static str = "10m";
+
+    /// Resolve `wait`, falling back to `false` (don't block on notary).
+    pub fn resolved_wait(&self) -> bool {
+        self.wait.unwrap_or(false)
+    }
+
+    /// Resolve `timeout` as a humantime string, falling back to
+    /// [`Self::DEFAULT_TIMEOUT`]. Returns an owned `String` because the
+    /// stored representation (`HumanDuration`) needs to be re-serialized
+    /// when materializing — there's no zero-cost view into it.
+    pub fn resolved_timeout(&self) -> String {
+        self.timeout
+            .map(|d| d.as_humantime_string())
+            .unwrap_or_else(|| Self::DEFAULT_TIMEOUT.to_string())
+    }
 }
 
 /// Artifact-type selector for native macOS notarization. Constrains the YAML
@@ -4188,6 +4227,18 @@ pub struct MacOSNativeSignNotarizeConfig {
     pub notarize: Option<MacOSNativeNotarizeConfig>,
 }
 
+impl MacOSNativeSignNotarizeConfig {
+    /// Default `use:` selector. Anodize-original — GR has no native
+    /// notarize. DMG is the canonical signed-app distribution format
+    /// for macOS releases; PKG opt-in handles installers.
+    pub const DEFAULT_USE: MacOSNativeArtifactKind = MacOSNativeArtifactKind::Dmg;
+
+    /// Resolve the `use:` selector, falling back to [`Self::DEFAULT_USE`].
+    pub fn resolved_use(&self) -> MacOSNativeArtifactKind {
+        self.use_.unwrap_or(Self::DEFAULT_USE)
+    }
+}
+
 /// Keychain-based signing configuration for native `codesign`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
@@ -4213,6 +4264,28 @@ pub struct MacOSNativeNotarizeConfig {
     /// Timeout for `xcrun notarytool submit --timeout`. Humantime-style
     /// string (e.g. `"10m"`, `"15s"`, `"1h"`).
     pub timeout: Option<HumanDuration>,
+}
+
+impl MacOSNativeNotarizeConfig {
+    /// Default notarization wait window. Aligns with the cross-platform
+    /// rcodesign path (and GoReleaser `macos.go`'s `10 * time.Minute`).
+    pub const DEFAULT_TIMEOUT: &'static str = "10m";
+
+    /// Resolve `wait`, falling back to `false`. The native xcrun path
+    /// prints a "submit only" message instead of polling when `wait`
+    /// is false; the unwrap at this accessor pins that fallback in one
+    /// place.
+    pub fn resolved_wait(&self) -> bool {
+        self.wait.unwrap_or(false)
+    }
+
+    /// Resolve `timeout` as a humantime string, falling back to
+    /// [`Self::DEFAULT_TIMEOUT`].
+    pub fn resolved_timeout(&self) -> String {
+        self.timeout
+            .map(|d| d.as_humantime_string())
+            .unwrap_or_else(|| Self::DEFAULT_TIMEOUT.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6646,6 +6719,114 @@ crates:
             cfg.resolved_combined_name_template(),
             "custom-{{ Version }}.txt"
         );
+    }
+
+    // ---- Notarize resolved_*() accessors (Session C lazy-defaults policy) ----
+
+    #[test]
+    fn test_macos_sign_resolved_timestamp_url_default() {
+        let cfg = MacOSSignConfig::default();
+        assert_eq!(
+            cfg.resolved_timestamp_url(),
+            "http://timestamp.apple.com/ts01"
+        );
+    }
+
+    #[test]
+    fn test_macos_sign_resolved_timestamp_url_user_value_wins() {
+        let cfg = MacOSSignConfig {
+            timestamp_url: Some("http://corp.example/ts".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_timestamp_url(), "http://corp.example/ts");
+    }
+
+    #[test]
+    fn test_macos_sign_resolved_timestamp_url_blank_falls_back() {
+        let cfg = MacOSSignConfig {
+            timestamp_url: Some("   ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_timestamp_url(),
+            "http://timestamp.apple.com/ts01"
+        );
+    }
+
+    #[test]
+    fn test_macos_notarize_api_resolved_wait_default() {
+        assert!(!MacOSNotarizeApiConfig::default().resolved_wait());
+    }
+
+    #[test]
+    fn test_macos_notarize_api_resolved_wait_user_value_wins() {
+        let cfg = MacOSNotarizeApiConfig {
+            wait: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.resolved_wait());
+    }
+
+    #[test]
+    fn test_macos_notarize_api_resolved_timeout_default() {
+        assert_eq!(MacOSNotarizeApiConfig::default().resolved_timeout(), "10m");
+    }
+
+    #[test]
+    fn test_macos_notarize_api_resolved_timeout_user_value_wins() {
+        let cfg = MacOSNotarizeApiConfig {
+            timeout: Some(HumanDuration(parse_humantime_duration("15m").unwrap())),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_timeout(), "15m");
+    }
+
+    #[test]
+    fn test_macos_native_notarize_resolved_wait_default() {
+        assert!(!MacOSNativeNotarizeConfig::default().resolved_wait());
+    }
+
+    #[test]
+    fn test_macos_native_notarize_resolved_wait_user_value_wins() {
+        let cfg = MacOSNativeNotarizeConfig {
+            wait: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.resolved_wait());
+    }
+
+    #[test]
+    fn test_macos_native_notarize_resolved_timeout_default() {
+        assert_eq!(
+            MacOSNativeNotarizeConfig::default().resolved_timeout(),
+            "10m"
+        );
+    }
+
+    #[test]
+    fn test_macos_native_notarize_resolved_timeout_user_value_wins() {
+        let cfg = MacOSNativeNotarizeConfig {
+            timeout: Some(HumanDuration(parse_humantime_duration("30m").unwrap())),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_timeout(), "30m");
+    }
+
+    #[test]
+    fn test_macos_native_sign_notarize_resolved_use_default() {
+        assert_eq!(
+            MacOSNativeSignNotarizeConfig::default().resolved_use(),
+            MacOSNativeArtifactKind::Dmg
+        );
+    }
+
+    #[test]
+    fn test_macos_native_sign_notarize_resolved_use_user_value_wins() {
+        let cfg = MacOSNativeSignNotarizeConfig {
+            use_: Some(MacOSNativeArtifactKind::Pkg),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_use(), MacOSNativeArtifactKind::Pkg);
     }
 
     // ---- ChecksumConfig disable tests ----
