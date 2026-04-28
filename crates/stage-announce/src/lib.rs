@@ -26,6 +26,24 @@ pub mod webhook;
 // Shared helpers to reduce boilerplate across providers
 // ---------------------------------------------------------------------------
 
+/// Display name shown to recipients in chat-platform announcements
+/// (Discord embed `author`, Slack/Mattermost webhook `username`).
+///
+/// **Brand-default policy** (Session C, locked 2026-04-28): anodizer keeps
+/// its own attribution instead of GR's `"GoReleaser"` default. The message
+/// *is* from anodize, not GoReleaser, and impersonating a different release
+/// tool in someone's release channels is wrong UX. The deviation is the
+/// documented exception to the GR-alignment rule.
+///
+/// Companion decision: discord/teams `icon_url` defaults stay `None` rather
+/// than pointing at `https://goreleaser.com/static/avatar.png` — we don't
+/// host an avatar URL today, and a third-party image we don't control is a
+/// worse default than no image. Revisit when the docsite ships an avatar.
+///
+/// `User-Agent` has its own const (`anodizer_core::http::USER_AGENT`) which
+/// includes the version suffix; this one is the bare display string.
+const DEFAULT_DISPLAY_NAME: &str = "anodizer";
+
 const DEFAULT_MESSAGE_TEMPLATE: &str =
     "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}";
 
@@ -214,7 +232,8 @@ impl Stage for AnnounceStage {
                     },
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let author = ctx.render_template_opt(cfg.author.as_deref().or(Some("anodizer")))?;
+                let author =
+                    ctx.render_template_opt(cfg.author.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
                 let color: Option<u32> = match cfg.color.as_deref() {
                     Some(raw) => {
                         let rendered = ctx.render_template(raw)?;
@@ -305,8 +324,8 @@ impl Stage for AnnounceStage {
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
-                let username =
-                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodizer")))?;
+                let username = ctx
+                    .render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
                 let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
                 let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let blocks = match cfg.blocks.as_ref() {
@@ -546,9 +565,10 @@ impl Stage for AnnounceStage {
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
-                // Default username to "anodizer" (GoReleaser defaults to "GoReleaser").
-                let username =
-                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodizer")))?;
+                // Default username to DEFAULT_DISPLAY_NAME (GoReleaser defaults to
+                // "GoReleaser"; brand-default policy keeps anodizer's own attribution).
+                let username = ctx
+                    .render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
                 let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
                 // Default color to "#2D313E" (GoReleaser default).
