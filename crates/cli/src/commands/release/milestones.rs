@@ -4,6 +4,77 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::scm::ScmTokenType;
 use anyhow::{Context as _, Result};
 
+/// Resolved milestone target ready for closing.
+struct MilestoneTarget {
+    name: String,
+    owner: String,
+    repo_name: String,
+}
+
+/// Resolve a milestone for closing: gate on `close: true`, render the name
+/// template, then resolve the repo owner/name. Returns `Ok(None)` when the
+/// milestone is gated off (close=false) or a `strict_guard`-permitted skip
+/// applies in normal mode; returns `Err` only when `--strict` mode promotes
+/// a config-resolution failure to an error.
+///
+/// Shared by [`preflight_milestones`] (validate-time pre-flight) and
+/// [`close_milestones`] (post-pipeline publish) so both honour the same
+/// skip-when-empty UX policy.
+fn resolve_milestone_for_close(
+    milestone_cfg: &anodizer_core::config::MilestoneConfig,
+    ctx: &Context,
+    log: &StageLogger,
+) -> Result<Option<MilestoneTarget>> {
+    if !milestone_cfg.resolved_close() {
+        return Ok(None);
+    }
+    let name_template = milestone_cfg.resolved_name_template();
+    let milestone_name = ctx
+        .render_template(name_template)
+        .context("milestone: render name_template")?;
+    if milestone_name.is_empty() {
+        ctx.strict_guard(log, "milestone: name_template rendered to empty — skipping")?;
+        return Ok(None);
+    }
+    // Prefer `ctx.token_type` when choosing among mixed-provider configs so
+    // a GitLab release run doesn't accidentally pick up a crate's GitHub block.
+    let (owner, repo_name) = resolve_milestone_repo(milestone_cfg, &ctx.config, ctx.token_type);
+    if owner.is_empty() || repo_name.is_empty() {
+        ctx.strict_guard(
+            log,
+            "milestone: repo owner/name not resolvable — skipping close",
+        )?;
+        return Ok(None);
+    }
+    Ok(Some(MilestoneTarget {
+        name: milestone_name,
+        owner,
+        repo_name,
+    }))
+}
+
+/// Pre-flight milestone resolution at validate time.
+///
+/// Surfaces config-resolution failures (empty rendered name, unresolvable
+/// repo) before the main release pipeline runs, so a misconfigured
+/// `milestones:` block fails fast instead of after a full build. Routes
+/// through [`Context::strict_guard`], matching [`close_milestones`].
+pub(super) fn preflight_milestones(
+    milestones: &[anodizer_core::config::MilestoneConfig],
+    ctx: &mut Context,
+    log: &StageLogger,
+) -> Result<()> {
+    for milestone_cfg in milestones {
+        if let Some(target) = resolve_milestone_for_close(milestone_cfg, ctx, log)? {
+            log.status(&format!(
+                "milestone: will close '{}' on {}/{}",
+                target.name, target.owner, target.repo_name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Close milestones on the VCS provider after a release.
 ///
 /// For each milestone config with `close: true`, renders the name template,
@@ -34,32 +105,14 @@ pub(super) fn close_milestones(
     let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
 
     for milestone_cfg in milestones {
-        if !milestone_cfg.resolved_close() {
+        let Some(target) = resolve_milestone_for_close(milestone_cfg, ctx, log)? else {
             continue;
-        }
-
-        let name_template = milestone_cfg.resolved_name_template();
-        let milestone_name = ctx
-            .render_template(name_template)
-            .context("milestone: render name_template")?;
-
-        if milestone_name.is_empty() {
-            ctx.strict_guard(log, "milestone: name_template rendered to empty — skipping")?;
-            continue;
-        }
-
-        // Determine repo owner/name from milestone config or release config.
-        // Prefer `ctx.token_type` when choosing among mixed-provider configs so
-        // a GitLab release run doesn't accidentally pick up a crate's GitHub block.
-        let (owner, repo_name) = resolve_milestone_repo(milestone_cfg, &ctx.config, ctx.token_type);
-
-        if owner.is_empty() || repo_name.is_empty() {
-            ctx.strict_guard(
-                log,
-                "milestone: repo owner/name not resolvable — skipping close",
-            )?;
-            continue;
-        }
+        };
+        let MilestoneTarget {
+            name: milestone_name,
+            owner,
+            repo_name,
+        } = target;
 
         if dry_run {
             log.status(&format!(
@@ -628,5 +681,101 @@ mod tests {
         }];
         close_milestones(&milestones, &mut ctx, true, &log)
             .expect("fail_on_error must not gate config-resolution failures");
+    }
+
+    #[test]
+    fn preflight_resolvable_milestone_logs_and_returns_ok() {
+        let config = config_with_resolvable_repo();
+        let mut ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        preflight_milestones(&milestones, &mut ctx, &log)
+            .expect("resolvable milestone must pre-flight cleanly");
+    }
+
+    #[test]
+    fn preflight_close_false_is_noop() {
+        // close: false milestones must be ignored at pre-flight, even when the
+        // repo is unresolvable — they will not run at publish time either.
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, true);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(false),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        preflight_milestones(&milestones, &mut ctx, &log)
+            .expect("close: false must not trip strict_guard at pre-flight");
+    }
+
+    #[test]
+    fn preflight_empty_name_normal_mode_warns_and_continues() {
+        let config = config_with_resolvable_repo();
+        let mut ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some(String::new()),
+            ..Default::default()
+        }];
+        preflight_milestones(&milestones, &mut ctx, &log)
+            .expect("normal mode pre-flight must skip empty rendered name");
+    }
+
+    #[test]
+    fn preflight_empty_name_strict_mode_errors() {
+        let config = config_with_resolvable_repo();
+        let mut ctx = ctx_with_strict(config, true);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some(String::new()),
+            ..Default::default()
+        }];
+        let err = preflight_milestones(&milestones, &mut ctx, &log)
+            .expect_err("strict mode pre-flight must error on empty rendered name");
+        assert!(
+            err.to_string().contains("rendered to empty"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn preflight_unresolvable_repo_normal_mode_warns_and_continues() {
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        preflight_milestones(&milestones, &mut ctx, &log)
+            .expect("normal mode pre-flight must skip unresolvable repo");
+    }
+
+    #[test]
+    fn preflight_unresolvable_repo_strict_mode_errors() {
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, true);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        let err = preflight_milestones(&milestones, &mut ctx, &log)
+            .expect_err("strict mode pre-flight must error on unresolvable repo");
+        assert!(
+            err.to_string().contains("not resolvable"),
+            "unexpected error: {}",
+            err
+        );
     }
 }

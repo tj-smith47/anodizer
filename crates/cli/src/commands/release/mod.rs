@@ -456,6 +456,16 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // GoReleaser always writes this, including in dry-run mode.
     helpers::write_effective_config(&config, &log)?;
 
+    // Pre-flight milestone resolution so a misconfigured `milestones:` block
+    // (empty rendered name, unresolvable repo) fails fast — at validate time
+    // — instead of after the full build/archive/sign pipeline. Skipped in
+    // --split mode; the milestone close runs only in the merge step.
+    if !opts.split
+        && let Some(ref milestones) = config.milestones
+    {
+        milestones::preflight_milestones(milestones, &mut ctx, &log)?;
+    }
+
     // --split: run only the build stage, serialize artifacts to dist/, then exit
     if opts.split {
         return split::run_split(&mut ctx, &config, &log);
