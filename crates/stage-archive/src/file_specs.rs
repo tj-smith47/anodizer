@@ -205,13 +205,18 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
 /// process working directory may be the workspace root and pull in unrelated
 /// files (e.g. the workspace's top-level README).
 pub(crate) fn resolve_default_extra_files(base_dir: &Path) -> Vec<ResolvedExtraFile> {
+    // GR-aligned default order (archive.go:84-91): lowercase glob first, then
+    // uppercase, for each of license / readme / changelog. On case-insensitive
+    // filesystems (macOS HFS+, Windows NTFS default), this controls which file
+    // is picked first when both `LICENSE` and `license` exist; matching GR's
+    // ordering makes anodizer-produced archives byte-equivalent to GR's.
     let patterns = [
-        "LICENSE*",
         "license*",
-        "README*",
+        "LICENSE*",
         "readme*",
-        "CHANGELOG*",
+        "README*",
         "changelog*",
+        "CHANGELOG*",
     ];
     let mut results = Vec::new();
     for pattern in &patterns {

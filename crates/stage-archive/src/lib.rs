@@ -61,7 +61,11 @@ pub fn formats_for_target(
 ) -> Vec<String> {
     let (os, _arch) = map_target(target);
     for ov in overrides {
-        if ov.os == os
+        // GR-aligned (archive.go:349 `strings.HasPrefix(platform, override.Goos)`):
+        // FormatOverride.os matches when the resolved target's os field starts
+        // with the configured value. Same call-site rationale as the primary
+        // archive run loop.
+        if os.starts_with(&ov.os)
             && let Some(ref fmts) = ov.formats
             && !fmts.is_empty()
         {
@@ -434,9 +438,16 @@ impl Stage for ArchiveStage {
                     // own `formats` list (or the global default).
                     let formats_to_produce: Vec<String> = {
                         let (os, _arch) = map_target(target);
+                        // GR-aligned (archive.go:349 `strings.HasPrefix(platform,
+                        // override.Goos)`): a FormatOverride.os matches when the
+                        // resolved target's os field starts with the configured
+                        // value. Behavior matches `==` for canonical OS names
+                        // ("linux", "darwin", "windows"); the prefix relaxation
+                        // is exercised when an OS gains a sub-variant (e.g.,
+                        // "linux-musl") without users having to add an override.
                         let override_match = format_overrides
                             .iter()
-                            .find(|ov| ov.os == os)
+                            .find(|ov| os.starts_with(&ov.os))
                             .and_then(|ov| ov.formats.as_ref().filter(|f| !f.is_empty()).cloned());
                         match override_match {
                             Some(fmts) => fmts,
@@ -1190,6 +1201,57 @@ mod tests {
     // New tests: glob pattern resolution
     // ---------------------------------------------------------------------------
 
+    /// Pins C-new-6: GR-aligned default extra-file glob order is lowercase-first
+    /// for each of license / readme / changelog. On case-insensitive
+    /// filesystems where both `LICENSE` and `license` exist, the lowercase
+    /// glob's first match wins. Mirrors GoReleaser archive.go:84-91.
+    #[test]
+    fn test_resolve_default_extra_files_gr_aligned_lowercase_first() {
+        let tmp = TempDir::new().unwrap();
+        // Two distinct files with case-different basenames so the test runs
+        // on case-sensitive filesystems too — there both files exist; the
+        // ordering check is then about the GLOB iteration order, not
+        // filesystem case folding.
+        fs::write(tmp.path().join("license.txt"), b"a").unwrap();
+        fs::write(tmp.path().join("LICENSE.md"), b"b").unwrap();
+        fs::write(tmp.path().join("readme.txt"), b"c").unwrap();
+        fs::write(tmp.path().join("README.md"), b"d").unwrap();
+        fs::write(tmp.path().join("changelog.txt"), b"e").unwrap();
+        fs::write(tmp.path().join("CHANGELOG.md"), b"f").unwrap();
+
+        let results = resolve_default_extra_files(tmp.path());
+        let names: Vec<String> = results
+            .iter()
+            .filter_map(|r| {
+                r.src
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+
+        // Each of the three lowercase basename should appear before its
+        // uppercase counterpart in the resolved order.
+        let pos = |name: &str| {
+            names
+                .iter()
+                .position(|n| n == name)
+                .unwrap_or_else(|| panic!("{name} missing from resolved list: {names:?}"))
+        };
+        assert!(
+            pos("license.txt") < pos("LICENSE.md"),
+            "license.txt must precede LICENSE.md (got {names:?})"
+        );
+        assert!(
+            pos("readme.txt") < pos("README.md"),
+            "readme.txt must precede README.md (got {names:?})"
+        );
+        assert!(
+            pos("changelog.txt") < pos("CHANGELOG.md"),
+            "changelog.txt must precede CHANGELOG.md (got {names:?})"
+        );
+    }
+
     /// Regression: auto-resolved LICENSE/README/CHANGELOG entries must carry
     /// `default: true` so diagnostics can distinguish them from user-specified
     /// `files:`. User-configured globs keep `default: false`.
@@ -1489,6 +1551,65 @@ crates:
         assert_eq!(archives.len(), 1);
         assert!(archives[0].path.exists());
         assert!(archives[0].path.to_string_lossy().ends_with(".tar.gz"));
+    }
+
+    /// Pins C-new-4: when `archives: []` (or omitted) is set on a crate WITH
+    /// builds, the stage auto-injects `ArchiveConfig::default()` so the user
+    /// still gets a default `tar.gz`. Mirrors GoReleaser archive.go:57-59:
+    /// `if len(ctx.Config.Archives) == 0 { Archives = append(Archives, Archive{}) }`.
+    #[test]
+    fn test_archive_stage_empty_archives_auto_injects_default() {
+        use anodizer_core::config::{ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"fake binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                // Empty archives list — must auto-inject the default.
+                archives: ArchivesConfig::Configs(vec![]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m.insert("id".to_string(), "myapp".to_string());
+                m
+            },
+            size: None,
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(
+            archives.len(),
+            1,
+            "auto-injected default archive must produce one .tar.gz"
+        );
+        assert!(
+            archives[0].path.to_string_lossy().ends_with(".tar.gz"),
+            "auto-injected default format is tar.gz, got {}",
+            archives[0].path.display()
+        );
     }
 
     #[test]
@@ -3889,6 +4010,40 @@ crates:
         }];
         let result = formats_for_target("x86_64-pc-windows-msvc", "zip", &overrides);
         assert_eq!(result, vec!["zip"]);
+    }
+
+    /// Pins C-new-5: FormatOverride.os matches via prefix, mirroring GR's
+    /// `strings.HasPrefix(platform, override.Goos)`. For canonical OS names
+    /// the behavior is identical to `==`; the prefix relaxation kicks in for
+    /// any future os value that gains a sub-variant suffix.
+    #[test]
+    fn test_format_override_prefix_match() {
+        let overrides = vec![FormatOverride {
+            os: "lin".to_string(), // prefix of "linux"
+            formats: Some(vec!["tar.gz".to_string()]),
+        }];
+        let result = formats_for_target("x86_64-unknown-linux-gnu", "zip", &overrides);
+        assert_eq!(
+            result,
+            vec!["tar.gz"],
+            "prefix-matching FormatOverride must apply"
+        );
+    }
+
+    /// Negative pin for C-new-5: a prefix that does NOT match the target's os
+    /// field falls through to the default (e.g., `os: "darw"` against linux).
+    #[test]
+    fn test_format_override_prefix_no_match() {
+        let overrides = vec![FormatOverride {
+            os: "darw".to_string(),
+            formats: Some(vec!["tar.gz".to_string()]),
+        }];
+        let result = formats_for_target("x86_64-unknown-linux-gnu", "zip", &overrides);
+        assert_eq!(
+            result,
+            vec!["zip"],
+            "prefix mismatch must fall through to default"
+        );
     }
 
     // -----------------------------------------------------------------------
