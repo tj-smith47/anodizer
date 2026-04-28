@@ -4698,12 +4698,12 @@ use: gitea
     }
 
     #[test]
+    #[serial]
     fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
         // End-to-end: with `use: github` + no previous tag, the stage should
         // succeed without making an API call (pre-empt path). This is run in
         // a fresh tempdir as a git repo with no tags so prev_tag is None.
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
         use std::process::Command;
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -4740,37 +4740,34 @@ use: gitea
         let dist = repo.join("dist");
         std::fs::create_dir_all(&dist).unwrap();
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.dist = dist.clone();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "mylib".to_string(),
+                // The crate's tag_template never matched any tag (the repo
+                // has none), so prev_tag will be None and pre-empt should
+                // kick in.
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            // No token — if the API path were taken, fetch_github_commits
+            // would attempt detect_github_repo() → likely fail, then
+            // strict_guard would log + fall back. Our pre-empt skips that
+            // entire branch.
+            .dry_run(true)
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("github".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "mylib".to_string(),
-            // The crate's tag_template never matched any tag (the repo has
-            // none), so prev_tag will be None and pre-empt should kick in.
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let opts = ContextOptions {
-            dry_run: true,
-            // No token — if the API path were taken, fetch_github_commits
-            // would attempt detect_github_repo() → likely fail, then strict_guard
-            // would log + fall back. Our pre-empt skips that entire branch.
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
 
         // Run from inside the tempdir so git commands operate on it.
-        let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(repo).unwrap();
+        // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
+        let _cwd = CwdGuard::new(repo).unwrap();
         let stage = ChangelogStage;
         let result = stage.run(&mut ctx);
-        std::env::set_current_dir(original_cwd).unwrap();
 
         assert!(
             result.is_ok(),
@@ -4789,23 +4786,21 @@ use: gitea
 
     #[test]
     fn test_changelog_stage_unsupported_source_bails() {
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .crates(vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("bitbucket".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "test".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let mut ctx = Context::new(config, ContextOptions::default());
 
         let stage = ChangelogStage;
         let result = stage.run(&mut ctx);
