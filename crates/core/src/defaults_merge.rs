@@ -97,11 +97,14 @@ fn json_skip_truthy(value: &Json) -> bool {
 /// The merge engine reads `config.defaults`; if it is `None`, this function
 /// returns immediately.
 ///
-/// Note: top-level `Config` fields that path-mirror in `Defaults` (`source`,
-/// `upx`, `sboms`, etc.) are not yet folded by this function — WAVE 2
-/// scope is per-crate inheritance only. Future waves will extend the merge
-/// engine to fill those fields when defaults provides them and the
-/// top-level field is unset.
+/// Top-level `Config` fields that path-mirror in `Defaults` (`source`,
+/// `upx`, `signs`, `binary_signs`, `docker_signs`, `notarize`, `sboms`,
+/// `makeselfs`, `srpms`) are folded as a fill-when-unset pre-pipeline
+/// pass: if the top-level field is empty / `None`, the defaults entry
+/// is cloned in; if the top-level field is already set, it wins (defaults
+/// are inert). For deeply-nested `Option<T>` slots that share a struct
+/// type with the defaults slot, the per-config entry is deep-merged with
+/// the defaults entry filling any field the user left unset.
 pub fn apply_defaults(config: &mut Config) {
     let defaults = match config.defaults.clone() {
         Some(d) => d,
@@ -119,6 +122,55 @@ pub fn apply_defaults(config: &mut Config) {
                 apply_to_crate(&defaults, crate_cfg);
             }
         }
+    }
+
+    // Top-level `Config` fold (WAVE 2 — separate from the per-crate fold so
+    // stages reading `ctx.config.<field>` see the resolved value without
+    // needing to consult `defaults.<field>` on every access).
+    apply_top_level_defaults(config, &defaults);
+}
+
+/// Fold defaults into the top-level `Config` fields that path-mirror in
+/// `Defaults`. Fill-when-unset — top-level user values always win.
+fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
+    // Single-struct deep-merge: both sides are Option<T>, so deep-merge if
+    // both Some, fill if config is None.
+    deep_merge_option(&mut config.source, defaults.source.as_ref());
+    deep_merge_option(&mut config.notarize, defaults.notarize.as_ref());
+    deep_merge_option(&mut config.srpms, defaults.srpms.as_ref());
+
+    // Vec<T> top-level filled from a single defaults entry when empty.
+    if config.upx.is_empty()
+        && let Some(ref d) = defaults.upx
+    {
+        config.upx = vec![d.clone()];
+    }
+    if config.signs.is_empty()
+        && let Some(ref d) = defaults.sign
+    {
+        config.signs = vec![d.clone()];
+    }
+    if config.binary_signs.is_empty()
+        && let Some(ref d) = defaults.binary_signs
+    {
+        config.binary_signs = vec![d.clone()];
+    }
+    if config.sboms.is_empty()
+        && let Some(ref d) = defaults.sbom
+    {
+        config.sboms = vec![d.clone()];
+    }
+    if config.makeselfs.is_empty()
+        && let Some(ref d) = defaults.makeselves
+    {
+        config.makeselfs = vec![d.clone()];
+    }
+
+    // Option<Vec<T>> filled from a single defaults entry when None / empty.
+    if config.docker_signs.as_ref().is_none_or(|v| v.is_empty())
+        && let Some(ref d) = defaults.docker_signs
+    {
+        config.docker_signs = Some(vec![d.clone()]);
     }
 }
 
@@ -168,7 +220,7 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
 
     // ---- List-typed fields: append + merge-by-identity ----
     merge_archives(&mut crate_cfg.archives, defaults.archives.as_ref());
-    merge_list_by_identity(&mut crate_cfg.nfpm, defaults.nfpms.as_ref(), nfpm_identity);
+    merge_list_by_identity(&mut crate_cfg.nfpms, defaults.nfpms.as_ref(), nfpm_identity);
     merge_list_by_identity(
         &mut crate_cfg.snapcrafts,
         defaults.snapcrafts.as_ref(),
@@ -1213,7 +1265,7 @@ crates:
             ..Default::default()
         };
         let mut crate_cfg = make_crate("a");
-        crate_cfg.nfpm = Some(vec![NfpmConfig {
+        crate_cfg.nfpms = Some(vec![NfpmConfig {
             package_name: Some("myapp".to_string()),
             // umask deliberately unset — should inherit from defaults.
             ..Default::default()
@@ -1221,7 +1273,7 @@ crates:
 
         apply_to_crate(&defaults, &mut crate_cfg);
 
-        let nfpm = crate_cfg.nfpm.expect("nfpm vec");
+        let nfpm = crate_cfg.nfpms.expect("nfpm vec");
         assert_eq!(nfpm.len(), 1, "identity match collapses to one entry");
         assert_eq!(
             nfpm[0].umask,
@@ -1288,5 +1340,187 @@ crates:
         // CrateConfig has no `changelog` field — this is the structural
         // proof that no per-crate inheritance path exists today.
         let _ = crate_cfg; // explicit no-op assertion: there is no field to check.
+    }
+
+    // --------------- WAVE 2 — top-level Config field fold ---------------
+
+    /// `defaults.source` fills `Config.source` when the user did not set it.
+    #[test]
+    fn top_level_source_fills_from_defaults_when_unset() {
+        use crate::config::{Config, SourceConfig};
+        let mut config = Config {
+            defaults: Some(Defaults {
+                source: Some(SourceConfig {
+                    enabled: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        assert_eq!(
+            config.source.as_ref().and_then(|s| s.enabled),
+            Some(true),
+            "defaults.source should fill Config.source"
+        );
+    }
+
+    /// User-set `Config.source` wins over `defaults.source` (deep-merge fills
+    /// only the fields the user left unset).
+    #[test]
+    fn top_level_source_user_overrides_defaults() {
+        use crate::config::{Config, SourceConfig};
+        let mut config = Config {
+            defaults: Some(Defaults {
+                source: Some(SourceConfig {
+                    enabled: Some(false),
+                    name_template: Some("default-name".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            source: Some(SourceConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        let s = config.source.as_ref().expect("source set");
+        assert_eq!(s.enabled, Some(true), "user value wins");
+        assert_eq!(
+            s.name_template.as_deref(),
+            Some("default-name"),
+            "field unset by user is filled from defaults"
+        );
+    }
+
+    /// `defaults.upx` fills the empty `Config.upx` Vec when no user upx is set.
+    #[test]
+    fn top_level_upx_fills_when_empty() {
+        use crate::config::{Config, UpxConfig};
+        let mut config = Config {
+            defaults: Some(Defaults {
+                upx: Some(UpxConfig {
+                    id: Some("from-defaults".to_string()),
+                    enabled: Some(StringOrBool::Bool(true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        assert_eq!(config.upx.len(), 1);
+        assert_eq!(config.upx[0].id.as_deref(), Some("from-defaults"));
+    }
+
+    /// User-set top-level Vec wins; defaults are inert.
+    #[test]
+    fn top_level_upx_does_not_override_user_vec() {
+        use crate::config::{Config, UpxConfig};
+        let mut config = Config {
+            defaults: Some(Defaults {
+                upx: Some(UpxConfig {
+                    id: Some("from-defaults".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            upx: vec![UpxConfig {
+                id: Some("user-upx".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        assert_eq!(config.upx.len(), 1);
+        assert_eq!(
+            config.upx[0].id.as_deref(),
+            Some("user-upx"),
+            "user vec wins"
+        );
+    }
+
+    /// Each fill-when-empty Vec slot loads its single defaults entry.
+    #[test]
+    fn top_level_signs_and_friends_fill_when_empty() {
+        use crate::config::{
+            Config, DockerSignConfig, MakeselfConfig, SbomConfig, SignConfig, SrpmConfig,
+        };
+        let mut config = Config {
+            defaults: Some(Defaults {
+                sign: Some(SignConfig {
+                    cmd: Some("cosign".to_string()),
+                    ..Default::default()
+                }),
+                binary_signs: Some(SignConfig {
+                    cmd: Some("gpg".to_string()),
+                    ..Default::default()
+                }),
+                docker_signs: Some(DockerSignConfig {
+                    cmd: Some("cosign".to_string()),
+                    ..Default::default()
+                }),
+                sbom: Some(SbomConfig {
+                    cmd: Some("syft".to_string()),
+                    ..Default::default()
+                }),
+                makeselves: Some(MakeselfConfig {
+                    id: Some("from-defaults".to_string()),
+                    ..Default::default()
+                }),
+                srpms: Some(SrpmConfig {
+                    enabled: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        assert_eq!(config.signs.len(), 1);
+        assert_eq!(config.signs[0].cmd.as_deref(), Some("cosign"));
+        assert_eq!(config.binary_signs.len(), 1);
+        assert_eq!(config.binary_signs[0].cmd.as_deref(), Some("gpg"));
+        assert_eq!(config.docker_signs.as_ref().unwrap().len(), 1);
+        assert_eq!(config.sboms.len(), 1);
+        assert_eq!(config.sboms[0].cmd.as_deref(), Some("syft"));
+        assert_eq!(config.makeselfs.len(), 1);
+        assert_eq!(config.makeselfs[0].id.as_deref(), Some("from-defaults"));
+        assert_eq!(config.srpms.as_ref().and_then(|s| s.enabled), Some(true));
+    }
+
+    /// `defaults.notarize` deep-merges into `Config.notarize` when both Some.
+    #[test]
+    fn top_level_notarize_deep_merges() {
+        use crate::config::{
+            Config, MacOSNativeArtifactKind, MacOSNativeSignNotarizeConfig, NotarizeConfig,
+        };
+        let mut config = Config {
+            defaults: Some(Defaults {
+                notarize: Some(NotarizeConfig {
+                    macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
+                        use_: Some(MacOSNativeArtifactKind::Dmg),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            notarize: Some(NotarizeConfig::default()),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+        let n = config.notarize.as_ref().expect("notarize set");
+        let mac = n.macos_native.as_ref().expect("macos_native set");
+        assert!(
+            matches!(
+                mac.first().and_then(|m| m.use_.as_ref()),
+                Some(MacOSNativeArtifactKind::Dmg)
+            ),
+            "deep-merge should fold defaults.notarize.macos_native[0].use_ into Config.notarize"
+        );
     }
 }

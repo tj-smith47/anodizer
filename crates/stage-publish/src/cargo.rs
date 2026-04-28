@@ -395,19 +395,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
     // overlaid workspace's crates, but a crate's depends_on may reference
     // crates in other workspaces (e.g. cfgd depends on cfgd-core which
     // lives in its own workspace).
-    let all_crates: Vec<CrateConfig> = {
-        let mut acc = ctx.config.crates.clone();
-        if let Some(ref ws_list) = ctx.config.workspaces {
-            for ws in ws_list {
-                for c in &ws.crates {
-                    if !acc.iter().any(|existing| existing.name == c.name) {
-                        acc.push(c.clone());
-                    }
-                }
-            }
-        }
-        acc
-    };
+    let all_crates: Vec<CrateConfig> = crate::util::all_crates(ctx);
 
     let expanded_selection: Vec<String> = if selected.is_empty() {
         Vec::new()

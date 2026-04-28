@@ -3,15 +3,22 @@
 //! Centralised here so all `Command::new("docker")` shell-outs live inside
 //! the module-boundaries allow-list (`.claude/rules/module-boundaries.md`).
 
+use std::io;
 use std::process::Command;
 
 /// Run `docker buildx version` and return whether buildx is installed and
-/// reachable. Used by `anodizer check` to surface a warning when docker
-/// itself is present but buildx (the multi-platform builder) is missing.
-pub fn buildx_available() -> bool {
+/// reachable.
+///
+/// `Ok(true)` — `docker buildx version` ran and exited zero.
+/// `Ok(false)` — `docker` ran but the `buildx` subcommand exited non-zero
+///   (typically: docker is present but buildx plugin not installed).
+/// `Err(_)` — `docker` itself could not be spawned (binary missing,
+///   permission denied). Distinct from `Ok(false)` so callers can log the
+///   underlying `io::Error` at trace level when surfacing "docker not
+///   available" vs. "docker installed but buildx missing".
+pub fn buildx_available() -> io::Result<bool> {
     Command::new("docker")
         .args(["buildx", "version"])
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
 }

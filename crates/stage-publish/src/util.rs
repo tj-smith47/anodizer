@@ -1,11 +1,38 @@
 use anodizer_core::artifact::{Artifact, ArtifactKind};
-use anodizer_core::config::RepositoryConfig;
+use anodizer_core::config::{CrateConfig, RepositoryConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
+
+// ---------------------------------------------------------------------------
+// Crate universe walker (shared across publisher dispatch + cargo flatten)
+// ---------------------------------------------------------------------------
+
+/// Flatten `ctx.config.crates` plus every `ctx.config.workspaces[].crates`
+/// into a single de-duplicated `Vec<CrateConfig>` (dedup by `name`,
+/// `ctx.config.crates` wins on collision). This is the universe of crates
+/// every per-crate publisher must walk — without this, a workspace-only
+/// crate carrying a non-cargo publisher block (homebrew, scoop, ...) is
+/// invisible because the dispatcher only looks at `ctx.config.crates`,
+/// while `cargo.rs` flattens both. The cargo + non-cargo walkers must
+/// share one universe so a crate with both `cargo:` and `homebrew:` is
+/// either eligible everywhere or skipped everywhere.
+pub(crate) fn all_crates(ctx: &Context) -> Vec<CrateConfig> {
+    let mut acc = ctx.config.crates.clone();
+    if let Some(ref ws_list) = ctx.config.workspaces {
+        for ws in ws_list {
+            for c in &ws.crates {
+                if !acc.iter().any(|existing| existing.name == c.name) {
+                    acc.push(c.clone());
+                }
+            }
+        }
+    }
+    acc
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers for HTTP publishers (Artifactory, Fury, CloudSmith)
@@ -67,7 +94,7 @@ pub(crate) fn run_cmd_in(dir: &Path, program: &str, args: &[&str], label: &str) 
 // Publisher config lookup
 // ---------------------------------------------------------------------------
 
-use anodizer_core::config::{CrateConfig, PublishConfig};
+use anodizer_core::config::PublishConfig;
 
 /// Look up a crate's config and its `publish` section by name, returning a
 /// descriptive error when either is missing.

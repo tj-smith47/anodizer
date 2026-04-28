@@ -177,8 +177,12 @@ pub struct Config {
     #[serde(default, deserialize_with = "deserialize_makeselfs")]
     #[schemars(schema_with = "makeselfs_schema")]
     pub makeselfs: Vec<MakeselfConfig>,
-    /// Source RPM configuration.
-    pub srpm: Option<SrpmConfig>,
+    /// Source RPM configuration. Renamed from `srpm:` (singular) for spelling
+    /// parity with `Defaults.srpms` and the rest of the plural-name packaging
+    /// fields. The `srpm:` spelling is still accepted via serde alias for
+    /// back-compat.
+    #[serde(alias = "srpm")]
+    pub srpms: Option<SrpmConfig>,
     /// Milestone closing configurations.
     pub milestones: Option<Vec<MilestoneConfig>>,
     /// Generic HTTP upload configurations.
@@ -265,7 +269,7 @@ impl Default for Config {
             template_files: None,
             monorepo: None,
             makeselfs: Vec::new(),
-            srpm: None,
+            srpms: None,
             milestones: None,
             uploads: None,
             aur_sources: None,
@@ -896,67 +900,13 @@ pub fn load_env_files(
 // ---------------------------------------------------------------------------
 // env helpers — Vec<String> of "KEY=VAL" entries
 // ---------------------------------------------------------------------------
+//
+// Lifted to `crate::env` so they are reachable as
+// `anodizer_core::env::*` directly. The re-exports below preserve the
+// historical `anodizer_core::config::*` import paths used by stages and
+// publishers.
 
-/// Split a `KEY=VAL` env entry into `(key, value)`.
-///
-/// Returns the original entry as the error message when the line is missing
-/// `=` or has an empty key. Used by stage code that needs to apply env entries
-/// to a child process (sign, sbom, notarize, publishers).
-pub fn split_env_entry(entry: &str) -> Result<(&str, &str), String> {
-    let (k, v) = entry
-        .split_once('=')
-        .ok_or_else(|| format!("env entry must be KEY=VALUE, got: {entry:?}"))?;
-    let key = k.trim();
-    if key.is_empty() {
-        return Err(format!("env entry has empty key: {entry:?}"));
-    }
-    Ok((key, v))
-}
-
-/// Parse a list of `KEY=VAL` env entries into ordered `(key, value)` pairs.
-///
-/// Order is preserved so chained env applications (sign + sbom + notarize)
-/// see entries in user-declared order.
-pub fn parse_env_entries(entries: &[String]) -> anyhow::Result<Vec<(String, String)>> {
-    entries
-        .iter()
-        .map(|e| {
-            split_env_entry(e)
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .map_err(anyhow::Error::msg)
-        })
-        .collect()
-}
-
-/// Parse `KEY=VALUE` env entries and render each value through a template closure.
-///
-/// Combines [`parse_env_entries`] with per-value rendering in one pass so call
-/// sites don't duplicate the parse → iterate → render loop.  The `render`
-/// closure is called once per value; any error is propagated with a
-/// descriptive context message so the caller can identify which key failed.
-///
-/// Preserves declaration order — important for chained-env semantics in stages
-/// like sign, sbom, and notarize where later entries may reference env vars set
-/// by earlier ones.
-///
-/// ```ignore
-/// let rendered = render_env_entries(cfg.env.as_deref().unwrap_or(&[]), |v| ctx.render_template(v))?;
-/// for (k, v) in rendered { cmd.env(k, v); }
-/// ```
-pub fn render_env_entries<F>(entries: &[String], render: F) -> anyhow::Result<Vec<(String, String)>>
-where
-    F: Fn(&str) -> anyhow::Result<String>,
-{
-    use anyhow::Context as _;
-    let parsed = parse_env_entries(entries)?;
-    parsed
-        .into_iter()
-        .map(|(k, v)| {
-            let rendered = render(&v).with_context(|| format!("render env value for '{k}'"))?;
-            Ok((k, rendered))
-        })
-        .collect()
-}
+pub use crate::env::{parse_env_entries, render_env_entries, split_env_entry};
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -1188,8 +1138,13 @@ pub struct CrateConfig {
     pub docker_digest: Option<DockerDigestConfig>,
     /// Docker multi-platform manifest configurations for this crate.
     pub docker_manifests: Option<Vec<DockerManifestConfig>>,
-    /// Linux package (deb, rpm, apk) configurations for this crate.
-    pub nfpm: Option<Vec<NfpmConfig>>,
+    /// Linux package (deb, rpm, apk) configurations for this crate. Renamed
+    /// from `nfpm:` (singular) for spelling parity with `Defaults.nfpms` and
+    /// the rest of the plural-name per-crate packaging lists (`dmgs`, `msis`,
+    /// `pkgs`, `nsis`, ...). The `nfpm:` spelling is still accepted via serde
+    /// alias for back-compat.
+    #[serde(alias = "nfpm")]
+    pub nfpms: Option<Vec<NfpmConfig>>,
     /// Snapcraft package configurations for this crate.
     pub snapcrafts: Option<Vec<SnapcraftConfig>>,
     /// macOS DMG disk image configurations for this crate.
@@ -1244,7 +1199,7 @@ impl Default for CrateConfig {
             docker_v2: None,
             docker_digest: None,
             docker_manifests: None,
-            nfpm: None,
+            nfpms: None,
             snapcrafts: None,
             dmgs: None,
             msis: None,
@@ -2860,8 +2815,16 @@ pub struct ChocolateyConfig {
     pub api_key: Option<String>,
     /// Push source URL (default: "https://push.chocolatey.org/").
     pub source_repo: Option<String>,
-    /// Skip pushing to the Chocolatey community repository.
-    pub skip_publish: Option<bool>,
+    /// Skip pushing to the Chocolatey community repository. Bool, string, or
+    /// template expression (e.g. `"{{ .IsSnapshot }}"`). Accepts the legacy
+    /// `skip_publish:` spelling for back-compat with pre-DEC-12 configs;
+    /// canonical name is `skip:` to align with every other publisher.
+    #[serde(
+        default,
+        alias = "skip_publish",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
+    pub skip: Option<StringOrBool>,
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
@@ -3034,117 +2997,19 @@ pub struct AurConfig {
 }
 
 // ---------------------------------------------------------------------------
-// KrewConfig
+// KrewConfig + NixConfig — lifted to `crate::publishers`
 // ---------------------------------------------------------------------------
+//
+// WAVE 5 split: see `crate::publishers` for the type definitions. The
+// re-exports below preserve the historical
+// `anodizer_core::config::{KrewConfig, NixConfig, NixDependency}`
+// import paths used by `stage-publish/krew.rs` / `stage-publish/nix.rs`.
+// Remaining publisher configs (`HomebrewConfig`, `ScoopConfig`,
+// `ChocolateyConfig`, `WingetConfig`, `AurConfig`, `AurSourceConfig`,
+// `CargoPublishConfig`, `DockerV2Config`, `DockerDigestConfig`, ...)
+// still live in this file pending future split passes.
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct KrewConfig {
-    /// Override the plugin name (default: crate name).
-    pub name: Option<String>,
-    /// Build IDs filter: only include artifacts whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Unified repository config with branch, token, PR, git SSH support.
-    /// (Replaces the legacy `manifests_repo:` / `upstream_repo:` form.) The
-    /// upstream PR target is derived from `repository.pull_request.base`
-    /// when set, falling back to the canonical kubernetes-sigs/krew-index.
-    pub repository: Option<RepositoryConfig>,
-    /// Commit author with optional signing.
-    pub commit_author: Option<CommitAuthorConfig>,
-    /// Custom commit message template.
-    pub commit_msg_template: Option<String>,
-    /// Full description of the kubectl plugin.
-    pub description: Option<String>,
-    /// One-line summary of the kubectl plugin (max 255 chars).
-    pub short_description: Option<String>,
-    /// Project homepage URL for the plugin.
-    pub homepage: Option<String>,
-    /// Custom URL template for download URLs (overrides release URL).
-    pub url_template: Option<String>,
-    /// Post-install message shown to the user.
-    pub caveats: Option<String>,
-    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
-    /// Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip_upload: Option<StringOrBool>,
-    /// Skip this Krew config. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
-    /// Distinct from `skip_upload` so users can opt out of generating the
-    /// manifest entirely (common when a project is not a kubectl plugin and
-    /// has no krew channel).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
-    /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
-    /// variant are included.
-    pub arm_variant: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
-// NixConfig
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct NixConfig {
-    /// Override the derivation name (default: crate name).
-    pub name: Option<String>,
-    /// Path for the .nix file in the repository (default: `pkgs/<name>/default.nix`).
-    pub path: Option<String>,
-    /// Unified repository config with branch, token, PR, git SSH support.
-    pub repository: Option<RepositoryConfig>,
-    /// Commit author with optional signing.
-    pub commit_author: Option<CommitAuthorConfig>,
-    /// Custom commit message template.
-    pub commit_msg_template: Option<String>,
-    /// Build IDs filter: only include artifacts whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Custom URL template for download URLs (overrides release URL).
-    pub url_template: Option<String>,
-    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
-    /// Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip_upload: Option<StringOrBool>,
-    /// Skip this Nix config. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
-    /// Distinct from `skip_upload` so users can model both intents — disable
-    /// means "don't generate at all", skip_upload means "generate but don't
-    /// push". Without this field, `nix: { skip: true }` was silently
-    /// dropped by the serde unknown-field default.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-    /// Custom install commands (replaces auto-generated binary install).
-    pub install: Option<String>,
-    /// Additional install commands appended after the main install.
-    pub extra_install: Option<String>,
-    /// Post-install commands (postInstall phase).
-    pub post_install: Option<String>,
-    /// Short description of the Nix derivation.
-    pub description: Option<String>,
-    /// Project homepage URL.
-    pub homepage: Option<String>,
-    /// Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses.
-    pub license: Option<String>,
-    /// Nix package dependencies with optional OS filtering.
-    pub dependencies: Option<Vec<NixDependency>>,
-    /// Nix formatter to run on the generated file: "alejandra" or "nixfmt".
-    pub formatter: Option<String>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
-}
-
-/// Nix package dependency with optional OS restriction.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct NixDependency {
-    /// Nix attribute path for the dependency (e.g., "openssl", "pkgs.libgit2").
-    pub name: String,
-    /// OS restriction: "linux", "darwin", or empty for all.
-    pub os: Option<String>,
-}
+pub use crate::publishers::{KrewConfig, NixConfig, NixDependency};
 
 // Use `DockerV2Config` (canonical) for docker image builds.
 
@@ -4711,73 +4576,15 @@ pub struct ChangelogGroup {
 }
 
 // ---------------------------------------------------------------------------
-// SignConfig / DockerSignConfig
+// SignConfig / DockerSignConfig — lifted to `crate::signing`
 // ---------------------------------------------------------------------------
+//
+// WAVE 5 split: see `crate::signing` for the type definitions. The
+// re-exports below preserve the historical
+// `anodizer_core::config::{SignConfig, DockerSignConfig}` import paths
+// used by every stage that consumes a sign config.
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct SignConfig {
-    /// Unique identifier for this sign config.
-    pub id: Option<String>,
-    /// Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none").
-    pub artifacts: Option<String>,
-    /// Signing command to invoke (default: "cosign" or "gpg").
-    pub cmd: Option<String>,
-    /// Arguments passed to the signing command (supports templates with ${artifact} and ${signature}).
-    pub args: Option<Vec<String>>,
-    /// Signature output filename template (supports templates).
-    pub signature: Option<String>,
-    /// Content written to the signing command's stdin.
-    pub stdin: Option<String>,
-    /// Path to a file whose content is written to the signing command's stdin.
-    pub stdin_file: Option<String>,
-    /// Build IDs filter: only sign artifacts from builds whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Environment variables passed to the signing command.
-    #[serde(default)]
-    pub env: Option<Vec<String>>,
-    /// Certificate file to embed in the signature (Cosign bundle signing).
-    pub certificate: Option<String>,
-    /// Capture and log stdout/stderr of the signing command.
-    /// Accepts bool or template string (e.g., "{{ .IsSnapshot }}").
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub output: Option<StringOrBool>,
-    /// Template-conditional: skip this sign config if rendered result is "false" or empty.
-    #[serde(rename = "if")]
-    pub if_condition: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct DockerSignConfig {
-    /// Unique identifier for this docker sign config.
-    pub id: Option<String>,
-    /// Docker artifact types to sign: "all", "image", or "manifest" (default: "none").
-    pub artifacts: Option<String>,
-    /// Signing command to invoke (default: "cosign").
-    pub cmd: Option<String>,
-    /// Arguments passed to the signing command (supports templates).
-    pub args: Option<Vec<String>>,
-    /// Signature output filename template (supports templates).
-    pub signature: Option<String>,
-    /// Certificate file to embed in the signature (Cosign bundle signing).
-    pub certificate: Option<String>,
-    /// Docker config IDs filter: only sign images from configs whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Content written to the signing command's stdin.
-    pub stdin: Option<String>,
-    /// Path to a file whose content is written to the signing command's stdin.
-    pub stdin_file: Option<String>,
-    /// Environment variables passed to the signing command.
-    #[serde(default)]
-    pub env: Option<Vec<String>>,
-    /// Capture and log stdout/stderr of the docker signing command.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub output: Option<StringOrBool>,
-    /// Template-conditional: skip this docker sign config if rendered result is "false" or empty.
-    #[serde(rename = "if")]
-    pub if_condition: Option<String>,
-}
+pub use crate::signing::{DockerSignConfig, SignConfig};
 
 // ---------------------------------------------------------------------------
 // UpxConfig
@@ -5835,7 +5642,9 @@ impl Default for StringOrBool {
 }
 
 /// Custom deserializer for `Option<StringOrBool>`.
-fn deserialize_string_or_bool_opt<'de, D>(deserializer: D) -> Result<Option<StringOrBool>, D::Error>
+pub(crate) fn deserialize_string_or_bool_opt<'de, D>(
+    deserializer: D,
+) -> Result<Option<StringOrBool>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -6134,196 +5943,20 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// MakeselfConfig
+// MakeselfConfig + SrpmConfig — lifted to `crate::packagers`
 // ---------------------------------------------------------------------------
+//
+// WAVE 5 split: see `crate::packagers` for the type definitions and
+// associated `deserialize_makeselfs` / `makeselfs_schema` helpers. The
+// re-exports below preserve the historical
+// `anodizer_core::config::{MakeselfConfig, MakeselfFile, SrpmConfig}`
+// import paths used by stages and tests. The remaining packaging types
+// (`NfpmConfig`, `SnapcraftConfig`, `FlatpakConfig`, `AppBundleConfig`,
+// `DmgConfig`, `PkgConfig`, `MsiConfig`, `NsisConfig`) still live in
+// this file pending future split passes.
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct MakeselfConfig {
-    /// Unique identifier for this makeself config (default: "default").
-    pub id: Option<String>,
-    /// Build IDs filter: only include artifacts whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Output filename template (default includes project, version, os, arch).
-    pub filename: Option<String>,
-    /// Display name embedded in the self-extracting archive.
-    pub name: Option<String>,
-    /// Startup script to run when the archive is extracted and executed.
-    /// Required — the archive will not be created without this.
-    pub script: Option<String>,
-    /// Description for LSM metadata.
-    pub description: Option<String>,
-    /// Maintainer for LSM metadata.
-    pub maintainer: Option<String>,
-    /// Keywords for LSM metadata.
-    pub keywords: Option<Vec<String>>,
-    /// Homepage URL for LSM metadata.
-    pub homepage: Option<String>,
-    /// License for LSM metadata.
-    pub license: Option<String>,
-    /// Compression algorithm: gzip, bzip2, xz, lzo, compress, or none.
-    pub compression: Option<String>,
-    /// Extra arguments passed to the makeself command.
-    pub extra_args: Option<Vec<String>>,
-    /// Additional files to include in the archive.
-    pub files: Option<Vec<MakeselfFile>>,
-    /// Target OS filter (default: ["linux", "darwin"]).
-    pub goos: Option<Vec<String>>,
-    /// Target architecture filter.
-    pub goarch: Option<Vec<String>>,
-    /// Skip this config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct MakeselfFile {
-    /// Source file path (relative to project root).
-    pub source: String,
-    /// Destination path inside the archive.
-    pub destination: Option<String>,
-    /// Strip the parent directory from the source path.
-    pub strip_parent: Option<bool>,
-}
-
-/// Deserialize makeselfs: single object → vec of one, array → vec of many.
-fn deserialize_makeselfs<'de, D>(deserializer: D) -> Result<Vec<MakeselfConfig>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::{self, Visitor};
-
-    struct MakeselfVisitor;
-
-    impl<'de> Visitor<'de> for MakeselfVisitor {
-        type Value = Vec<MakeselfConfig>;
-
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a makeself config object or an array of makeself config objects")
-        }
-
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            let mut configs = Vec::new();
-            while let Some(item) = seq.next_element::<MakeselfConfig>()? {
-                configs.push(item);
-            }
-            Ok(configs)
-        }
-
-        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-            let config = MakeselfConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
-            Ok(vec![config])
-        }
-
-        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(Vec::new())
-        }
-
-        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(Vec::new())
-        }
-    }
-
-    deserializer.deserialize_any(MakeselfVisitor)
-}
-
-fn makeselfs_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-    let mut schema = generator.subschema_for::<Vec<MakeselfConfig>>();
-    if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description = Some(
-            "Makeself self-extracting archive configurations. Accepts a single object or array."
-                .to_owned(),
-        );
-    }
-    schema
-}
-
-// ---------------------------------------------------------------------------
-// SrpmConfig
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct SrpmConfig {
-    /// Enable source RPM generation. Default: false.
-    pub enabled: Option<bool>,
-    /// Package name (default: project_name).
-    pub package_name: Option<String>,
-    /// Output filename template.
-    pub file_name_template: Option<String>,
-    /// Path to the RPM spec file template.
-    pub spec_file: Option<String>,
-    /// RPM epoch.
-    pub epoch: Option<String>,
-    /// RPM section.
-    pub section: Option<String>,
-    /// Package maintainer.
-    pub maintainer: Option<String>,
-    /// Package vendor.
-    pub vendor: Option<String>,
-    /// Summary line.
-    pub summary: Option<String>,
-    /// RPM group.
-    pub group: Option<String>,
-    /// Package description.
-    pub description: Option<String>,
-    /// License identifier.
-    pub license: Option<String>,
-    /// License file name to include.
-    pub license_file_name: Option<String>,
-    /// Homepage URL.
-    pub url: Option<String>,
-    /// RPM packager field.
-    pub packager: Option<String>,
-    /// Compression algorithm (gzip, xz, zstd, none).
-    pub compression: Option<String>,
-    /// Documentation files to include.
-    pub docs: Option<Vec<String>>,
-    /// Additional contents to include in the source RPM. Shares the unified
-    /// [`NfpmContent`] type with nFPM contents; SRPM-style `source:` /
-    /// `destination:` / `type:` keys are accepted via serde aliases.
-    pub contents: Option<Vec<NfpmContent>>,
-    /// RPM signature configuration. Shares the unified
-    /// [`NfpmSignatureConfig`] type with nFPM.
-    pub signature: Option<NfpmSignatureConfig>,
-    /// Build IDs whose binaries are bundled into the source RPM. When set,
-    /// only artifacts produced by builds with these IDs are packaged.
-    /// Mirrors GR `NFPM.Builds`.
-    pub bins: Option<Vec<String>>,
-    /// Project import path (Go-style; for Rust this is the canonical
-    /// repository URL, e.g. `github.com/owner/repo`). Used in spec file
-    /// generation for downstream tooling that expects a vcs-rooted path.
-    pub import_path: Option<String>,
-    /// Filesystem prefixes the package may install to (RPM `Prefix:` tag).
-    /// Each entry becomes one `Prefix:` directive — relocatable RPMs need
-    /// at least one prefix declared.
-    pub prefixes: Option<Vec<String>>,
-    /// Override the build host recorded in the RPM header. Useful for
-    /// reproducible builds where the actual hostname leaks build-env detail.
-    pub build_host: Option<String>,
-    /// `%pretrans` scriptlet — executed on the package transaction *before*
-    /// any package in the transaction is installed. Path to a script file.
-    pub pretrans: Option<String>,
-    /// `%posttrans` scriptlet — executed *after* all packages in the
-    /// transaction have been installed. Path to a script file.
-    pub posttrans: Option<String>,
-    /// Prerelease suffix appended to the version (e.g. `rc1`, `beta2`).
-    /// Mirrors GR `NFPM.Prerelease`.
-    pub prerelease: Option<String>,
-    /// Build metadata appended to the version (e.g. git commit hash).
-    /// Mirrors GR `NFPM.VersionMetadata`.
-    pub version_metadata: Option<String>,
-    /// Skip this config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-}
-
-// SRPM signatures share [`NfpmSignatureConfig`]; the SRPM-style
-// `passphrase:` key is accepted as a serde alias for `key_passphrase:`.
-
-// SRPM contents share [`NfpmContent`]; both the canonical `src` / `dst`
-// keys and the SRPM-style `source` / `destination` aliases parse.
+pub use crate::packagers::{MakeselfConfig, MakeselfFile, SrpmConfig};
+pub(crate) use crate::packagers::{deserialize_makeselfs, makeselfs_schema};
 
 // ---------------------------------------------------------------------------
 // MilestoneConfig
@@ -9034,7 +8667,7 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let contents = config.srpm.as_ref().unwrap().contents.as_ref().unwrap();
+        let contents = config.srpms.as_ref().unwrap().contents.as_ref().unwrap();
         assert_eq!(contents.len(), 1);
         assert_eq!(contents[0].src, "./LICENSE");
         assert_eq!(contents[0].dst, "/usr/share/doc/myapp/LICENSE");
@@ -9057,7 +8690,7 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let contents = config.srpm.as_ref().unwrap().contents.as_ref().unwrap();
+        let contents = config.srpms.as_ref().unwrap().contents.as_ref().unwrap();
         assert_eq!(contents[0].src, "./README.md");
     }
 
@@ -9079,9 +8712,78 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let sig = config.srpm.as_ref().unwrap().signature.as_ref().unwrap();
+        let sig = config.srpms.as_ref().unwrap().signature.as_ref().unwrap();
         assert_eq!(sig.key_file.as_deref(), Some("/keys/srpm.gpg"));
         assert_eq!(sig.key_passphrase.as_deref(), Some("s3cret"));
+    }
+
+    #[test]
+    fn test_srpm_singular_alias_still_accepted() {
+        // H4: Config.srpm renamed to Config.srpms for parity with
+        // Defaults.srpms; the legacy `srpm:` spelling stays accepted via
+        // serde alias.
+        let yaml_legacy = r#"
+project_name: test
+srpm:
+  enabled: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let yaml_canonical = r#"
+project_name: test
+srpms:
+  enabled: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let legacy: Config = serde_yaml_ng::from_str(yaml_legacy).unwrap();
+        let canonical: Config = serde_yaml_ng::from_str(yaml_canonical).unwrap();
+        assert!(legacy.srpms.is_some(), "srpm: alias must populate srpms");
+        assert!(canonical.srpms.is_some(), "srpms: must populate srpms");
+        assert_eq!(
+            legacy.srpms.as_ref().unwrap().enabled,
+            canonical.srpms.as_ref().unwrap().enabled
+        );
+    }
+
+    #[test]
+    fn test_nfpm_singular_alias_still_accepted() {
+        // H4: CrateConfig.nfpm renamed to CrateConfig.nfpms for parity with
+        // every other plural-name per-crate packaging list (`dmgs`, `msis`,
+        // `pkgs`, ...). The legacy `nfpm:` spelling stays accepted via serde
+        // alias.
+        let yaml_legacy = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - id: deb
+        formats: [deb]
+"#;
+        let yaml_canonical = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpms:
+      - id: deb
+        formats: [deb]
+"#;
+        let legacy: Config = serde_yaml_ng::from_str(yaml_legacy).unwrap();
+        let canonical: Config = serde_yaml_ng::from_str(yaml_canonical).unwrap();
+        assert_eq!(legacy.crates[0].nfpms.as_ref().unwrap().len(), 1);
+        assert_eq!(canonical.crates[0].nfpms.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            legacy.crates[0].nfpms.as_ref().unwrap()[0].id,
+            canonical.crates[0].nfpms.as_ref().unwrap()[0].id
+        );
     }
 
     // ---- WingetConfig tests ----
@@ -11206,52 +10908,6 @@ docker_signs:
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let ds = &cfg.docker_signs.as_ref().unwrap()[0];
         assert!(ds.env.is_none());
-    }
-
-    #[test]
-    fn test_split_env_entry_basic() {
-        assert_eq!(
-            super::split_env_entry("KEY=value").unwrap(),
-            ("KEY", "value")
-        );
-    }
-
-    #[test]
-    fn test_split_env_entry_split_on_first_equals() {
-        assert_eq!(
-            super::split_env_entry("FLAGS=--key=val --other=stuff").unwrap(),
-            ("FLAGS", "--key=val --other=stuff")
-        );
-    }
-
-    #[test]
-    fn test_split_env_entry_no_equals_errors() {
-        let err = super::split_env_entry("COSIGN_PASSWORD").unwrap_err();
-        assert!(err.contains("must be KEY=VALUE"), "{err}");
-    }
-
-    #[test]
-    fn test_split_env_entry_empty_key_errors() {
-        let err = super::split_env_entry("=value").unwrap_err();
-        assert!(err.contains("empty key"), "{err}");
-    }
-
-    #[test]
-    fn test_parse_env_entries_preserves_order() {
-        let input = vec![
-            "FIRST=1".to_string(),
-            "SECOND=2".to_string(),
-            "THIRD=3".to_string(),
-        ];
-        let parsed = super::parse_env_entries(&input).unwrap();
-        assert_eq!(
-            parsed,
-            vec![
-                ("FIRST".to_string(), "1".to_string()),
-                ("SECOND".to_string(), "2".to_string()),
-                ("THIRD".to_string(), "3".to_string()),
-            ]
-        );
     }
 
     #[test]

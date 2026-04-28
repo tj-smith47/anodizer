@@ -35,16 +35,23 @@ use winget::publish_to_winget;
 
 /// Collect crate names that match the selection filter and have a specific
 /// publisher configured (as determined by the predicate `has_config`).
+///
+/// Walks the same crate universe as `cargo.rs::publish_to_cargo` —
+/// `ctx.config.crates` plus every `ctx.config.workspaces[].crates` —
+/// so a workspace-only crate carrying a non-cargo publisher block
+/// (`homebrew:`, `scoop:`, `aur:`, ...) is dispatched alongside the
+/// crates from the top-level list. Without this, cargo would publish
+/// the workspace crate but every other publisher would silently skip
+/// it. See `util::all_crates` for the dedup rule.
 fn crates_with_publisher<F>(ctx: &Context, selected: &[String], has_config: F) -> Vec<String>
 where
     F: Fn(&PublishConfig) -> bool,
 {
-    ctx.config
-        .crates
-        .iter()
+    util::all_crates(ctx)
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| c.publish.as_ref().is_some_and(&has_config))
-        .map(|c| c.name.clone())
+        .map(|c| c.name)
         .collect()
 }
 
@@ -272,7 +279,8 @@ impl Stage for PublishStage {
 mod tests {
     use super::*;
     use anodizer_core::config::{
-        AurConfig, CargoPublishConfig, Config, CrateConfig, PublishConfig,
+        AurConfig, CargoPublishConfig, Config, CrateConfig, HomebrewConfig, PublishConfig,
+        WorkspaceConfig,
     };
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -296,6 +304,73 @@ mod tests {
         let config = Config::default();
         let mut ctx = dry_run_ctx(config);
         assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    /// WAVE 3: a workspace-only crate that carries a non-cargo publisher block
+    /// (homebrew/scoop/aur/...) must be visible to `crates_with_publisher`,
+    /// matching the universe `cargo.rs::publish_to_cargo` walks. Before the
+    /// shared `util::all_crates` lift, this crate would silently disappear
+    /// from every non-cargo dispatcher even though cargo would still publish it.
+    #[test]
+    fn test_crates_with_publisher_includes_workspace_only_crates() {
+        let mut config = Config::default();
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![CrateConfig {
+                name: "ws-only".to_string(),
+                path: "crates/ws-only".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    homebrew: Some(HomebrewConfig::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+
+        let ctx = dry_run_ctx(config);
+        let names = crates_with_publisher(&ctx, &[], |p| p.homebrew.is_some());
+        assert_eq!(names, vec!["ws-only".to_string()]);
+    }
+
+    /// WAVE 3 dedup rule: top-level `crates` wins on name collision with a
+    /// workspace entry. Both walkers (cargo + non-cargo) must see exactly
+    /// one entry per name so `expand_with_transitive_deps` and the
+    /// publisher loops never double-publish.
+    #[test]
+    fn test_crates_with_publisher_dedupes_top_level_over_workspace() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "shared".to_string(),
+            path: "top".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![CrateConfig {
+                // Same name as the top-level — top-level must win.
+                name: "shared".to_string(),
+                path: "ws/shared".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: None,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+
+        let ctx = dry_run_ctx(config);
+        let names = crates_with_publisher(&ctx, &[], |p| p.homebrew.is_some());
+        assert_eq!(
+            names,
+            vec!["shared".to_string()],
+            "top-level entry must win on name collision and not be doubled"
+        );
     }
 
     #[test]

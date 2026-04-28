@@ -1410,7 +1410,7 @@ crates:
         license: MIT
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.package_name, Some("my-app".to_string()));
     assert_eq!(nfpm.formats, vec!["deb", "rpm"]);
     assert_eq!(nfpm.vendor, Some("My Company".to_string()));
@@ -1434,7 +1434,7 @@ crates:
         file_name_template: "{{ package_name }}_{{ version }}_{{ arch }}"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(
         nfpm.file_name_template,
         Some("{{ package_name }}_{{ version }}_{{ arch }}".to_string())
@@ -1454,7 +1454,7 @@ crates:
           - deb
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.file_name_template, None);
 }
 
@@ -1479,7 +1479,7 @@ crates:
               - glibc
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     let overrides = nfpm.overrides.as_ref().unwrap();
     assert!(overrides.contains_key("deb"));
     assert!(overrides.contains_key("rpm"));
@@ -1498,7 +1498,7 @@ crates:
           - deb
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.overrides, None);
 }
 
@@ -1518,7 +1518,7 @@ crates:
           - archlinux
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.formats.len(), 4);
     assert_eq!(nfpm.formats[3], "archlinux");
 }
@@ -1535,7 +1535,7 @@ crates:
       - formats: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert!(nfpm.formats.is_empty());
 }
 
@@ -1558,7 +1558,7 @@ crates:
             type: config
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     let contents = nfpm.contents.as_ref().unwrap();
     assert_eq!(contents.len(), 2);
     assert_eq!(contents[0].src, "./app");
@@ -1585,7 +1585,7 @@ crates:
           postremove: ./scripts/postremove.sh
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     let scripts = nfpm.scripts.as_ref().unwrap();
     assert_eq!(
         scripts.preinstall,
@@ -1624,7 +1624,7 @@ crates:
             - glibc
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     let deps = nfpm.dependencies.as_ref().unwrap();
     assert_eq!(deps.get("deb").unwrap().len(), 2);
     assert_eq!(deps.get("rpm").unwrap().len(), 1);
@@ -1653,7 +1653,7 @@ crates:
           - app-service
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.recommends.as_ref().unwrap(), &["bash-completion"]);
     assert_eq!(nfpm.suggests.as_ref().unwrap(), &["zsh"]);
     assert_eq!(nfpm.conflicts.as_ref().unwrap(), &["old-app"]);
@@ -1675,7 +1675,7 @@ crates:
         bindir: /usr/local/bin
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.bindir, Some("/usr/local/bin".to_string()));
 }
 
@@ -1689,7 +1689,7 @@ crates:
     tag_template: "v{{ version }}"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert!(config.crates[0].nfpm.is_none());
+    assert!(config.crates[0].nfpms.is_none());
 }
 
 // ---- publish.homebrew tests ----
@@ -2660,13 +2660,13 @@ name = "app"
 path = "."
 tag_template = "v{{ .Version }}"
 
-[[crates.nfpm]]
+[[crates.nfpms]]
 package_name = "my-app"
 formats = ["deb", "rpm"]
 vendor = "ACME"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+    let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.package_name, Some("my-app".to_string()));
     assert_eq!(nfpm.formats, vec!["deb", "rpm"]);
 }
@@ -2989,7 +2989,7 @@ crates:
               mode: 0o755
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let content = &config.crates[0].nfpm.as_ref().unwrap()[0]
+    let content = &config.crates[0].nfpms.as_ref().unwrap()[0]
         .contents
         .as_ref()
         .unwrap()[0];
@@ -3033,7 +3033,7 @@ fn test_crate_config_default_struct() {
     assert!(config.checksum.is_none());
     assert!(config.release.is_none());
     assert!(config.publish.is_none());
-    assert!(config.nfpm.is_none());
+    assert!(config.nfpms.is_none());
 }
 
 #[test]
@@ -3760,7 +3760,7 @@ crates:
     assert_eq!(docker.images, vec!["ghcr.io/org/app".to_string()]);
 
     // App nfpm
-    let nfpm = &app.nfpm.as_ref().unwrap()[0];
+    let nfpm = &app.nfpms.as_ref().unwrap()[0];
     assert_eq!(nfpm.formats, vec!["deb", "rpm"]);
     assert!(nfpm.overrides.is_some());
     assert!(nfpm.scripts.is_some());

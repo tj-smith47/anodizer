@@ -443,11 +443,14 @@ pub fn run(opts: TagOpts) -> Result<()> {
             // Without this, the tagged commit has Cargo.toml at the new version
             // but Cargo.lock at the old version, causing `cargo test` (from
             // before hooks) to update Cargo.lock and dirty the tree.
-            let lock_updated = anodizer_core::cargo_lock::cargo_update_workspace(None);
-            if !lock_updated {
-                log.warn(
-                    "version-sync: `cargo update --workspace` failed; Cargo.lock may be stale",
-                );
+            match anodizer_core::cargo_lock::cargo_update_workspace(None) {
+                Ok(true) => {}
+                Ok(false) => log.warn(
+                    "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
+                ),
+                Err(e) => log.warn(&format!(
+                    "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+                )),
             }
 
             let cargo_toml = format!("{}/Cargo.toml", path);
@@ -549,9 +552,14 @@ fn apply_workspace_bump(
 
     apply_plan(workspace_root, &rows, false, log)?;
 
-    let lock_updated = anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root));
-    if !lock_updated {
-        log.warn("version-sync: `cargo update --workspace` failed; Cargo.lock may be stale");
+    match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root)) {
+        Ok(true) => {}
+        Ok(false) => log.warn(
+            "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
+        ),
+        Err(e) => log.warn(&format!(
+            "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+        )),
     }
 
     let mut staged: Vec<PathBuf> = Vec::new();

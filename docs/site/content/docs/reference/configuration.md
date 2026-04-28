@@ -52,7 +52,7 @@ List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `snapshot` | SnapshotConfig | — | Snapshot release configuration (local/non-tag builds). |
 | `source` | SourceConfig | — | Source archive configuration. |
-| `srpm` | SrpmConfig | — | Source RPM configuration. |
+| `srpms` | SrpmConfig | — | Source RPM configuration. Renamed from `srpm:` (singular) for spelling parity with `Defaults.srpms` and the rest of the plural-name packaging fields. The `srpm:` spelling is still accepted via serde alias for back-compat. |
 | `tag` | TagConfig | — | Automatic semantic version tagging configuration. |
 | `template_files` | list of TemplateFileConfig | — | Template files to render and include as release artifacts. File contents are processed through the template engine. |
 | `uploads` | list of UploadConfig | — | Generic HTTP upload configurations. |
@@ -217,7 +217,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `flatpaks` | list of FlatpakConfig | — | Linux Flatpak bundle configurations for this crate. |
 | `msis` | list of MsiConfig | — | Windows MSI installer configurations for this crate. |
 | `name` | string | — | Crate name as published (must match the Cargo.toml package name). |
-| `nfpm` | list of NfpmConfig | — | Linux package (deb, rpm, apk) configurations for this crate. |
+| `nfpms` | list of NfpmConfig | — | Linux package (deb, rpm, apk) configurations for this crate. Renamed from `nfpm:` (singular) for spelling parity with `Defaults.nfpms` and the rest of the plural-name per-crate packaging lists (`dmgs`, `msis`, `pkgs`, `nsis`, ...). The `nfpm:` spelling is still accepted via serde alias for back-compat. |
 | `no_unique_dist_dir` | StringOrBool | — | When true (or template evaluating to "true"), all build outputs are placed in a flat `dist/` directory instead of `dist/{target}/`. |
 | `nsis` | list of NsisConfig | — | NSIS installer configurations for this crate. |
 | `path` | string | — | Relative path to the crate directory from the project root. |
@@ -528,7 +528,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `name_template` | string | — | Filename template for the source archive (supports templates). |
 | `prefix_template` | string | — | Prefix prepended to all paths inside the archive (supports templates). Defaults to name_template value. Use this to set a different prefix than the archive name. |
 
-## `srpm`
+## `srpms`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bins` | list of string | — | Build IDs whose binaries are bundled into the source RPM. When set, only artifacts produced by builds with these IDs are packaged. Mirrors GR `NFPM.Builds`. |

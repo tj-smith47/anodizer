@@ -275,12 +275,17 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     };
 
     // GoReleaser checks SkipPublish early in Publish(), before any work.
-    if choco_cfg.skip_publish == Some(true) {
-        log.status(&format!(
-            "chocolatey: skipping publish for '{}' (skip_publish)",
-            crate_name
-        ));
-        return Ok(());
+    if let Some(d) = choco_cfg.skip.as_ref() {
+        let off = d
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("chocolatey: render skip template for '{}'", crate_name))?;
+        if off {
+            log.status(&format!(
+                "chocolatey: skipping publish for '{}' (skip=true)",
+                crate_name
+            ));
+            return Ok(());
+        }
     }
 
     if ctx.is_dry_run() {
@@ -1434,7 +1439,62 @@ mod tests {
     }
 
     #[test]
-    fn test_chocolatey_skip_publish_bool_config() {
+    fn test_chocolatey_skip_bool_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        skip: true
+        repository:
+          owner: org
+          name: test
+"#;
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let choco = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .chocolatey
+            .as_ref()
+            .unwrap();
+        assert!(choco.skip.as_ref().unwrap().as_bool());
+    }
+
+    #[test]
+    fn test_chocolatey_skip_false_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        skip: false
+        repository:
+          owner: org
+          name: test
+"#;
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let choco = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .chocolatey
+            .as_ref()
+            .unwrap();
+        assert!(!choco.skip.as_ref().unwrap().as_bool());
+    }
+
+    #[test]
+    fn test_chocolatey_skip_publish_legacy_alias_still_accepted() {
+        // DEC-12 (post-WAVE 5+) renamed `skip_publish:` → `skip:` for project-wide
+        // canonicalization, but old configs in the wild still spell it `skip_publish:`.
+        // The serde alias keeps them parsing.
         let yaml = r#"
 project_name: test
 crates:
@@ -1456,11 +1516,11 @@ crates:
             .chocolatey
             .as_ref()
             .unwrap();
-        assert_eq!(choco.skip_publish, Some(true));
+        assert!(choco.skip.as_ref().unwrap().as_bool());
     }
 
     #[test]
-    fn test_chocolatey_skip_publish_false_config() {
+    fn test_chocolatey_skip_template_string() {
         let yaml = r#"
 project_name: test
 crates:
@@ -1469,7 +1529,7 @@ crates:
     tag_template: "v{{ .Version }}"
     publish:
       chocolatey:
-        skip_publish: false
+        skip: "{{ .IsSnapshot }}"
         repository:
           owner: org
           name: test
@@ -1482,7 +1542,7 @@ crates:
             .chocolatey
             .as_ref()
             .unwrap();
-        assert_eq!(choco.skip_publish, Some(false));
+        assert!(choco.skip.as_ref().unwrap().is_template());
     }
 
     #[test]

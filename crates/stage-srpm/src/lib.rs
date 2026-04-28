@@ -23,7 +23,7 @@ impl Stage for SrpmStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("srpm");
-        let srpm_cfg = match ctx.config.srpm.clone() {
+        let srpm_cfg = match ctx.config.srpms.clone() {
             Some(cfg) if cfg.enabled.unwrap_or(false) => cfg,
             _ => return Ok(()),
         };
@@ -188,7 +188,7 @@ impl Stage for SrpmStage {
         }
 
         // Write spec file
-        let spec_path = dist.join(format!("{}.srpm.spec", package_name));
+        let spec_path = dist.join(format!("{}.srpms.spec", package_name));
         fs::create_dir_all(&dist)
             .with_context(|| format!("srpm: create dist dir {}", dist.display()))?;
         fs::write(&spec_path, &spec_contents)
@@ -426,7 +426,7 @@ mod tests {
             anodizer_core::config::Config::default(),
             anodizer_core::context::ContextOptions::default(),
         );
-        ctx.config.srpm = Some(SrpmConfig {
+        ctx.config.srpms = Some(SrpmConfig {
             enabled: Some(false),
             ..Default::default()
         });
@@ -440,7 +440,7 @@ mod tests {
             anodizer_core::config::Config::default(),
             anodizer_core::context::ContextOptions::default(),
         );
-        ctx.config.srpm = Some(SrpmConfig {
+        ctx.config.srpms = Some(SrpmConfig {
             enabled: Some(true),
             ..Default::default()
         });
@@ -529,7 +529,7 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let srpm = config.srpm.as_ref().unwrap();
+        let srpm = config.srpms.as_ref().unwrap();
         assert_eq!(srpm.enabled, Some(true));
         assert_eq!(srpm.package_name.as_deref(), Some("myapp"));
         assert_eq!(srpm.spec_file.as_deref(), Some("myapp.spec"));
@@ -564,7 +564,7 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let srpm = config.srpm.as_ref().unwrap();
+        let srpm = config.srpms.as_ref().unwrap();
         assert_eq!(srpm.bins.as_ref().unwrap(), &vec!["myapp-cli".to_string()]);
         assert_eq!(srpm.import_path.as_deref(), Some("github.com/me/myapp"));
         assert_eq!(

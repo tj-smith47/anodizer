@@ -92,6 +92,18 @@ fn default_name_template() -> &'static str {
     "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
 }
 
+/// Multi-crate variant of [`default_name_template`]: substitutes
+/// `{{ .ProjectName }}` with `{{ .CrateName }}` so per-crate archives
+/// resolve to distinct filenames instead of all colliding on
+/// `<project>_<ver>_<os>_<arch>`. Used as the default in monorepo /
+/// multi-crate workspaces (more than one crate produces archives) when
+/// the user has not set an explicit `archive.name_template:`. Single-crate
+/// configs continue to default to the project-name-keyed template for
+/// GoReleaser parity.
+fn default_name_template_multi_crate() -> &'static str {
+    "{{ .CrateName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+}
+
 fn default_binary_name_template() -> &'static str {
     "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
 }
@@ -244,6 +256,16 @@ impl Stage for ArchiveStage {
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
 
+        // WAVE 6: pick the default `archive.name_template` based on whether
+        // the run produces archives for more than one crate. In a single-crate
+        // config the GoReleaser-canonical `{{ .ProjectName }}_..._{{ .Os }}_..`
+        // template is unambiguous; in a monorepo every crate would resolve to
+        // the same filename and emit `artifact '<...>' already registered`
+        // warnings. The multi-crate default substitutes `{{ .CrateName }}` so
+        // each crate's archive stem is distinct without forcing every user to
+        // hand-author `archive.name_template:`.
+        let multi_crate = work.len() > 1;
+
         for (crate_name, crate_dir, archive_cfgs) in &work {
             // Archive all build artifact types, matching GoReleaser
             // (Binary, UniversalBinary, Header, CArchive, CShared).
@@ -361,9 +383,16 @@ impl Stage for ArchiveStage {
                 // Determine which binaries to include
                 let binary_filter: Option<&Vec<String>> = archive_cfg.binaries.as_ref();
 
-                // Name template
+                // Name template — pick the multi-crate default when the run
+                // produces archives for more than one crate so per-crate
+                // filenames do not collide. User-set `archive.name_template:`
+                // always wins regardless of multi-crate state.
                 let has_custom_name_tmpl = archive_cfg.name_template.is_some();
-                let default_tmpl = default_name_template();
+                let default_tmpl = if multi_crate {
+                    default_name_template_multi_crate()
+                } else {
+                    default_name_template()
+                };
                 let name_tmpl = archive_cfg.name_template.as_deref().unwrap_or(default_tmpl);
 
                 // strip_binary_directory: place binaries at archive root
@@ -427,6 +456,10 @@ impl Stage for ArchiveStage {
                     tvars.set("Os", &os);
                     tvars.set("Arch", &arch);
                     tvars.set("Target", target);
+                    // CrateName is set per-crate so the multi-crate default
+                    // template (and any user template that references
+                    // `{{ .CrateName }}`) can produce distinct archive stems.
+                    tvars.set("CrateName", crate_name);
 
                     // Set Binary to the first selected binary's name (matches GoReleaser behavior)
                     if let Some(bin_name) =
@@ -4763,6 +4796,146 @@ crates:
         assert!(
             !name.ends_with(".exe"),
             "Linux binary-format upload should not get .exe, got: {name}"
+        );
+    }
+
+    /// WAVE 6 regression: in a multi-crate config with no explicit
+    /// `archive.name_template:`, every crate's archive must resolve to a
+    /// distinct filename. Pre-fix the canonical default
+    /// `{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}` produced
+    /// the same stem for every crate and caused the dry-run to emit
+    /// `Warning: artifact '<name>' already registered` once per crate.
+    #[test]
+    fn test_archive_multi_crate_default_template_uses_crate_name() {
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_a = tmp.path().join("crate-a");
+        fs::write(&bin_a, b"binary-a").unwrap();
+        let bin_b = tmp.path().join("crate-b");
+        fs::write(&bin_b, b"binary-b").unwrap();
+
+        let mk_crate = |name: &str| CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "anodizer".to_string();
+        config.dist = dist;
+        config.crates = vec![mk_crate("crate-a"), mk_crate("crate-b")];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let mk_artifact = |bin: PathBuf, crate_name: &str, bin_name: &str| Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), bin_name.to_string());
+                m
+            },
+            size: None,
+        };
+        ctx.artifacts.add(mk_artifact(bin_a, "crate-a", "crate-a"));
+        ctx.artifacts.add(mk_artifact(bin_b, "crate-b", "crate-b"));
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 2, "two crates → two archives");
+        let names: Vec<String> = archives
+            .iter()
+            .map(|a| a.metadata.get("name").cloned().unwrap_or_default())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("crate-a_")),
+            "crate-a archive must use CrateName: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with("crate-b_")),
+            "crate-b archive must use CrateName: {names:?}"
+        );
+        assert_ne!(
+            names[0], names[1],
+            "multi-crate archives must have distinct stems: {names:?}"
+        );
+    }
+
+    /// WAVE 6: a single-crate config keeps the GoReleaser-canonical
+    /// `{{ .ProjectName }}_..` default — the multi-crate template change
+    /// is opt-in via crate count, not unconditional.
+    #[test]
+    fn test_archive_single_crate_keeps_project_name_default() {
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp-project".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+            size: None,
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        let name = archives[0]
+            .metadata
+            .get("name")
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            name.starts_with("myapp-project_"),
+            "single-crate config must keep ProjectName-keyed default: {name}"
         );
     }
 }

@@ -461,8 +461,22 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
                 warnings
                     .push("docker is not installed but docker sections are configured".to_string());
             } else {
-                // Check for docker buildx
-                if !anodizer_core::docker_detect::buildx_available() {
+                // Check for docker buildx. The probe surfaces three states:
+                //   Ok(true)  → buildx subcommand exists.
+                //   Ok(false) → docker present but buildx subcommand missing.
+                //   Err(_)    → spawn failed (typically: docker disappeared
+                //               between the find_binary check above and now,
+                //               e.g. PATH race). Collapse Err to "buildx
+                //               unavailable" and trace-log the io::Error so
+                //               verbose runs can see the underlying cause.
+                let buildx_ok = match anodizer_core::docker_detect::buildx_available() {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::trace!(error = %e, "buildx probe failed");
+                        false
+                    }
+                };
+                if !buildx_ok {
                     warnings.push(
                         "docker buildx is not available but docker sections are configured"
                             .to_string(),
@@ -482,7 +496,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             );
         }
 
-        let needs_nfpm = config.crates.iter().any(|c| c.nfpm.is_some());
+        let needs_nfpm = config.crates.iter().any(|c| c.nfpms.is_some());
         if needs_nfpm && !tool_available("nfpm") {
             warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
         }

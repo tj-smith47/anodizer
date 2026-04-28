@@ -925,7 +925,7 @@ impl Stage for NfpmStage {
             .crates
             .iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| c.nfpm.is_some())
+            .filter(|c| c.nfpms.is_some())
             .cloned()
             .collect();
 
@@ -951,7 +951,7 @@ impl Stage for NfpmStage {
         {
             let mut seen_ids = std::collections::HashSet::new();
             for krate in &crates {
-                if let Some(ref nfpm_configs) = krate.nfpm {
+                if let Some(ref nfpm_configs) = krate.nfpms {
                     for cfg in nfpm_configs {
                         let id = cfg.id.as_deref().unwrap_or("default");
                         if !seen_ids.insert(id.to_string()) {
@@ -966,7 +966,7 @@ impl Stage for NfpmStage {
         }
 
         for krate in &crates {
-            let Some(nfpm_configs) = krate.nfpm.as_ref() else {
+            let Some(nfpm_configs) = krate.nfpms.as_ref() else {
                 continue;
             };
 
@@ -1890,7 +1890,7 @@ mod tests {
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         };
 
@@ -2070,7 +2070,7 @@ crates:
           postinstall: /scripts/post.sh
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        let nfpm = config.crates[0].nfpms.as_ref().unwrap();
         let scripts = nfpm[0].scripts.as_ref().unwrap();
         assert_eq!(scripts.preinstall.as_deref(), Some("/scripts/pre.sh"));
         assert_eq!(scripts.postinstall.as_deref(), Some("/scripts/post.sh"));
@@ -2101,7 +2101,7 @@ crates:
           - test-bin
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        let nfpm = config.crates[0].nfpms.as_ref().unwrap();
         assert_eq!(nfpm[0].recommends.as_ref().unwrap(), &["libfoo"]);
         assert_eq!(nfpm[0].suggests.as_ref().unwrap(), &["libbar"]);
         assert_eq!(nfpm[0].conflicts.as_ref().unwrap(), &["old-test"]);
@@ -2130,7 +2130,7 @@ crates:
               mode: "0755"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        let nfpm = config.crates[0].nfpms.as_ref().unwrap();
         let contents = nfpm[0].contents.as_ref().unwrap();
         assert_eq!(contents[0].content_type.as_deref(), Some("config"));
         let fi = contents[0].file_info.as_ref().unwrap();
@@ -2301,7 +2301,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2352,7 +2352,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2400,7 +2400,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2498,7 +2498,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2598,7 +2598,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2646,7 +2646,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2697,7 +2697,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2758,7 +2758,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2811,7 +2811,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2872,7 +2872,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2919,7 +2919,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -2965,7 +2965,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -3724,7 +3724,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -3772,7 +3772,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -3819,7 +3819,7 @@ crates:
         mtime: "2023-01-01T00:00:00Z"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         assert_eq!(nfpm.epoch.as_deref(), Some("1"));
         assert_eq!(nfpm.release.as_deref(), Some("2"));
         assert_eq!(nfpm.prerelease.as_deref(), Some("beta1"));
@@ -3855,7 +3855,7 @@ crates:
             key_id: ABCD1234
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let rpm = nfpm.rpm.as_ref().unwrap();
         assert_eq!(rpm.summary.as_deref(), Some("My package summary"));
         assert_eq!(rpm.compression.as_deref(), Some("lzma"));
@@ -3900,7 +3900,7 @@ crates:
             Bugs: "https://github.com/example/project/issues"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let deb = nfpm.deb.as_ref().unwrap();
         assert_eq!(deb.compression.as_deref(), Some("xz"));
         assert_eq!(deb.predepends.as_ref().unwrap(), &["libc6"]);
@@ -3940,7 +3940,7 @@ crates:
             key_file: /path/to/key.rsa
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let apk = nfpm.apk.as_ref().unwrap();
         let sig = apk.signature.as_ref().unwrap();
         assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.rsa"));
@@ -3965,7 +3965,7 @@ crates:
             postupgrade: scripts/postupgrade.sh
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let arch = nfpm.archlinux.as_ref().unwrap();
         assert_eq!(arch.pkgbase.as_deref(), Some("myapp-base"));
         assert_eq!(
@@ -4001,7 +4001,7 @@ crates:
               mtime: "2023-01-01T00:00:00Z"
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let fi = nfpm.contents.as_ref().unwrap()[0]
             .file_info
             .as_ref()
@@ -4028,7 +4028,7 @@ crates:
             key_passphrase: secret
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let sig = nfpm.rpm.as_ref().unwrap().signature.as_ref().unwrap();
         assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.gpg"));
         assert_eq!(sig.key_id.as_deref(), Some("ABCD1234"));
@@ -4062,7 +4062,7 @@ crates:
               - triggers-noawait
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let triggers = nfpm.deb.as_ref().unwrap().triggers.as_ref().unwrap();
         assert_eq!(triggers.interest.as_ref().unwrap(), &["/usr/share/apps"]);
         assert_eq!(
@@ -4186,7 +4186,7 @@ crates:
         formats: [deb, termux.deb, ipk, rpm]
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         assert_eq!(nfpm.formats, vec!["deb", "termux.deb", "ipk", "rpm"]);
     }
 
@@ -4286,7 +4286,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -4342,7 +4342,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -4423,7 +4423,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -4488,7 +4488,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -4543,7 +4543,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -4594,7 +4594,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -4644,7 +4644,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -4917,7 +4917,7 @@ crates:
             postupgrade: scripts/post.sh
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let apk = nfpm.apk.as_ref().unwrap();
         let scripts = apk.scripts.as_ref().unwrap();
         assert_eq!(scripts.preupgrade.as_deref(), Some("scripts/pre.sh"));
@@ -4942,7 +4942,7 @@ crates:
             type: origin
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let sig = nfpm.deb.as_ref().unwrap().signature.as_ref().unwrap();
         assert_eq!(sig.key_name.as_deref(), Some("mykey.rsa.pub"));
         assert_eq!(sig.type_.as_deref(), Some("origin"));
@@ -4966,7 +4966,7 @@ crates:
             expand: true
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let content = &nfpm.contents.as_ref().unwrap()[0];
         assert_eq!(content.packager.as_deref(), Some("deb"));
         assert_eq!(content.expand, Some(true));
@@ -4996,7 +4996,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -5045,7 +5045,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -5094,7 +5094,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -5144,7 +5144,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -5438,7 +5438,7 @@ crates:
           cshared: /usr/lib
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         let libdirs = nfpm.libdirs.as_ref().unwrap();
         assert_eq!(libdirs.header.as_deref(), Some("/usr/include"));
         assert_eq!(libdirs.carchive.as_deref(), Some("/usr/lib"));
@@ -5505,7 +5505,7 @@ crates:
         changelog: changelog.yaml
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
         assert_eq!(nfpm.changelog.as_deref(), Some("changelog.yaml"));
     }
 
@@ -5542,7 +5542,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -5817,7 +5817,7 @@ crates:
             name: "openwrt-pkg".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -5868,7 +5868,7 @@ crates:
               link_name: /usr/bin/link
 "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let nfpm = config.crates[0].nfpm.as_ref().unwrap();
+        let nfpm = config.crates[0].nfpms.as_ref().unwrap();
         let ipk = nfpm[0].ipk.as_ref().unwrap();
         assert_eq!(ipk.abi_version.as_deref(), Some("1.0"));
         assert_eq!(ipk.auto_installed, Some(true));
@@ -5942,7 +5942,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
 
@@ -6135,7 +6135,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
         let mut ctx = Context::new(
@@ -6234,7 +6234,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -6298,7 +6298,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -6358,7 +6358,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            nfpm: Some(vec![nfpm_cfg]),
+            nfpms: Some(vec![nfpm_cfg]),
             ..Default::default()
         }];
         let mut ctx = Context::new(

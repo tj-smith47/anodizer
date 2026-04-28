@@ -400,8 +400,8 @@
         }
       ]
     },
-    "srpm": {
-      "description": "Source RPM configuration.",
+    "srpms": {
+      "description": "Source RPM configuration. Renamed from `srpm:` (singular) for spelling parity with `Defaults.srpms` and the rest of the plural-name packaging fields. The `srpm:` spelling is still accepted via serde alias for back-compat.",
       "default": null,
       "anyOf": [
         {
@@ -2912,12 +2912,16 @@
             "null"
           ]
         },
-        "skip_publish": {
-          "description": "Skip pushing to the Chocolatey community repository.",
+        "skip": {
+          "description": "Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `\"{{ .IsSnapshot }}\"`). Accepts the legacy `skip_publish:` spelling for back-compat with pre-DEC-12 configs; canonical name is `skip:` to align with every other publisher.",
           "default": null,
-          "type": [
-            "boolean",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "source_repo": {
@@ -3403,8 +3407,8 @@
           "default": "",
           "type": "string"
         },
-        "nfpm": {
-          "description": "Linux package (deb, rpm, apk) configurations for this crate.",
+        "nfpms": {
+          "description": "Linux package (deb, rpm, apk) configurations for this crate. Renamed from `nfpm:` (singular) for spelling parity with `Defaults.nfpms` and the rest of the plural-name per-crate packaging lists (`dmgs`, `msis`, `pkgs`, `nsis`, ...). The `nfpm:` spelling is still accepted via serde alias for back-compat.",
           "default": null,
           "type": [
             "array",

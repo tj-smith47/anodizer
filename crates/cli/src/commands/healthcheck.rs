@@ -67,8 +67,27 @@ pub fn run() -> Result<()> {
     let mut missing_count = 0;
 
     for tool in TOOLS {
-        if tool_available(tool.name) {
-            let version = tool_version(tool.name).unwrap_or_else(|| "unknown version".to_string());
+        // tool_available returns Err only when the spawn itself fails (typically
+        // ENOENT — the binary is not on PATH). That is the same observable
+        // outcome as "tool missing" for this surface, so we collapse Err into
+        // the missing branch and log the underlying io::Error at trace level
+        // for verbose-mode debugging.
+        let available = match tool_available(tool.name) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::trace!(tool = tool.name, error = %e, "probe failed");
+                false
+            }
+        };
+        if available {
+            let version = match tool_version(tool.name) {
+                Ok(Some(v)) => v,
+                Ok(None) => "unknown version".to_string(),
+                Err(e) => {
+                    tracing::trace!(tool = tool.name, error = %e, "version probe failed");
+                    "unknown version".to_string()
+                }
+            };
             log.status(&format!(
                 "{} {:<20} {} ({})",
                 "\u{2713}".green().bold(),
@@ -104,25 +123,36 @@ mod tests {
     #[test]
     fn test_tool_available_cargo() {
         // cargo should always be available in a Rust project
-        assert!(tool_available("cargo"), "cargo should be available");
-    }
-
-    #[test]
-    fn test_tool_available_nonexistent() {
         assert!(
-            !tool_available("this-tool-does-not-exist-12345"),
-            "nonexistent tool should not be available"
+            tool_available("cargo").expect("cargo should spawn"),
+            "cargo should be available"
         );
     }
 
     #[test]
+    fn test_tool_available_nonexistent() {
+        // Lifted: the missing-binary case now surfaces as Err(NotFound) instead
+        // of a silently swallowed bool — the regression-test signature is the
+        // whole point of the lift. Callers can collapse Err to "treat as
+        // missing" but the io::Error must reach them.
+        let res = tool_available("this-tool-does-not-exist-12345");
+        assert!(res.is_err(), "nonexistent tool must surface a spawn error");
+    }
+
+    #[test]
     fn test_tool_version_cargo() {
-        let version = tool_version("cargo");
+        let version = tool_version("cargo").expect("cargo should spawn");
         assert!(version.is_some(), "cargo --version should produce output");
         assert!(
             version.unwrap().contains("cargo"),
             "cargo version should contain 'cargo'"
         );
+    }
+
+    #[test]
+    fn test_tool_version_nonexistent_surfaces_error() {
+        let res = tool_version("this-tool-does-not-exist-12345");
+        assert!(res.is_err(), "nonexistent tool must surface a spawn error");
     }
 
     #[test]

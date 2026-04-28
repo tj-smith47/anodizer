@@ -6,20 +6,24 @@
 //! crate — that was outside the allow-list and counted as a boundary
 //! violation.
 
+use std::io;
 use std::path::Path;
 use std::process::Command;
 
 /// Run `cargo update --workspace`, optionally inside `dir`.
 ///
-/// Returns `true` when the update succeeded, `false` otherwise. Callers
-/// that care about the failure should check the return; the legacy
-/// behaviour was to log a "cargo update failed; Cargo.lock may be stale"
-/// warning and continue.
-pub fn cargo_update_workspace(dir: Option<&Path>) -> bool {
+/// `Ok(true)` — `cargo` ran and exited zero (lockfile updated).
+/// `Ok(false)` — `cargo` ran but exited non-zero (e.g. registry network
+///   failure, locked-flag conflict). The lockfile may be unchanged.
+/// `Err(_)` — `cargo` could not be spawned (missing binary, permission
+///   denied, ...). Distinct from `Ok(false)` so callers can log the
+///   underlying `io::Error` at trace level if they want to surface why
+///   the probe itself failed.
+pub fn cargo_update_workspace(dir: Option<&Path>) -> io::Result<bool> {
     let mut cmd = Command::new("cargo");
     cmd.args(["update", "--workspace"]);
     if let Some(d) = dir {
         cmd.current_dir(d);
     }
-    cmd.output().map(|o| o.status.success()).unwrap_or(false)
+    cmd.output().map(|o| o.status.success())
 }
