@@ -2460,7 +2460,7 @@
       "type": "object",
       "properties": {
         "abbrev": {
-          "description": "Hash abbreviation length. Default: 7. Set to -1 to omit the hash entirely.",
+          "description": "Hash abbreviation length. Default: 0 (no truncation, emit the full SHA). Set to -1 to omit the hash entirely; positive values truncate to N chars. Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `abbrevEntry`.",
           "default": null,
           "type": [
             "integer",

@@ -31,16 +31,11 @@ pub(super) fn close_milestones(
     let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
 
     for milestone_cfg in milestones {
-        if !milestone_cfg.close.unwrap_or(false) {
+        if !milestone_cfg.resolved_close() {
             continue;
         }
 
-        // GoReleaser milestone.go:13 defaults to `"{{ .Tag }}"` (Go template);
-        // anodizer's Tera-shaped equivalent renders to the same string.
-        let name_template = milestone_cfg
-            .name_template
-            .as_deref()
-            .unwrap_or("{{ Tag }}");
+        let name_template = milestone_cfg.resolved_name_template();
         let milestone_name = ctx
             .render_template(name_template)
             .context("milestone: render name_template")?;
@@ -56,7 +51,7 @@ pub(super) fn close_milestones(
         let (owner, repo_name) = resolve_milestone_repo(milestone_cfg, &ctx.config, ctx.token_type);
 
         if owner.is_empty() || repo_name.is_empty() {
-            if milestone_cfg.fail_on_error.unwrap_or(false) {
+            if milestone_cfg.resolved_fail_on_error() {
                 anyhow::bail!("milestone: repo owner/name not configured");
             }
             log.warn("milestone: skipping — repo owner/name not configured");
@@ -117,7 +112,7 @@ pub(super) fn close_milestones(
                 ));
             }
             Err(e) => {
-                if milestone_cfg.fail_on_error.unwrap_or(false) {
+                if milestone_cfg.resolved_fail_on_error() {
                     return Err(
                         e.context(format!("milestone: failed to close '{}'", milestone_name))
                     );

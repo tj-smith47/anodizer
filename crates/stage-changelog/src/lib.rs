@@ -404,17 +404,15 @@ pub(crate) fn render_changelog_with_provider(
     divider: Option<&str>,
     scm_provider: Option<&str>,
 ) -> Result<String> {
-    let default_format = if abbrev < 0 {
-        "{{ Message }}"
-    } else {
-        match use_source {
-            "github" | "gitlab" | "gitea" => {
-                "{{ SHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})"
-            }
-            _ => "{{ SHA }} {{ Message }}",
-        }
+    use anodizer_core::config::ChangelogConfig;
+    // Build a transient ChangelogConfig with just the user-supplied
+    // format so resolved_format applies the same precedence the
+    // ChangelogStage call site uses.
+    let probe = ChangelogConfig {
+        format: format_template.map(|s| s.to_string()),
+        ..Default::default()
     };
-    let tmpl = format_template.unwrap_or(default_format);
+    let tmpl: &str = probe.resolved_format(use_source, abbrev);
     // GitLab and Gitea need trailing spaces before newlines for markdown line breaks.
     // GoReleaser's newLineFor() checks ctx.TokenType, not the changelog source.
     // See https://docs.gitlab.com/ee/user/markdown.html#newlines
@@ -426,7 +424,7 @@ pub(crate) fn render_changelog_with_provider(
     let mut out = String::new();
     // GoReleaser always emits a title heading (default "Changelog") when groups
     // are configured. When no groups are configured, the title is still emitted.
-    let changelog_title = title.unwrap_or("Changelog");
+    let changelog_title = title.unwrap_or(ChangelogConfig::DEFAULT_TITLE);
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
     }
@@ -688,7 +686,7 @@ pub fn render_crate_section(
         apply_filters(&infos, &exclude, &log)?
     };
 
-    sort_commits(&mut infos, cfg.sort.as_deref().unwrap_or(""))?;
+    sort_commits(&mut infos, cfg.resolved_sort()?)?;
 
     let groups: Vec<ChangelogGroup> = cfg.groups.clone().unwrap_or_default();
     let grouped = if groups.is_empty() {
@@ -709,13 +707,13 @@ pub fn render_crate_section(
         return Ok(None);
     }
 
-    let abbrev = cfg.abbrev.unwrap_or(0);
+    let abbrev = cfg.resolved_abbrev();
     let body = render_changelog_with_provider(
         &grouped,
         abbrev,
         cfg.format.as_deref(),
         "",
-        cfg.use_source.as_deref().unwrap_or("git"),
+        cfg.resolved_use_source(),
         Some(""),
         cfg.divider.as_deref(),
         None,
@@ -910,7 +908,7 @@ impl Stage for ChangelogStage {
         if ctx.is_snapshot() {
             let snapshot_opt_in = changelog_cfg
                 .as_ref()
-                .and_then(|c| c.snapshot)
+                .map(|c| c.resolved_snapshot())
                 .unwrap_or(false);
             if !snapshot_opt_in {
                 log.status(
@@ -983,8 +981,10 @@ impl Stage for ChangelogStage {
         // release notes.
         let use_source = changelog_cfg
             .as_ref()
-            .and_then(|c| c.use_source.clone())
-            .unwrap_or_else(|| "git".to_string());
+            .map(|c| c.resolved_use_source().to_string())
+            .unwrap_or_else(|| {
+                anodizer_core::config::ChangelogConfig::DEFAULT_USE_SOURCE.to_string()
+            });
 
         if use_source == "github-native" {
             // The release stage will eventually call GitHub's
@@ -1028,17 +1028,22 @@ impl Stage for ChangelogStage {
             return Ok(());
         }
 
-        // Validate the use source — only "git", "github", "gitlab", "gitea",
-        // and "github-native" (already handled above) are supported.
-        if !["git", "github", "gitlab", "gitea"].contains(&use_source.as_str()) {
+        // Validate the use source against ChangelogConfig::VALID_USE_SOURCE
+        // (excluding github-native which the early-return handled above).
+        if !anodizer_core::config::ChangelogConfig::VALID_USE_SOURCE.contains(&use_source.as_str())
+        {
             anyhow::bail!(
-                "changelog: unsupported use source {:?} (expected \"git\", \"github\", \"gitlab\", \"gitea\", or \"github-native\")",
-                use_source
+                "changelog: unsupported use source {:?} (expected one of: {})",
+                use_source,
+                anodizer_core::config::ChangelogConfig::VALID_USE_SOURCE.join(", ")
             );
         }
 
         let cfg = changelog_cfg.as_ref();
-        let sort_order = cfg.and_then(|c| c.sort.clone()).unwrap_or_default();
+        let sort_order = match cfg {
+            Some(c) => c.resolved_sort()?.to_string(),
+            None => String::new(),
+        };
         let filters = cfg.and_then(|c| c.filters.as_ref());
         let exclude_filters: Vec<String> =
             filters.and_then(|f| f.exclude.clone()).unwrap_or_default();
@@ -1060,7 +1065,9 @@ impl Stage for ChangelogStage {
             .as_ref()
             .map(|src| anodizer_core::content_source::resolve(src, "changelog footer", ctx))
             .transpose()?;
-        let abbrev: i32 = cfg.and_then(|c| c.abbrev).unwrap_or(0);
+        let abbrev: i32 = cfg
+            .map(|c| c.resolved_abbrev())
+            .unwrap_or(anodizer_core::config::ChangelogConfig::DEFAULT_ABBREV);
         let format_template: Option<String> = cfg.and_then(|c| c.format.clone());
         let changelog_paths: Vec<String> = cfg.and_then(|c| c.paths.clone()).unwrap_or_default();
         let changelog_title: Option<String> = cfg.and_then(|c| c.title.clone());

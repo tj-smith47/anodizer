@@ -4716,7 +4716,10 @@ pub struct ChangelogConfig {
     /// `"github-native"` delegates entirely to GitHub's auto-generated notes.
     #[serde(rename = "use")]
     pub use_source: Option<String>,
-    /// Hash abbreviation length. Default: 7. Set to -1 to omit the hash entirely.
+    /// Hash abbreviation length. Default: 0 (no truncation, emit the full
+    /// SHA). Set to -1 to omit the hash entirely; positive values truncate
+    /// to N chars. Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s
+    /// `abbrevEntry`.
     pub abbrev: Option<i32>,
     /// Template for each changelog commit line.
     /// Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject),
@@ -4742,6 +4745,106 @@ pub struct ChangelogConfig {
     /// lets users opt back in here for local preview / draft generation.
     /// Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.
     pub snapshot: Option<bool>,
+}
+
+impl ChangelogConfig {
+    /// Default `sort` value. Empty string means "preserve commit order"
+    /// (no sort applied). Mirrors GoReleaser `changelog.go`'s
+    /// `checkSortDirection`, which accepts "", "asc", "desc".
+    pub const DEFAULT_SORT: &'static str = "";
+
+    /// Valid `sort` values. Anything else is a config error.
+    pub const VALID_SORT: &[&'static str] = &["", "asc", "desc"];
+
+    /// Default changelog source. Mirrors GoReleaser `changelog.go` —
+    /// the unset field falls back to git log parsing.
+    pub const DEFAULT_USE_SOURCE: &'static str = "git";
+
+    /// Valid `use:` values. github-native delegates to GitHub's
+    /// auto-generated notes; the others control which API anodize hits
+    /// for commit metadata.
+    pub const VALID_USE_SOURCE: &[&'static str] =
+        &["git", "github", "gitlab", "gitea", "github-native"];
+
+    /// Default changelog title heading. Mirrors GoReleaser `changelog.go`
+    /// (always emits a `## Changelog` heading when title is unset).
+    pub const DEFAULT_TITLE: &'static str = "Changelog";
+
+    /// Default `abbrev` (hash truncation length). 0 = full SHA, mirroring
+    /// GoReleaser `abbrevEntry`. The misleading "Default: 7" docstring
+    /// previously on the field has been corrected.
+    pub const DEFAULT_ABBREV: i32 = 0;
+
+    /// Default `format` template when `abbrev` is negative (hash omitted).
+    pub const DEFAULT_FORMAT_NO_HASH: &'static str = "{{ Message }}";
+
+    /// Default `format` template for SCM-backed sources (github/gitlab/gitea).
+    /// Renders SHA, message, and an `@login` mention falling back to
+    /// `AuthorName <AuthorEmail>` when the API returned no login.
+    pub const DEFAULT_FORMAT_SCM: &'static str = "{{ SHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})";
+
+    /// Default `format` template for the `git` backend. Mirrors GoReleaser.
+    pub const DEFAULT_FORMAT_GIT: &'static str = "{{ SHA }} {{ Message }}";
+
+    /// Resolve the `sort` mode, falling back to [`Self::DEFAULT_SORT`]
+    /// (empty = preserve commit order). Returns an error when the user
+    /// supplied a value outside [`Self::VALID_SORT`] so the invalid mode
+    /// surfaces at the call site.
+    pub fn resolved_sort(&self) -> anyhow::Result<&str> {
+        let value = self.sort.as_deref().unwrap_or(Self::DEFAULT_SORT);
+        if Self::VALID_SORT.contains(&value) {
+            Ok(value)
+        } else {
+            Err(anyhow::anyhow!(
+                "changelog: invalid sort '{}', must be one of: \"\", asc, desc",
+                value
+            ))
+        }
+    }
+
+    /// Resolve the changelog source, falling back to `"git"`.
+    pub fn resolved_use_source(&self) -> &str {
+        self.use_source
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_USE_SOURCE)
+    }
+
+    /// Resolve the title heading, falling back to `"Changelog"`. An empty
+    /// `title:` is preserved (the renderer skips emitting the heading
+    /// when the resolved title is empty), so the schema still allows
+    /// users to suppress the heading with an explicit empty string.
+    pub fn resolved_title(&self) -> &str {
+        self.title.as_deref().unwrap_or(Self::DEFAULT_TITLE)
+    }
+
+    /// Resolve `abbrev`, falling back to [`Self::DEFAULT_ABBREV`] (0 = full SHA).
+    pub fn resolved_abbrev(&self) -> i32 {
+        self.abbrev.unwrap_or(Self::DEFAULT_ABBREV)
+    }
+
+    /// Resolve the per-entry `format:` template. When the user did not
+    /// set `format:`, returns the backend-specific default keyed off
+    /// `use_source` and `abbrev` (negative abbrev → no-hash template;
+    /// SCM backend → SCM template; git backend → SHA + message).
+    /// Caller should pass the resolved use_source / abbrev values.
+    pub fn resolved_format<'a>(&'a self, use_source: &str, abbrev: i32) -> &'a str {
+        if let Some(f) = self.format.as_deref() {
+            return f;
+        }
+        if abbrev < 0 {
+            return Self::DEFAULT_FORMAT_NO_HASH;
+        }
+        match use_source {
+            "github" | "gitlab" | "gitea" => Self::DEFAULT_FORMAT_SCM,
+            _ => Self::DEFAULT_FORMAT_GIT,
+        }
+    }
+
+    /// Resolve `snapshot`, falling back to `false` (matches GoReleaser:
+    /// skip changelog on `ctx.Snapshot`).
+    pub fn resolved_snapshot(&self) -> bool {
+        self.snapshot.unwrap_or(false)
+    }
 }
 
 /// AI-powered changelog enhancement configuration.
@@ -6253,6 +6356,34 @@ pub struct MilestoneConfig {
     pub name_template: Option<String>,
 }
 
+impl MilestoneConfig {
+    /// Default milestone name template. Mirrors GoReleaser
+    /// `internal/pipe/milestone/milestone.go` (`cfg.NameTemplate = "{{.Tag}}"`).
+    /// Anodize uses Tera-style `{{ Tag }}`; the rendered value is
+    /// identical for any tag the project produces.
+    pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";
+
+    /// Resolve the milestone name template, falling back to
+    /// [`Self::DEFAULT_NAME_TEMPLATE`].
+    pub fn resolved_name_template(&self) -> &str {
+        self.name_template
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_NAME_TEMPLATE)
+    }
+
+    /// Resolve `close`, falling back to `false` (don't close milestones
+    /// on release by default).
+    pub fn resolved_close(&self) -> bool {
+        self.close.unwrap_or(false)
+    }
+
+    /// Resolve `fail_on_error`, falling back to `false` (milestone close
+    /// errors are warnings by default; opt in to fail-the-build).
+    pub fn resolved_fail_on_error(&self) -> bool {
+        self.fail_on_error.unwrap_or(false)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // UploadConfig (generic HTTP upload)
 // ---------------------------------------------------------------------------
@@ -7230,6 +7361,171 @@ crates:
         assert!(cfg.resolved_replace_existing_artifacts());
         assert!(cfg.resolved_include_meta());
         assert!(cfg.resolved_use_existing_draft());
+    }
+
+    // ---- ChangelogConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+
+    #[test]
+    fn test_changelog_resolved_sort_default_empty() {
+        assert_eq!(ChangelogConfig::default().resolved_sort().unwrap(), "");
+    }
+
+    #[test]
+    fn test_changelog_resolved_sort_valid_values() {
+        for s in ["", "asc", "desc"] {
+            let cfg = ChangelogConfig {
+                sort: Some(s.to_string()),
+                ..Default::default()
+            };
+            assert_eq!(cfg.resolved_sort().unwrap(), s);
+        }
+    }
+
+    #[test]
+    fn test_changelog_resolved_sort_invalid_errors() {
+        let cfg = ChangelogConfig {
+            sort: Some("random".to_string()),
+            ..Default::default()
+        };
+        let err = cfg.resolved_sort().unwrap_err().to_string();
+        assert!(err.contains("invalid sort 'random'"), "got: {err}");
+    }
+
+    #[test]
+    fn test_changelog_resolved_use_source_default_git() {
+        assert_eq!(ChangelogConfig::default().resolved_use_source(), "git");
+    }
+
+    #[test]
+    fn test_changelog_resolved_use_source_user_value_wins() {
+        let cfg = ChangelogConfig {
+            use_source: Some("github".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_use_source(), "github");
+    }
+
+    #[test]
+    fn test_changelog_resolved_title_default() {
+        assert_eq!(ChangelogConfig::default().resolved_title(), "Changelog");
+    }
+
+    #[test]
+    fn test_changelog_resolved_title_explicit_empty_preserved() {
+        let cfg = ChangelogConfig {
+            title: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_title(), "");
+    }
+
+    #[test]
+    fn test_changelog_resolved_abbrev_default_zero() {
+        assert_eq!(ChangelogConfig::default().resolved_abbrev(), 0);
+    }
+
+    #[test]
+    fn test_changelog_resolved_abbrev_user_value_wins() {
+        let cfg = ChangelogConfig {
+            abbrev: Some(7),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_abbrev(), 7);
+    }
+
+    #[test]
+    fn test_changelog_resolved_format_user_value_wins() {
+        let cfg = ChangelogConfig {
+            format: Some("custom format".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_format("git", 0), "custom format");
+        assert_eq!(cfg.resolved_format("github", -1), "custom format");
+    }
+
+    #[test]
+    fn test_changelog_resolved_format_default_no_hash() {
+        let cfg = ChangelogConfig::default();
+        assert_eq!(cfg.resolved_format("git", -1), "{{ Message }}");
+        assert_eq!(cfg.resolved_format("github", -1), "{{ Message }}");
+    }
+
+    #[test]
+    fn test_changelog_resolved_format_default_scm() {
+        let cfg = ChangelogConfig::default();
+        for backend in ["github", "gitlab", "gitea"] {
+            assert!(
+                cfg.resolved_format(backend, 0).contains("{% if Login %}"),
+                "expected SCM template for backend {backend}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_changelog_resolved_format_default_git() {
+        let cfg = ChangelogConfig::default();
+        assert_eq!(cfg.resolved_format("git", 0), "{{ SHA }} {{ Message }}");
+    }
+
+    #[test]
+    fn test_changelog_resolved_snapshot_default_false() {
+        assert!(!ChangelogConfig::default().resolved_snapshot());
+    }
+
+    #[test]
+    fn test_changelog_resolved_snapshot_user_value_wins() {
+        let cfg = ChangelogConfig {
+            snapshot: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.resolved_snapshot());
+    }
+
+    // ---- MilestoneConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+
+    #[test]
+    fn test_milestone_resolved_name_template_default() {
+        assert_eq!(
+            MilestoneConfig::default().resolved_name_template(),
+            "{{ Tag }}"
+        );
+    }
+
+    #[test]
+    fn test_milestone_resolved_name_template_user_value_wins() {
+        let cfg = MilestoneConfig {
+            name_template: Some("v{{ Version }}".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_name_template(), "v{{ Version }}");
+    }
+
+    #[test]
+    fn test_milestone_resolved_close_default_false() {
+        assert!(!MilestoneConfig::default().resolved_close());
+    }
+
+    #[test]
+    fn test_milestone_resolved_close_user_value_wins() {
+        let cfg = MilestoneConfig {
+            close: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.resolved_close());
+    }
+
+    #[test]
+    fn test_milestone_resolved_fail_on_error_default_false() {
+        assert!(!MilestoneConfig::default().resolved_fail_on_error());
+    }
+
+    #[test]
+    fn test_milestone_resolved_fail_on_error_user_value_wins() {
+        let cfg = MilestoneConfig {
+            fail_on_error: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.resolved_fail_on_error());
     }
 
     // ---- ChecksumConfig disable tests ----
