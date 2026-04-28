@@ -427,12 +427,18 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
 }
 
 /// Artifact kinds eligible for release upload. Canonical list used by the
-/// GitHub release publisher and by blob storage when deciding which artifacts
-/// to include.
+/// GitHub release publisher, blob storage, stage-checksum, and the stage-sign
+/// "all" filter.
 ///
-/// Kept intentionally narrower than [`uploadable_kinds`] — for example,
-/// [`ArtifactKind::PublishableSnapcraft`] appears in the internal uploadable
-/// list but is not released to GitHub.
+/// Mirrors GoReleaser's `artifact.ReleaseUploadableTypes()` plus the four
+/// installer kinds that are GR Pro features (MSI/NSIS as `Installer`, DMG as
+/// `DiskImage`, PKG as `MacOsPackage`) — anodizer ships these as OSS so they
+/// are first-class release artifacts here.
+///
+/// Kept narrower than [`uploadable_kinds`]: snap-store-bound kinds
+/// ([`ArtifactKind::Snap`], [`ArtifactKind::PublishableSnapcraft`]) and raw
+/// build outputs ([`ArtifactKind::Binary`], [`ArtifactKind::UniversalBinary`])
+/// don't end up in the GitHub release, so they don't appear here either.
 pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
     &[
         ArtifactKind::Archive,
@@ -443,12 +449,9 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
-        // GoReleaser parity: macOS PKG/DMG, Windows MSI/NSIS installers
-        // are first-class release artifacts. Omitting them meant
-        // `anodizer release` produced the installers but never uploaded
-        // them to the GitHub release, leaving users to fish them out of
-        // dist/ manually.
         ArtifactKind::Installer,
+        ArtifactKind::DiskImage,
+        ArtifactKind::MacOsPackage,
         ArtifactKind::Sbom,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
@@ -1113,5 +1116,57 @@ mod tests {
         let json = registry.to_artifacts_json().unwrap();
         let first = &json.as_array().unwrap()[0];
         assert_eq!(first["size"], 12345);
+    }
+
+    #[test]
+    fn release_uploadable_kinds_matches_canonical_set() {
+        // Pins the cross-linked artifact set used by stage-checksum,
+        // stage-release upload, blob storage, and stage-sign "all" filter.
+        // Mirrors GoReleaser's `artifact.ReleaseUploadableTypes()` plus the
+        // four installer kinds anodizer ships as OSS (MSI/NSIS as Installer,
+        // DMG as DiskImage, PKG as MacOsPackage). A regression that drops
+        // any of these silently breaks downstream upload/checksum behavior.
+        let kinds = release_uploadable_kinds();
+        let expected = [
+            ArtifactKind::Archive,
+            ArtifactKind::UploadableBinary,
+            ArtifactKind::UploadableFile,
+            ArtifactKind::SourceArchive,
+            ArtifactKind::Makeself,
+            ArtifactKind::LinuxPackage,
+            ArtifactKind::Flatpak,
+            ArtifactKind::SourceRpm,
+            ArtifactKind::Installer,
+            ArtifactKind::DiskImage,
+            ArtifactKind::MacOsPackage,
+            ArtifactKind::Sbom,
+            ArtifactKind::Checksum,
+            ArtifactKind::Signature,
+            ArtifactKind::Certificate,
+        ];
+        assert_eq!(kinds, &expected);
+    }
+
+    #[test]
+    fn release_uploadable_kinds_excludes_snap_store_and_raw_build_outputs() {
+        // Negative pin: snap-store-bound kinds and raw build outputs must
+        // never appear in the release-upload set. Snap files are pushed to
+        // the snap store (not GitHub releases); raw Binary / UniversalBinary
+        // are wrapped as UploadableBinary or bundled into Archive before
+        // upload. A regression that adds any of these would put files in
+        // checksums.txt that aren't in the GitHub release.
+        let kinds = release_uploadable_kinds();
+        for excluded in [
+            ArtifactKind::Snap,
+            ArtifactKind::PublishableSnapcraft,
+            ArtifactKind::Binary,
+            ArtifactKind::UniversalBinary,
+        ] {
+            assert!(
+                !kinds.contains(&excluded),
+                "{:?} must not be in release_uploadable_kinds()",
+                excluded
+            );
+        }
     }
 }

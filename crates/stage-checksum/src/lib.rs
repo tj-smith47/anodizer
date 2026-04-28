@@ -302,20 +302,18 @@ impl Stage for ChecksumStage {
                 .or(global_split)
                 .unwrap_or(false);
 
-            // Gather checksummable artifacts for this crate
+            // Gather checksummable artifacts for this crate. Source-of-truth is
+            // `release_uploadable_kinds()` minus `Checksum` itself — mirroring
+            // GoReleaser's `Not(ByType(Checksum))` filter in
+            // `internal/pipe/checksums/checksums.go::buildArtifactList`. Cross-
+            // linking here means stage-checksum, stage-release upload, and the
+            // stage-sign "all" filter all reason about the same artifact set.
             let mut source_artifacts: Vec<Artifact> = Vec::new();
-            for kind in [
-                ArtifactKind::Archive,
-                ArtifactKind::LinuxPackage,
-                ArtifactKind::Binary,
-                ArtifactKind::UploadableBinary,
-                ArtifactKind::SourceArchive,
-                ArtifactKind::Sbom,
-                ArtifactKind::Snap,
-                ArtifactKind::DiskImage,
-                ArtifactKind::Installer,
-                ArtifactKind::MacOsPackage,
-            ] {
+            for kind in anodizer_core::artifact::release_uploadable_kinds()
+                .iter()
+                .copied()
+                .filter(|k| *k != ArtifactKind::Checksum)
+            {
                 let artifacts = ctx
                     .artifacts
                     .by_kind_and_crate(kind, crate_name)
@@ -2977,5 +2975,86 @@ extra_files:
         assert!(rendered.exists());
         let rendered_content = fs::read_to_string(&rendered).unwrap();
         assert_eq!(rendered_content, "Release notes for myapp 1.0.0");
+    }
+
+    #[test]
+    fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
+        // Pins C-new-23: stage-checksum's source-list is the cross-linked
+        // `release_uploadable_kinds()` minus `Checksum` (mirroring GR's
+        // `Not(ByType(Checksum))` filter). Six kinds previously absent —
+        // Makeself, Flatpak, SourceRpm, UploadableFile, Signature, Certificate
+        // — must now be checksummed; Snap and raw Binary must NOT.
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        // One file per artifact kind under test. Distinct names so a single
+        // grep over the combined file confirms inclusion/exclusion.
+        let cases: &[(ArtifactKind, &str, bool)] = &[
+            // (kind, filename, must_be_in_combined_checksums)
+            (ArtifactKind::Archive, "myapp.tar.gz", true),
+            (ArtifactKind::UploadableBinary, "myapp-bin", true),
+            (ArtifactKind::UploadableFile, "extra.txt", true),
+            (ArtifactKind::SourceArchive, "myapp-source.tar.gz", true),
+            (ArtifactKind::Makeself, "myapp.run", true),
+            (ArtifactKind::LinuxPackage, "myapp.deb", true),
+            (ArtifactKind::Flatpak, "myapp.flatpak", true),
+            (ArtifactKind::SourceRpm, "myapp.src.rpm", true),
+            (ArtifactKind::Installer, "myapp.msi", true),
+            (ArtifactKind::DiskImage, "myapp.dmg", true),
+            (ArtifactKind::MacOsPackage, "myapp.pkg", true),
+            (ArtifactKind::Sbom, "myapp.sbom.json", true),
+            (ArtifactKind::Signature, "myapp.tar.gz.sig", true),
+            (ArtifactKind::Certificate, "myapp.crt", true),
+            // Excluded: snap-store-bound + raw build output.
+            (ArtifactKind::Snap, "myapp.snap", false),
+            (ArtifactKind::Binary, "myapp-raw-bin", false),
+        ];
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+
+        for (kind, filename, _) in cases {
+            let path = dist.join(filename);
+            fs::write(&path, format!("contents of {filename}").as_bytes()).unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: *kind,
+                name: filename.to_string(),
+                path,
+                target: None,
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
+        assert!(combined.exists(), "combined checksums file must exist");
+        let content = fs::read_to_string(&combined).unwrap();
+
+        for (kind, filename, must_be_in) in cases {
+            let present = content.contains(filename);
+            assert_eq!(
+                present,
+                *must_be_in,
+                "expected `{filename}` (kind={kind:?}) {} in checksums.txt; got:\n{content}",
+                if *must_be_in { "present" } else { "absent" },
+            );
+        }
     }
 }
