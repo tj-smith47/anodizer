@@ -1,4 +1,14 @@
-use super::*;
+use std::collections::HashMap;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::{
+    AppBundleConfig, ArchiveConfig, ArchivesConfig, BinstallConfig, BlobConfig, ChecksumConfig,
+    DmgConfig, DockerDigestConfig, DockerManifestConfig, DockerV2Config, FlatpakConfig, HookEntry,
+    MsiConfig, NfpmConfig, NsisConfig, PkgConfig, PublishConfig, ReleaseConfig, SnapcraftConfig,
+    StringOrBool, VersionSyncConfig, deserialize_archives_config, deserialize_string_or_bool_opt,
+};
 
 // ---------------------------------------------------------------------------
 // BuildIgnore — exclude specific os/arch combos from builds

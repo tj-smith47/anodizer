@@ -1,4 +1,9 @@
-use super::*;
+use std::collections::HashMap;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::{FileInfo, StringOrU32};
 
 // ---------------------------------------------------------------------------
 // NfpmConfig

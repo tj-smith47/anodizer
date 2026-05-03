@@ -1,4 +1,11 @@
-use super::*;
+use std::collections::HashMap;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
+
+use super::{
+    ArchiveHooksConfig, SignConfig, StringOrBool, StringOrU32, deserialize_string_or_bool_opt,
+};
 
 // ---------------------------------------------------------------------------
 // ArchivesConfig — untagged enum: false => Disabled, array => Configs

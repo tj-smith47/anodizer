@@ -1,4 +1,5 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
 
 // ---------------------------------------------------------------------------
 // StringOrBool — accepts bool or template string in YAML
