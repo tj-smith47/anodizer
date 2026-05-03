@@ -1,0 +1,85 @@
+use super::*;
+
+// ---------------------------------------------------------------------------
+// WingetConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct WingetConfig {
+    /// Override the package name (default: crate name).
+    pub name: Option<String>,
+    /// Package name as displayed (default: same as name).
+    pub package_name: Option<String>,
+    /// WinGet package identifier (e.g. "Publisher.AppName"). Auto-generated if empty.
+    pub package_identifier: Option<String>,
+    /// Publisher name (required).
+    pub publisher: Option<String>,
+    /// Publisher homepage URL shown in the WinGet manifest.
+    pub publisher_url: Option<String>,
+    /// Publisher support URL.
+    pub publisher_support_url: Option<String>,
+    /// Privacy policy URL.
+    pub privacy_url: Option<String>,
+    /// Author name.
+    pub author: Option<String>,
+    /// Copyright notice.
+    pub copyright: Option<String>,
+    /// Copyright URL.
+    pub copyright_url: Option<String>,
+    /// License identifier (required, e.g. "MIT").
+    pub license: Option<String>,
+    /// License URL.
+    pub license_url: Option<String>,
+    /// Short description (required, max 256 chars).
+    pub short_description: Option<String>,
+    /// Full package description displayed in the WinGet gallery.
+    pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
+    /// Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
+    /// Custom commit message template.
+    pub commit_msg_template: Option<String>,
+    /// Manifest file path (auto-generated if empty from publisher/name/version).
+    pub path: Option<String>,
+    /// Release notes for this version.
+    pub release_notes: Option<String>,
+    /// URL to full release notes.
+    pub release_notes_url: Option<String>,
+    /// Post-install notes shown to the user.
+    pub installation_notes: Option<String>,
+    /// Tags for package discovery (lowercased, spaces→hyphens).
+    pub tags: Option<Vec<String>>,
+    /// Package dependencies.
+    pub dependencies: Option<Vec<WingetDependency>>,
+    /// Unified repository config with branch, token, PR, git SSH support.
+    /// (Replaces the legacy `manifests_repo: WingetManifestsRepoConfig`.)
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Product code for the installer (used in Add/Remove Programs).
+    pub product_code: Option<String>,
+    /// Artifact selection: "archive" (default), "msi", or "nsis".
+    #[serde(rename = "use")]
+    pub use_artifact: Option<String>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub amd64_variant: Option<String>,
+}
+
+/// WinGet package dependency.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct WingetDependency {
+    /// WinGet package identifier of the dependency (e.g., "Publisher.App").
+    pub package_identifier: String,
+    /// Minimum required version of the dependency.
+    pub minimum_version: Option<String>,
+}

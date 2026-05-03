@@ -1,0 +1,378 @@
+use super::*;
+
+// ---------------------------------------------------------------------------
+// HomebrewConfig / ScoopConfig / TapConfig / BucketConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HomebrewConfig {
+    /// Unified repository config with branch, token, PR, git SSH support.
+    /// (Replaces the legacy `tap: TapConfig` owner/name-only form.)
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Formula directory in the tap (e.g. "Formula"). Matches GoReleaser `directory`.
+    pub directory: Option<String>,
+    /// Override the formula name (default: crate name).
+    pub name: Option<String>,
+    /// Short description of the formula (shown in `brew info`).
+    pub description: Option<String>,
+    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
+    pub license: Option<String>,
+    /// Ruby `install` block content for the formula.
+    pub install: Option<String>,
+    /// Additional install commands appended after the main install block.
+    pub extra_install: Option<String>,
+    /// Post-install commands (separate `def post_install` block in formula).
+    pub post_install: Option<String>,
+    /// Ruby `test` block content for the formula (run by `brew test`).
+    pub test: Option<String>,
+    /// Project homepage URL. Falls back to the GitHub release URL when unset.
+    pub homepage: Option<String>,
+    /// Package dependencies (e.g. `openssl`, `libgit2`).
+    pub dependencies: Option<Vec<HomebrewDependency>>,
+    /// Conflicting formula names with optional reason.
+    pub conflicts: Option<Vec<HomebrewConflict>>,
+    /// Post-install user-facing notes shown by `brew info`.
+    pub caveats: Option<String>,
+    /// Skip publishing the formula.  `"true"` always skips; `"auto"` skips
+    /// for prerelease versions. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
+    /// Custom commit message template. Rendered via Tera with the standard
+    /// release template variables (`ProjectName`, `Tag`, `Version`, etc.).
+    /// Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"`
+    /// (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`).
+    pub commit_msg_template: Option<String>,
+    // Legacy flat `commit_author_name` / `commit_author_email` fields are
+    // gone; use the structured `commit_author: { name, email, signing }`.
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    /// HTTP headers to include in download requests (e.g. for private repos).
+    pub url_headers: Option<Vec<String>>,
+    /// Custom download strategy class name (e.g. `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`).
+    pub download_strategy: Option<String>,
+    /// Ruby `require` statement for custom download strategies.
+    pub custom_require: Option<String>,
+    /// Custom Ruby code block inserted into the formula class body.
+    pub custom_block: Option<String>,
+    /// Launchd plist content for `brew services`.
+    pub plist: Option<String>,
+    /// Homebrew service block content (alternative to plist).
+    pub service: Option<String>,
+    /// Homebrew Cask configuration (macOS .app bundles).
+    pub cask: Option<HomebrewCaskConfig>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub amd64_variant: Option<String>,
+    /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
+    /// variant are included.
+    pub arm_variant: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewDependency {
+    /// Homebrew formula name of the dependency.
+    pub name: String,
+    /// Restrict to a specific OS: `"mac"` or `"linux"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    /// Dependency type, e.g. `"optional"`.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub dep_type: Option<String>,
+    /// Version constraint for the dependency (e.g. `">= 1.1"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// A Homebrew conflict entry, supporting both a bare name string and a
+/// structured object with an optional `because` reason.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(untagged)]
+pub enum HomebrewConflict {
+    /// Just the formula name (e.g. `"other-tool"`).
+    Name(String),
+    /// Name with reason (e.g. `{name: "other-tool", because: "both install a bin/foo binary"}`).
+    WithReason {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        because: Option<String>,
+    },
+}
+
+impl HomebrewConflict {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(n) => n,
+            Self::WithReason { name, .. } => name,
+        }
+    }
+    pub fn because(&self) -> Option<&str> {
+        match self {
+            Self::Name(_) => None,
+            Self::WithReason { because, .. } => because.as_deref(),
+        }
+    }
+}
+
+/// Unified Homebrew Cask configuration (WAVE 4).
+///
+/// Used at both call-sites:
+/// - `homebrew_casks:` — top-level array (GoReleaser parity); carries `repository`,
+///   `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc.
+/// - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with
+///   `url_template` as the simpler URL alternative.
+///
+/// Fields from both original types are present; any field may be `None` at either
+/// call-site. The union avoids a two-type bifurcation while keeping both axes.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HomebrewCaskConfig {
+    // ----- Identity -----
+    /// Cask name (default: crate / project name).
+    pub name: Option<String>,
+    /// Alternative cask names (aliases).
+    pub alternative_names: Option<Vec<String>>,
+
+    // ----- Tap repository (top-level axis) -----
+    /// Unified repository config for the Homebrew tap.
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Custom commit message template.
+    /// Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}"
+    pub commit_msg_template: Option<String>,
+    /// Subdirectory in the tap repo for cask placement (default: "Casks").
+    pub directory: Option<String>,
+
+    // ----- Artifact selection -----
+    /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+
+    // ----- Download URL -----
+    /// Simple URL template for the .dmg/.zip download (per-crate shorthand).
+    ///
+    /// Cannot be combined with `url.template:` — set one or the other.
+    /// If both are present, config validation rejects the config at parse time.
+    /// Use `url:` for the structured form (verified domain, custom headers, etc.)
+    /// or `url_template:` for a bare string shorthand — never both simultaneously.
+    pub url_template: Option<String>,
+    /// Structured download URL configuration (top-level axis).
+    pub url: Option<HomebrewCaskURL>,
+
+    // ----- macOS bundle -----
+    /// macOS .app bundle name (e.g. "MyApp.app").
+    pub app: Option<String>,
+    /// Binary stubs to create in /usr/local/bin (paths inside the .app bundle).
+    pub binaries: Option<Vec<String>>,
+
+    // ----- Metadata -----
+    /// Cask description.
+    pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
+    /// License identifier (SPDX).
+    pub license: Option<String>,
+    /// Custom caveats shown after install.
+    pub caveats: Option<String>,
+
+    // ----- Ruby block -----
+    /// Arbitrary Ruby code inserted into the cask block.
+    pub custom_block: Option<String>,
+    /// Homebrew service definition.
+    pub service: Option<String>,
+
+    // ----- Completions / manpages -----
+    /// Manual page references to install.
+    pub manpages: Option<Vec<String>>,
+    /// Shell completion definitions.
+    pub completions: Option<HomebrewCaskCompletions>,
+    /// Auto-generate shell completions from an executable.
+    pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
+
+    // ----- Dependencies / conflicts -----
+    /// Cask dependencies (other casks or formulae).
+    pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
+    /// Conflicting casks or formulae.
+    pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
+
+    // ----- Lifecycle hooks -----
+    /// Pre/post install/uninstall hooks.
+    pub hooks: Option<HomebrewCaskHooks>,
+
+    // ----- Uninstall / zap -----
+    /// Structured uninstall stanza configuration.
+    pub uninstall: Option<HomebrewCaskUninstall>,
+    /// Deep uninstall (zap) stanza configuration.
+    pub zap: Option<HomebrewCaskUninstall>,
+
+    // ----- Publishing control -----
+    /// Skip publishing the cask. `"true"` always skips; `"auto"` skips
+    /// for prerelease versions. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
+}
+
+/// Structured URL configuration for Homebrew Cask downloads.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskURL {
+    /// URL template for the download.
+    pub template: Option<String>,
+    /// Verification string (domain shown to user).
+    pub verified: Option<String>,
+    /// Custom downloader (e.g. `:homebrew_curl`, `:post`).
+    pub using: Option<String>,
+    /// HTTP cookies for the download.
+    pub cookies: Option<HashMap<String, String>>,
+    /// Referer header for the download.
+    pub referer: Option<String>,
+    /// Custom HTTP headers.
+    pub headers: Option<Vec<String>>,
+    /// Custom user agent string.
+    pub user_agent: Option<String>,
+    /// POST data for form submissions.
+    pub data: Option<HashMap<String, String>>,
+}
+
+/// Structured uninstall/zap configuration for Homebrew Cask.
+/// Used for both `uninstall` and `zap` stanzas.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskUninstall {
+    /// Launch daemon/agent identifiers to stop.
+    pub launchctl: Option<Vec<String>>,
+    /// Application bundle IDs to quit.
+    pub quit: Option<Vec<String>>,
+    /// Login item names to remove.
+    pub login_item: Option<Vec<String>>,
+    /// File paths to delete.
+    pub delete: Option<Vec<String>>,
+    /// File paths to trash (preserves app state).
+    pub trash: Option<Vec<String>>,
+}
+
+/// Pre/post install/uninstall hooks for Homebrew Cask.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskHooks {
+    /// Pre-install/uninstall hooks.
+    pub pre: Option<HomebrewCaskHook>,
+    /// Post-install/uninstall hooks.
+    pub post: Option<HomebrewCaskHook>,
+}
+
+/// Individual hook for install/uninstall phases.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskHook {
+    /// Ruby code for preflight/postflight during install.
+    pub install: Option<String>,
+    /// Ruby code for uninstall_preflight/uninstall_postflight.
+    pub uninstall: Option<String>,
+}
+
+/// Shell completion file paths for Homebrew Cask.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskCompletions {
+    /// Path to bash completion file.
+    pub bash: Option<String>,
+    /// Path to zsh completion file.
+    pub zsh: Option<String>,
+    /// Path to fish completion file.
+    pub fish: Option<String>,
+}
+
+/// Cask dependency (on another cask or formula).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskDependencyEntry {
+    /// Dependent cask name.
+    pub cask: Option<String>,
+    /// Dependent formula name.
+    pub formula: Option<String>,
+}
+
+/// Cask conflict (with another cask or formula).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskConflictEntry {
+    /// Conflicting cask name.
+    pub cask: Option<String>,
+    /// Conflicting formula name (deprecated by Homebrew).
+    pub formula: Option<String>,
+}
+
+/// Auto-generate shell completions from an executable.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskGeneratedCompletions {
+    /// Binary to generate completions from.
+    pub executable: Option<String>,
+    /// Arguments to pass to the executable.
+    pub args: Option<Vec<String>>,
+    /// Base name for completion files.
+    pub base_name: Option<String>,
+    /// Shell completion framework type (arg, clap, click, cobra, flag, none, typer).
+    pub shell_parameter_format: Option<String>,
+    /// Target shells (bash, zsh, fish, pwsh).
+    pub shells: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ScoopConfig {
+    /// Unified repository config with branch, token, PR, git SSH support.
+    /// (Replaces the legacy `bucket: BucketConfig` owner/name-only form.)
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Override the manifest name (default: crate name).
+    pub name: Option<String>,
+    /// Subdirectory in the bucket repo for manifest placement.
+    pub directory: Option<String>,
+    /// Short description of the package (shown in `scoop info`).
+    pub description: Option<String>,
+    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
+    pub license: Option<String>,
+    /// Project homepage URL. Falls back to the GitHub-derived URL when unset.
+    pub homepage: Option<String>,
+    /// Data paths persisted between Scoop updates.
+    pub persist: Option<Vec<String>>,
+    /// Application dependencies (other Scoop packages).
+    pub depends: Option<Vec<String>>,
+    /// Commands to run before installation.
+    pub pre_install: Option<Vec<String>>,
+    /// Commands to run after installation.
+    pub post_install: Option<Vec<String>>,
+    /// Start menu shortcuts as `[executable, label]` pairs.
+    pub shortcuts: Option<Vec<Vec<String>>>,
+    /// Skip publishing the manifest.  `"true"` always skips; `"auto"` skips
+    /// for prerelease versions. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
+    /// Custom commit message template.
+    pub commit_msg_template: Option<String>,
+    // Use the structured `commit_author: { name, email, signing }` form for
+    // commit author identity (legacy flat `commit_author_name` /
+    // `commit_author_email` fields are not accepted).
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    /// Artifact selection: "archive" (default), "msi", or "nsis".
+    #[serde(rename = "use")]
+    pub use_artifact: Option<String>,
+    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
+    /// Only artifacts matching this variant are included. Default: "v1".
+    pub amd64_variant: Option<String>,
+}
+
+// `TapConfig` / `BucketConfig` (legacy {owner, name}-only repo types) live
+// nowhere — every publisher now carries `repository: RepositoryConfig`
+// with the broader feature set (token / branch / git SSH / pull_request).
