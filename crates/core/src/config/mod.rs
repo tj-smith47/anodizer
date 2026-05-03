@@ -820,407 +820,64 @@ pub use announce::*;
 // DockerHub description sync
 // ---------------------------------------------------------------------------
 
-/// DockerHub description sync configuration.
-/// Pushes image descriptions and README content to DockerHub repositories.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct DockerHubConfig {
-    /// DockerHub username for authentication.
-    pub username: Option<String>,
-    /// Environment variable name containing the DockerHub token.
-    pub secret_name: Option<String>,
-    /// DockerHub image names to update (e.g. `myorg/myapp`).
-    pub images: Option<Vec<String>>,
-    /// Short description for the DockerHub repository (max 100 chars).
-    pub description: Option<String>,
-    /// Full description (README) source for the DockerHub repository.
-    pub full_description: Option<DockerHubFullDescription>,
-    /// Skip this publisher. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-}
-
-/// Full description source for DockerHub: either from a URL or a local file.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct DockerHubFullDescription {
-    /// Fetch full description content from a URL.
-    pub from_url: Option<DockerHubFromUrl>,
-    /// Read full description content from a local file.
-    pub from_file: Option<DockerHubFromFile>,
-}
-
-/// Fetch DockerHub full description content from a URL.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct DockerHubFromUrl {
-    /// URL to fetch the full description from.
-    pub url: String,
-    /// Optional HTTP headers for the request.
-    pub headers: Option<HashMap<String, String>>,
-}
-
-/// Read DockerHub full description content from a local file.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct DockerHubFromFile {
-    /// Path to the file containing the full description.
-    pub path: String,
-}
+mod dockerhub;
+pub use dockerhub::*;
 
 // ---------------------------------------------------------------------------
 // Artifactory publisher
 // ---------------------------------------------------------------------------
 
-/// Artifactory upload configuration.
-/// Uploads artifacts to JFrog Artifactory repositories.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct ArtifactoryConfig {
-    /// Human-readable name for this publisher (used in logs).
-    pub name: Option<String>,
-    /// Target URL template for uploads (supports template variables).
-    pub target: Option<String>,
-    /// Upload mode: "archive" (upload archives) or "binary" (upload binaries).
-    pub mode: Option<String>,
-    /// Artifactory username for authentication.
-    pub username: Option<String>,
-    /// Artifactory password or API key (or env var reference).
-    pub password: Option<String>,
-    /// Build IDs filter: only upload artifacts from builds whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// File extension filter: only upload artifacts matching these extensions.
-    pub exts: Option<Vec<String>>,
-    /// Path to client X.509 certificate for mTLS authentication.
-    pub client_x509_cert: Option<String>,
-    /// Path to client X.509 private key for mTLS authentication.
-    pub client_x509_key: Option<String>,
-    /// Custom HTTP headers sent with each upload request.
-    pub custom_headers: Option<HashMap<String, String>>,
-    /// Header name used for checksum verification (e.g. `X-Checksum-Sha256`).
-    pub checksum_header: Option<String>,
-    /// Extra files to upload alongside build artifacts.
-    pub extra_files: Option<Vec<ExtraFileSpec>>,
-    /// Include checksums in uploaded artifacts.
-    pub checksum: Option<bool>,
-    /// Include signatures in uploaded artifacts.
-    pub signature: Option<bool>,
-    /// Include metadata artifacts in uploaded artifacts.
-    pub meta: Option<bool>,
-    /// Use custom artifact naming instead of default.
-    pub custom_artifact_name: Option<bool>,
-    /// When true, upload only extra_files (skip normal artifacts).
-    pub extra_files_only: Option<bool>,
-    /// HTTP method to use for uploads (default: "PUT").
-    pub method: Option<String>,
-    /// PEM-encoded trusted CA certificates for TLS verification.
-    /// Appended to the system certificate pool.
-    pub trusted_certificates: Option<String>,
-    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-}
+mod artifactory;
+pub use artifactory::*;
 
 // ---------------------------------------------------------------------------
 // CloudSmith publisher
 // ---------------------------------------------------------------------------
 
-/// CloudSmith publisher configuration.
-/// Pushes packages to CloudSmith repositories.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct CloudSmithConfig {
-    /// CloudSmith organization slug.
-    pub organization: Option<String>,
-    /// CloudSmith repository slug.
-    pub repository: Option<String>,
-    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Package format filter: only publish artifacts matching these formats.
-    pub formats: Option<Vec<String>>,
-    /// Distribution mapping per format (e.g. `deb: "ubuntu/focal"`).
-    pub distributions: Option<HashMap<String, serde_json::Value>>,
-    /// Debian component name (e.g. "main").
-    pub component: Option<String>,
-    /// Environment variable name containing the CloudSmith API key.
-    pub secret_name: Option<String>,
-    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-    /// When true, allow republishing over existing package versions.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub republish: Option<StringOrBool>,
-}
+mod cloudsmith;
+pub use cloudsmith::*;
 
 // ---------------------------------------------------------------------------
 // PublisherConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct PublisherConfig {
-    /// Human-readable name for this publisher (used in logs).
-    pub name: Option<String>,
-    /// Command to invoke for publishing.
-    pub cmd: String,
-    /// Arguments passed to the publish command (supports templates).
-    pub args: Option<Vec<String>>,
-    /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Artifact type filter: only publish artifacts of these types (e.g., "archive", "binary").
-    pub artifact_types: Option<Vec<String>>,
-    /// Environment variables passed to the publish command.
-    #[serde(default)]
-    pub env: Option<Vec<String>>,
-    /// Working directory for the publisher command.
-    pub dir: Option<String>,
-    /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
-    /// Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-    /// Include checksums in published artifacts.
-    pub checksum: Option<bool>,
-    /// Include signatures in published artifacts.
-    pub signature: Option<bool>,
-    /// Include metadata artifacts in published artifacts.
-    pub meta: Option<bool>,
-    /// Extra files to include in publishing (glob patterns with optional name override).
-    pub extra_files: Option<Vec<ExtraFileSpec>>,
-    /// Extra files whose contents are rendered through the template engine before publishing.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// GoReleaser Pro feature.
-    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
-}
+mod publisher;
+pub use publisher::*;
 
 // ---------------------------------------------------------------------------
 // HooksConfig
 // ---------------------------------------------------------------------------
 
-/// Top-level lifecycle hooks for `before` and `after` blocks.
-/// Each block has `pre` and `post` lists of hook commands that run around the
-/// entire pipeline (not individual stages).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct HooksConfig {
-    /// Commands to run before the pipeline or stage starts. Matches GoReleaser
-    /// `before.hooks` canonically.
-    pub hooks: Option<Vec<HookEntry>>,
-    /// Commands to run after the pipeline or stage completes. Anodizer extension
-    /// (GoReleaser has no top-level `after:` block).
-    pub post: Option<Vec<HookEntry>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct StructuredHook {
-    /// Command to run (passed through the shell).
-    pub cmd: String,
-    /// Working directory for the command (defaults to project root).
-    pub dir: Option<String>,
-    /// Environment variables for the command.
-    #[serde(default)]
-    pub env: Option<Vec<String>>,
-    /// When true, capture and log stdout/stderr of the command.
-    pub output: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
-#[serde(untagged)]
-pub enum HookEntry {
-    Simple(String),
-    Structured(StructuredHook),
-}
-
-impl PartialEq<&str> for HookEntry {
-    fn eq(&self, other: &&str) -> bool {
-        match self {
-            HookEntry::Simple(s) => s.as_str() == *other,
-            HookEntry::Structured(h) => h.cmd.as_str() == *other,
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for HookEntry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        match &value {
-            serde_json::Value::String(s) => Ok(HookEntry::Simple(s.clone())),
-            serde_json::Value::Object(_) => {
-                let hook: StructuredHook =
-                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                Ok(HookEntry::Structured(hook))
-            }
-            _ => Err(serde::de::Error::custom(
-                "hook entry must be a string or an object with cmd/dir/env/output",
-            )),
-        }
-    }
-}
+mod hooks;
+pub use hooks::*;
 
 // ---------------------------------------------------------------------------
 // GitConfig
 // ---------------------------------------------------------------------------
 
-/// Git-level tag discovery and sorting settings.
-///
-/// Controls how anodizer discovers and orders tags when determining the current
-/// and previous versions. This is separate from `TagConfig`, which controls
-/// version *bumping* logic.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct GitConfig {
-    /// How to sort git tags when determining the latest version.
-    ///
-    /// Accepted values:
-    /// - `"-version:refname"` (default) — lexicographic version sort on the tag name.
-    /// - `"-version:creatordate"` — sort by the tag's creation date (newest first).
-    pub tag_sort: Option<String>,
-    /// Tag patterns to ignore during version detection (supports templates).
-    /// Tags matching any pattern in this list are excluded from version
-    /// detection entirely.
-    pub ignore_tags: Option<Vec<String>>,
-    /// Tag prefixes to ignore during version detection (supports templates).
-    /// Tags starting with any prefix in this list are excluded.
-    /// Mirrors GoReleaser Pro's ignore_tag_prefixes feature.
-    pub ignore_tag_prefixes: Option<Vec<String>>,
-    /// Suffix that identifies pre-release tags for sorting purposes.
-    /// When set, tags ending with this suffix are treated as pre-releases
-    /// and sorted accordingly during tag discovery.
-    pub prerelease_suffix: Option<String>,
-}
+mod git_config;
+pub use git_config::*;
 
 // ---------------------------------------------------------------------------
 // MonorepoConfig
 // ---------------------------------------------------------------------------
 
-/// GoReleaser Pro monorepo configuration.
-///
-/// When configured, tag discovery filters by `tag_prefix` and the working
-/// directory is scoped to `dir`.
-///
-/// This is DIFFERENT from `TagConfig.tag_prefix`:
-/// - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix
-///   (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ .Tag }}`
-///   while `{{ .PrefixedTag }}` retains the full tag.
-/// - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing
-///   `{{ .PrefixedTag }}` from a plain tag.
-///
-/// When `monorepo` is configured, it takes precedence over `tag.tag_prefix`
-/// for `PrefixedTag` / `PrefixedPreviousTag` behavior.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct MonorepoConfig {
-    /// Tag prefix for this subproject (e.g. `"subproject1/"`).
-    ///
-    /// Tags matching this prefix are selected during tag discovery, and the
-    /// prefix is stripped from `{{ .Tag }}` while `{{ .PrefixedTag }}` retains
-    /// the full tag.
-    pub tag_prefix: Option<String>,
-    /// Working directory for this subproject.
-    ///
-    /// Used for changelog path filtering (when no explicit `changelog.paths`
-    /// or `crate.path` is configured) and as the default build `dir`.
-    pub dir: Option<String>,
-}
+mod monorepo;
+pub use monorepo::*;
 
 // ---------------------------------------------------------------------------
 // TagConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct TagConfig {
-    /// Default version bump type when no conventional commit token is found: "major", "minor", "patch", or "none".
-    pub default_bump: Option<String>,
-    /// Prefix prepended to version tags (e.g., "v" produces "v1.2.3").
-    pub tag_prefix: Option<String>,
-    /// Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]).
-    pub release_branches: Option<Vec<String>>,
-    /// Custom version tag to use instead of auto-incrementing.
-    pub custom_tag: Option<String>,
-    /// Source for determining the previous tag: "repo" (default) or "branch".
-    pub tag_context: Option<String>,
-    /// Branch history mode for determining the previous tag: "full" or "last".
-    pub branch_history: Option<String>,
-    /// Version string to use when no previous tag exists (default: "0.1.0").
-    pub initial_version: Option<String>,
-    /// When true, apply a pre-release suffix to the generated version.
-    pub prerelease: Option<bool>,
-    /// Suffix appended to pre-release versions (e.g., "beta").
-    pub prerelease_suffix: Option<String>,
-    /// When true, create a new tag even if no commits have changed since the last tag.
-    pub force_without_changes: Option<bool>,
-    /// Like force_without_changes but only for pre-release versions.
-    pub force_without_changes_pre: Option<bool>,
-    /// Conventional commit token triggering a major bump (default: "major").
-    pub major_string_token: Option<String>,
-    /// Conventional commit token triggering a minor bump (default: "minor" or "feat").
-    pub minor_string_token: Option<String>,
-    /// Conventional commit token triggering a patch bump (default: "patch" or "fix").
-    pub patch_string_token: Option<String>,
-    /// Conventional commit token suppressing a version bump entirely (default: "none").
-    pub none_string_token: Option<String>,
-    /// When true, use the GitHub/GitLab API for tagging instead of git CLI.
-    pub git_api_tagging: Option<bool>,
-    /// When true, print verbose tag calculation output.
-    pub verbose: Option<bool>,
-    /// Commands to run before `anodizer tag` creates the tag. Useful for updating
-    /// lockfiles or committing sibling changes that must be part of the tagged
-    /// commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set;
-    /// template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`,
-    /// `{{ .PrefixedTag }}` are available.
-    pub tag_pre_hooks: Option<Vec<HookEntry>>,
-    /// Commands to run after `anodizer tag` successfully creates and pushes the
-    /// tag. Env and template vars same as `tag_pre_hooks`.
-    pub tag_post_hooks: Option<Vec<HookEntry>>,
-}
+mod tag;
+pub use tag::*;
 
 // ---------------------------------------------------------------------------
 // WorkspaceConfig
 // ---------------------------------------------------------------------------
 
-/// A workspace represents an independent project root within a monorepo.
-/// Each workspace has its own crates, changelog, and release configuration,
-/// allowing independently-versioned components that aren't Cargo workspace members.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct WorkspaceConfig {
-    /// Workspace identifier used in logs and template variables.
-    pub name: String,
-    /// Crates belonging to this workspace.
-    pub crates: Vec<CrateConfig>,
-    /// Changelog configuration for this workspace.
-    pub changelog: Option<ChangelogConfig>,
-    /// Signing configurations for binaries, archives, and checksums.
-    #[serde(default, deserialize_with = "deserialize_signs")]
-    #[schemars(schema_with = "signs_schema")]
-    pub signs: Vec<SignConfig>,
-    /// Binary-specific signing configs (same shape as `signs` but only for
-    /// binary artifacts). The `artifacts` field on each entry is constrained
-    /// at parse time to `binary` / `none` (or omitted) — a broader filter on
-    /// `binary_signs` would silently match nothing because the loop only
-    /// iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.
-    #[serde(default, deserialize_with = "deserialize_binary_signs")]
-    #[schemars(schema_with = "signs_schema")]
-    pub binary_signs: Vec<SignConfig>,
-    /// Hooks run before this workspace's pipeline starts.
-    pub before: Option<HooksConfig>,
-    /// Hooks run after this workspace's pipeline completes.
-    pub after: Option<HooksConfig>,
-    /// Environment variables scoped to this workspace.
-    ///
-    /// List of `KEY=VALUE` strings (GoReleaser parity). Order is preserved.
-    /// Values are template-rendered at pipeline startup.
-    #[serde(default)]
-    pub env: Option<Vec<String>>,
-    /// Pipeline stages to skip when releasing this workspace.
-    /// Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`).
-    #[serde(default)]
-    pub skip: Vec<String>,
-}
+mod workspace;
+pub use workspace::*;
 
 // ---------------------------------------------------------------------------
 // StringOrBool — accepts bool or template string in YAML
@@ -1248,204 +905,22 @@ pub(crate) use crate::packagers::{deserialize_makeselfs, makeselfs_schema};
 // MilestoneConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct MilestoneConfig {
-    /// Repository owner/name. Auto-detected from git remote if not set.
-    pub repo: Option<ScmRepoConfig>,
-    /// Close the milestone on release. Default: false.
-    pub close: Option<bool>,
-    /// Fail the pipeline if milestone close fails. Default: false.
-    pub fail_on_error: Option<bool>,
-    /// Milestone name template (default: "{{ .Tag }}").
-    pub name_template: Option<String>,
-}
-
-impl MilestoneConfig {
-    /// Default milestone name template. Mirrors GoReleaser
-    /// `internal/pipe/milestone/milestone.go` (`cfg.NameTemplate = "{{.Tag}}"`).
-    /// Anodize uses Tera-style `{{ Tag }}`; the rendered value is
-    /// identical for any tag the project produces.
-    pub const DEFAULT_NAME_TEMPLATE: &'static str = "{{ Tag }}";
-
-    /// Resolve the milestone name template, falling back to
-    /// [`Self::DEFAULT_NAME_TEMPLATE`].
-    pub fn resolved_name_template(&self) -> &str {
-        self.name_template
-            .as_deref()
-            .unwrap_or(Self::DEFAULT_NAME_TEMPLATE)
-    }
-
-    /// Resolve `close`, falling back to `false` (don't close milestones
-    /// on release by default).
-    pub fn resolved_close(&self) -> bool {
-        self.close.unwrap_or(false)
-    }
-
-    /// Resolve `fail_on_error`, falling back to `false` (milestone close
-    /// errors are warnings by default; opt in to fail-the-build).
-    pub fn resolved_fail_on_error(&self) -> bool {
-        self.fail_on_error.unwrap_or(false)
-    }
-}
+mod milestone;
+pub use milestone::*;
 
 // ---------------------------------------------------------------------------
 // UploadConfig (generic HTTP upload)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct UploadConfig {
-    /// Human-readable name for this upload config.
-    pub name: Option<String>,
-    /// Build IDs filter: only upload artifacts whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// File extension filter: only upload artifacts with these extensions.
-    pub exts: Option<Vec<String>>,
-    /// Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}).
-    pub target: String,
-    /// Username for HTTP basic auth.
-    /// Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`.
-    /// Set this to a literal value or a `{{ .Env.X }}` template.
-    pub username: Option<String>,
-    /// Password for HTTP basic auth (env var template strongly recommended;
-    /// in-config plaintext leaves the value in `dist/config.yaml` after dry-run).
-    /// Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.
-    /// Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12).
-    pub password: Option<String>,
-    /// HTTP method: PUT or POST (default: PUT).
-    pub method: Option<String>,
-    /// Upload mode: "archive" (default) or "binary".
-    pub mode: Option<String>,
-    /// Header name for the SHA256 checksum of the artifact.
-    pub checksum_header: Option<String>,
-    /// Path to PEM-encoded trusted CA certificates.
-    pub trusted_certificates: Option<String>,
-    /// Path to PEM-encoded client X.509 certificate for mTLS.
-    pub client_x509_cert: Option<String>,
-    /// Path to PEM-encoded client X.509 key for mTLS.
-    pub client_x509_key: Option<String>,
-    /// Include checksums in uploaded artifacts.
-    pub checksum: Option<bool>,
-    /// Include signatures in uploaded artifacts.
-    pub signature: Option<bool>,
-    /// Include metadata artifacts in uploaded artifacts.
-    pub meta: Option<bool>,
-    /// Custom HTTP headers (each value is template-expanded).
-    pub custom_headers: Option<HashMap<String, String>>,
-    /// When true, use the artifact name as-is (don't append to target URL).
-    pub custom_artifact_name: Option<bool>,
-    /// Extra files to include in uploading.
-    pub extra_files: Option<Vec<ExtraFileSpec>>,
-    /// Upload only extra files, skip normal artifacts.
-    pub extra_files_only: Option<bool>,
-    /// Skip condition template (if rendered to "true", skip this upload).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-}
+mod upload;
+pub use upload::*;
 
 // ---------------------------------------------------------------------------
 // AurSourceConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct AurSourceConfig {
-    /// Override the package name (default: crate name, no -bin suffix).
-    pub name: Option<String>,
-    /// Build IDs filter.
-    pub ids: Option<Vec<String>>,
-    /// Commit author with optional signing.
-    pub commit_author: Option<CommitAuthorConfig>,
-    /// Custom commit message template.
-    pub commit_msg_template: Option<String>,
-    /// Short description of the package.
-    pub description: Option<String>,
-    /// Project homepage URL.
-    pub homepage: Option<String>,
-    /// SPDX license identifier.
-    pub license: Option<String>,
-    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip_upload: Option<StringOrBool>,
-    /// Custom URL template for download URLs.
-    pub url_template: Option<String>,
-    /// PKGBUILD maintainer entries.
-    pub maintainers: Option<Vec<String>>,
-    /// Contributors listed in PKGBUILD comments.
-    pub contributors: Option<Vec<String>>,
-    /// Packages this PKGBUILD provides.
-    pub provides: Option<Vec<String>>,
-    /// Packages this PKGBUILD conflicts with.
-    pub conflicts: Option<Vec<String>>,
-    /// Runtime dependencies.
-    pub depends: Option<Vec<String>>,
-    /// Optional dependencies.
-    pub optdepends: Option<Vec<String>>,
-    /// Build-time dependencies (source packages need these).
-    pub makedepends: Option<Vec<String>>,
-    /// Backup files to preserve on upgrade.
-    pub backup: Option<Vec<String>>,
-    /// Package release number (default: "1").
-    pub rel: Option<String>,
-    /// Custom `prepare()` function body for PKGBUILD.
-    pub prepare: Option<String>,
-    /// Custom `build()` function body for PKGBUILD.
-    pub build: Option<String>,
-    /// Custom `package()` function body for PKGBUILD.
-    pub package: Option<String>,
-    /// AUR SSH git URL.
-    pub git_url: Option<String>,
-    /// Custom SSH command for git operations.
-    pub git_ssh_command: Option<String>,
-    /// Path to SSH private key file.
-    pub private_key: Option<String>,
-    /// Subdirectory in the git repo for committed files.
-    pub directory: Option<String>,
-    /// Skip this config.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip: Option<StringOrBool>,
-    /// Explicit architecture list (default: auto-detect from artifacts).
-    pub arches: Option<Vec<String>>,
-    /// `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3`
-    /// (AVX2), or `v4`. Equivalent to GR `AurSource.Goamd64`. Constrained
-    /// to a typed enum because AUR source pkgs build from the upstream
-    /// tarball (no binary artifacts to filter), so the value's only role
-    /// is as the `Amd64` template var consumed by `prepare:` / `build:` /
-    /// `package:` script bodies — typos must fail at parse time, not
-    /// silently render an invalid string into the PKGBUILD.
-    /// When unset, defaults to `v1` at template-render time.
-    pub amd64_variant: Option<Amd64Variant>,
-}
-
-/// `x86_64` micro-architecture variant. Mirrors GoReleaser's `Goamd64` typed
-/// values. Used by [`AurSourceConfig::amd64_variant`] to constrain the
-/// `prepare:` / `build:` / `package:` template var surface to a known set —
-/// AUR source pkgs build from the upstream tarball so the value is
-/// template-only (no artifact filter) and a typo would render an invalid
-/// PKGBUILD silently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Amd64Variant {
-    V1,
-    V2,
-    V3,
-    V4,
-}
-
-impl Amd64Variant {
-    /// Canonical lowercase string form (`"v1"`..`"v4"`). Matches the GR
-    /// `Goamd64` external surface and the value rendered into the PKGBUILD
-    /// `Amd64` template var.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Amd64Variant::V1 => "v1",
-            Amd64Variant::V2 => "v2",
-            Amd64Variant::V3 => "v3",
-            Amd64Variant::V4 => "v4",
-        }
-    }
-}
+mod aur_source;
+pub use aur_source::*;
 
 // ---------------------------------------------------------------------------
 // Tests
