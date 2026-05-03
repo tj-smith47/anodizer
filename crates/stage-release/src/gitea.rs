@@ -13,7 +13,7 @@ use anodizer_core::url::percent_encode_path_segment as encode_segment;
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
 
-use crate::compose_body_for_mode;
+use crate::release_body::compose_body_for_mode;
 
 // ---------------------------------------------------------------------------
 // Public helpers

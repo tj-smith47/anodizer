@@ -14,7 +14,7 @@ use anodizer_core::url::percent_encode_path_segment;
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
 
-use crate::compose_body_for_mode;
+use crate::release_body::compose_body_for_mode;
 
 // ---------------------------------------------------------------------------
 // URL-encoding aliases — consolidated onto `anodizer_core::url::percent_encode_path_segment`.
