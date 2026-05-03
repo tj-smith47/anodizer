@@ -688,14 +688,11 @@ pub use publishers::*;
 // KrewConfig + NixConfig — lifted to `crate::publishers`
 // ---------------------------------------------------------------------------
 //
-// WAVE 5 split: see `crate::publishers` for the type definitions. The
-// re-exports below preserve the historical
+// Wave B carve completed. All publisher config types were lifted to
+// `crate::publishers` during the Wave 5 split. The re-exports below
+// preserve the historical
 // `anodizer_core::config::{KrewConfig, NixConfig, NixDependency}`
 // import paths used by `stage-publish/krew.rs` / `stage-publish/nix.rs`.
-// Remaining publisher configs (`HomebrewConfig`, `ScoopConfig`,
-// `ChocolateyConfig`, `WingetConfig`, `AurConfig`, `AurSourceConfig`,
-// `CargoPublishConfig`, `DockerV2Config`, `DockerDigestConfig`, ...)
-// still live in this file pending future split passes.
 
 pub use crate::publishers::{KrewConfig, NixConfig, NixDependency};
 
@@ -712,6 +709,7 @@ pub use docker::*;
 
 mod nfpm;
 pub use nfpm::*;
+
 // ---------------------------------------------------------------------------
 // SnapcraftConfig
 // ---------------------------------------------------------------------------
@@ -885,18 +883,16 @@ pub use workspace::*;
 
 mod string_or_bool;
 pub use string_or_bool::*;
+
 // ---------------------------------------------------------------------------
 // MakeselfConfig + SrpmConfig — lifted to `crate::packagers`
 // ---------------------------------------------------------------------------
 //
-// WAVE 5 split: see `crate::packagers` for the type definitions and
-// associated `deserialize_makeselfs` / `makeselfs_schema` helpers. The
-// re-exports below preserve the historical
+// Wave B carve completed. All packaging config types were lifted to
+// `crate::packagers` during the Wave 5 split. The re-exports below
+// preserve the historical
 // `anodizer_core::config::{MakeselfConfig, MakeselfFile, SrpmConfig}`
-// import paths used by stages and tests. The remaining packaging types
-// (`NfpmConfig`, `SnapcraftConfig`, `FlatpakConfig`, `AppBundleConfig`,
-// `DmgConfig`, `PkgConfig`, `MsiConfig`, `NsisConfig`) still live in
-// this file pending future split passes.
+// import paths used by stages and tests.
 
 pub use crate::packagers::{MakeselfConfig, MakeselfFile, SrpmConfig};
 pub(crate) use crate::packagers::{deserialize_makeselfs, makeselfs_schema};
