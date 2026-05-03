@@ -1,4 +1,10 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::{
+    ChangelogConfig, CrateConfig, HooksConfig, SignConfig, deserialize_binary_signs,
+    deserialize_signs, signs_schema,
+};
 
 // ---------------------------------------------------------------------------
 // WorkspaceConfig

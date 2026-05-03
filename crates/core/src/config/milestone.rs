@@ -1,4 +1,7 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::ScmRepoConfig;
 
 // ---------------------------------------------------------------------------
 // MilestoneConfig
