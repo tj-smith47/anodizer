@@ -1,5 +1,14 @@
-use super::*;
+use std::collections::HashMap;
+
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::{NfpmConfig, NfpmDebConfig, NfpmRpmConfig, NfpmSignatureConfig};
+use anodizer_core::stage::Stage;
 use tempfile::TempDir;
+
+use super::{
+    KNOWN_FORMATS, NfpmLibraryPaths, NfpmStage, format_extension, generate_nfpm_yaml, nfpm_command,
+    validate_format,
+};
 
 #[test]
 fn test_generate_nfpm_yaml() {
