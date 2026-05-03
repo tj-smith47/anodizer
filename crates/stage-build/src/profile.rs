@@ -1,4 +1,4 @@
-use super::*;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // detect_cargo_profile — parse --release / --profile flags from cargo flags

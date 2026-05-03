@@ -1,4 +1,4 @@
-use super::*;
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // strip_glibc_suffix — strip glibc version suffix like ".2.17" from targets

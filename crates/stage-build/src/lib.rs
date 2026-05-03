@@ -1,21 +1,3 @@
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::Command;
-
-use anyhow::{Context as _, Result};
-
-use anodizer_core::artifact::{Artifact, ArtifactKind};
-use anodizer_core::config::{
-    BuildConfig, BuildIgnore, BuildOverride, CrossStrategy, HookEntry, UniversalBinaryConfig,
-};
-use anodizer_core::context::Context;
-use anodizer_core::env_expand::expand_env as expand_env_vars;
-use anodizer_core::hooks::run_hooks;
-use anodizer_core::stage::Stage;
-use anodizer_core::target::map_target;
-use anodizer_core::util::find_binary;
-
 pub mod binstall;
 pub mod version_sync;
 
@@ -31,21 +13,18 @@ pub use command::*;
 // ---------------------------------------------------------------------------
 
 mod profile;
-pub(crate) use profile::*;
 
 // ---------------------------------------------------------------------------
 // build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
 // ---------------------------------------------------------------------------
 
 mod universal;
-pub(crate) use universal::*;
 
 // ---------------------------------------------------------------------------
 // Build ignore/override helpers
 // ---------------------------------------------------------------------------
 
 mod targets;
-pub(crate) use targets::*;
 
 // ---------------------------------------------------------------------------
 // strip_glibc_suffix — strip glibc version suffix like ".2.17" from targets
@@ -59,6 +38,27 @@ pub use validation::*;
 // ---------------------------------------------------------------------------
 
 mod workspace;
+
+// Re-export internal modules and std/core items into the crate root so that
+// `tests.rs`'s `use super::*` can resolve everything it needs without each
+// test file duplicating a long import list.
+#[cfg(test)]
+pub(crate) use anodizer_core::artifact::ArtifactKind;
+#[cfg(test)]
+pub(crate) use anodizer_core::config::{BuildIgnore, BuildOverride, CrossStrategy};
+#[cfg(test)]
+pub(crate) use anodizer_core::stage::Stage;
+#[cfg(test)]
+pub(crate) use profile::*;
+#[cfg(test)]
+pub(crate) use std::collections::HashMap;
+#[cfg(test)]
+pub(crate) use std::path::{Path, PathBuf};
+#[cfg(test)]
+pub(crate) use targets::*;
+#[cfg(test)]
+pub(crate) use universal::*;
+#[cfg(test)]
 pub(crate) use workspace::*;
 
 // ---------------------------------------------------------------------------

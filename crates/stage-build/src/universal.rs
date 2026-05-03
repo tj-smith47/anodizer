@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::HashMap;
+use std::process::Command;
+
+use anyhow::Context as _;
+
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::UniversalBinaryConfig;
+use anodizer_core::context::Context;
+use anodizer_core::hooks::run_hooks;
+use anodizer_core::util::find_binary;
 
 // ---------------------------------------------------------------------------
 // build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
