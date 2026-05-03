@@ -11,3 +11,5 @@ CLAUDE.local.md
 .claude/local/
 .claude/scratch/
 .claude/settings.local.json.bak.*
+.claude/audits/
+.claude/prompts/
