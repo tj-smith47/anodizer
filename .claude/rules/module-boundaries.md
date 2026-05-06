@@ -7,7 +7,10 @@ focus on the few touch-points that actually shell out.
 
 ## Allow-list (may call `Command::new` directly)
 
-- `crates/core/src/git.rs` — git porcelain (`clone`, `tag`, `push`, ...).
+- `crates/core/src/git/**` — git porcelain (`clone`, `tag`, `push`, ...).
+  Carved from former `git.rs` into focused submodules (`semver`, `detect`,
+  `status`, `remote`, `tags`, `commits`, `github_api`); all sibling files
+  inherit the allow-listing.
 - `crates/core/src/hooks.rs` — user-defined `before:` / `after:` hook execution.
 - `crates/core/src/cargo_lock.rs` — `cargo update --workspace` invoked by the
   `tag` command after a version bump.
@@ -54,7 +57,7 @@ focus on the few touch-points that actually shell out.
   (or one of the other allow-listed `core::<tool>_*` helpers).
 - `crates/core/**` (apart from the allow-listed modules above) — keep core
   pure / library-grade. If you need a new shell-out, extract a helper module
-  next to `git.rs` and add it to the allow-list above.
+  next to `git/` and add it to the allow-list above.
 - Any new crate that doesn't appear in the allow-list above.
 
 ## Rationale
@@ -65,9 +68,11 @@ opaque to clippy / unsafe / panic-safety review. Confining `Command::new`
 to a handful of named modules means the security-relevant surface is small
 and reviewable.
 
-The current count (audit 2026-04-27, post-batch-E lift): **35 files
-/ 192 call sites**, all inside the allow-list above. Drift to a
-forbidden module is a review-blocker.
+The current count (audit 2026-05-06, post-git-carve): **50 files
+/ 198 call sites**, all inside the allow-list above. The file-count
+delta vs. the prior 35-file baseline is structural — `git.rs` was
+carved into a `git/` module of 7 sibling submodules + tests — not
+new shell-out surface. Drift to a forbidden module is a review-blocker.
 
 ## Enforcement
 
