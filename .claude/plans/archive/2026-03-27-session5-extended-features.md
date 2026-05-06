@@ -1,3 +1,13 @@
+> **STATUS (archived 2026-05-06):** Tasks 5A–5N delivered (binstall,
+> version_sync, `tag` cmd, nightly, includes, SOURCE_DATE_EPOCH, universal
+> binaries, monorepo, choco/winget/AUR/krew, source/SBOM/UPX, 8 announce
+> providers, jsonschema, .env, config versioning, build ignore/overrides,
+> serde_yaml_ng migration). **Task 5O delivered as Zola** (see
+> `archive/2026-03-27-docsite.md`) rather than mdBook as originally
+> outlined — goal met, named tooling differs. Canonical tracker:
+> `parity-session-index.md` (sessions A–O, 444/444). Per-checkbox
+> reconciliation skipped.
+
 # Session 5: Extended Features — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

@@ -1,3 +1,12 @@
+> **STATUS (archived 2026-05-06):** All 18 tasks accounted for — 16
+> DONE in code, Task 15 (`if` on global hooks) reclassified N/A
+> (GoReleaser itself lacks the field; see `parity-session-index.md:136`),
+> Task 18 superseded by `cc098a9` which deleted the target
+> `goreleaser-parity-matrix.md` in favour of
+> `goreleaser-complete-feature-inventory.md` + `parity-session-index.md`.
+> Canonical tracker: `parity-session-index.md` (444/444). Per-checkbox
+> reconciliation skipped.
+
 # GoReleaser Parity Closures Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

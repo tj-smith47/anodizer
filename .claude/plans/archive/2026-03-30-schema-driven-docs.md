@@ -1,3 +1,10 @@
+> **STATUS (archived 2026-05-06):** All 47 outlined items delivered.
+> xtask deps + 629-line `gen_docs.rs` schema walker, `///` doc comments
+> across all 343 fields (carved into 36-file `config/` module), 5 sidebar
+> links, 15 new doc pages, parity-session-index jsonschema section.
+> SchemaStore.org PR follow-up correctly tracked in `PLAN.md::Task POST-0`
+> (gated on live docs URL). Per-checkbox reconciliation skipped.
+
 # Schema-Driven Documentation Generation
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

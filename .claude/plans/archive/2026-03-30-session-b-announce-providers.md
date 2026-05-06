@@ -1,3 +1,11 @@
+> **STATUS (archived 2026-05-06):** All 14 tasks delivered.
+> `announce.skip`, Teams `icon_url`, Mattermost `title_template`,
+> Webhook `expected_status_codes`, Slack blocks/attachments, lettre-based
+> SMTP transport, plus 7 new providers (Reddit, Twitter, Mastodon,
+> Bluesky, LinkedIn, OpenCollective, Discourse) all wired with tests
+> (159/159 stage-announce tests pass). Canonical tracker:
+> `parity-session-index.md` Session B. Per-checkbox reconciliation skipped.
+
 # Session B: Announce Providers — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
