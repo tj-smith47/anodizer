@@ -19,6 +19,10 @@ violations, user-reported issues.
 
 ## Active
 
+### Phase 3 parity audit review deferrals — 2026-05-07 (1 MINOR)
+
+- [ ] 2026-05-07 code-review (Impl-B2): five `#[allow(clippy::too_many_arguments)]` suppressions remain in `crates/stage-release/src/{gitlab,gitea}.rs` after P1.4 retry wiring (`gitlab_create_release`, `gitlab_upload_asset`, `gitea_upload_asset`, `gitea_delete_asset_by_name`, `upload_via_package_registry`). Implementer evaluated a backend ctx-struct refactor and found the realistic shape (per-asset state isn't naturally "backend ctx" — `gitlab_upload_asset` has 12 args of which only 4 are shareable; subtracting them still leaves 8 + ctx, still over clippy's 7-arg threshold). Cleanest fix is a deeper restructure that bundles per-asset state alongside backend ctx — out of budget for this commit. Source: Impl-B2 code-review (commit `c9aa9a3`).
+
 ### Group F·3 review deferrals — 2026-04-28 (1 MINOR)
 
 - [x] `crates/core/src/context.rs` — `changelogs: HashMap<String, String>`, `changelog_header: Option<String>`, `changelog_footer: Option<String>`, and `github_native_changelog: bool` lifted into a new `StageOutputs` sub-struct on `Context`. Stage-output fields now sit behind `ctx.stage_outputs.<field>` (changelog stage writes; release stage + `populate_release_notes_var` read). Closes the F·3 deferral ahead of the original "third pair lands" trigger — bundled with the post-decomposition cleanup pass. ~62 callsites updated across `core/context.rs`, `stage-changelog/{run,tests}.rs`, `stage-release/{run,tests}.rs`, and `cli/commands/changelog.rs`. `cargo build --workspace` clean. Source: F·3 code-quality review. — resolved 2026-05-07.

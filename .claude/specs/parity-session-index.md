@@ -1006,6 +1006,6 @@ These rows are added with `parity_status=n-a` and `notes` justifying. They never
 
 Tracked separately from CLI-parity work because the action repo (`/opt/repos/goreleaser-action`) has its own release cadence (action ≥ v7.2.0 for immutable nightly).
 
-- [ ] **S1** Update `anodize-action/action.yml` and README to handle `version: nightly` immutable-tag resolution. Goreleaser-action ≥ v7.2.0 resolves `nightly` to the latest `vX.Y.Z-<sha>-nightly` tag via GitHub Releases API. Anodizer-action must mirror — list Releases, pick newest tag matching `*-nightly`, install. Source: `www/content/customization/ci/actions.md::Nightly builds` + `goreleaser-action-feature-inventory.md::refresh-2026-05-07`.
-- [ ] **S2** Document the new tag format `vX.Y.Z-<sha>-nightly` in anodize-action README, mirroring goreleaser-action.
+- [x] **S1** Update `anodize-action/action.yml` and README to handle `version: nightly` immutable-tag resolution. Goreleaser-action ≥ v7.2.0 resolves `nightly` to the latest `vX.Y.Z-<sha>-nightly` tag via GitHub Releases API. Anodizer-action must mirror — list Releases, pick newest tag matching `*-nightly`, install. Source: `www/content/customization/ci/actions.md::Nightly builds` + `goreleaser-action-feature-inventory.md::refresh-2026-05-07`. Landed in `anodizer-action@bb4b922` (2026-05-07).
+- [x] **S2** Document the new tag format `vX.Y.Z-<sha>-nightly` in anodize-action README, mirroring goreleaser-action. Landed in `anodizer-action@bb4b922` (2026-05-07).
 
