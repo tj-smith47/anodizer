@@ -270,8 +270,10 @@ pub(crate) fn build_release_json(
 
 /// Build the JSON body for the un-draft (publish) PATCH on `/repos/{o}/{r}/releases/{id}`.
 ///
-/// Mirrors GoReleaser `internal/client/github.go::PublishRelease` post-commits
-/// 6ecba31 + 2e17678:
+/// Mirrors GoReleaser `internal/client/github.go::PublishRelease` PR
+/// [#6591](https://github.com/goreleaser/goreleaser/pull/6591) (commits
+/// `6ecba31405e8ade89b335bf05e19734d0fd8d2d8` +
+/// `2e17678c4be30b1c53b5931919b57e71532b6d16`):
 ///
 /// - Always sends `draft = false`.
 /// - Re-renders the release `name` (callers pass the already-rendered template
@@ -297,11 +299,20 @@ pub(crate) fn build_publish_patch_body(
     }
     if prerelease {
         body["prerelease"] = serde_json::Value::Bool(true);
-        // Force make_latest=false for prereleases. Mirrors GoReleaser commit
-        // 6ecba31: a prerelease cannot also be marked "latest", regardless of
-        // the user's `make_latest` template.
+        // Force make_latest=false for prereleases. Mirrors GoReleaser PR
+        // #6591 (commit `6ecba31...` — see PR ref above): a prerelease
+        // cannot also be marked "latest", regardless of the user's
+        // `make_latest` template.
         body["make_latest"] = serde_json::Value::String("false".to_string());
     } else if let Some(ml) = make_latest {
+        // NB: only set `prerelease` when true. Mirrors GoReleaser PR #6591:
+        // an un-draft PATCH that *omits* `prerelease` leaves whatever flag
+        // GitHub already has on the draft. So a stale draft created earlier
+        // with `prerelease=true` whose user has since re-rendered to false
+        // will keep the `prerelease=true` flag in GitHub. To clear it the
+        // user must delete + recreate the draft. GoReleaser has the same
+        // behaviour; do NOT "fix" this by also sending `prerelease=false`
+        // here without first changing GR.
         body["make_latest"] = serde_json::Value::String(ml.to_string());
     }
     if let Some(dc) = discussion_category {

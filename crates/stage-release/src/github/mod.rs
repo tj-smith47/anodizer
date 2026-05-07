@@ -22,10 +22,12 @@ use crate::{release_log, resolve_release_repo};
 mod assets;
 mod client;
 mod rate_limit;
+mod retry_classify;
 
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit;
+pub(crate) use retry_classify::classify_octocrab_error;
 // NOTE: A `resolve_github_username` helper used to live alongside this mod
 // (search-users API fallback for resolving commit author emails). Upstream
 // removed the Search API call entirely in commit 17315a5 (parity item P3),
@@ -652,13 +654,16 @@ pub(crate) fn run_github_backend(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, release_id_raw
             );
-            // Build the publish PATCH body via the GR-aligned helper:
+            // Build the publish PATCH body via the GR-aligned helper
+            // (GoReleaser PR #6591):
             // - includes `name` (re-rendered name_template) so the published
             //   release reflects the current template, even if the draft was
-            //   created with an older name (GR commit 2e17678).
+            //   created with an older name (commit
+            //   `2e17678c4be30b1c53b5931919b57e71532b6d16`).
             // - forces `make_latest=false` whenever `prerelease` is true,
-            //   regardless of the user's `make_latest` template (GR commit
-            //   6ecba31). A prerelease can never be the latest.
+            //   regardless of the user's `make_latest` template (commit
+            //   `6ecba31405e8ade89b335bf05e19734d0fd8d2d8`). A prerelease can
+            //   never be the latest.
             let publish_body = build_publish_patch_body(
                 release_name,
                 prerelease,
@@ -686,23 +691,23 @@ pub(crate) fn run_github_backend(
                     {
                         Ok(release) => Ok(release),
                         Err(err) => {
-                            let status = match &err {
-                                octocrab::Error::GitHub { source, .. } => {
-                                    source.status_code.as_u16()
-                                }
-                                _ => 0,
-                            };
-                            let wrapped =
-                                anodizer_core::retry::HttpError::new(err, status);
-                            if anodizer_core::retry::is_retriable(&wrapped) {
-                                tracing::warn!(
-                                    attempt,
-                                    status,
-                                    "release: publish PATCH failed (retriable)"
-                                );
-                                Err(ControlFlow::Continue(anyhow::Error::new(wrapped)))
+                            // Shared classifier — same rule as the
+                            // upload-asset retry above (Hyper / Http /
+                            // Service / Other / Serde / Json all force-
+                            // wrap into `Retriable` because their Display
+                            // strings don't match `is_network_error`'s
+                            // substring needles).
+                            let (wrapped, status) = classify_octocrab_error(err);
+                            if anodizer_core::retry::is_retriable(&*wrapped) {
+                                release_log().warn(&format!(
+                                    "release: publish PATCH failed (retriable, \
+                                     attempt {attempt}, status={status})"
+                                ));
+                                Err(ControlFlow::Continue(anyhow::Error::from_boxed(
+                                    wrapped,
+                                )))
                             } else {
-                                Err(ControlFlow::Break(anyhow::Error::new(wrapped)))
+                                Err(ControlFlow::Break(anyhow::Error::from_boxed(wrapped)))
                             }
                         }
                     }
