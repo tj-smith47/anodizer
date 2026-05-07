@@ -40,7 +40,7 @@ pub fn async_client(timeout: Duration) -> Result<reqwest::Client> {
 /// read error becomes `"could not read response body: <err>"` rather than
 /// silently truncating to `""`. Exposed as a free function so unit tests can
 /// pin the exact wording without standing up a fault-injecting HTTP server.
-pub fn format_body_read_error<E: std::fmt::Display>(err: E) -> String {
+pub fn body_read_error_message<E: std::fmt::Display>(err: E) -> String {
     format!("could not read response body: {err}")
 }
 
@@ -54,18 +54,28 @@ pub fn format_body_read_error<E: std::fmt::Display>(err: E) -> String {
 /// larger error context (e.g. `"GitHub API returned 422: {body}"`), so the
 /// placeholder still surfaces a usable diagnostic instead of a confusing
 /// empty payload.
+///
+/// Use this when the body will be interpolated into a downstream error
+/// message; use `resp.text().await?` directly when the caller will
+/// propagate the read failure as its own error rather than substituting
+/// a placeholder.
 pub async fn body_of(resp: reqwest::Response) -> String {
     match resp.text().await {
         Ok(s) => s,
-        Err(err) => format_body_read_error(err),
+        Err(err) => body_read_error_message(err),
     }
 }
 
 /// Blocking analogue of [`body_of`].
+///
+/// Use this when the body will be interpolated into a downstream error
+/// message; use `resp.text()?` directly when the caller will propagate
+/// the read failure as its own error rather than substituting a
+/// placeholder.
 pub fn body_of_blocking(resp: reqwest::blocking::Response) -> String {
     match resp.text() {
         Ok(s) => s,
-        Err(err) => format_body_read_error(err),
+        Err(err) => body_read_error_message(err),
     }
 }
 
@@ -74,11 +84,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_format_body_read_error_uses_descriptive_prefix() {
+    fn test_body_read_error_message_uses_descriptive_prefix() {
         // Pin the exact wording: callers may parse / match on this string,
         // and parity with upstream GoReleaser's `bodyOf` requires the
         // `"could not read response body: "` prefix verbatim.
-        let formatted = format_body_read_error("connection reset by peer");
+        let formatted = body_read_error_message("connection reset by peer");
         assert_eq!(
             formatted,
             "could not read response body: connection reset by peer"
@@ -86,9 +96,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_body_read_error_with_io_error() {
+    fn test_body_read_error_message_with_io_error() {
         let io_err = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "stream ended early");
-        let formatted = format_body_read_error(io_err);
+        let formatted = body_read_error_message(io_err);
         assert!(
             formatted.starts_with("could not read response body: "),
             "format must keep the descriptive prefix: {formatted}"

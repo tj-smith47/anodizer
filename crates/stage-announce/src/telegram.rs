@@ -1,5 +1,22 @@
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde_json::json;
+
+/// Replacement marker for the bot token in any error message we surface
+/// upstream. The Telegram URL is `…/bot<TOKEN>/sendMessage`, and the
+/// `reqwest::Error` Display chain echoes the full URL on transport
+/// failure — without redaction the token would leak via every error log.
+const REDACTED_BOT_TOKEN_MARKER: &str = "<REDACTED_BOT_TOKEN>";
+
+/// Strip occurrences of `bot_token` from any error string before it is
+/// surfaced upstream. Returns the message unchanged when the token is
+/// empty (an empty `String::replace` needle would inject the marker
+/// between every byte).
+fn redact_bot_token(message: &str, bot_token: &str) -> String {
+    if bot_token.is_empty() {
+        return message.to_string();
+    }
+    message.replace(bot_token, REDACTED_BOT_TOKEN_MARKER)
+}
 
 // ---------------------------------------------------------------------------
 // Payload builder
@@ -49,10 +66,17 @@ pub fn send_telegram(
         .header("Content-Type", "application/json")
         .body(payload)
         .send()
-        .with_context(|| "telegram: failed to send POST request")?;
+        .map_err(|e| {
+            // `reqwest::Error::Display` echoes the full request URL,
+            // which contains the bot token in the path segment
+            // (`…/bot<TOKEN>/sendMessage`). We must redact before the
+            // error chain is rendered into anodizer's log.
+            let msg = redact_bot_token(&e.to_string(), bot_token);
+            anyhow::anyhow!("telegram: failed to send POST request: {msg}")
+        })?;
 
     let status = resp.status();
-    let body = anodizer_core::http::body_of_blocking(resp);
+    let body = redact_bot_token(&anodizer_core::http::body_of_blocking(resp), bot_token);
 
     if !status.is_success() {
         anyhow::bail!("telegram: HTTP {} — {}", status, body);
@@ -130,5 +154,41 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(json["message_thread_id"], 99);
         assert!(json.get("parse_mode").is_none());
+    }
+
+    // ---- token redaction (I2 regression) ------------------------------
+
+    #[test]
+    fn redact_bot_token_strips_token_from_message() {
+        // Simulate a `reqwest::Error` Display chain that has echoed the
+        // full request URL with the bot token in it.
+        let err_msg = "error sending request for url \
+                       (https://api.telegram.org/bot123:ABC/sendMessage): \
+                       connection refused";
+        let redacted = redact_bot_token(err_msg, "123:ABC");
+        assert!(
+            !redacted.contains("123:ABC"),
+            "redacted message must not contain the token: {redacted}"
+        );
+        assert!(
+            redacted.contains("<REDACTED_BOT_TOKEN>"),
+            "redacted message must contain the marker: {redacted}"
+        );
+    }
+
+    #[test]
+    fn redact_bot_token_empty_token_passthrough() {
+        // A bot_token of `""` would, with naive `String::replace`, inject
+        // the marker between every byte. Guard against that.
+        let msg = "abc";
+        let out = redact_bot_token(msg, "");
+        assert_eq!(out, msg);
+    }
+
+    #[test]
+    fn redact_bot_token_no_token_in_message_passthrough() {
+        let msg = "no secrets here";
+        let out = redact_bot_token(msg, "123:ABC");
+        assert_eq!(out, msg);
     }
 }

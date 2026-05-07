@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
 
-use super::cmd::run_cmd_in;
+use super::cmd::{redact_output_token, run_cmd_in, run_cmd_in_redacted};
 
 /// Clone a git repo into `tmp_dir` with token-based auth.
 ///
@@ -42,16 +42,24 @@ pub(crate) fn clone_repo_with_auth(
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .with_context(|| format!("{label}: git clone: spawn"))?;
+    // Pre-redact: git's stderr on failure typically echoes the full URL
+    // (`fatal: unable to access 'https://x-access-token:<TOKEN>@host/...'`).
+    // Scrub the token bytes BEFORE handing the `Output` to `check_output`,
+    // which logs `stderr` and `stdout` verbatim.
+    let output = redact_output_token(output, token);
     log.check_output(output, &format!("{label}: git clone"))?;
 
     // Configure the remote URL for subsequent push operations with auth.
+    // The push URL embeds the token in `argv`, so we route through the
+    // `_redacted` variant so failures don't leak it via the error message.
     if let Some(tok) = token {
         let push_url = inject_token_in_url(repo_url, tok);
-        run_cmd_in(
+        run_cmd_in_redacted(
             tmp_dir,
             "git",
             &["remote", "set-url", "origin", &push_url],
             &format!("{label}: git set push URL"),
+            Some(tok),
         )?;
     }
 
@@ -120,6 +128,12 @@ pub(crate) fn clone_repo_ssh(
     let output = cmd
         .output()
         .with_context(|| format!("{label}: git clone via SSH: spawn"))?;
+    // SSH credentials are passed via `GIT_SSH_COMMAND` env / sidecar key
+    // file — they never appear in `argv` or in git's stdio. We still call
+    // through `redact_output_token` with `None` to keep the call shape
+    // symmetric with `clone_repo_with_auth` and to make the absence of a
+    // secret-on-argv contract explicit at the read-site.
+    let output = redact_output_token(output, None);
     log.check_output(output, &format!("{label}: git clone (SSH)"))?;
 
     // Configure core.sshCommand in the cloned repo so that subsequent push

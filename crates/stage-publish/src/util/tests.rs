@@ -796,3 +796,117 @@ fn test_render_or_warn_renders_well_formed_template() {
     let out = render_or_warn(&ctx, &log, "aur.name", "{{ .ProjectName }}-bin");
     assert_eq!(out, "myproj-bin");
 }
+
+// ---------------------------------------------------------------------------
+// cmd / token-redaction tests
+// ---------------------------------------------------------------------------
+//
+// `redact_output_token` and `replace_bytes` scrub tokens from
+// `std::process::Output` before its bytes flow into `StageLogger::error`
+// or an `anyhow::bail!` chain. Regression coverage for the C1 finding:
+// "git clone failure with token-bearing URL leaks the token via stderr".
+
+mod redact_output_token_tests {
+    use super::super::cmd::{redact_output_token, replace_bytes};
+    use std::process::Output;
+
+    /// Build a synthetic `Output` for the redaction test cases.
+    ///
+    /// `redact_output_token` only reads `output.stderr` / `output.stdout`,
+    /// so any concrete `ExitStatus` works here. We spawn `true` (Unix) or
+    /// `cmd /c exit 0` (Windows) just to obtain a real `ExitStatus` value,
+    /// since `ExitStatus` cannot be constructed directly in stable Rust.
+    fn failing_output(stderr: &[u8], stdout: &[u8]) -> Output {
+        let real = std::process::Command::new("true")
+            .output()
+            .or_else(|_| {
+                std::process::Command::new("cmd")
+                    .args(["/c", "exit", "0"])
+                    .output()
+            })
+            .unwrap();
+        Output {
+            status: real.status,
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    #[test]
+    fn redact_output_token_replaces_in_stderr_and_stdout() {
+        let stderr = b"fatal: cannot access 'https://x-access-token:secret123@host/repo.git'";
+        let stdout = b"see also secret123 here";
+        let out = failing_output(stderr, stdout);
+        let redacted = redact_output_token(out, Some("secret123"));
+
+        let s_err = String::from_utf8_lossy(&redacted.stderr);
+        let s_out = String::from_utf8_lossy(&redacted.stdout);
+
+        assert!(
+            !s_err.contains("secret123"),
+            "stderr must not retain the token after redaction: {s_err}"
+        );
+        assert!(
+            s_err.contains("<REDACTED_TOKEN>"),
+            "stderr must contain the redaction marker: {s_err}"
+        );
+        assert!(
+            !s_out.contains("secret123"),
+            "stdout must not retain the token after redaction: {s_out}"
+        );
+        assert!(
+            s_out.contains("<REDACTED_TOKEN>"),
+            "stdout must contain the redaction marker: {s_out}"
+        );
+    }
+
+    #[test]
+    fn redact_output_token_no_token_passthrough() {
+        let stderr = b"fatal: noise without a secret";
+        let stdout = b"normal output";
+        let out = failing_output(stderr, stdout);
+        let redacted = redact_output_token(out, None);
+        assert_eq!(redacted.stderr, stderr);
+        assert_eq!(redacted.stdout, stdout);
+    }
+
+    #[test]
+    fn redact_output_token_empty_token_passthrough() {
+        // Empty secret must NOT replace every empty substring — that would
+        // turn `abc` into `<REDACTED_TOKEN>a<REDACTED_TOKEN>...`.
+        let stderr = b"abc";
+        let stdout = b"def";
+        let out = failing_output(stderr, stdout);
+        let redacted = redact_output_token(out, Some(""));
+        assert_eq!(redacted.stderr, stderr);
+        assert_eq!(redacted.stdout, stdout);
+    }
+
+    #[test]
+    fn replace_bytes_overlapping_collapses_to_non_overlapping() {
+        // Pin the chosen semantics: needle `aa` in haystack `aaaa` produces
+        // two replacements (after each match the cursor jumps past the
+        // consumed needle), not three. Documented in `replace_bytes`'s
+        // doc comment.
+        let out = replace_bytes(b"aaaa", b"aa", b"X");
+        assert_eq!(out, b"XX");
+    }
+
+    #[test]
+    fn replace_bytes_empty_needle_passthrough() {
+        let out = replace_bytes(b"abc", b"", b"X");
+        assert_eq!(out, b"abc");
+    }
+
+    #[test]
+    fn replace_bytes_empty_haystack_passthrough() {
+        let out = replace_bytes(b"", b"abc", b"X");
+        assert_eq!(out, b"");
+    }
+
+    #[test]
+    fn replace_bytes_multiple_non_overlapping_matches() {
+        let out = replace_bytes(b"foo bar foo bar", b"foo", b"X");
+        assert_eq!(out, b"X bar X bar");
+    }
+}

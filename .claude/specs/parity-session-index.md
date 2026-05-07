@@ -685,7 +685,7 @@ GoReleaser explicitly passes HOME, USER, PATH, TMPDIR, etc. Anodizer only passes
 - [x] No deprecation system for config fields — deprecated fields silently accepted — added `Context::deprecate()` with dedup via `notified_deprecations` HashSet
 - [x] No ID uniqueness validation — added for build IDs (stage-build), sign IDs (stage-sign); docker v2/makeself already had it
 - [x] No strict YAML parsing — unknown config fields silently ignored — added `deny_unknown_fields` to top-level `Config` struct
-- [x] Hook output redaction uses hardcoded 10-var list — now delegates to `redact::redact_string()` which auto-discovers secrets
+- [x] Hook output redaction uses hardcoded 10-var list — now delegates to `redact::string()` which auto-discovers secrets
 - [x] No GitHub API rate limit handling (sleep-and-retry on 403/429) — added `check_github_rate_limit()` proactive check + 403/429 detection in upload retry loop
 
 ### Session O: Extremely Deep Parity Audit (2026-04-07)
