@@ -37,36 +37,86 @@ pub(crate) use retry_classify::classify_octocrab_error;
 // co-author enrichment in `stage-changelog/src/fetch/github.rs`) needs
 // noreply parsing, re-introduce a focused helper in that crate's module.
 
+/// Runtime / context infrastructure for [`run_github_backend`].
+///
+/// Bundles the four "ambient" handles every backend call needs — the
+/// shared tokio runtime, the global anodizer [`Context`], the per-stage
+/// logger, and the resolved GitHub token. Pulling them into a struct
+/// drains four positional arguments off the call site.
+pub(crate) struct BackendEnv<'a> {
+    pub rt: &'a tokio::runtime::Runtime,
+    pub ctx: &'a Context,
+    pub log: &'a StageLogger,
+    pub token: &'a Option<String>,
+}
+
+/// Per-release attributes consumed by [`run_github_backend`].
+///
+/// Mirrors `GitlabReleaseSpec` / `GiteaReleaseSpec` from the sibling
+/// `gitlab.rs` / `gitea.rs` backends. Field names line up with
+/// [`crate::release_body::ReleaseJsonSpec`] so the `build_release_json`
+/// call site is a near-direct field forward.
+#[derive(Clone, Copy)]
+pub(crate) struct GithubReleaseSpec<'a> {
+    pub tag: &'a str,
+    pub name: &'a str,
+    pub body: &'a str,
+    pub mode: &'a str,
+    pub draft: bool,
+    pub prerelease: bool,
+    pub make_latest: &'a Option<MakeLatest>,
+    pub target_commitish: &'a Option<String>,
+    pub discussion_category: &'a Option<String>,
+    pub github_native_changelog: bool,
+}
+
+/// Boolean cluster controlling upload semantics for [`run_github_backend`].
+#[derive(Clone, Copy)]
+pub(crate) struct UploadOpts {
+    pub skip_upload: bool,
+    pub replace_existing_draft: bool,
+    pub replace_existing_artifacts: bool,
+    pub use_existing_draft: bool,
+}
+
 /// Run the GitHub release backend for one crate.
 ///
 /// Returns:
 /// - `Ok(Some((release_html_url, download_base, owner, repo)))` on success.
 /// - `Ok(None)` when no `release.github` config is present for the crate
 ///   (callers should `continue` the outer loop with a warning already logged).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_github_backend(
-    rt: &tokio::runtime::Runtime,
-    ctx: &Context,
-    log: &StageLogger,
+    env: &BackendEnv<'_>,
     crate_cfg: &CrateConfig,
     release_cfg: &ReleaseConfig,
-    token: &Option<String>,
-    tag: &str,
-    release_name: &str,
-    release_body: &str,
-    release_mode: &str,
+    spec: &GithubReleaseSpec<'_>,
+    upload_opts: &UploadOpts,
     artifact_entries: &[(std::path::PathBuf, Option<String>)],
-    draft: bool,
-    prerelease: bool,
-    skip_upload: bool,
-    replace_existing_draft: bool,
-    replace_existing_artifacts: bool,
-    use_existing_draft: bool,
-    make_latest: &Option<MakeLatest>,
-    target_commitish: &Option<String>,
-    discussion_category_name: &Option<String>,
-    github_native_changelog: bool,
 ) -> Result<Option<(String, String, String, String)>> {
+    let BackendEnv {
+        rt,
+        ctx,
+        log,
+        token,
+    } = *env;
+    let GithubReleaseSpec {
+        tag,
+        name: release_name,
+        body: release_body,
+        mode: release_mode,
+        draft,
+        prerelease,
+        make_latest,
+        target_commitish,
+        discussion_category: discussion_category_name,
+        github_native_changelog,
+    } = *spec;
+    let UploadOpts {
+        skip_upload,
+        replace_existing_draft,
+        replace_existing_artifacts,
+        use_existing_draft,
+    } = *upload_opts;
     let github = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
         Some(r) => r,
         None => {
@@ -239,17 +289,17 @@ pub(crate) fn run_github_backend(
                 GITHUB_RELEASE_BODY_MAX_CHARS,
             ));
         }
-        let json_body = build_release_json(
+        let json_body = build_release_json(&crate::release_body::ReleaseJsonSpec {
             tag,
-            release_name,
-            &final_body,
-            true, // always create as draft first
-            prerelease,
-            &None, // make_latest deferred to publish PATCH
+            name: release_name,
+            body: &final_body,
+            draft: true, // always create as draft first
+            prerelease_flag: prerelease,
+            make_latest: &None, // make_latest deferred to publish PATCH
             target_commitish,
-            &None, // discussion_category_name deferred to publish PATCH
-            github_native_changelog,
-        );
+            discussion_category: &None, // discussion_category_name deferred to publish PATCH
+            github_native: github_native_changelog,
+        });
 
         // Rate limit check before release create/update API call.
         check_github_rate_limit(&rate_limit_client, &token_str, 10).await;

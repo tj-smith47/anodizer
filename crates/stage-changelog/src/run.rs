@@ -18,7 +18,7 @@ use crate::fetch::{
 use crate::group::{
     GroupedCommits, apply_filters, apply_include_filters, group_commits, sort_commits,
 };
-use crate::render::render_changelog_with_provider;
+use crate::render::{ChangelogRenderOpts, render_changelog_with_provider};
 
 impl Stage for super::ChangelogStage {
     fn name(&self) -> &str {
@@ -413,13 +413,15 @@ impl Stage for super::ChangelogStage {
             let scm_provider = ctx.token_type.to_string();
             let markdown = render_changelog_with_provider(
                 &grouped,
-                abbrev,
-                format_template.as_deref(),
-                &logins_str,
-                &use_source,
-                changelog_title.as_deref(),
-                changelog_divider.as_deref(),
-                Some(&scm_provider),
+                ChangelogRenderOpts {
+                    abbrev,
+                    format_template: format_template.as_deref(),
+                    logins: &logins_str,
+                    use_source: &use_source,
+                    title: changelog_title.as_deref(),
+                    divider: changelog_divider.as_deref(),
+                    scm_provider: Some(&scm_provider),
+                },
             )?;
 
             // Store per-crate changelog in context for the release stage.

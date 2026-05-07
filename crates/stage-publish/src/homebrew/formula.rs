@@ -188,6 +188,26 @@ pub struct FormulaOptions<'a> {
     pub service: Option<&'a str>,
 }
 
+/// Package identity — name, version, description, license. The fields
+/// emitted as plain template variables (`{{ name }}` etc.) by every
+/// formula renderer.
+#[derive(Clone, Copy)]
+pub struct FormulaCore<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+    pub description: &'a str,
+    pub license: &'a str,
+}
+
+/// Ruby code blocks emitted into the formula body — `install do … end` and
+/// `test do … end`. Pre-rendered before reaching the renderer so that
+/// templating decisions stay outside this module.
+#[derive(Clone, Copy)]
+pub struct FormulaCode<'a> {
+    pub install: &'a str,
+    pub test: &'a str,
+}
+
 /// Generate a Homebrew Ruby formula string.
 ///
 /// `archives` is a slice of `(platform_tag, url, sha256)` tuples.
@@ -195,38 +215,27 @@ pub struct FormulaOptions<'a> {
 /// uses a flat `url`/`sha256` pair; otherwise it emits an `on_macos`/`on_linux`
 /// block per entry.
 pub fn generate_formula(
-    name: &str,
-    version: &str,
+    core: &FormulaCore<'_>,
     archives: &[(&str, &str, &str)],
-    description: &str,
-    license: &str,
-    install: &str,
-    test: &str,
+    code: &FormulaCode<'_>,
 ) -> Result<String> {
-    generate_formula_with_opts(
-        name,
-        version,
-        archives,
-        description,
-        license,
-        install,
-        test,
-        &FormulaOptions::default(),
-    )
+    generate_formula_with_opts(core, archives, code, &FormulaOptions::default())
 }
 
 /// Generate a Homebrew Ruby formula string with extended options.
-#[allow(clippy::too_many_arguments)]
 pub fn generate_formula_with_opts(
-    name: &str,
-    version: &str,
+    core: &FormulaCore<'_>,
     archives: &[(&str, &str, &str)],
-    description: &str,
-    license: &str,
-    install: &str,
-    test: &str,
+    code: &FormulaCode<'_>,
     opts: &FormulaOptions<'_>,
 ) -> Result<String> {
+    let FormulaCore {
+        name,
+        version,
+        description,
+        license,
+    } = *core;
+    let FormulaCode { install, test } = *code;
     // Ruby class name: GoReleaser-compatible conversion.
     //
     // Rules (from GoReleaser's formulaNameFor):

@@ -53,5 +53,5 @@ pub(crate) use config::{
     resolve_repo_token, resolve_secret_name, should_skip_publisher, should_skip_upload,
 };
 pub(crate) use formats::{default_package_formats, format_matches};
-pub(crate) use pr::{maybe_submit_pr, submit_pr_via_gh};
+pub(crate) use pr::{PrOrigin, maybe_submit_pr, submit_pr_via_gh};
 pub(crate) use template::{render_or_warn, render_url_template};

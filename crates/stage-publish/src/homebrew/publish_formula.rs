@@ -263,13 +263,17 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     let formula_name = formula_name_rendered.as_str();
 
     let formula = generate_formula_with_opts(
-        formula_name,
-        &version,
+        &super::formula::FormulaCore {
+            name: formula_name,
+            version: &version,
+            description: &description,
+            license: license.as_deref().unwrap_or(""),
+        },
         &archives,
-        &description,
-        license.as_deref().unwrap_or(""),
-        &install,
-        &test_block,
+        &super::formula::FormulaCode {
+            install: &install,
+            test: &test_block,
+        },
         &opts,
     )?;
 
@@ -415,9 +419,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     crate::util::maybe_submit_pr(
         repo_path,
         hb_cfg.repository.as_ref(),
-        &repo_owner,
-        &repo_name,
-        pr_branch,
+        &crate::util::PrOrigin {
+            repo_owner: &repo_owner,
+            repo_name: &repo_name,
+            branch_name: pr_branch,
+        },
         &pr_title,
         &pr_body,
         "homebrew",

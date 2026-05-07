@@ -496,9 +496,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     util::maybe_submit_pr(
         repo_path,
         scoop_cfg.repository.as_ref(),
-        &repo_owner,
-        &repo_name,
-        pr_branch,
+        &util::PrOrigin {
+            repo_owner: &repo_owner,
+            repo_name: &repo_name,
+            branch_name: pr_branch,
+        },
         &format!("Update {} manifest to {}", manifest_name, version),
         &format!(
             "## Manifest\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",

@@ -85,19 +85,50 @@ fn gh_is_available() -> bool {
         .unwrap_or(false)
 }
 
+// ---------------------------------------------------------------------------
+// PR specs — bundle the request shape shared by both transports
+// ---------------------------------------------------------------------------
+
+/// Pull-request payload, shared by [`create_pr_via_gh_cli`] and
+/// [`create_pr_via_api`].
+///
+/// All fields are borrowed; the struct is short-lived and lives on the
+/// caller's stack frame.
+#[derive(Clone, Copy)]
+pub(crate) struct PrSpec<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub head: &'a str,
+    pub base_branch: &'a str,
+    pub draft: bool,
+}
+
+/// Upstream repository identity (owner + name).
+///
+/// Used by the API transport (which builds
+/// `https://api.github.com/repos/{owner}/{name}/pulls`) and by
+/// [`maybe_submit_pr`] when resolving a configured PR base.
+#[derive(Clone, Copy)]
+pub(crate) struct Upstream<'a> {
+    pub owner: &'a str,
+    pub name: &'a str,
+}
+
 /// Submit a pull request via the GitHub CLI (`gh pr create`).
-#[allow(clippy::too_many_arguments)]
 fn create_pr_via_gh_cli(
     repo_path: &Path,
     upstream_repo: &str,
-    head: &str,
-    base_branch: &str,
-    title: &str,
-    body: &str,
-    draft: bool,
+    spec: &PrSpec<'_>,
     label: &str,
     log: &StageLogger,
 ) {
+    let PrSpec {
+        title,
+        body,
+        head,
+        base_branch,
+        draft,
+    } = *spec;
     let mut args = vec![
         "pr",
         "create",
@@ -181,23 +212,22 @@ fn create_pr_via_gh_cli(
 /// CLI is not installed).
 ///
 /// Uses `POST /repos/{owner}/{repo}/pulls` with token-based auth.
-#[allow(clippy::too_many_arguments)]
 fn create_pr_via_api(
-    upstream_owner: &str,
-    upstream_name: &str,
-    head: &str,
-    base_branch: &str,
-    title: &str,
-    body: &str,
-    draft: bool,
+    upstream: &Upstream<'_>,
+    spec: &PrSpec<'_>,
     token: &str,
     label: &str,
     log: &StageLogger,
 ) {
-    let url = format!(
-        "https://api.github.com/repos/{}/{}/pulls",
-        upstream_owner, upstream_name
-    );
+    let Upstream { owner, name } = *upstream;
+    let PrSpec {
+        title,
+        body,
+        head,
+        base_branch,
+        draft,
+    } = *spec;
+    let url = format!("https://api.github.com/repos/{}/{}/pulls", owner, name);
     let payload = serde_json::json!({
         "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,
     });
@@ -233,28 +263,39 @@ fn create_pr_via_api(
     }
 }
 
+/// Origin (the fork) coordinates passed to [`maybe_submit_pr`].
+#[derive(Clone, Copy)]
+pub(crate) struct PrOrigin<'a> {
+    pub repo_owner: &'a str,
+    pub repo_name: &'a str,
+    pub branch_name: &'a str,
+}
+
 /// Submit a pull request if `repo.pull_request.enabled` is true.
 ///
 /// Uses `pull_request.base` for the upstream target when available,
-/// falling back to `repo_owner/repo_name`.  Supports `pull_request.draft`.
+/// falling back to `origin.repo_owner/origin.repo_name`. Supports
+/// `pull_request.draft`.
 ///
 /// When the base repository differs from the fork (i.e. a PR across repos),
 /// the fork is synced with upstream before submitting (GoReleaser parity).
 ///
 /// Tries `gh` CLI first; if unavailable, falls back to the GitHub REST API
 /// using the token from the RepositoryConfig (or `GITHUB_TOKEN` env var).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn maybe_submit_pr(
     repo_path: &Path,
     repo: Option<&RepositoryConfig>,
-    repo_owner: &str,
-    repo_name: &str,
-    branch_name: &str,
+    origin: &PrOrigin<'_>,
     title: &str,
     body: &str,
     label: &str,
     log: &StageLogger,
 ) {
+    let PrOrigin {
+        repo_owner,
+        repo_name,
+        branch_name,
+    } = *origin;
     let pr_cfg = match repo.and_then(|r| r.pull_request.as_ref()) {
         Some(pr) if pr.enabled == Some(true) => pr,
         _ => return,
@@ -301,32 +342,23 @@ pub(crate) fn maybe_submit_pr(
         }
     }
 
+    let spec = PrSpec {
+        title,
+        body: pr_body,
+        head: &head,
+        base_branch,
+        draft: is_draft,
+    };
+    let upstream = Upstream {
+        owner: upstream_owner,
+        name: upstream_name,
+    };
+
     // PR creation: try gh CLI first, fall back to GitHub API.
     if gh_is_available() {
-        create_pr_via_gh_cli(
-            repo_path,
-            &upstream_slug,
-            &head,
-            base_branch,
-            title,
-            pr_body,
-            is_draft,
-            label,
-            log,
-        );
+        create_pr_via_gh_cli(repo_path, &upstream_slug, &spec, label, log);
     } else if let Some(ref tok) = token {
-        create_pr_via_api(
-            upstream_owner,
-            upstream_name,
-            &head,
-            base_branch,
-            title,
-            pr_body,
-            is_draft,
-            tok,
-            label,
-            log,
-        );
+        create_pr_via_api(&upstream, &spec, tok, label, log);
     } else {
         log.warn(&format!(
             "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
@@ -363,32 +395,20 @@ pub(crate) fn submit_pr_via_gh(
         .and_then(|(owner, name)| fetch_default_branch(owner, name, token.as_deref()))
         .unwrap_or_else(|| "main".to_string());
 
+    let spec = PrSpec {
+        title,
+        body,
+        head,
+        base_branch: &base_branch,
+        draft: false,
+    };
+
     if gh_is_available() {
-        create_pr_via_gh_cli(
-            repo_path,
-            upstream_repo,
-            head,
-            &base_branch,
-            title,
-            body,
-            false,
-            label,
-            log,
-        );
+        create_pr_via_gh_cli(repo_path, upstream_repo, &spec, label, log);
     } else if let Some(ref tok) = token {
         if let Some((owner, name)) = upstream_repo.split_once('/') {
-            create_pr_via_api(
-                owner,
-                name,
-                head,
-                &base_branch,
-                title,
-                body,
-                false,
-                tok,
-                label,
-                log,
-            );
+            let upstream = Upstream { owner, name };
+            create_pr_via_api(&upstream, &spec, tok, label, log);
         } else {
             log.warn(&format!(
                 "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"

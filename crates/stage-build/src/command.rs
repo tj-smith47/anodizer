@@ -133,109 +133,88 @@ pub(crate) fn resolve_build_program(
 }
 
 // ---------------------------------------------------------------------------
-// build_command
+// BuildContext + helpers
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_command(
-    binary: &str,
-    crate_path: &str,
-    target: &str,
-    strategy: &CrossStrategy,
-    flags: &[String],
-    features: &[String],
-    no_default_features: bool,
-    env: &HashMap<String, String>,
-    cross_tool: Option<&str>,
-    command_override: Option<&str>,
-) -> BuildCommand {
-    let (program, subcommand) =
-        resolve_build_program(strategy, cross_tool, command_override, Some(target));
+/// Per-call context shared by [`build_command`] and [`build_lib_command`].
+///
+/// Bundles every parameter that's identical across the bin and lib paths
+/// (toolchain selection, cargo flags, feature flags, env, target triple,
+/// crate path) so each public entry point only has to supply the
+/// target-selector args (`--bin <name>` vs `--lib`). All fields are
+/// borrowed; the struct is short-lived.
+pub(crate) struct BuildContext<'a> {
+    pub crate_path: &'a str,
+    pub target: &'a str,
+    pub strategy: &'a CrossStrategy,
+    pub flags: &'a [String],
+    pub features: &'a [String],
+    pub no_default_features: bool,
+    pub env: &'a HashMap<String, String>,
+    pub cross_tool: Option<&'a str>,
+    pub command_override: Option<&'a str>,
+}
+
+/// Internal helper that does the shared cargo-invocation construction. Takes
+/// a `target_selector` (`["--bin", binary, "--target", target]` for bin
+/// builds or `["--lib", "--target", target]` for lib builds) plus the
+/// invariant [`BuildContext`] and assembles the full `BuildCommand`.
+///
+/// Centralising the body here means every change to flag handling,
+/// feature handling, or `--no-default-features` semantics happens in one
+/// place — the bin and lib paths can never drift apart.
+fn build_target_command(target_selector: &[&str], ctx: &BuildContext<'_>) -> BuildCommand {
+    let (program, subcommand) = resolve_build_program(
+        ctx.strategy,
+        ctx.cross_tool,
+        ctx.command_override,
+        Some(ctx.target),
+    );
 
     // The subcommand may contain spaces (e.g. "auditable build"), split into separate args
     let mut args: Vec<String> = subcommand
         .split_whitespace()
         .map(|s| s.to_string())
         .collect();
-    args.extend([
-        "--bin".to_string(),
-        binary.to_string(),
-        "--target".to_string(),
-        target.to_string(),
-    ]);
+    args.extend(target_selector.iter().map(|s| s.to_string()));
 
     // Append flags (one argv token per entry — quoted shell args survive).
-    args.extend(flags.iter().cloned());
+    args.extend(ctx.flags.iter().cloned());
 
     // Features
-    if !features.is_empty() {
+    if !ctx.features.is_empty() {
         args.push("--features".to_string());
-        args.push(features.join(","));
+        args.push(ctx.features.join(","));
     }
 
-    if no_default_features {
+    if ctx.no_default_features {
         args.push("--no-default-features".to_string());
     }
 
     BuildCommand {
         program,
         args,
-        env: env.clone(),
-        cwd: PathBuf::from(crate_path),
+        env: ctx.env.clone(),
+        cwd: PathBuf::from(ctx.crate_path),
     }
 }
 
 // ---------------------------------------------------------------------------
-// build_lib_command
+// build_command — `cargo build --bin <binary>`
+// ---------------------------------------------------------------------------
+
+pub(crate) fn build_command(binary: &str, ctx: &BuildContext<'_>) -> BuildCommand {
+    build_target_command(&["--bin", binary, "--target", ctx.target], ctx)
+}
+
+// ---------------------------------------------------------------------------
+// build_lib_command — `cargo build --lib`
 // ---------------------------------------------------------------------------
 
 /// Build command for library targets (cdylib, staticlib, etc.).
 /// Uses `--lib` instead of `--bin`.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_lib_command(
-    crate_path: &str,
-    target: &str,
-    strategy: &CrossStrategy,
-    flags: &[String],
-    features: &[String],
-    no_default_features: bool,
-    env: &HashMap<String, String>,
-    cross_tool: Option<&str>,
-    command_override: Option<&str>,
-) -> BuildCommand {
-    let (program, subcommand) =
-        resolve_build_program(strategy, cross_tool, command_override, Some(target));
-
-    // The subcommand may contain spaces (e.g. "auditable build"), split into separate args
-    let mut args: Vec<String> = subcommand
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
-    args.extend([
-        "--lib".to_string(),
-        "--target".to_string(),
-        target.to_string(),
-    ]);
-
-    // Append flags (one argv token per entry).
-    args.extend(flags.iter().cloned());
-
-    // Features
-    if !features.is_empty() {
-        args.push("--features".to_string());
-        args.push(features.join(","));
-    }
-
-    if no_default_features {
-        args.push("--no-default-features".to_string());
-    }
-
-    BuildCommand {
-        program,
-        args,
-        env: env.clone(),
-        cwd: PathBuf::from(crate_path),
-    }
+pub(crate) fn build_lib_command(ctx: &BuildContext<'_>) -> BuildCommand {
+    build_target_command(&["--lib", "--target", ctx.target], ctx)
 }
 
 // ---------------------------------------------------------------------------

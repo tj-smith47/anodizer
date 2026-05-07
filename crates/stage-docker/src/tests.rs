@@ -3,9 +3,9 @@
 use super::DockerStage;
 use super::build::{DockerBuildJob, format_v2_created_images_log, list_staging_dir_recursive};
 use super::command::{
-    apply_docker_v2_defaults, build_docker_command, build_docker_v2_command,
-    generate_v2_image_tags, is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend,
-    resolve_skip_push,
+    DockerV1Spec, DockerV2Spec, apply_docker_v2_defaults, build_docker_command,
+    build_docker_v2_command, generate_v2_image_tags, is_docker_v2_sbom_enabled,
+    is_docker_v2_skipped, resolve_backend, resolve_skip_push,
 };
 use super::detect::is_retriable_error;
 use super::platform::{platform_to_arch, tag_suffix};
@@ -31,16 +31,16 @@ fn test_platform_to_arch() {
 #[test]
 fn test_build_docker_command() {
     // With explicit buildx backend, multi-platform gets --push
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64", "linux/arm64"],
-        &["ghcr.io/owner/app:v1.0.0", "ghcr.io/owner/app:latest"],
-        &[],
-        true,
-        &[],
-        &[],
-        Some("buildx"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64", "linux/arm64"],
+        tags: &["ghcr.io/owner/app:v1.0.0", "ghcr.io/owner/app:latest"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert!(cmd.contains(&"buildx".to_string()));
     assert!(cmd.contains(&"build".to_string()));
@@ -51,16 +51,16 @@ fn test_build_docker_command() {
 
 #[test]
 fn test_build_docker_command_dry_run() {
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        false,
-        &[],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     // When push=false, neither --push nor --load
     assert!(!cmd.contains(&"--push".to_string()));
@@ -102,16 +102,16 @@ fn parse_platform_no_arch_does_not_panic() {
 
 #[test]
 fn test_build_docker_command_structure() {
-    let cmd = build_docker_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["my-image:latest"],
-        &[],
-        true,
-        &[],
-        &[],
-        Some("buildx"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        tags: &["my-image:latest"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert_eq!(cmd[0], "docker");
     assert_eq!(cmd[1], "buildx");
@@ -122,16 +122,16 @@ fn test_build_docker_command_structure() {
 
 #[test]
 fn test_build_docker_command_multiple_tags() {
-    let cmd = build_docker_command(
-        "/tmp/ctx",
-        &["linux/amd64", "linux/arm64"],
-        &["repo/img:v1.0.0", "repo/img:latest"],
-        &[],
-        true,
-        &[],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64", "linux/arm64"],
+        tags: &["repo/img:v1.0.0", "repo/img:latest"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     // Both tags should appear after --tag flags
     let tag_positions: Vec<usize> = cmd
@@ -151,46 +151,46 @@ fn test_build_docker_command_multiple_tags() {
 #[test]
 fn test_build_docker_command_skip_push() {
     // When push=false (i.e. skip_push is true or dry_run), --push should not appear
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        false,
-        &[],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert!(!cmd.contains(&"--push".to_string()));
 
     // When push=true with plain docker (single-platform, no backend),
     // --push should NOT appear — plain `docker build` doesn't support it.
     // Push is handled separately via `docker push` per tag.
-    let cmd_plain = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true,
-        &[],
-        &[],
-        None, // resolves to plain docker for single-platform
-    )
+    let cmd_plain = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert!(!cmd_plain.contains(&"--push".to_string()));
 
     // When push=true with buildx backend, --push SHOULD appear
-    let cmd_buildx = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true,
-        &[],
-        &[],
-        Some("buildx"),
-    )
+    let cmd_buildx = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert!(cmd_buildx.contains(&"--push".to_string()));
 }
@@ -202,48 +202,48 @@ fn test_build_docker_command_push_flags() {
         "--provenance=true".to_string(),
     ];
     // push_flags are only baked into the build command for buildx backend
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true,
-        &push_flags,
-        &[],
-        Some("buildx"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &push_flags,
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert!(cmd.contains(&"--push".to_string()));
     assert!(cmd.contains(&"--cache-to=type=registry,ref=ghcr.io/owner/app:cache".to_string()));
     assert!(cmd.contains(&"--provenance=true".to_string()));
 
     // push_flags should NOT appear when push=false
-    let cmd_no_push = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        false,
-        &push_flags,
-        &[],
-        Some("buildx"),
-    )
+    let cmd_no_push = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &push_flags,
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert!(!cmd_no_push.contains(&"--push".to_string()));
     assert!(!cmd_no_push.contains(&"--provenance=true".to_string()));
 
     // For plain docker backend with push=true, push_flags should NOT
     // appear in the build command (they go to `docker push` instead)
-    let cmd_plain = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true,
-        &push_flags,
-        &[],
-        None,
-    )
+    let cmd_plain = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &push_flags,
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert!(!cmd_plain.contains(&"--push".to_string()));
     assert!(!cmd_plain.contains(&"--provenance=true".to_string()));
@@ -257,16 +257,16 @@ fn test_build_docker_command_push_flags() {
 fn test_skip_push_prevents_push_flag_in_command() {
     // When skip_push=true and dry_run=false, should_push should be false
     // so the docker command should NOT contain --push
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        false, // push=false (because skip_push=true or dry_run)
-        &["--provenance=true".to_string()],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &["--provenance=true".to_string()],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert!(!cmd.contains(&"--push".to_string()));
     // push_flags should also NOT be included when push=false
@@ -277,16 +277,16 @@ fn test_skip_push_prevents_push_flag_in_command() {
 fn test_push_flags_appended_to_command() {
     // push_flags only appear in build command for buildx backend
     let push_flags = vec!["--provenance=true".to_string(), "--sbom=true".to_string()];
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["img:v1.0.0"],
-        &[],
-        true,
-        &push_flags,
-        &[],
-        Some("buildx"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["img:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &push_flags,
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert!(cmd.contains(&"--push".to_string()));
     assert!(cmd.contains(&"--provenance=true".to_string()));
@@ -299,16 +299,16 @@ fn test_push_flags_appended_to_command() {
 
 #[test]
 fn test_multi_platform_generates_correct_platform_flag() {
-    let cmd = build_docker_command(
-        "/tmp/ctx",
-        &["linux/amd64", "linux/arm64", "linux/arm/v7"],
-        &["img:latest"],
-        &[],
-        false,
-        &[],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64", "linux/arm64", "linux/arm/v7"],
+        tags: &["img:latest"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert!(cmd.contains(&"--platform=linux/amd64,linux/arm64,linux/arm/v7".to_string()));
 }
@@ -329,16 +329,16 @@ fn test_build_docker_command_extra_build_flags() {
         "--build-arg=APP_VERSION=1.0.0".to_string(),
         "--label=org.opencontainers.image.version=1.0.0".to_string(),
     ];
-    let cmd = build_docker_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:v1.0.0"],
-        &extra,
-        false,
-        &[],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        tags: &["img:v1.0.0"],
+        extra_flags: &extra,
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert!(cmd.contains(&"--build-arg=APP_VERSION=1.0.0".to_string()));
     assert!(cmd.contains(&"--label=org.opencontainers.image.version=1.0.0".to_string()));
@@ -346,16 +346,16 @@ fn test_build_docker_command_extra_build_flags() {
 
 #[test]
 fn test_build_docker_command_context_dir_is_last() {
-    let cmd = build_docker_command(
-        "/my/staging/dir",
-        &["linux/amd64"],
-        &["img:latest"],
-        &[],
-        false,
-        &[],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/my/staging/dir",
+        platforms: &["linux/amd64"],
+        tags: &["img:latest"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert_eq!(cmd.last().unwrap(), "/my/staging/dir");
 }
@@ -378,16 +378,16 @@ fn test_labels_appear_in_docker_build_command() {
             "1.0.0".to_string(),
         ),
     ];
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        false,
-        &[],
-        &labels,
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &labels,
+        use_backend: None,
+    })
     .unwrap();
     assert!(
         cmd.contains(&"--label".to_string()),
@@ -745,16 +745,16 @@ fn test_resolve_backend_unknown_errors() {
 
 #[test]
 fn test_build_docker_command_podman_backend() {
-    let cmd = build_docker_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest"],
-        &[],
-        false,
-        &[],
-        &[],
-        Some("podman"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        tags: &["img:latest"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("podman"),
+    })
     .unwrap();
     assert_eq!(cmd[0], "podman");
     assert_eq!(cmd[1], "build");
@@ -763,16 +763,16 @@ fn test_build_docker_command_podman_backend() {
 
 #[test]
 fn test_build_docker_command_docker_backend() {
-    let cmd = build_docker_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest"],
-        &[],
-        false,
-        &[],
-        &[],
-        Some("docker"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        tags: &["img:latest"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("docker"),
+    })
     .unwrap();
     assert_eq!(cmd[0], "docker");
     assert_eq!(cmd[1], "build");
@@ -782,16 +782,16 @@ fn test_build_docker_command_docker_backend() {
 
 #[test]
 fn test_build_docker_command_buildx_backend() {
-    let cmd = build_docker_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest"],
-        &[],
-        false,
-        &[],
-        &[],
-        Some("buildx"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        tags: &["img:latest"],
+        extra_flags: &[],
+        push: false,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert_eq!(cmd[0], "docker");
     assert_eq!(cmd[1], "buildx");
@@ -1034,18 +1034,18 @@ fn test_build_docker_v2_command_basic() {
         "ghcr.io/owner/app:latest".to_string(),
         "ghcr.io/owner/app:v1.0.0".to_string(),
     ];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &image_tags,
-        &[],
-        &[],
-        &[],
-        &[],
-        false,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &image_tags,
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     // V2 always uses buildx
@@ -1076,18 +1076,18 @@ fn test_build_docker_v2_command_build_args() {
         ("APP_VERSION".to_string(), "1.0.0".to_string()),
         ("BUILD_DATE".to_string(), "2024-01-01".to_string()),
     ];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &build_args,
-        &[],
-        &[],
-        &[],
-        false,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &build_args,
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     // Check --build-arg flags
@@ -1113,18 +1113,18 @@ fn test_build_docker_v2_command_annotations() {
             "1.0.0".to_string(),
         ),
     ];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &annotations,
-        &[],
-        &[],
-        false,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &annotations,
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     let ann_positions: Vec<usize> = cmd
@@ -1146,18 +1146,18 @@ fn test_build_docker_v2_command_annotations() {
 #[test]
 fn test_build_docker_v2_command_labels() {
     let labels = vec![("maintainer".to_string(), "dev@example.com".to_string())];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &labels,
-        &[],
-        false,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &labels,
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     assert!(cmd.contains(&"--label".to_string()));
@@ -1166,18 +1166,18 @@ fn test_build_docker_v2_command_labels() {
 
 #[test]
 fn test_build_docker_v2_command_sbom_true() {
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        true, // sbom enabled
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: true,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     assert!(cmd.contains(&"--attest=type=sbom".to_string()));
@@ -1187,18 +1187,18 @@ fn test_build_docker_v2_command_sbom_true() {
 
 #[test]
 fn test_build_docker_v2_command_sbom_false() {
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        false, // sbom not enabled
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     assert!(!cmd.contains(&"--sbom=true".to_string()));
@@ -1210,18 +1210,18 @@ fn test_build_docker_v2_command_flags() {
         "--cache-from=type=gha".to_string(),
         "--cache-to=type=gha".to_string(),
     ];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &flags,
-        false,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &flags,
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     assert!(cmd.contains(&"--cache-from=type=gha".to_string()));
@@ -1230,18 +1230,18 @@ fn test_build_docker_v2_command_flags() {
 
 #[test]
 fn test_build_docker_v2_command_push() {
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        false,
-        true, // push
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: true,
+        load: true,
+    })
     .unwrap();
 
     assert!(cmd.contains(&"--push".to_string()));
@@ -1250,18 +1250,18 @@ fn test_build_docker_v2_command_push() {
 
 #[test]
 fn test_build_docker_v2_command_no_push_single_platform_loads() {
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        false,
-        false, // no push
-        true,  // load
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     assert!(!cmd.contains(&"--push".to_string()));
@@ -1270,18 +1270,18 @@ fn test_build_docker_v2_command_no_push_single_platform_loads() {
 
 #[test]
 fn test_build_docker_v2_command_no_push_multi_platform_no_load() {
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64", "linux/arm64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        false,
-        false, // no push
-        true,  // load
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64", "linux/arm64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
 
     assert!(!cmd.contains(&"--push".to_string()));
@@ -1299,21 +1299,21 @@ fn test_build_docker_v2_command_combined() {
     let labels = vec![("maintainer".to_string(), "dev@example.com".to_string())];
     let flags = vec!["--no-cache".to_string()];
 
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64", "linux/arm64"],
-        &[
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64", "linux/arm64"],
+        image_tags: &[
             "ghcr.io/owner/app:latest".to_string(),
             "ghcr.io/owner/app:v1.0.0".to_string(),
         ],
-        &build_args,
-        &annotations,
-        &labels,
-        &flags,
-        true, // sbom
-        true, // push
-        true,
-    )
+        build_args: &build_args,
+        annotations: &annotations,
+        labels: &labels,
+        flags: &flags,
+        sbom: true,
+        push: true,
+        load: true,
+    })
     .unwrap();
 
     // Verify all parts are present
@@ -1333,18 +1333,18 @@ fn test_build_docker_v2_command_combined() {
 
 #[test]
 fn test_build_docker_v2_command_includes_iidfile() {
-    let cmd = build_docker_v2_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        false,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
     assert!(
         cmd.iter().any(|a| a.starts_with("--iidfile=")),
@@ -2251,18 +2251,18 @@ fn test_tag_suffix_arm_v7() {
 
 #[test]
 fn test_sbom_uses_attest_format() {
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        true,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: true,
+        push: false,
+        load: true,
+    })
     .unwrap();
     assert!(
         cmd.contains(&"--attest=type=sbom".to_string()),
@@ -2277,18 +2277,18 @@ fn test_sbom_uses_attest_format() {
 #[test]
 fn test_annotations_no_prefix_single_platform() {
     let annotations = vec![("foo".to_string(), "bar".to_string())];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &annotations,
-        &[],
-        &[],
-        false,
-        false,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &annotations,
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
     assert!(
         cmd.contains(&"foo=bar".to_string()),
@@ -2299,18 +2299,18 @@ fn test_annotations_no_prefix_single_platform() {
 #[test]
 fn test_annotations_get_index_prefix_multi_platform() {
     let annotations = vec![("foo".to_string(), "bar".to_string())];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64", "linux/arm64"],
-        &["img:latest".to_string()],
-        &[],
-        &annotations,
-        &[],
-        &[],
-        false,
-        true,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64", "linux/arm64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &annotations,
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: true,
+        load: true,
+    })
     .unwrap();
     assert!(
         cmd.contains(&"index:foo=bar".to_string()),
@@ -2321,18 +2321,18 @@ fn test_annotations_get_index_prefix_multi_platform() {
 #[test]
 fn test_annotations_no_double_index_prefix() {
     let annotations = vec![("index:foo".to_string(), "bar".to_string())];
-    let cmd = build_docker_v2_command(
-        "/tmp/ctx",
-        &["linux/amd64", "linux/arm64"],
-        &["img:latest".to_string()],
-        &[],
-        &annotations,
-        &[],
-        &[],
-        false,
-        true,
-        true,
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/ctx",
+        platforms: &["linux/amd64", "linux/arm64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &annotations,
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: true,
+        load: true,
+    })
     .unwrap();
     assert!(
         cmd.contains(&"index:foo=bar".to_string()),
@@ -2551,18 +2551,18 @@ fn test_project_marker_in_subdirectory_path() {
 
 #[test]
 fn test_build_docker_v2_command_no_load_when_disabled() {
-    let cmd = build_docker_v2_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        false,
-        false,
-        false, // load=false (daemon unavailable)
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: false,
+    })
     .unwrap();
     assert!(!cmd.contains(&"--load".to_string()));
     assert!(!cmd.contains(&"--push".to_string()));
@@ -2570,18 +2570,18 @@ fn test_build_docker_v2_command_no_load_when_disabled() {
 
 #[test]
 fn test_build_docker_v2_command_load_when_enabled() {
-    let cmd = build_docker_v2_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["img:latest".to_string()],
-        &[],
-        &[],
-        &[],
-        &[],
-        false,
-        false,
-        true, // load=true (daemon available)
-    )
+    let cmd = build_docker_v2_command(&DockerV2Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        image_tags: &["img:latest".to_string()],
+        build_args: &[],
+        annotations: &[],
+        labels: &[],
+        flags: &[],
+        sbom: false,
+        push: false,
+        load: true,
+    })
     .unwrap();
     assert!(cmd.contains(&"--load".to_string()));
 }
@@ -2593,16 +2593,16 @@ fn test_build_docker_v2_command_load_when_enabled() {
 #[test]
 fn test_build_docker_command_plain_docker_no_push_flag() {
     // Plain docker (use: docker) should never get --push in the build command
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true, // push requested
-        &[],
-        &[],
-        Some("docker"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("docker"),
+    })
     .unwrap();
     assert!(
         !cmd.contains(&"--push".to_string()),
@@ -2615,16 +2615,16 @@ fn test_build_docker_command_plain_docker_no_push_flag() {
 #[test]
 fn test_build_docker_command_podman_no_push_flag() {
     // Podman should never get --push in the build command
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true, // push requested
-        &[],
-        &[],
-        Some("podman"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("podman"),
+    })
     .unwrap();
     assert!(
         !cmd.contains(&"--push".to_string()),
@@ -2635,16 +2635,16 @@ fn test_build_docker_command_podman_no_push_flag() {
 #[test]
 fn test_build_docker_command_buildx_gets_push_flag() {
     // buildx SHOULD get --push in the build command
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true,
-        &[],
-        &[],
-        Some("buildx"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert!(
         cmd.contains(&"--push".to_string()),
@@ -2657,16 +2657,16 @@ fn test_build_docker_command_multi_platform_no_implicit_buildx() {
     // Multi-platform with no explicit backend defaults to plain docker
     // (matching GoReleaser). --push is NOT added for plain docker.
     // Users must set `use: buildx` explicitly for buildx features.
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64", "linux/arm64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true,
-        &[],
-        &[],
-        None,
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64", "linux/arm64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: None,
+    })
     .unwrap();
     assert!(
         !cmd.contains(&"--push".to_string()),
@@ -2681,16 +2681,16 @@ fn test_build_docker_command_multi_platform_no_implicit_buildx() {
 #[test]
 fn test_build_docker_command_multi_platform_explicit_buildx_gets_push() {
     // Multi-platform with explicit buildx should get --push
-    let cmd = build_docker_command(
-        "/tmp/staging",
-        &["linux/amd64", "linux/arm64"],
-        &["ghcr.io/owner/app:v1.0.0"],
-        &[],
-        true,
-        &[],
-        &[],
-        Some("buildx"),
-    )
+    let cmd = build_docker_command(&DockerV1Spec {
+        staging_dir: "/tmp/staging",
+        platforms: &["linux/amd64", "linux/arm64"],
+        tags: &["ghcr.io/owner/app:v1.0.0"],
+        extra_flags: &[],
+        push: true,
+        push_flags: &[],
+        labels: &[],
+        use_backend: Some("buildx"),
+    })
     .unwrap();
     assert!(
         cmd.contains(&"--push".to_string()),

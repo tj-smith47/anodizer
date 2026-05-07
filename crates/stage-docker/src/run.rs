@@ -352,18 +352,18 @@ impl Stage for super::DockerStage {
                         true
                     };
 
-                    let cmd_args = build_docker_v2_command(
-                        &staging_str,
-                        &platform_refs,
-                        &image_tags,
-                        &rendered_build_args,
-                        &rendered_annotations,
-                        &rendered_labels,
-                        &rendered_flags,
-                        sbom_enabled,
-                        should_push,
-                        should_load,
-                    )?;
+                    let cmd_args = build_docker_v2_command(&crate::command::DockerV2Spec {
+                        staging_dir: &staging_str,
+                        platforms: &platform_refs,
+                        image_tags: &image_tags,
+                        build_args: &rendered_build_args,
+                        annotations: &rendered_annotations,
+                        labels: &rendered_labels,
+                        flags: &rendered_flags,
+                        sbom: sbom_enabled,
+                        push: should_push,
+                        load: should_load,
+                    })?;
 
                     // Resolve retry configuration: per-pipe `docker_v2.retry`
                     // takes precedence (with deprecation warning) over the

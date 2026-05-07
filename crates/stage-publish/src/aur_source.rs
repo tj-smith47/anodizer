@@ -111,42 +111,36 @@ fn publish_aur_source_entry(
         .clone()
         .unwrap_or_else(|| vec!["rust".to_string(), "cargo".to_string()]);
 
-    let pkgbuild = generate_source_pkgbuild(
-        &pkg_name,
-        &version,
+    let meta = AurMeta {
+        name: &pkg_name,
+        version: &version,
         pkgrel,
         description,
         homepage,
         license,
-        &maintainers,
-        &contributors,
-        &depends,
-        &makedepends,
-        &optdepends,
-        &conflicts,
-        &provides,
-        &backup,
-        &source_url,
-        cfg.prepare.as_deref(),
-        cfg.build.as_deref(),
-        cfg.package.as_deref(),
-        default_name,
-    );
-
-    let srcinfo = generate_source_srcinfo(
-        &pkg_name,
-        &version,
-        pkgrel,
-        description,
-        homepage,
-        license,
-        &depends,
-        &makedepends,
-        &optdepends,
-        &conflicts,
-        &provides,
-        &source_url,
-    );
+    };
+    let deps = AurDeps {
+        depends: &depends,
+        makedepends: &makedepends,
+        optdepends: &optdepends,
+        conflicts: &conflicts,
+        provides: &provides,
+    };
+    let extras = AurExtras {
+        people: AurPeople {
+            maintainers: &maintainers,
+            contributors: &contributors,
+        },
+        hooks: AurHooks {
+            prepare: cfg.prepare.as_deref(),
+            build: cfg.build.as_deref(),
+            package: cfg.package.as_deref(),
+        },
+        backup: &backup,
+        binary_name: default_name,
+    };
+    let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &source_url);
+    let srcinfo = generate_source_srcinfo(&meta, &deps, &source_url);
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -316,22 +310,85 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
     Ok(())
 }
 
-/// Generate a .SRCINFO file for a source AUR package.
-#[allow(clippy::too_many_arguments)]
-fn generate_source_srcinfo(
-    name: &str,
-    version: &str,
+// ---------------------------------------------------------------------------
+// AUR source render specs
+// ---------------------------------------------------------------------------
+//
+// The original `generate_source_srcinfo` and `generate_source_pkgbuild`
+// functions took 12 and 19 positional arguments respectively. Bundle them
+// so each public entry point lands well under clippy's threshold and so
+// fields that are truly identical between the two render paths
+// (`AurMeta`, `AurDeps`) are guaranteed to stay in lock-step.
+
+/// Package identity — name, version, pkgrel, description, homepage, license.
+/// Shared by [`generate_source_srcinfo`] and [`generate_source_pkgbuild`].
+#[derive(Clone, Copy)]
+struct AurMeta<'a> {
+    name: &'a str,
+    version: &'a str,
     pkgrel: u32,
-    description: &str,
-    homepage: &str,
-    license: &str,
-    depends: &[String],
-    makedepends: &[String],
-    optdepends: &[String],
-    conflicts: &[String],
-    provides: &[String],
-    source_url: &str,
-) -> String {
+    description: &'a str,
+    homepage: &'a str,
+    license: &'a str,
+}
+
+/// Dependency lists — the five `depends`/`makedepends`/`optdepends`/
+/// `conflicts`/`provides` arrays. Shared by both renderers.
+#[derive(Clone, Copy)]
+struct AurDeps<'a> {
+    depends: &'a [String],
+    makedepends: &'a [String],
+    optdepends: &'a [String],
+    conflicts: &'a [String],
+    provides: &'a [String],
+}
+
+/// People credits — `# Maintainer:` / `# Contributor:` comment lines.
+/// PKGBUILD-only (.SRCINFO does not surface these).
+#[derive(Clone, Copy)]
+struct AurPeople<'a> {
+    maintainers: &'a [String],
+    contributors: &'a [String],
+}
+
+/// User-supplied PKGBUILD function bodies. Each is opt-in; when `None`,
+/// the renderer emits the default cargo-based body.
+#[derive(Clone, Copy)]
+struct AurHooks<'a> {
+    prepare: Option<&'a str>,
+    build: Option<&'a str>,
+    package: Option<&'a str>,
+}
+
+/// Everything PKGBUILD-only beyond `meta` + `deps` + `source_url`.
+/// Bundles people, hooks, backup file list, and the binary name used by
+/// the default build/package bodies.
+#[derive(Clone, Copy)]
+struct AurExtras<'a> {
+    people: AurPeople<'a>,
+    hooks: AurHooks<'a>,
+    backup: &'a [String],
+    binary_name: &'a str,
+}
+
+/// Generate a .SRCINFO file for a source AUR package.
+fn generate_source_srcinfo(meta: &AurMeta<'_>, deps: &AurDeps<'_>, source_url: &str) -> String {
+    let AurMeta {
+        name,
+        version,
+        pkgrel,
+        description,
+        homepage,
+        license,
+    } = *meta;
+    let AurDeps {
+        depends,
+        makedepends,
+        optdepends,
+        conflicts,
+        provides,
+    } = *deps;
+
     let mut lines = Vec::new();
     lines.push(format!("pkgbase = {}", name));
     lines.push(format!("\tpkgdesc = {}", description));
@@ -366,28 +423,41 @@ fn generate_source_srcinfo(
 }
 
 /// Generate a source-only PKGBUILD that builds from source using cargo.
-#[allow(clippy::too_many_arguments)]
 fn generate_source_pkgbuild(
-    name: &str,
-    version: &str,
-    pkgrel: u32,
-    description: &str,
-    homepage: &str,
-    license: &str,
-    maintainers: &[String],
-    contributors: &[String],
-    depends: &[String],
-    makedepends: &[String],
-    optdepends: &[String],
-    conflicts: &[String],
-    provides: &[String],
-    backup: &[String],
+    meta: &AurMeta<'_>,
+    deps: &AurDeps<'_>,
+    extras: &AurExtras<'_>,
     source_url: &str,
-    prepare: Option<&str>,
-    build: Option<&str>,
-    package: Option<&str>,
-    binary_name: &str,
 ) -> String {
+    let AurMeta {
+        name,
+        version,
+        pkgrel,
+        description,
+        homepage,
+        license,
+    } = *meta;
+    let AurDeps {
+        depends,
+        makedepends,
+        optdepends,
+        conflicts,
+        provides,
+    } = *deps;
+    let AurExtras {
+        people: AurPeople {
+            maintainers,
+            contributors,
+        },
+        hooks: AurHooks {
+            prepare,
+            build,
+            package,
+        },
+        backup,
+        binary_name,
+    } = *extras;
+
     let mut lines = Vec::new();
 
     // Header comments
@@ -493,26 +563,44 @@ mod tests {
 
     #[test]
     fn test_generate_source_pkgbuild() {
+        let maintainers = vec!["Test <test@example.com>".to_string()];
+        let depends = vec!["openssl".to_string()];
+        let makedepends = vec!["rust".to_string(), "cargo".to_string()];
+        let conflicts = vec!["myapp-bin".to_string()];
+        let provides = vec!["myapp".to_string()];
+        let meta = AurMeta {
+            name: "myapp",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "A test application",
+            homepage: "https://example.com",
+            license: "MIT",
+        };
+        let deps = AurDeps {
+            depends: &depends,
+            makedepends: &makedepends,
+            optdepends: &[],
+            conflicts: &conflicts,
+            provides: &provides,
+        };
+        let extras = AurExtras {
+            people: AurPeople {
+                maintainers: &maintainers,
+                contributors: &[],
+            },
+            hooks: AurHooks {
+                prepare: None,
+                build: None,
+                package: None,
+            },
+            backup: &[],
+            binary_name: "myapp",
+        };
         let pkgbuild = generate_source_pkgbuild(
-            "myapp",
-            "1.0.0",
-            1,
-            "A test application",
-            "https://example.com",
-            "MIT",
-            &["Test <test@example.com>".to_string()],
-            &[],
-            &["openssl".to_string()],
-            &["rust".to_string(), "cargo".to_string()],
-            &[],
-            &["myapp-bin".to_string()],
-            &["myapp".to_string()],
-            &[],
+            &meta,
+            &deps,
+            &extras,
             "https://github.com/user/myapp/archive/refs/tags/v1.0.0.tar.gz",
-            None,
-            None,
-            None,
-            "myapp",
         );
 
         assert!(pkgbuild.contains("pkgname='myapp'"));
@@ -528,27 +616,36 @@ mod tests {
 
     #[test]
     fn test_generate_source_pkgbuild_custom_build() {
-        let pkgbuild = generate_source_pkgbuild(
-            "myapp",
-            "1.0.0",
-            1,
-            "Test",
-            "",
-            "MIT",
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
-            "https://example.com/source.tar.gz",
-            Some("cd myapp\npatch -p1 < fix.patch"),
-            Some("make"),
-            Some("make install DESTDIR=\"$pkgdir\""),
-            "myapp",
-        );
+        let meta = AurMeta {
+            name: "myapp",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "Test",
+            homepage: "",
+            license: "MIT",
+        };
+        let deps = AurDeps {
+            depends: &[],
+            makedepends: &[],
+            optdepends: &[],
+            conflicts: &[],
+            provides: &[],
+        };
+        let extras = AurExtras {
+            people: AurPeople {
+                maintainers: &[],
+                contributors: &[],
+            },
+            hooks: AurHooks {
+                prepare: Some("cd myapp\npatch -p1 < fix.patch"),
+                build: Some("make"),
+                package: Some("make install DESTDIR=\"$pkgdir\""),
+            },
+            backup: &[],
+            binary_name: "myapp",
+        };
+        let pkgbuild =
+            generate_source_pkgbuild(&meta, &deps, &extras, "https://example.com/source.tar.gz");
 
         assert!(pkgbuild.contains("prepare() {"));
         assert!(pkgbuild.contains("patch -p1 < fix.patch"));
@@ -558,18 +655,28 @@ mod tests {
 
     #[test]
     fn test_generate_source_srcinfo() {
+        let depends = vec!["openssl".to_string()];
+        let makedepends = vec!["rust".to_string(), "cargo".to_string()];
+        let conflicts = vec!["myapp-bin".to_string()];
+        let provides = vec!["myapp".to_string()];
+        let meta = AurMeta {
+            name: "myapp",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "A test application",
+            homepage: "https://example.com",
+            license: "MIT",
+        };
+        let deps = AurDeps {
+            depends: &depends,
+            makedepends: &makedepends,
+            optdepends: &[],
+            conflicts: &conflicts,
+            provides: &provides,
+        };
         let srcinfo = generate_source_srcinfo(
-            "myapp",
-            "1.0.0",
-            1,
-            "A test application",
-            "https://example.com",
-            "MIT",
-            &["openssl".to_string()],
-            &["rust".to_string(), "cargo".to_string()],
-            &[],
-            &["myapp-bin".to_string()],
-            &["myapp".to_string()],
+            &meta,
+            &deps,
             "https://github.com/user/myapp/archive/refs/tags/v1.0.0.tar.gz",
         );
 

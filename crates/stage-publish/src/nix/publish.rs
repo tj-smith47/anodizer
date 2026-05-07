@@ -455,9 +455,11 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     util::maybe_submit_pr(
         repo_path,
         nix_cfg.repository.as_ref(),
-        &repo_owner,
-        &repo_name,
-        branch.unwrap_or("main"),
+        &util::PrOrigin {
+            repo_owner: &repo_owner,
+            repo_name: &repo_name,
+            branch_name: branch.unwrap_or("main"),
+        },
         &format!("Update {} to {}", name, version),
         &format!(
             "## Package\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",

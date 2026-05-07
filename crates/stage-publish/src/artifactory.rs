@@ -49,19 +49,35 @@ fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
     }
 }
 
+/// Bundling flags for [`collect_upload_artifacts`].
+///
+/// Each `bool` toggles inclusion of an extra artifact category alongside
+/// the mode-selected primary artifacts. `extra_files_only` short-circuits
+/// the entire selection — when set, only [`ArtifactKind::UploadableFile`]
+/// items are returned and the other flags are ignored.
+#[derive(Clone, Copy, Default)]
+pub struct CollectFlags {
+    pub checksum: bool,
+    pub signature: bool,
+    pub meta: bool,
+    pub extra_files_only: bool,
+}
+
 /// Collect artifacts matching mode, optional ID filter, and optional extension filter.
 /// Also collects checksum/signature/metadata artifacts and extra files when configured.
-#[allow(clippy::too_many_arguments)]
 pub fn collect_upload_artifacts<'a>(
     ctx: &'a Context,
     mode: &str,
     ids: Option<&[String]>,
     exts: Option<&[String]>,
-    include_checksum: bool,
-    include_signature: bool,
-    include_meta: bool,
-    extra_files_only: bool,
+    flags: CollectFlags,
 ) -> Vec<&'a Artifact> {
+    let CollectFlags {
+        checksum: include_checksum,
+        signature: include_signature,
+        meta: include_meta,
+        extra_files_only,
+    } = flags;
     // If extra_files_only, skip normal artifacts entirely
     if extra_files_only {
         return ctx
@@ -240,6 +256,28 @@ pub fn render_artifact_url(
 // upload_single_artifact
 // ---------------------------------------------------------------------------
 
+/// HTTP request descriptor for [`upload_single_artifact`].
+///
+/// Bundles the four "what URL / how to address it" fields. The
+/// `checksum_header` slot, when non-empty, names a custom HTTP header
+/// (e.g. `X-Checksum-Sha256`) that is set to the artifact's hex SHA-256
+/// before the request is dispatched.
+#[derive(Clone, Copy)]
+pub struct UploadHeaders<'a> {
+    pub method: &'a str,
+    pub url: &'a str,
+    pub checksum_header: &'a str,
+    pub custom_headers: &'a HashMap<String, String>,
+}
+
+/// HTTP basic-auth credentials for [`upload_single_artifact`]. Either both
+/// fields are non-empty (auth applied) or both are empty (anonymous).
+#[derive(Clone, Copy)]
+pub struct UploadAuth<'a> {
+    pub username: &'a str,
+    pub password: &'a str,
+}
+
 /// Upload a single artifact to the target URL.
 ///
 /// Drives the per-attempt request through [`retry_http_blocking`], which
@@ -247,20 +285,22 @@ pub fn render_artifact_url(
 /// responses, and 429s retry per the user's `retry:` config (mirrors
 /// GoReleaser `internal/pipe/upload/upload.go::doUpload`); 4xx responses
 /// fast-fail.
-#[allow(clippy::too_many_arguments)]
 pub fn upload_single_artifact(
     client: &reqwest::blocking::Client,
-    method: &str,
-    url: &str,
-    username: &str,
-    password: &str,
-    checksum_header: &str,
-    custom_headers: &HashMap<String, String>,
+    headers: &UploadHeaders<'_>,
+    auth: &UploadAuth<'_>,
     artifact: &Artifact,
     ctx: &Context,
     policy: &RetryPolicy,
     log: &StageLogger,
 ) -> Result<()> {
+    let UploadHeaders {
+        method,
+        url,
+        checksum_header,
+        custom_headers,
+    } = *headers;
+    let UploadAuth { username, password } = *auth;
     let path = &artifact.path;
     if !path.exists() {
         bail!("artifactory: artifact file not found: {}", path.display());
@@ -562,10 +602,12 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
                 mode,
                 entry.ids.as_deref(),
                 entry.exts.as_deref(),
-                include_checksum,
-                include_signature,
-                include_meta,
-                extra_files_only,
+                CollectFlags {
+                    checksum: include_checksum,
+                    signature: include_signature,
+                    meta: include_meta,
+                    extra_files_only,
+                },
             );
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
             // Render per-artifact URLs through the same path live mode uses
@@ -601,10 +643,12 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             mode,
             entry.ids.as_deref(),
             entry.exts.as_deref(),
-            include_checksum,
-            include_signature,
-            include_meta,
-            extra_files_only,
+            CollectFlags {
+                checksum: include_checksum,
+                signature: include_signature,
+                meta: include_meta,
+                extra_files_only,
+            },
         );
 
         if artifacts.is_empty() {
@@ -627,12 +671,16 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             let url = render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
             upload_single_artifact(
                 &client,
-                method,
-                &url,
-                &username,
-                &password,
-                checksum_header,
-                custom_headers,
+                &UploadHeaders {
+                    method,
+                    url: &url,
+                    checksum_header,
+                    custom_headers,
+                },
+                &UploadAuth {
+                    username: &username,
+                    password: &password,
+                },
                 artifact,
                 ctx,
                 &policy,
@@ -1043,13 +1091,13 @@ mod tests {
 
         // Archive mode should find archive but not binary
         let archive_arts =
-            collect_upload_artifacts(&ctx, "archive", None, None, false, false, false, false);
+            collect_upload_artifacts(&ctx, "archive", None, None, CollectFlags::default());
         assert_eq!(archive_arts.len(), 1);
         assert_eq!(archive_arts[0].kind, ArtifactKind::Archive);
 
         // Binary mode should find binary but not archive
         let binary_arts =
-            collect_upload_artifacts(&ctx, "binary", None, None, false, false, false, false);
+            collect_upload_artifacts(&ctx, "binary", None, None, CollectFlags::default());
         assert_eq!(binary_arts.len(), 1);
         assert_eq!(binary_arts[0].kind, ArtifactKind::UploadableBinary);
     }
@@ -1080,16 +1128,8 @@ mod tests {
         });
 
         let exts = vec!["zip".to_string()];
-        let arts = collect_upload_artifacts(
-            &ctx,
-            "archive",
-            None,
-            Some(&exts),
-            false,
-            false,
-            false,
-            false,
-        );
+        let arts =
+            collect_upload_artifacts(&ctx, "archive", None, Some(&exts), CollectFlags::default());
         assert_eq!(arts.len(), 1);
         assert!(arts[0].name().ends_with(".zip"));
     }
@@ -1120,12 +1160,20 @@ mod tests {
         });
 
         // Without include_checksum
-        let arts =
-            collect_upload_artifacts(&ctx, "archive", None, None, false, false, false, false);
+        let arts = collect_upload_artifacts(&ctx, "archive", None, None, CollectFlags::default());
         assert_eq!(arts.len(), 1);
 
         // With include_checksum
-        let arts = collect_upload_artifacts(&ctx, "archive", None, None, true, false, false, false);
+        let arts = collect_upload_artifacts(
+            &ctx,
+            "archive",
+            None,
+            None,
+            CollectFlags {
+                checksum: true,
+                ..CollectFlags::default()
+            },
+        );
         assert_eq!(arts.len(), 2);
     }
 

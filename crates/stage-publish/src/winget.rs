@@ -948,9 +948,11 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         util::maybe_submit_pr(
             repo_path,
             winget_cfg.repository.as_ref(),
-            &repo_owner,
-            &repo_name,
-            branch_name,
+            &util::PrOrigin {
+                repo_owner: &repo_owner,
+                repo_name: &repo_name,
+                branch_name,
+            },
             &format!("New version: {} version {}", package_id, version),
             &format!(
                 "## Package\n- **Package**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",

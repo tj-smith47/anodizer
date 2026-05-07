@@ -20,21 +20,40 @@ use crate::group::{
     group_commits, parse_commit_message, sort_commits,
 };
 
+/// Per-call rendering options for [`render_changelog_with_provider`].
+///
+/// Bundles the long parameter list so the public render entry point keeps a
+/// readable signature. All fields are borrowed; the struct is short-lived.
+#[derive(Clone, Copy)]
+pub(crate) struct ChangelogRenderOpts<'a> {
+    pub abbrev: i32,
+    pub format_template: Option<&'a str>,
+    pub logins: &'a str,
+    pub use_source: &'a str,
+    pub title: Option<&'a str>,
+    pub divider: Option<&'a str>,
+    /// Overrides `use_source` for newline selection only (matches
+    /// GoReleaser's `newLineFor()` which inspects `ctx.TokenType`).
+    pub scm_provider: Option<&'a str>,
+}
+
 /// Inner render function that accepts an optional SCM provider override for
 /// newline handling. GoReleaser's `newLineFor()` checks `ctx.TokenType`, not
 /// the changelog source. When `scm_provider` is set, it overrides `use_source`
 /// for newline selection (but not for default format template selection).
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_changelog_with_provider(
     grouped: &[GroupedCommits],
-    abbrev: i32,
-    format_template: Option<&str>,
-    logins: &str,
-    use_source: &str,
-    title: Option<&str>,
-    divider: Option<&str>,
-    scm_provider: Option<&str>,
+    opts: ChangelogRenderOpts<'_>,
 ) -> Result<String> {
+    let ChangelogRenderOpts {
+        abbrev,
+        format_template,
+        logins,
+        use_source,
+        title,
+        divider,
+        scm_provider,
+    } = opts;
     use anodizer_core::config::ChangelogConfig;
     // Build a transient ChangelogConfig with just the user-supplied
     // format so resolved_format applies the same precedence the
@@ -69,20 +88,44 @@ pub(crate) fn render_changelog_with_provider(
     if !changelog_title.is_empty() {
         out.push_str(&format!("## {}\n\n", changelog_title));
     }
-    render_groups(&mut out, grouped, abbrev, tmpl, logins, divider, newline, 3)?;
+    let state = RenderGroupsState {
+        abbrev,
+        tmpl,
+        logins,
+        divider,
+        newline,
+    };
+    render_groups(&mut out, grouped, &state, 3)?;
     Ok(out)
 }
+
+/// State shared across the recursive [`render_groups`] tree walk.
+///
+/// Bundles every parameter that's invariant across the recursion (only `out`,
+/// `groups`, and `depth` change). `divider` is the single field that's
+/// suppressed at subgroup boundaries — that's expressed by passing
+/// `state.with_divider(None)` into the recursive call.
+#[derive(Clone, Copy)]
+struct RenderGroupsState<'a> {
+    abbrev: i32,
+    tmpl: &'a str,
+    logins: &'a str,
+    divider: Option<&'a str>,
+    newline: &'a str,
+}
+
+impl<'a> RenderGroupsState<'a> {
+    fn with_divider(self, divider: Option<&'a str>) -> Self {
+        Self { divider, ..self }
+    }
+}
+
 /// Recursively render grouped commits at the given heading depth.
 /// Depth is capped at 6 (matching Markdown's `######` max heading level).
-#[allow(clippy::too_many_arguments)]
 fn render_groups(
     out: &mut String,
     groups: &[GroupedCommits],
-    abbrev: i32,
-    tmpl: &str,
-    logins: &str,
-    divider: Option<&str>,
-    newline: &str,
+    state: &RenderGroupsState<'_>,
     depth: usize,
 ) -> Result<()> {
     if depth > 6 {
@@ -92,7 +135,7 @@ fn render_groups(
     for (i, group) in groups.iter().enumerate() {
         // Insert divider between groups (not before the first one).
         if i > 0
-            && let Some(div) = divider
+            && let Some(div) = state.divider
         {
             out.push_str(div);
             out.push('\n');
@@ -105,20 +148,18 @@ fn render_groups(
             out.push_str(&format!("{} {}\n\n", hashes, group.title));
         }
         for commit in &group.commits {
-            render_commit_line(out, commit, abbrev, tmpl, logins, newline)?;
+            render_commit_line(
+                out,
+                commit,
+                state.abbrev,
+                state.tmpl,
+                state.logins,
+                state.newline,
+            )?;
         }
         // Render nested subgroups one level deeper (no divider at subgroup level).
         if !group.subgroups.is_empty() {
-            render_groups(
-                out,
-                &group.subgroups,
-                abbrev,
-                tmpl,
-                logins,
-                None,
-                newline,
-                depth + 1,
-            )?;
+            render_groups(out, &group.subgroups, &state.with_divider(None), depth + 1)?;
         }
         // Add trailing newline after commits. Skip if this group has subgroups
         // (they add their own spacing) and no direct commits.
@@ -349,13 +390,15 @@ pub fn render_crate_section(
     let abbrev = cfg.resolved_abbrev();
     let body = render_changelog_with_provider(
         &grouped,
-        abbrev,
-        cfg.format.as_deref(),
-        "",
-        cfg.resolved_use_source(),
-        Some(""),
-        cfg.divider.as_deref(),
-        None,
+        ChangelogRenderOpts {
+            abbrev,
+            format_template: cfg.format.as_deref(),
+            logins: "",
+            use_source: cfg.resolved_use_source(),
+            title: Some(""),
+            divider: cfg.divider.as_deref(),
+            scm_provider: None,
+        },
     )?;
     // `render_changelog_with_provider` always emits a `## <title>` line; we
     // suppressed it by passing `Some("")`, which produces `## \n\n`. Drop

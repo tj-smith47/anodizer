@@ -107,10 +107,12 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             mode,
             entry.ids.as_deref(),
             entry.exts.as_deref(),
-            include_checksum,
-            include_signature,
-            include_meta,
-            extra_files_only,
+            artifactory::CollectFlags {
+                checksum: include_checksum,
+                signature: include_signature,
+                meta: include_meta,
+                extra_files_only,
+            },
         );
 
         if artifacts.is_empty() {
@@ -163,12 +165,16 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             // Upload the artifact
             artifactory::upload_single_artifact(
                 &client,
-                method,
-                &url,
-                &username,
-                &password,
-                checksum_header,
-                custom_headers,
+                &artifactory::UploadHeaders {
+                    method,
+                    url: &url,
+                    checksum_header,
+                    custom_headers,
+                },
+                &artifactory::UploadAuth {
+                    username: &username,
+                    password: &password,
+                },
                 artifact,
                 ctx,
                 &policy,

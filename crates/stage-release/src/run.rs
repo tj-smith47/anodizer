@@ -989,28 +989,37 @@ impl Stage for super::ReleaseStage {
                 // GitHub backend (extracted to github::run_github_backend)
                 // ===============================================================
                 ScmTokenType::GitHub => {
-                    match github::run_github_backend(
-                        &rt,
+                    let env = github::BackendEnv {
+                        rt: &rt,
                         ctx,
-                        &log,
-                        crate_cfg,
-                        release_cfg,
-                        &token,
-                        &tag,
-                        &release_name,
-                        &release_body,
-                        &release_mode,
-                        &artifact_entries,
+                        log: &log,
+                        token: &token,
+                    };
+                    let spec = github::GithubReleaseSpec {
+                        tag: &tag,
+                        name: &release_name,
+                        body: &release_body,
+                        mode: &release_mode,
                         draft,
                         prerelease,
+                        make_latest: &make_latest,
+                        target_commitish: &target_commitish,
+                        discussion_category: &discussion_category_name,
+                        github_native_changelog,
+                    };
+                    let upload_opts = github::UploadOpts {
                         skip_upload,
                         replace_existing_draft,
                         replace_existing_artifacts,
                         use_existing_draft,
-                        &make_latest,
-                        &target_commitish,
-                        &discussion_category_name,
-                        github_native_changelog,
+                    };
+                    match github::run_github_backend(
+                        &env,
+                        crate_cfg,
+                        release_cfg,
+                        &spec,
+                        &upload_opts,
+                        &artifact_entries,
                     )? {
                         Some(t) => t,
                         None => continue,

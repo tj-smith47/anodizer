@@ -670,32 +670,23 @@ impl Stage for super::BuildStage {
                         target_env.insert("RUSTFLAGS".to_string(), new_rustflags);
                     }
 
+                    let build_ctx = crate::command::BuildContext {
+                        crate_path: &crate_cfg.path,
+                        target,
+                        strategy: &strategy,
+                        flags: &effective_flags,
+                        features: &effective_features,
+                        no_default_features,
+                        env: &target_env,
+                        cross_tool: cross_tool.as_deref(),
+                        command_override: command_override.as_deref(),
+                    };
+
                     // For library/wasm targets, use --lib; otherwise --bin
                     let cmd = if is_library || is_wasm_target {
-                        build_lib_command(
-                            &crate_cfg.path,
-                            target,
-                            &strategy,
-                            &effective_flags,
-                            &effective_features,
-                            no_default_features,
-                            &target_env,
-                            cross_tool.as_deref(),
-                            command_override.as_deref(),
-                        )
+                        build_lib_command(&build_ctx)
                     } else {
-                        build_command(
-                            &binary_name,
-                            &crate_cfg.path,
-                            target,
-                            &strategy,
-                            &effective_flags,
-                            &effective_features,
-                            no_default_features,
-                            &target_env,
-                            cross_tool.as_deref(),
-                            command_override.as_deref(),
-                        )
+                        build_command(&binary_name, &build_ctx)
                     };
 
                     build_jobs.push(BuildJob {

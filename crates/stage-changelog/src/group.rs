@@ -378,13 +378,15 @@ pub(crate) fn render_changelog(
     // directly so they can pattern-match on the Err.
     crate::render::render_changelog_with_provider(
         grouped,
-        abbrev,
-        format_template,
-        logins,
-        use_source,
-        title,
-        divider,
-        None,
+        crate::render::ChangelogRenderOpts {
+            abbrev,
+            format_template,
+            logins,
+            use_source,
+            title,
+            divider,
+            scm_provider: None,
+        },
     )
     .expect("test render_changelog: template render failed")
 }

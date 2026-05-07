@@ -110,9 +110,11 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
     crate::util::maybe_submit_pr(
         repo_path,
         hb_cfg.repository.as_ref(),
-        &repo_owner,
-        &repo_name,
-        pr_branch,
+        &crate::util::PrOrigin {
+            repo_owner: &repo_owner,
+            repo_name: &repo_name,
+            branch_name: pr_branch,
+        },
         &format!("Update {} cask to {}", cask_result.cask_name, version),
         &format!(
             "## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",

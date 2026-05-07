@@ -2542,51 +2542,51 @@ fn test_include_meta_collects_dist_files() {
 #[test]
 fn test_build_release_json_body_within_limit() {
     let body = "a".repeat(1000);
-    let json = build_release_json(
-        "v1.0.0",
-        "Release v1.0.0",
-        &body,
-        false,
-        false,
-        &None,
-        &None,
-        &None,
-        false,
-    );
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: &body,
+        draft: false,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+        github_native: false,
+    });
     assert_eq!(json["body"].as_str().unwrap(), &body);
 }
 
 #[test]
 fn test_build_release_json_body_at_limit() {
     let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS);
-    let json = build_release_json(
-        "v1.0.0",
-        "Release v1.0.0",
-        &body,
-        false,
-        false,
-        &None,
-        &None,
-        &None,
-        false,
-    );
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: &body,
+        draft: false,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+        github_native: false,
+    });
     assert_eq!(json["body"].as_str().unwrap(), &body);
 }
 
 #[test]
 fn test_build_release_json_body_exceeds_limit_is_truncated() {
     let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS + 500);
-    let json = build_release_json(
-        "v1.0.0",
-        "Release v1.0.0",
-        &body,
-        false,
-        false,
-        &None,
-        &None,
-        &None,
-        false,
-    );
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: &body,
+        draft: false,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+        github_native: false,
+    });
     let result = json["body"].as_str().unwrap();
     let suffix = "\n\n...(truncated)";
     // Total length must not exceed the limit.
@@ -2604,17 +2604,17 @@ fn test_build_release_json_body_exceeds_limit_is_truncated() {
 
 #[test]
 fn test_build_release_json_empty_body_not_set() {
-    let json = build_release_json(
-        "v1.0.0",
-        "Release v1.0.0",
-        "",
-        false,
-        false,
-        &None,
-        &None,
-        &None,
-        false,
-    );
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: "",
+        draft: false,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+        github_native: false,
+    });
     assert!(json.get("body").is_none());
 }
 
@@ -2622,33 +2622,33 @@ fn test_build_release_json_empty_body_not_set() {
 
 #[test]
 fn test_build_release_json_draft_true() {
-    let json = build_release_json(
-        "v1.0.0",
-        "Release v1.0.0",
-        "body",
-        true,
-        false,
-        &None,
-        &None,
-        &None,
-        false,
-    );
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: "body",
+        draft: true,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+        github_native: false,
+    });
     assert!(json["draft"].as_bool().unwrap());
 }
 
 #[test]
 fn test_build_release_json_draft_false() {
-    let json = build_release_json(
-        "v1.0.0",
-        "Release v1.0.0",
-        "body",
-        false,
-        false,
-        &None,
-        &None,
-        &None,
-        false,
-    );
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: "body",
+        draft: false,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+        github_native: false,
+    });
     assert!(!json["draft"].as_bool().unwrap());
 }
 

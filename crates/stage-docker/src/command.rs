@@ -39,57 +39,99 @@ pub fn resolve_backend(
     }
 }
 
-/// Construct the docker build command arguments.
-///
-/// * `staging_dir` – path to the directory that acts as the Docker build
-///   context (already contains the Dockerfile and binaries).
-/// * `platforms` – Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
-/// * `tags` – fully-qualified image tags.
-/// * `extra_flags` – rendered `build_flag_templates`.
-/// * `push` – when `true`, adds `--push` to the command.
-/// * `push_flags` – additional flags added to the command when pushing.
-/// * `labels` – OCI labels added as `--label key=value` flags.
-/// * `use_backend` – backend selection: `"docker"`, `"buildx"`, or `"podman"`.
-#[allow(clippy::too_many_arguments)]
-pub fn build_docker_command(
-    staging_dir: &str,
-    platforms: &[&str],
-    tags: &[&str],
-    extra_flags: &[String],
-    push: bool,
-    push_flags: &[String],
-    labels: &[(String, String)],
-    use_backend: Option<&str>,
-) -> Result<Vec<String>> {
-    let multi_platform = platforms.len() > 1;
-    let (binary, subcommands) = resolve_backend(use_backend, multi_platform)?;
+// ---------------------------------------------------------------------------
+// Shared command-construction helpers
+// ---------------------------------------------------------------------------
+//
+// `build_docker_command` (V1) and `build_docker_v2_command` (V2) share the
+// same skeleton: backend prefix → `--progress=plain` → `--platform=…` →
+// `--tag …` (× n) → `--label …` (× n) → trailing positional context dir.
+// Centralise that common header so the two paths can never drift apart on
+// argv ordering or quoting rules.
 
-    let mut cmd: Vec<String> = Vec::new();
+/// Append the backend command prefix (binary + sub-commands).
+fn push_backend_prefix(cmd: &mut Vec<String>, binary: &str, subcommands: &[&str]) {
     cmd.push(binary.to_string());
     for sub in subcommands {
-        cmd.push(sub.to_string());
+        cmd.push((*sub).to_string());
     }
+}
 
-    // Always use plain progress for CI-friendly, verbose output.
-    cmd.push("--progress=plain".to_string());
-
-    // --platform=linux/amd64,linux/arm64
+/// Append `--platform=<comma-joined>` when `platforms` is non-empty.
+fn push_platforms(cmd: &mut Vec<String>, platforms: &[&str]) {
     if !platforms.is_empty() {
-        let platform_str = platforms.join(",");
-        cmd.push(format!("--platform={platform_str}"));
+        cmd.push(format!("--platform={}", platforms.join(",")));
     }
+}
 
-    // --tag <tag> for each image tag
+/// Append `--tag <tag>` pairs for every entry.
+fn push_tags<S: AsRef<str>>(cmd: &mut Vec<String>, tags: &[S]) {
     for tag in tags {
         cmd.push("--tag".to_string());
-        cmd.push(tag.to_string());
+        cmd.push(tag.as_ref().to_string());
     }
+}
 
-    // --label key=value for each OCI label
+/// Append `--label key=value` pairs for every entry.
+fn push_labels(cmd: &mut Vec<String>, labels: &[(String, String)]) {
     for (key, value) in labels {
         cmd.push("--label".to_string());
         cmd.push(format!("{}={}", key, value));
     }
+}
+
+// ---------------------------------------------------------------------------
+// V1 spec + builder
+// ---------------------------------------------------------------------------
+
+/// Spec for the legacy (V1) `docker build` invocation.
+///
+/// Bundles every parameter previously taken positionally by
+/// `build_docker_command`. Fields are borrowed; the struct is short-lived.
+#[derive(Clone, Copy)]
+pub struct DockerV1Spec<'a> {
+    /// Path to the directory that acts as the Docker build context
+    /// (already contains the Dockerfile and binaries).
+    pub staging_dir: &'a str,
+    /// Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
+    pub platforms: &'a [&'a str],
+    /// Fully-qualified image tags.
+    pub tags: &'a [&'a str],
+    /// Rendered `build_flag_templates`.
+    pub extra_flags: &'a [String],
+    /// When `true`, adds `--push` to the command (buildx only).
+    pub push: bool,
+    /// Additional flags appended after `--push` (buildx only).
+    pub push_flags: &'a [String],
+    /// OCI labels emitted as `--label key=value` flags.
+    pub labels: &'a [(String, String)],
+    /// Backend selection: `"docker"`, `"buildx"`, or `"podman"`.
+    pub use_backend: Option<&'a str>,
+}
+
+/// Construct the docker build command arguments (V1 path).
+pub fn build_docker_command(spec: &DockerV1Spec<'_>) -> Result<Vec<String>> {
+    let DockerV1Spec {
+        staging_dir,
+        platforms,
+        tags,
+        extra_flags,
+        push,
+        push_flags,
+        labels,
+        use_backend,
+    } = *spec;
+
+    let multi_platform = platforms.len() > 1;
+    let (binary, subcommands) = resolve_backend(use_backend, multi_platform)?;
+
+    let mut cmd: Vec<String> = Vec::new();
+    push_backend_prefix(&mut cmd, binary, &subcommands);
+    // Always use plain progress for CI-friendly, verbose output.
+    cmd.push("--progress=plain".to_string());
+    push_platforms(&mut cmd, platforms);
+    push_tags(&mut cmd, tags);
+    push_labels(&mut cmd, labels);
 
     // Extra build flags (rendered build_flag_templates)
     for flag in extra_flags {
@@ -144,60 +186,65 @@ pub fn build_docker_command(
 // build_docker_v2_command
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// V2 spec + builder
+// ---------------------------------------------------------------------------
+
+/// Spec for the V2 `docker buildx build` invocation.
+///
+/// Bundles every parameter previously taken positionally by
+/// `build_docker_v2_command`. Fields are borrowed; the struct is short-lived.
+#[derive(Clone, Copy)]
+pub struct DockerV2Spec<'a> {
+    /// Path to the directory that acts as the Docker build context.
+    pub staging_dir: &'a str,
+    /// Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
+    pub platforms: &'a [&'a str],
+    /// Fully-qualified `image:tag` references (pre-computed from images × tags).
+    pub image_tags: &'a [String],
+    /// `--build-arg KEY=VALUE` pairs.
+    pub build_args: &'a [(String, String)],
+    /// `--annotation KEY=VALUE` pairs.
+    pub annotations: &'a [(String, String)],
+    /// `--label KEY=VALUE` pairs.
+    pub labels: &'a [(String, String)],
+    /// Arbitrary extra flags passed directly to buildx.
+    pub flags: &'a [String],
+    /// When true, adds `--attest=type=sbom`.
+    pub sbom: bool,
+    /// When `true`, adds `--push` to the command.
+    pub push: bool,
+    /// When `true`, adds `--load` for single-platform non-push builds
+    /// (requires a running Docker daemon).
+    pub load: bool,
+}
+
 /// Construct the docker build command arguments for a Docker V2 config.
-///
-/// V2 uses `images` + `tags` to generate image references, `build_args` map,
-/// `annotations` map, `sbom` flag, and arbitrary `flags`.
-///
-/// * `staging_dir` – path to the directory that acts as the Docker build context.
-/// * `platforms` – Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
-/// * `image_tags` – fully-qualified image:tag references (pre-computed from images x tags).
-/// * `build_args` – `--build-arg KEY=VALUE` pairs.
-/// * `annotations` – `--annotation KEY=VALUE` pairs.
-/// * `labels` – `--label KEY=VALUE` pairs.
-/// * `flags` – arbitrary extra flags passed directly.
-/// * `sbom` – when true, adds `--sbom=true`.
-/// * `push` – when `true`, adds `--push` to the command.
-/// * `load` – when `true`, adds `--load` for single-platform non-push builds
-///   (requires a running Docker daemon).
-#[allow(clippy::too_many_arguments)]
-pub fn build_docker_v2_command(
-    staging_dir: &str,
-    platforms: &[&str],
-    image_tags: &[String],
-    build_args: &[(String, String)],
-    annotations: &[(String, String)],
-    labels: &[(String, String)],
-    flags: &[String],
-    sbom: bool,
-    push: bool,
-    load: bool,
-) -> Result<Vec<String>> {
+pub fn build_docker_v2_command(spec: &DockerV2Spec<'_>) -> Result<Vec<String>> {
+    let DockerV2Spec {
+        staging_dir,
+        platforms,
+        image_tags,
+        build_args,
+        annotations,
+        labels,
+        flags,
+        sbom,
+        push,
+        load,
+    } = *spec;
+
     // V2 always uses buildx when platforms are specified
     let multi_platform = platforms.len() > 1;
     let (binary, subcommands) = resolve_backend(Some("buildx"), multi_platform)?;
 
     let mut cmd: Vec<String> = Vec::new();
-    cmd.push(binary.to_string());
-    for sub in subcommands {
-        cmd.push(sub.to_string());
-    }
-
+    push_backend_prefix(&mut cmd, binary, &subcommands);
     // Always use plain progress for CI-friendly, verbose output that helps
     // diagnose buildx errors (e.g., COPY failures, attestation issues).
     cmd.push("--progress=plain".to_string());
-
-    // --platform=linux/amd64,linux/arm64
-    if !platforms.is_empty() {
-        let platform_str = platforms.join(",");
-        cmd.push(format!("--platform={platform_str}"));
-    }
-
-    // --tag <tag> for each image:tag combination
-    for tag in image_tags {
-        cmd.push("--tag".to_string());
-        cmd.push(tag.clone());
-    }
+    push_platforms(&mut cmd, platforms);
+    push_tags(&mut cmd, image_tags);
 
     // --build-arg KEY=VALUE
     for (key, value) in build_args {
@@ -223,11 +270,7 @@ pub fn build_docker_v2_command(
         }
     }
 
-    // --label KEY=VALUE
-    for (key, value) in labels {
-        cmd.push("--label".to_string());
-        cmd.push(format!("{}={}", key, value));
-    }
+    push_labels(&mut cmd, labels);
 
     // Arbitrary extra flags
     for flag in flags {

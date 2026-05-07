@@ -494,9 +494,11 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         util::maybe_submit_pr(
             repo_path,
             krew_cfg.repository.as_ref(),
-            &repo_owner,
-            &repo_name,
-            &branch_name,
+            &util::PrOrigin {
+                repo_owner: &repo_owner,
+                repo_name: &repo_name,
+                branch_name: &branch_name,
+            },
             &format!("Add/update {} plugin to v{}", crate_name, version),
             &format!(
                 "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\nAutomatically submitted by anodizer.",

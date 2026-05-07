@@ -6,17 +6,21 @@ use super::formula::{FormulaOptions, generate_formula, generate_formula_with_opt
 #[test]
 fn test_generate_formula() {
     let formula = generate_formula(
-        "cfgd",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "cfgd",
+            version: "1.0.0",
+            description: "Declarative config management",
+            license: "MIT",
+        },
         &[(
             "darwin-amd64",
             "https://example.com/cfgd-1.0.0-darwin-amd64.tar.gz",
             "sha256abc",
         )],
-        "Declarative config management",
-        "MIT",
-        "bin.install \"cfgd\"",
-        "system \"#{bin}/cfgd\", \"--version\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"cfgd\"",
+            test: "system \"#{bin}/cfgd\", \"--version\"",
+        },
     )
     .unwrap();
     assert!(formula.contains("class Cfgd < Formula"));
@@ -28,8 +32,12 @@ fn test_generate_formula() {
 #[test]
 fn test_generate_formula_multiple_archives() {
     let formula = generate_formula(
-        "my-tool",
-        "2.0.0",
+        &super::formula::FormulaCore {
+            name: "my-tool",
+            version: "2.0.0",
+            description: "A tool",
+            license: "Apache-2.0",
+        },
         &[
             (
                 "darwin-amd64",
@@ -42,10 +50,10 @@ fn test_generate_formula_multiple_archives() {
                 "def456",
             ),
         ],
-        "A tool",
-        "Apache-2.0",
-        "bin.install \"my-tool\"",
-        "system \"#{bin}/my-tool\", \"--version\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"my-tool\"",
+            test: "system \"#{bin}/my-tool\", \"--version\"",
+        },
     )
     .unwrap();
     assert!(formula.contains("class MyTool < Formula"));
@@ -58,13 +66,17 @@ fn test_generate_formula_multiple_archives() {
 #[test]
 fn test_generate_formula_class_name_hyphen() {
     let formula = generate_formula(
-        "cfgd-core",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "cfgd-core",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"cfgd-core\"",
-        "system \"#{bin}/cfgd-core\", \"--version\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"cfgd-core\"",
+            test: "system \"#{bin}/cfgd-core\", \"--version\"",
+        },
     )
     .unwrap();
     assert!(formula.contains("class CfgdCore < Formula"));
@@ -75,8 +87,12 @@ fn test_generate_formula_multi_arch_grouped() {
     // darwin-amd64 and darwin-arm64 must produce a single on_macos block
     // containing on_intel and on_arm sub-blocks.
     let formula = generate_formula(
-        "mytool",
-        "3.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "3.0.0",
+            description: "My tool",
+            license: "MIT",
+        },
         &[
             (
                 "darwin-amd64",
@@ -94,10 +110,10 @@ fn test_generate_formula_multi_arch_grouped() {
                 "cccc",
             ),
         ],
-        "My tool",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\", \"--version\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\", \"--version\"",
+        },
     )
     .unwrap();
     // There must be exactly one on_macos block wrapping both arches.
@@ -119,18 +135,21 @@ fn test_generate_formula_multi_arch_grouped() {
 #[test]
 fn test_integration_formula_complete_structure() {
     let formula = generate_formula(
-            "anodizer",
-            "3.2.1",
-            &[(
+        &super::formula::FormulaCore {
+            name: "anodizer",
+            version: "3.2.1",
+            description: "Release automation for Rust projects",
+            license: "Apache-2.0",
+        },
+        &[(
                 "darwin-arm64",
                 "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-darwin-arm64.tar.gz",
                 "aabbccdd11223344",
             )],
-            "Release automation for Rust projects",
-            "Apache-2.0",
-            "bin.install \"anodizer\"",
-            "system \"#{bin}/anodizer\", \"--version\"",
-        ).unwrap();
+        &super::formula::FormulaCode {
+            install: "bin.install \"anodizer\"",
+            test: "system \"#{bin}/anodizer\", \"--version\"",
+        }).unwrap();
 
     // Verify class declaration (after header comments)
     assert!(
@@ -180,8 +199,12 @@ fn test_integration_formula_complete_structure() {
 #[test]
 fn test_integration_formula_multi_arch_complete_structure() {
     let formula = generate_formula(
-        "my-cli",
-        "2.0.0",
+        &super::formula::FormulaCore {
+            name: "my-cli",
+            version: "2.0.0",
+            description: "A CLI tool",
+            license: "MIT",
+        },
         &[
             (
                 "darwin-arm64",
@@ -204,10 +227,10 @@ fn test_integration_formula_multi_arch_complete_structure() {
                 "sha_linux_arm64",
             ),
         ],
-        "A CLI tool",
-        "MIT",
-        "bin.install \"my-cli\"",
-        "system \"#{bin}/my-cli\", \"--version\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"my-cli\"",
+            test: "system \"#{bin}/my-cli\", \"--version\"",
+        },
     )
     .unwrap();
 
@@ -274,13 +297,17 @@ fn test_integration_formula_multi_arch_complete_structure() {
 fn test_integration_formula_no_archives() {
     // Edge case: no archive entries
     let formula = generate_formula(
-        "empty-tool",
-        "0.1.0",
+        &super::formula::FormulaCore {
+            name: "empty-tool",
+            version: "0.1.0",
+            description: "An empty tool",
+            license: "MIT",
+        },
         &[],
-        "An empty tool",
-        "MIT",
-        "bin.install \"empty-tool\"",
-        "system \"#{bin}/empty-tool\", \"--help\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"empty-tool\"",
+            test: "system \"#{bin}/empty-tool\", \"--help\"",
+        },
     )
     .unwrap();
 
@@ -300,14 +327,17 @@ fn test_integration_formula_no_archives() {
 #[test]
 fn test_integration_formula_multiline_install() {
     let formula = generate_formula(
-            "complex-app",
-            "1.0.0",
-            &[("linux-amd64", "https://example.com/app.tar.gz", "hash123")],
-            "Complex app",
-            "MIT",
-            "bin.install \"complex-app\"\nman1.install \"complex-app.1\"",
-            "system \"#{bin}/complex-app\", \"--version\"\nassert_match \"complex-app\", shell_output(\"#{bin}/complex-app --help\")",
-        ).unwrap();
+        &super::formula::FormulaCore {
+            name: "complex-app",
+            version: "1.0.0",
+            description: "Complex app",
+            license: "MIT",
+        },
+        &[("linux-amd64", "https://example.com/app.tar.gz", "hash123")],
+        &super::formula::FormulaCode {
+            install: "bin.install \"complex-app\"\nman1.install \"complex-app.1\"",
+            test: "system \"#{bin}/complex-app\", \"--version\"\nassert_match \"complex-app\", shell_output(\"#{bin}/complex-app --help\")",
+        }).unwrap();
 
     // Verify multi-line install block with proper indentation
     assert!(formula.contains("    bin.install \"complex-app\"\n"));
@@ -326,8 +356,12 @@ fn test_integration_formula_multiline_install() {
 fn test_formula_multi_arch_darwin_intel_and_arm() {
     // Verify that darwin-amd64 and darwin-arm64 produce on_intel/on_arm blocks
     let formula = generate_formula(
-        "myapp",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "myapp",
+            version: "1.0.0",
+            description: "My app",
+            license: "MIT",
+        },
         &[
             (
                 "darwin-amd64",
@@ -340,10 +374,10 @@ fn test_formula_multi_arch_darwin_intel_and_arm() {
                 "hash_arm",
             ),
         ],
-        "My app",
-        "MIT",
-        "bin.install \"myapp\"",
-        "system \"#{bin}/myapp\", \"--version\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"myapp\"",
+            test: "system \"#{bin}/myapp\", \"--version\"",
+        },
     )
     .unwrap();
 
@@ -360,13 +394,17 @@ fn test_formula_multi_arch_darwin_intel_and_arm() {
 fn test_formula_single_archive_no_os_blocks() {
     // A single archive entry should use flat url/sha256, no on_macos/on_linux
     let formula = generate_formula(
-        "simple",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "simple",
+            version: "1.0.0",
+            description: "Simple tool",
+            license: "MIT",
+        },
         &[("linux-amd64", "https://example.com/simple.tar.gz", "abc123")],
-        "Simple tool",
-        "MIT",
-        "bin.install \"simple\"",
-        "system \"#{bin}/simple\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"simple\"",
+            test: "system \"#{bin}/simple\"",
+        },
     )
     .unwrap();
 
@@ -379,13 +417,17 @@ fn test_formula_single_archive_no_os_blocks() {
 #[test]
 fn test_formula_class_name_underscores_to_pascal_case() {
     let formula = generate_formula(
-        "my-cool-tool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "my-cool-tool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"my-cool-tool\"",
-        "system \"#{bin}/my-cool-tool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"my-cool-tool\"",
+            test: "system \"#{bin}/my-cool-tool\"",
+        },
     )
     .unwrap();
     assert!(formula.contains("class MyCoolTool < Formula"));
@@ -394,13 +436,17 @@ fn test_formula_class_name_underscores_to_pascal_case() {
 #[test]
 fn test_formula_class_name_at_sign() {
     let formula = generate_formula(
-        "node@20",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "node@20",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"node\"",
-        "system \"#{bin}/node\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"node\"",
+            test: "system \"#{bin}/node\"",
+        },
     )
     .unwrap();
     assert!(
@@ -412,13 +458,17 @@ fn test_formula_class_name_at_sign() {
 #[test]
 fn test_formula_class_name_plus_sign() {
     let formula = generate_formula(
-        "c++check",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "c++check",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"cppcheck\"",
-        "system \"#{bin}/cppcheck\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"cppcheck\"",
+            test: "system \"#{bin}/cppcheck\"",
+        },
     )
     .unwrap();
     assert!(
@@ -430,13 +480,17 @@ fn test_formula_class_name_plus_sign() {
 #[test]
 fn test_formula_class_name_dot_separator() {
     let formula = generate_formula(
-        "my.tool.app",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "my.tool.app",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"my.tool.app\"",
-        "system \"#{bin}/my.tool.app\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"my.tool.app\"",
+            test: "system \"#{bin}/my.tool.app\"",
+        },
     )
     .unwrap();
     assert!(
@@ -456,13 +510,17 @@ fn test_formula_custom_homepage() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -474,13 +532,17 @@ fn test_formula_custom_homepage() {
 fn test_formula_homepage_fallback_no_slug() {
     // When no homepage and no github_slug, homepage is empty.
     let formula = generate_formula(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
     )
     .unwrap();
     assert!(formula.contains("homepage \"\""));
@@ -494,13 +556,17 @@ fn test_formula_homepage_fallback_with_github_slug() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -529,13 +595,17 @@ fn test_formula_dependencies_global() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -566,13 +636,17 @@ fn test_formula_dependencies_os_specific() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -611,13 +685,17 @@ fn test_formula_dependencies_sorted_alphabetically() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -651,13 +729,17 @@ fn test_formula_conflicts() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -674,13 +756,17 @@ fn test_formula_caveats() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -693,13 +779,17 @@ fn test_formula_caveats() {
 #[test]
 fn test_formula_no_caveats_block_when_none() {
     let formula = generate_formula(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
     )
     .unwrap();
     assert!(!formula.contains("def caveats"));
@@ -724,13 +814,17 @@ fn test_formula_all_new_fields_together() {
         ..Default::default()
     };
     let formula = generate_formula_with_opts(
-        "mytool",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "mytool",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
-        "desc",
-        "MIT",
-        "bin.install \"mytool\"",
-        "system \"#{bin}/mytool\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"mytool\"",
+            test: "system \"#{bin}/mytool\"",
+        },
         &opts,
     )
     .unwrap();
@@ -750,13 +844,17 @@ fn test_formula_name_override() {
     // When HomebrewConfig.name is set, the formula should use the override
     // name for the class, not the crate name.
     let formula = generate_formula(
-        "my-custom-name",
-        "1.0.0",
+        &super::formula::FormulaCore {
+            name: "my-custom-name",
+            version: "1.0.0",
+            description: "desc",
+            license: "MIT",
+        },
         &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
-        "desc",
-        "MIT",
-        "bin.install \"my-custom-name\"",
-        "system \"#{bin}/my-custom-name\"",
+        &super::formula::FormulaCode {
+            install: "bin.install \"my-custom-name\"",
+            test: "system \"#{bin}/my-custom-name\"",
+        },
     )
     .unwrap();
     assert!(

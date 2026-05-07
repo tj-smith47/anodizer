@@ -256,9 +256,11 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
         crate::util::maybe_submit_pr(
             repo_path,
             repo_cfg,
-            &repo_owner,
-            &repo_name,
-            pr_branch,
+            &crate::util::PrOrigin {
+                repo_owner: &repo_owner,
+                repo_name: &repo_name,
+                branch_name: pr_branch,
+            },
             &format!("Update {} cask to {}", cask_name, version),
             &format!(
                 "## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",

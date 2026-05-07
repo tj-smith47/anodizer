@@ -12,9 +12,35 @@ use std::path::{Path, PathBuf};
 // Crate-internal items
 use super::BuildStage;
 use super::command::{
-    build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
+    BuildContext, build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
     detect_cross_strategy, resolve_build_program, same_apple_family, same_windows_family,
 };
+
+/// Test helper — assembles a [`BuildContext`] from the varying parts most
+/// tests want to vary, defaulting `cross_tool` and `command_override` to
+/// `None`. Keeps each test as a single struct literal (field-named) rather
+/// than 9 unlabelled positional arguments.
+fn ctx_for_test<'a>(
+    crate_path: &'a str,
+    target: &'a str,
+    strategy: &'a CrossStrategy,
+    flags: &'a [String],
+    features: &'a [String],
+    no_default_features: bool,
+    env: &'a HashMap<String, String>,
+) -> BuildContext<'a> {
+    BuildContext {
+        crate_path,
+        target,
+        strategy,
+        flags,
+        features,
+        no_default_features,
+        env,
+        cross_tool: None,
+        command_override: None,
+    }
+}
 use super::profile::{detect_amd64_variant, parse_amd64_variant_from_rustflags};
 use super::targets::{DEFAULT_TARGETS, KNOWN_TARGETS};
 use super::targets::{find_matching_override, is_target_ignored, resolve_target_env};
@@ -28,17 +54,19 @@ fn test_logger() -> StageLogger {
 
 #[test]
 fn test_build_command_native_cargo() {
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "cfgd",
-        "crates/cfgd",
-        "x86_64-unknown-linux-gnu",
-        &CrossStrategy::Cargo,
-        &["--release".to_string()],
-        &[],
-        false,
-        &Default::default(),
-        None,
-        None,
+        &ctx_for_test(
+            "crates/cfgd",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+            &flags,
+            &[],
+            false,
+            &env,
+        ),
     );
     assert_eq!(cmd.program, "cargo");
     assert!(cmd.args.contains(&"build".to_string()));
@@ -51,17 +79,19 @@ fn test_build_command_native_cargo() {
 
 #[test]
 fn test_build_command_zigbuild() {
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "cfgd",
-        "crates/cfgd",
-        "aarch64-unknown-linux-gnu",
-        &CrossStrategy::Zigbuild,
-        &["--release".to_string()],
-        &[],
-        false,
-        &Default::default(),
-        None,
-        None,
+        &ctx_for_test(
+            "crates/cfgd",
+            "aarch64-unknown-linux-gnu",
+            &CrossStrategy::Zigbuild,
+            &flags,
+            &[],
+            false,
+            &env,
+        ),
     );
     assert_eq!(cmd.program, "cargo");
     assert!(cmd.args.contains(&"zigbuild".to_string()));
@@ -70,17 +100,19 @@ fn test_build_command_zigbuild() {
 
 #[test]
 fn test_build_command_cross() {
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "cfgd",
-        "crates/cfgd",
-        "aarch64-unknown-linux-gnu",
-        &CrossStrategy::Cross,
-        &["--release".to_string()],
-        &[],
-        false,
-        &Default::default(),
-        None,
-        None,
+        &ctx_for_test(
+            "crates/cfgd",
+            "aarch64-unknown-linux-gnu",
+            &CrossStrategy::Cross,
+            &flags,
+            &[],
+            false,
+            &env,
+        ),
     );
     assert_eq!(cmd.program, "cross");
     assert!(cmd.args.contains(&"build".to_string()));
@@ -88,17 +120,20 @@ fn test_build_command_cross() {
 
 #[test]
 fn test_build_command_with_features() {
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
+    let features = vec!["tls".to_string(), "json".to_string()];
     let cmd = build_command(
         "cfgd",
-        "crates/cfgd",
-        "x86_64-unknown-linux-gnu",
-        &CrossStrategy::Cargo,
-        &["--release".to_string()],
-        &["tls".to_string(), "json".to_string()],
-        false,
-        &Default::default(),
-        None,
-        None,
+        &ctx_for_test(
+            "crates/cfgd",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+            &flags,
+            &features,
+            false,
+            &env,
+        ),
     );
     assert!(cmd.args.contains(&"--features".to_string()));
     assert!(cmd.args.contains(&"tls,json".to_string()));
@@ -106,17 +141,19 @@ fn test_build_command_with_features() {
 
 #[test]
 fn test_build_command_no_default_features() {
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "cfgd",
-        "crates/cfgd",
-        "x86_64-unknown-linux-gnu",
-        &CrossStrategy::Cargo,
-        &["--release".to_string()],
-        &[],
-        true,
-        &Default::default(),
-        None,
-        None,
+        &ctx_for_test(
+            "crates/cfgd",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+            &flags,
+            &[],
+            true,
+            &env,
+        ),
     );
     assert!(cmd.args.contains(&"--no-default-features".to_string()));
 }
@@ -138,17 +175,19 @@ fn test_build_command_with_invalid_target_triple() {
     // build_command itself does not validate target triples -- it just
     // constructs the command.  Verify the invalid triple is passed through
     // so that cargo (or cross) reports the error at execution time.
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "mybin",
-        "crates/mybin",
-        "this-is-not-a-valid-triple",
-        &CrossStrategy::Cargo,
-        &["--release".to_string()],
-        &[],
-        false,
-        &Default::default(),
-        None,
-        None,
+        &ctx_for_test(
+            "crates/mybin",
+            "this-is-not-a-valid-triple",
+            &CrossStrategy::Cargo,
+            &flags,
+            &[],
+            false,
+            &env,
+        ),
     );
     assert!(cmd.args.contains(&"this-is-not-a-valid-triple".to_string()));
     assert_eq!(cmd.program, "cargo");
@@ -157,17 +196,18 @@ fn test_build_command_with_invalid_target_triple() {
 #[test]
 fn test_build_command_empty_binary_name() {
     // An empty binary name should still be passed through to --bin
+    let env = HashMap::new();
     let cmd = build_command(
         "",
-        ".",
-        "x86_64-unknown-linux-gnu",
-        &CrossStrategy::Cargo,
-        &[],
-        &[],
-        false,
-        &Default::default(),
-        None,
-        None,
+        &ctx_for_test(
+            ".",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+            &[],
+            &[],
+            false,
+            &env,
+        ),
     );
     assert!(cmd.args.contains(&"--bin".to_string()));
     // Empty string is present in args
@@ -310,17 +350,18 @@ fn test_build_command_with_env_vars() {
         "-C target-feature=+crt-static".to_string(),
     );
 
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "mybin",
-        ".",
-        "x86_64-unknown-linux-musl",
-        &CrossStrategy::Cargo,
-        &["--release".to_string()],
-        &[],
-        false,
-        &env,
-        None,
-        None,
+        &ctx_for_test(
+            ".",
+            "x86_64-unknown-linux-musl",
+            &CrossStrategy::Cargo,
+            &flags,
+            &[],
+            false,
+            &env,
+        ),
     );
     assert_eq!(cmd.env.get("CC").unwrap(), "gcc-12");
     assert_eq!(
@@ -423,17 +464,17 @@ crate_type = ["dylib"]
 
 #[test]
 fn test_build_lib_command_uses_lib_flag() {
-    let cmd = build_lib_command(
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
+    let cmd = build_lib_command(&ctx_for_test(
         "crates/my-lib",
         "x86_64-unknown-linux-gnu",
         &CrossStrategy::Cargo,
-        &["--release".to_string()],
+        &flags,
         &[],
         false,
-        &Default::default(),
-        None,
-        None,
-    );
+        &env,
+    ));
     assert_eq!(cmd.program, "cargo");
     assert!(cmd.args.contains(&"build".to_string()));
     assert!(cmd.args.contains(&"--lib".to_string()));
@@ -446,17 +487,17 @@ fn test_build_lib_command_uses_lib_flag() {
 
 #[test]
 fn test_build_lib_command_with_features() {
-    let cmd = build_lib_command(
+    let env = HashMap::new();
+    let features = vec!["wasm-bindgen".to_string()];
+    let cmd = build_lib_command(&ctx_for_test(
         "crates/my-lib",
         "wasm32-unknown-unknown",
         &CrossStrategy::Cargo,
         &[],
-        &["wasm-bindgen".to_string()],
+        &features,
         true,
-        &Default::default(),
-        None,
-        None,
-    );
+        &env,
+    ));
     assert!(cmd.args.contains(&"--lib".to_string()));
     assert!(cmd.args.contains(&"--features".to_string()));
     assert!(cmd.args.contains(&"wasm-bindgen".to_string()));
@@ -465,17 +506,17 @@ fn test_build_lib_command_with_features() {
 
 #[test]
 fn test_build_lib_command_zigbuild() {
-    let cmd = build_lib_command(
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
+    let cmd = build_lib_command(&ctx_for_test(
         ".",
         "aarch64-unknown-linux-gnu",
         &CrossStrategy::Zigbuild,
-        &["--release".to_string()],
+        &flags,
         &[],
         false,
-        &Default::default(),
-        None,
-        None,
-    );
+        &env,
+    ));
     assert_eq!(cmd.program, "cargo");
     assert!(cmd.args.contains(&"zigbuild".to_string()));
     assert!(cmd.args.contains(&"--lib".to_string()));
@@ -1408,17 +1449,21 @@ fn test_find_matching_override_invalid_glob_warns() {
 
 #[test]
 fn test_build_command_with_cross_tool() {
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "test-crate",
-        ".",
-        "x86_64-unknown-linux-gnu",
-        &CrossStrategy::Auto,
-        &["--release".to_string()],
-        &[],
-        false,
-        &Default::default(),
-        Some("/usr/bin/my-cross"),
-        None,
+        &BuildContext {
+            crate_path: ".",
+            target: "x86_64-unknown-linux-gnu",
+            strategy: &CrossStrategy::Auto,
+            flags: &flags,
+            features: &[],
+            no_default_features: false,
+            env: &env,
+            cross_tool: Some("/usr/bin/my-cross"),
+            command_override: None,
+        },
     );
     assert_eq!(cmd.program, "/usr/bin/my-cross");
     assert!(cmd.args.contains(&"build".to_string()));
@@ -2112,17 +2157,21 @@ edition = "2021"
 
 #[test]
 fn test_command_override() {
+    let env = HashMap::new();
+    let flags = vec!["--release".to_string()];
     let cmd = build_command(
         "mybin",
-        ".",
-        "x86_64-unknown-linux-gnu",
-        &CrossStrategy::Cargo,
-        &["--release".to_string()],
-        &[],
-        false,
-        &Default::default(),
-        None,
-        Some("auditable build"),
+        &BuildContext {
+            crate_path: ".",
+            target: "x86_64-unknown-linux-gnu",
+            strategy: &CrossStrategy::Cargo,
+            flags: &flags,
+            features: &[],
+            no_default_features: false,
+            env: &env,
+            cross_tool: None,
+            command_override: Some("auditable build"),
+        },
     );
     assert_eq!(cmd.program, "cargo");
     // "auditable build" should be split into two args

@@ -216,21 +216,40 @@ pub(crate) fn compose_body_for_mode(
 /// GitHub's maximum release body length in characters.
 pub(crate) const GITHUB_RELEASE_BODY_MAX_CHARS: usize = 125_000;
 
+/// Spec bundling every field that goes into a GitHub release JSON body.
+///
+/// Used by both POST (create) and PATCH (update) call sites.
+/// Mirrors the fields in `GithubReleaseSpec` consumed by `run_github_backend`
+/// (see `github/mod.rs`) so the create-release path can pass through a
+/// borrow without intermediate copies.
+#[derive(Clone, Copy)]
+pub(crate) struct ReleaseJsonSpec<'a> {
+    pub tag: &'a str,
+    pub name: &'a str,
+    pub body: &'a str,
+    pub draft: bool,
+    pub prerelease_flag: bool,
+    pub make_latest: &'a Option<octocrab::repos::releases::MakeLatest>,
+    pub target_commitish: &'a Option<String>,
+    pub discussion_category: &'a Option<String>,
+    pub github_native: bool,
+}
+
 /// Build the JSON body for GitHub release create/update API calls.
 /// Extracts the common construction shared by PATCH (update existing draft)
 /// and POST (create new release) paths.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn build_release_json(
-    tag: &str,
-    name: &str,
-    body: &str,
-    draft: bool,
-    prerelease_flag: bool,
-    make_latest: &Option<octocrab::repos::releases::MakeLatest>,
-    target_commitish: &Option<String>,
-    discussion_category: &Option<String>,
-    github_native: bool,
-) -> serde_json::Value {
+pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Value {
+    let ReleaseJsonSpec {
+        tag,
+        name,
+        body,
+        draft,
+        prerelease_flag,
+        make_latest,
+        target_commitish,
+        discussion_category,
+        github_native,
+    } = *spec;
     let mut json = serde_json::json!({
         "tag_name": tag,
         "name": name,
