@@ -86,7 +86,24 @@ pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
             .unwrap_or_default();
     // Use ls-remote --get-url (matches GoReleaser git.go:355).
     // Without an explicit remote name this defaults to "origin".
-    let remote_url_raw = git_output(&["ls-remote", "--get-url"]).unwrap_or_default();
+    //
+    // A truly missing remote (no `origin` configured) is a legitimate state —
+    // local-only repos, fresh `git init` — so we don't want to fail detect.
+    // But a *git error* during this lookup (broken config, transient SSH
+    // failure, permission issue) used to be silently swallowed by
+    // `unwrap_or_default()`, leaving `remote_url=""` with no diagnostic.
+    // Mirrors the spirit of GoReleaser commit 5042b84 (Q12): preserve the
+    // underlying error rather than replacing it with an empty sentinel.
+    let remote_url_raw = match git_output(&["ls-remote", "--get-url"]) {
+        Ok(url) => url,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "git ls-remote --get-url failed; remote_url left empty"
+            );
+            String::new()
+        }
+    };
     // Strip credentials from HTTPS URLs (e.g. https://user:token@github.com/... → https://github.com/...)
     let remote_url = strip_url_credentials(&remote_url_raw);
     let summary = git_output(&[
