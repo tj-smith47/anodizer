@@ -42,12 +42,15 @@ impl StringOrBool {
 
     /// Evaluate whether this value resolves to `true`.
     ///
-    /// If the value is a template string (contains `{`), it is rendered via
-    /// the provided closure and the result is compared to `"true"`.
-    /// Otherwise, the plain bool / string value is evaluated directly.
+    /// The value is always run through `render` (Tera leaves plain literals
+    /// unchanged, so this is a no-op for non-templated values). The rendered
+    /// result is then compared to `"true"` / `"1"` after trimming. A `Bool`
+    /// variant short-circuits without rendering.
     ///
-    /// Returns the render error so callers can fail fast on a malformed
-    /// template instead of silently treating it as `false`.
+    /// Always-rendering keeps this helper consistent with sibling
+    /// `should_skip_upload` (which always renders) — a literal `"{{ broken"`
+    /// surfaces as an `Err` instead of being silently treated as a false-y
+    /// non-template string.
     ///
     /// Used for both `skip:` evaluation (most callers) and `output:` / `sbom:`
     /// bool-or-template fields — there is no separate alias; call this directly.
@@ -55,10 +58,12 @@ impl StringOrBool {
         &self,
         render: impl Fn(&str) -> anyhow::Result<String>,
     ) -> anyhow::Result<bool> {
-        if self.is_template() {
-            Ok(render(self.as_str())?.trim() == "true")
-        } else {
-            Ok(self.as_bool())
+        match self {
+            StringOrBool::Bool(b) => Ok(*b),
+            StringOrBool::String(s) => {
+                let rendered = render(s)?;
+                Ok(matches!(rendered.trim(), "true" | "1"))
+            }
         }
     }
 }

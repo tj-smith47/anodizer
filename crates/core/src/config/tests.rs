@@ -5693,3 +5693,88 @@ crates: []
         "error should mention 'unknown field': {msg}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// StringOrBool::try_evaluates_to_true — always-render normalization
+// ---------------------------------------------------------------------------
+//
+// The helper used to short-circuit on `!s.contains('{')` and skip the render
+// closure for plain literals. That diverged from the sibling `should_skip_upload`
+// in stage-publish, which always renders. After unification both go through the
+// same render path; Tera leaves plain literals unchanged so it's a transparent
+// no-op for `"true"` / `"false"` and an `Err` for `"{{ broken"`.
+
+#[test]
+fn test_try_evaluates_to_true_plain_literal_invokes_render() {
+    // Records every input the closure sees so we can assert the render step
+    // ran even for the plain-literal "true" case (regression against the old
+    // contains('{') short-circuit).
+    let calls = std::cell::RefCell::new(Vec::<String>::new());
+    let render = |s: &str| -> anyhow::Result<String> {
+        calls.borrow_mut().push(s.to_string());
+        // Mimic Tera's behavior: plain literals pass through untouched.
+        Ok(s.to_string())
+    };
+
+    let val = StringOrBool::String("true".to_string());
+    let got = val
+        .try_evaluates_to_true(render)
+        .expect("plain literal 'true' should evaluate without error");
+    assert!(got, "plain literal 'true' should resolve to true");
+    assert_eq!(
+        calls.borrow().as_slice(),
+        &["true".to_string()],
+        "render closure must be invoked exactly once with the raw value, even for plain literals",
+    );
+
+    // And the inverse: plain literal "false" still returns false, also via render.
+    calls.borrow_mut().clear();
+    let val = StringOrBool::String("false".to_string());
+    let got = val.try_evaluates_to_true(render).expect("plain false ok");
+    assert!(!got);
+    assert_eq!(
+        calls.borrow().as_slice(),
+        &["false".to_string()],
+        "render closure must run for plain-literal 'false' too",
+    );
+}
+
+#[test]
+fn test_try_evaluates_to_true_invalid_template_surfaces_error() {
+    // A Tera-syntactically-invalid template must propagate as an Err rather
+    // than being silently treated as a literal (which the old short-circuit
+    // would have done for any value not containing '{', but a `{{ broken`
+    // string does contain '{' — the regression we're pinning here is the
+    // post-fix invariant: the render closure's error always reaches the caller).
+    let render = |_: &str| -> anyhow::Result<String> { anyhow::bail!("tera parse error") };
+
+    let val = StringOrBool::String("{{ broken".to_string());
+    let err = val
+        .try_evaluates_to_true(render)
+        .expect_err("malformed template must surface as Err");
+    assert!(
+        err.to_string().contains("tera parse error"),
+        "error must propagate from render closure: {err}",
+    );
+}
+
+#[test]
+fn test_try_evaluates_to_true_bool_variant_skips_render() {
+    // The Bool variant has nothing to render — we keep that as a fast path
+    // both for correctness (no template engine for a literal bool) and so
+    // configs that set `skip: true` don't pay a render cost per evaluation.
+    let render = |_: &str| -> anyhow::Result<String> {
+        panic!("render closure must not be called for StringOrBool::Bool");
+    };
+
+    assert!(
+        StringOrBool::Bool(true)
+            .try_evaluates_to_true(render)
+            .unwrap()
+    );
+    assert!(
+        !StringOrBool::Bool(false)
+            .try_evaluates_to_true(render)
+            .unwrap()
+    );
+}
