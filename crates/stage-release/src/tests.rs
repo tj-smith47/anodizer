@@ -650,7 +650,8 @@ fn test_dry_run_with_header_footer_in_changelog() {
             ..Default::default()
         }])
         .build();
-    ctx.changelogs
+    ctx.stage_outputs
+        .changelogs
         .insert("testcrate".to_string(), "- bug fix".to_string());
     let stage = ReleaseStage;
     assert!(stage.run(&mut ctx).is_ok());
@@ -994,10 +995,11 @@ fn test_dry_run_changelog_header_falls_through_to_release() {
             ..Default::default()
         }])
         .build();
-    ctx.changelogs
+    ctx.stage_outputs
+        .changelogs
         .insert("testcrate".to_string(), "- a fix".to_string());
-    ctx.changelog_header = Some("# Header from changelog".to_string());
-    ctx.changelog_footer = Some("Footer from changelog".to_string());
+    ctx.stage_outputs.changelog_header = Some("# Header from changelog".to_string());
+    ctx.stage_outputs.changelog_footer = Some("Footer from changelog".to_string());
 
     let stage = ReleaseStage;
     assert!(stage.run(&mut ctx).is_ok());
@@ -2434,7 +2436,8 @@ fn test_dry_run_with_all_new_fields() {
             ..Default::default()
         }])
         .build();
-    ctx.changelogs
+    ctx.stage_outputs
+        .changelogs
         .insert("testcrate".to_string(), "- changes".to_string());
     let stage = ReleaseStage;
     assert!(stage.run(&mut ctx).is_ok());

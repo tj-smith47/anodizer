@@ -45,12 +45,12 @@ pub fn run(
     stage.run(&mut ctx)?;
 
     // Print changelogs to stdout
-    for (crate_name, changelog) in &ctx.changelogs {
+    for (crate_name, changelog) in &ctx.stage_outputs.changelogs {
         log.verbose(&format!("changelog for '{}'", crate_name));
         println!("{}", changelog);
     }
 
-    if ctx.changelogs.is_empty() {
+    if ctx.stage_outputs.changelogs.is_empty() {
         log.warn("no changelogs generated");
     }
 

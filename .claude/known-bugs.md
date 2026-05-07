@@ -21,7 +21,7 @@ violations, user-reported issues.
 
 ### Group F·3 review deferrals — 2026-04-28 (1 MINOR)
 
-- [ ] `crates/core/src/context.rs:146-153` — fields `changelog_header: Option<String>` and `changelog_footer: Option<String>` joined the existing `changelogs: HashMap<String, String>` on the stage-output side of `Context`. As more stage→stage handoff fields accrete, a `StageOutputs` sub-struct would compress the surface and keep input/output state cleanly separated. Defer until a third stage-output pair lands; then break out. Source: F·3 code-quality review.
+- [x] `crates/core/src/context.rs` — `changelogs: HashMap<String, String>`, `changelog_header: Option<String>`, `changelog_footer: Option<String>`, and `github_native_changelog: bool` lifted into a new `StageOutputs` sub-struct on `Context`. Stage-output fields now sit behind `ctx.stage_outputs.<field>` (changelog stage writes; release stage + `populate_release_notes_var` read). Closes the F·3 deferral ahead of the original "third pair lands" trigger — bundled with the post-decomposition cleanup pass. ~62 callsites updated across `core/context.rs`, `stage-changelog/{run,tests}.rs`, `stage-release/{run,tests}.rs`, and `cli/commands/changelog.rs`. `cargo build --workspace` clean. Source: F·3 code-quality review. — resolved 2026-05-07.
 
 ### Tracked migrations / scope-creep deferrals — 2026-04-27 (4 SUGGEST)
 

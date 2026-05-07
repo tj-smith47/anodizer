@@ -133,24 +133,37 @@ impl Default for ContextOptions {
     }
 }
 
-pub struct Context {
-    pub config: Config,
-    pub artifacts: ArtifactRegistry,
-    pub options: ContextOptions,
-    /// Set by changelog stage when `use: github-native` is configured.
-    /// The release stage reads this to set `generate_release_notes(true)` on the GitHub API.
+/// Stage→stage handoff state produced by stages and consumed by later
+/// stages (as opposed to `config` / `options` which are pipeline inputs,
+/// or `artifacts` which has its own registry). Closes the F·3 deferral
+/// (see `.claude/plans/archive/...`): the changelog stage writes here,
+/// the release stage reads here.
+#[derive(Debug, Default)]
+pub struct StageOutputs {
+    /// Set by the changelog stage when `use: github-native` is configured.
+    /// The release stage reads this to set `generate_release_notes(true)`
+    /// on the GitHub API.
     pub github_native_changelog: bool,
-    template_vars: TemplateVars,
-    pub git_info: Option<GitInfo>,
+    /// Per-crate rendered changelog body, keyed by crate name.
     pub changelogs: HashMap<String, String>,
     /// Rendered `changelog.header` value, populated by the changelog stage.
-    /// The release stage uses it as a fallback when `release.header` is unset
-    /// so YAML-configured changelog headers reach the GitHub release body
-    /// (matching GoReleaser's `loadContent(ReleaseHeader…)` behaviour).
+    /// The release stage uses it as a fallback when `release.header` is
+    /// unset so YAML-configured changelog headers reach the GitHub release
+    /// body (matching GoReleaser's `loadContent(ReleaseHeader…)` behaviour).
     pub changelog_header: Option<String>,
     /// Rendered `changelog.footer` value, populated by the changelog stage.
     /// Same fallback semantics as `changelog_header`.
     pub changelog_footer: Option<String>,
+}
+
+pub struct Context {
+    pub config: Config,
+    pub artifacts: ArtifactRegistry,
+    pub options: ContextOptions,
+    /// Stage→stage handoff outputs (changelog text, header/footer, etc.).
+    pub stage_outputs: StageOutputs,
+    template_vars: TemplateVars,
+    pub git_info: Option<GitInfo>,
     /// The resolved SCM token type (GitHub, GitLab, or Gitea).
     pub token_type: ScmTokenType,
     /// Aggregated skips from per-sub-config loops (signs, docker_signs,
@@ -169,12 +182,9 @@ impl Context {
             config,
             artifacts: ArtifactRegistry::new(),
             options,
-            github_native_changelog: false,
+            stage_outputs: StageOutputs::default(),
             template_vars: vars,
             git_info: None,
-            changelogs: HashMap::new(),
-            changelog_header: None,
-            changelog_footer: None,
             token_type: ScmTokenType::GitHub,
             skip_memento: crate::pipe_skip::SkipMemento::new(),
         }
@@ -604,16 +614,17 @@ impl Context {
     /// Populate the `ReleaseNotes` template variable from stored changelogs.
     ///
     /// Should be called after the changelog stage has run and populated
-    /// `self.changelogs`. Uses the first crate (by config order) whose
-    /// changelog is present, or an empty string if no changelogs exist.
-    /// Config order is deterministic, unlike HashMap iteration order.
+    /// `self.stage_outputs.changelogs`. Uses the first crate (by config
+    /// order) whose changelog is present, or an empty string if no
+    /// changelogs exist. Config order is deterministic, unlike HashMap
+    /// iteration order.
     pub fn populate_release_notes_var(&mut self) {
         // Look up changelogs in config-defined crate order for determinism.
         let notes = self
             .config
             .crates
             .iter()
-            .find_map(|c| self.changelogs.get(&c.name))
+            .find_map(|c| self.stage_outputs.changelogs.get(&c.name))
             .cloned()
             .unwrap_or_default();
         self.template_vars.set("ReleaseNotes", &notes);
@@ -1389,7 +1400,8 @@ mod tests {
             ..Default::default()
         });
         let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.changelogs
+        ctx.stage_outputs
+            .changelogs
             .insert("my-crate".to_string(), "## Changes\n- fix bug".to_string());
         ctx.populate_release_notes_var();
 
@@ -1423,9 +1435,11 @@ mod tests {
             ..Default::default()
         });
         let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.changelogs
+        ctx.stage_outputs
+            .changelogs
             .insert("crate-a".to_string(), "notes-a".to_string());
-        ctx.changelogs
+        ctx.stage_outputs
+            .changelogs
             .insert("crate-b".to_string(), "notes-b".to_string());
         ctx.populate_release_notes_var();
 

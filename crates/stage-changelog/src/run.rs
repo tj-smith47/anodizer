@@ -76,7 +76,8 @@ impl Stage for super::ChangelogStage {
                 .cloned()
                 .collect();
             for crate_cfg in &crates {
-                ctx.changelogs
+                ctx.stage_outputs
+                    .changelogs
                     .insert(crate_cfg.name.clone(), content.clone());
             }
 
@@ -141,7 +142,7 @@ impl Stage for super::ChangelogStage {
                 );
             }
             log.status("using github-native changelog — skipping local generation");
-            ctx.github_native_changelog = true;
+            ctx.stage_outputs.github_native_changelog = true;
             let selected = ctx.options.selected_crates.clone();
             let crates: Vec<_> = ctx
                 .config
@@ -151,7 +152,9 @@ impl Stage for super::ChangelogStage {
                 .cloned()
                 .collect();
             for crate_cfg in &crates {
-                ctx.changelogs.insert(crate_cfg.name.clone(), String::new());
+                ctx.stage_outputs
+                    .changelogs
+                    .insert(crate_cfg.name.clone(), String::new());
             }
             return Ok(());
         }
@@ -420,7 +423,9 @@ impl Stage for super::ChangelogStage {
             )?;
 
             // Store per-crate changelog in context for the release stage.
-            ctx.changelogs.insert(crate_name.clone(), markdown.clone());
+            ctx.stage_outputs
+                .changelogs
+                .insert(crate_name.clone(), markdown.clone());
 
             combined_markdown.push_str(&markdown);
         }
@@ -428,8 +433,9 @@ impl Stage for super::ChangelogStage {
         // Prepend header and append footer if configured, rendering through
         // the template engine so variables like {{ .ProjectName }} are expanded.
         //
-        // The rendered header/footer are also stashed in `ctx.changelog_header`
-        // / `ctx.changelog_footer` so the release stage can wrap the GitHub
+        // The rendered header/footer are also stashed in
+        // `ctx.stage_outputs.changelog_header` /
+        // `ctx.stage_outputs.changelog_footer` so the release stage can wrap the GitHub
         // release body with them when no `release.header` / `release.footer`
         // override is configured. This mirrors GoReleaser's
         // `loadContent(ReleaseHeader…)` flow where `changelog.header` and
@@ -460,8 +466,8 @@ impl Stage for super::ChangelogStage {
                 rendered_footer = Some(rendered);
             }
         }
-        ctx.changelog_header = rendered_header;
-        ctx.changelog_footer = rendered_footer;
+        ctx.stage_outputs.changelog_header = rendered_header;
+        ctx.stage_outputs.changelog_footer = rendered_footer;
 
         // Write to dist/CHANGELOG.md (GoReleaser writes this even in dry-run mode).
         std::fs::create_dir_all(&dist)

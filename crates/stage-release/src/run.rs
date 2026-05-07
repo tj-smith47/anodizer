@@ -29,7 +29,7 @@ impl Stage for super::ReleaseStage {
 
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.is_dry_run();
-        let github_native_changelog = ctx.github_native_changelog;
+        let github_native_changelog = ctx.stage_outputs.github_native_changelog;
 
         // Collect crates that have a `release` block.
         let crates: Vec<_> = ctx
@@ -79,7 +79,12 @@ impl Stage for super::ReleaseStage {
                 );
             }
 
-            let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
+            let changelog_body = ctx
+                .stage_outputs
+                .changelogs
+                .get(&crate_name)
+                .cloned()
+                .unwrap_or_default();
 
             // Populate the {{ Checksums }} template variable from checksum artifacts.
             // GoReleaser's describeBody (release/body.go:24-44):
@@ -141,7 +146,7 @@ impl Stage for super::ReleaseStage {
             //
             // Anodizer-local precedence: `release.header` is the more
             // specific override and wins; `changelog.header` (rendered and
-            // stashed by the changelog stage in `ctx.changelog_header`) is the
+            // stashed by the changelog stage in `ctx.stage_outputs.changelog_header`) is the
             // fallback so a YAML-configured changelog wrapper still reaches
             // the release body. Same for the footer. GoReleaser only has the
             // `release.*` source (loaded via `loadContent(ReleaseHeader…)` in
@@ -172,12 +177,16 @@ impl Stage for super::ReleaseStage {
                     })
                 })
                 .transpose()?;
-            let rendered_header =
-                resolve_header_footer(release_header.as_deref(), ctx.changelog_header.as_deref())
-                    .map(str::to_owned);
-            let rendered_footer =
-                resolve_header_footer(release_footer.as_deref(), ctx.changelog_footer.as_deref())
-                    .map(str::to_owned);
+            let rendered_header = resolve_header_footer(
+                release_header.as_deref(),
+                ctx.stage_outputs.changelog_header.as_deref(),
+            )
+            .map(str::to_owned);
+            let rendered_footer = resolve_header_footer(
+                release_footer.as_deref(),
+                ctx.stage_outputs.changelog_footer.as_deref(),
+            )
+            .map(str::to_owned);
 
             let release_body = build_release_body(
                 &changelog_body,

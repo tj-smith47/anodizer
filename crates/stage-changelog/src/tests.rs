@@ -336,7 +336,7 @@ fn test_changelog_stage_disabled_skips() {
     stage.run(&mut ctx).unwrap();
 
     // No changelogs should be generated.
-    assert!(ctx.changelogs.is_empty());
+    assert!(ctx.stage_outputs.changelogs.is_empty());
 }
 
 // Snapshot mode skips changelog generation by default (matches
@@ -372,7 +372,7 @@ fn test_changelog_snapshot_skipped_when_opt_in_unset() {
         .run(&mut ctx)
         .expect("snapshot skip is graceful");
     assert!(
-        ctx.changelogs.is_empty(),
+        ctx.stage_outputs.changelogs.is_empty(),
         "snapshot mode without opt-in must skip changelog generation"
     );
 }
@@ -390,7 +390,7 @@ fn test_changelog_snapshot_skipped_when_opt_in_false() {
         .run(&mut ctx)
         .expect("snapshot skip is graceful");
     assert!(
-        ctx.changelogs.is_empty(),
+        ctx.stage_outputs.changelogs.is_empty(),
         "snapshot mode with opt-in=false must skip changelog generation"
     );
 }
@@ -442,11 +442,11 @@ fn test_changelog_snapshot_runs_when_opt_in_true() {
         .run(&mut ctx)
         .expect("snapshot + opt-in must render");
     assert!(
-        !ctx.changelogs.is_empty(),
+        !ctx.stage_outputs.changelogs.is_empty(),
         "snapshot mode with opt-in=true must NOT skip changelog generation"
     );
     assert_eq!(
-        ctx.changelogs.get("test").map(String::as_str),
+        ctx.stage_outputs.changelogs.get("test").map(String::as_str),
         Some("snapshot opt-in body"),
         "release-notes content should be stored verbatim"
     );
@@ -644,7 +644,10 @@ fn test_changelog_stage_github_native_produces_empty() {
     stage.run(&mut ctx).unwrap();
 
     // github-native should produce an empty changelog body per crate.
-    assert_eq!(ctx.changelogs.get("mylib"), Some(&String::new()));
+    assert_eq!(
+        ctx.stage_outputs.changelogs.get("mylib"),
+        Some(&String::new())
+    );
 }
 
 #[test]
@@ -1172,6 +1175,7 @@ fn test_integration_changelog_stage_with_real_git_repo() {
 
     // Verify the per-crate changelog was populated
     let changelog = ctx
+        .stage_outputs
         .changelogs
         .get("test-project")
         .unwrap_or_else(|| panic!("changelog for test-project should exist"));
@@ -1359,9 +1363,9 @@ fn test_disable_skips_stage_entirely() {
     ChangelogStage.run(&mut ctx).unwrap();
 
     // No changelogs should be generated when disabled
-    assert!(ctx.changelogs.is_empty());
+    assert!(ctx.stage_outputs.changelogs.is_empty());
     // The github_native_changelog flag should NOT be set
-    assert!(!ctx.github_native_changelog);
+    assert!(!ctx.stage_outputs.github_native_changelog);
 }
 
 #[test]
@@ -2895,7 +2899,12 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
 
     // The git fallback should have produced a changelog entry containing
     // the seed commit's subject.
-    let body = ctx.changelogs.get("mylib").cloned().unwrap_or_default();
+    let body = ctx
+        .stage_outputs
+        .changelogs
+        .get("mylib")
+        .cloned()
+        .unwrap_or_default();
     assert!(
         body.contains("initial commit"),
         "git fallback should include the seed commit, got: {body}"
