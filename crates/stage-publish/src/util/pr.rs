@@ -220,7 +220,7 @@ fn create_pr_via_api(
         }
         Ok(resp) => {
             let status = resp.status();
-            let body_text = resp.text().unwrap_or_default();
+            let body_text = anodizer_core::http::body_of_blocking(resp);
             log.warn(&format!(
                 "{label}: GitHub API PR creation returned {status} -- you may need to create the PR manually\n{body_text}"
             ));

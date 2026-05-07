@@ -206,7 +206,7 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<Option<String
         );
     }
 
-    let body = resp.text().unwrap_or_default();
+    let body = anodizer_core::http::body_of_blocking(resp);
     Ok(parse_index_cksum_for_version(&body, version))
 }
 
@@ -301,7 +301,7 @@ fn poll_crates_io_index(
     loop {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => {
-                let body = resp.text().unwrap_or_default();
+                let body = anodizer_core::http::body_of_blocking(resp);
                 // Each line of the sparse index is a JSON object; parse and check vers field.
                 if body.lines().any(|line| {
                     serde_json::from_str::<serde_json::Value>(line)

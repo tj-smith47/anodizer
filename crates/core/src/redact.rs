@@ -20,12 +20,14 @@ const SECRET_VALUE_PREFIXES: &[&str] = &[
     "xox",
 ];
 
-/// Minimum value length to consider for redaction.
-const MIN_SECRET_LEN: usize = 10;
-
 /// Returns true if this env entry looks like it contains a secret.
+///
+/// The empty string is the only excluded value — every non-empty value
+/// matching the heuristics is redacted, mirroring upstream
+/// GoReleaser's `internal/redact/redact.go::isSecret` after the
+/// length-floor was removed (commit `d1cdbb2`).
 fn is_secret(key: &str, value: &str) -> bool {
-    if value.len() < MIN_SECRET_LEN {
+    if value.is_empty() {
         return false;
     }
     let key_upper = key.to_uppercase();
@@ -38,7 +40,9 @@ fn is_secret(key: &str, value: &str) -> bool {
 /// Redact secret values in a string, replacing them with `$KEY_NAME`.
 ///
 /// Longer values are replaced first to prevent partial matches.
-pub fn redact_string(input: &str, env: &[(String, String)]) -> String {
+///
+/// Mirrors GoReleaser's `redact.String(s, env)` API.
+pub fn string(input: &str, env: &[(String, String)]) -> String {
     let mut secrets: Vec<(&str, &str)> = env
         .iter()
         .filter(|(k, v)| is_secret(k, v))
@@ -66,7 +70,7 @@ mod tests {
             ),
             ("PLAIN_VAR".to_string(), "not-a-secret".to_string()),
         ];
-        let result = redact_string("Login with mysecretpassword123 succeeded", &env);
+        let result = string("Login with mysecretpassword123 succeeded", &env);
         assert_eq!(result, "Login with $DOCKER_PASSWORD succeeded");
         assert!(!result.contains("mysecretpassword123"));
     }
@@ -74,14 +78,27 @@ mod tests {
     #[test]
     fn test_redact_by_value_prefix() {
         let env = vec![("MY_TOKEN".to_string(), "ghp_abc123def456ghi789".to_string())];
-        let result = redact_string("Using token ghp_abc123def456ghi789", &env);
+        let result = string("Using token ghp_abc123def456ghi789", &env);
         assert_eq!(result, "Using token $MY_TOKEN");
     }
 
     #[test]
-    fn test_redact_ignores_short_values() {
+    fn test_redact_includes_short_secret_when_key_looks_secret() {
+        // Mirrors upstream rename in `internal/redact/redact_test.go` after
+        // the length-floor was removed: a 5-char value under a `*_KEY` key
+        // must still be redacted.
         let env = vec![("API_KEY".to_string(), "short".to_string())];
-        let result = redact_string("Value is short", &env);
+        let result = string("Value is short", &env);
+        assert_eq!(result, "Value is $API_KEY");
+    }
+
+    #[test]
+    fn test_redact_skips_empty_value() {
+        // The empty string is the only excluded value: an unset env var
+        // would otherwise replace every empty substring in the input,
+        // turning "abc" into "$API_KEY a$API_KEY b$API_KEY c$API_KEY".
+        let env = vec![("API_KEY".to_string(), String::new())];
+        let result = string("Value is short", &env);
         assert_eq!(result, "Value is short");
     }
 
@@ -91,7 +108,7 @@ mod tests {
             ("SHORT_TOKEN".to_string(), "abcdefghij".to_string()),
             ("LONG_TOKEN".to_string(), "abcdefghijklmnop".to_string()),
         ];
-        let result = redact_string("secret: abcdefghijklmnop", &env);
+        let result = string("secret: abcdefghijklmnop", &env);
         // Longer match should be replaced first
         assert_eq!(result, "secret: $LONG_TOKEN");
     }
@@ -99,7 +116,7 @@ mod tests {
     #[test]
     fn test_redact_no_secrets() {
         let env = vec![("PATH".to_string(), "/usr/bin:/usr/local/bin".to_string())];
-        let result = redact_string("PATH is set", &env);
+        let result = string("PATH is set", &env);
         assert_eq!(result, "PATH is set");
     }
 
@@ -109,7 +126,7 @@ mod tests {
             "REGISTRY_PASSWORD".to_string(),
             "supersecret123".to_string(),
         )];
-        let result = redact_string("auth supersecret123 retry supersecret123", &env);
+        let result = string("auth supersecret123 retry supersecret123", &env);
         assert_eq!(result, "auth $REGISTRY_PASSWORD retry $REGISTRY_PASSWORD");
     }
 
@@ -141,7 +158,7 @@ mod tests {
         ];
         // Both keys map to the same value, so whichever sorts first by
         // key name should win — A_SECRET comes before B_SECRET.
-        let result = redact_string("found same_length_val here", &env);
+        let result = string("found same_length_val here", &env);
         assert_eq!(result, "found $A_SECRET here");
     }
 
@@ -155,7 +172,7 @@ mod tests {
                 "a_longer_secret_value_here".to_string(),
             ),
         ];
-        let result = redact_string("prefix a_longer_secret_value_here suffix", &env);
+        let result = string("prefix a_longer_secret_value_here suffix", &env);
         assert_eq!(result, "prefix $A_TOKEN suffix");
     }
 }

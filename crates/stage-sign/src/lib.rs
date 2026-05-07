@@ -375,10 +375,8 @@ impl Stage for DockerSignStage {
                     let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
 
-                    let stdout_str =
-                        anodizer_core::redact::redact_string(&stdout_raw, &docker_env_pairs);
-                    let stderr_str =
-                        anodizer_core::redact::redact_string(&stderr_raw, &docker_env_pairs);
+                    let stdout_str = anodizer_core::redact::string(&stdout_raw, &docker_env_pairs);
+                    let stderr_str = anodizer_core::redact::string(&stderr_raw, &docker_env_pairs);
 
                     let show_output = match docker_sign_cfg.output.as_ref() {
                         Some(s) => s

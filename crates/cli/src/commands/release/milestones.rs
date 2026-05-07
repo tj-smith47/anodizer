@@ -277,7 +277,7 @@ fn close_milestone_github(
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
+                let body = anodizer_core::http::body_of(resp).await;
                 anyhow::bail!(
                     "milestone: list milestones failed (HTTP {}): {}",
                     status,
@@ -332,7 +332,7 @@ fn close_milestone_github(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = anodizer_core::http::body_of(resp).await;
             anyhow::bail!("milestone: close failed (HTTP {}): {}", status, body);
         }
 
@@ -401,7 +401,7 @@ fn close_milestone_gitlab(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = anodizer_core::http::body_of(resp).await;
             anyhow::bail!(
                 "milestone: GitLab list milestones failed (HTTP {}): {}",
                 status,
@@ -443,7 +443,7 @@ fn close_milestone_gitlab(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = anodizer_core::http::body_of(resp).await;
             anyhow::bail!("milestone: GitLab close failed (HTTP {}): {}", status, body);
         }
         Ok(MilestoneCloseOutcome::Closed)
@@ -486,7 +486,7 @@ fn close_milestone_gitea(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = anodizer_core::http::body_of(resp).await;
             anyhow::bail!(
                 "milestone: Gitea list milestones failed (HTTP {}): {}",
                 status,
@@ -535,7 +535,7 @@ fn close_milestone_gitea(
         }
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = anodizer_core::http::body_of(resp).await;
             anyhow::bail!("milestone: Gitea close failed (HTTP {}): {}", status, body);
         }
         Ok(MilestoneCloseOutcome::Closed)

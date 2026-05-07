@@ -327,7 +327,7 @@ pub fn upload_single_artifact(
 
     let status = resp.status();
     if !status.is_success() {
-        let resp_body = resp.text().unwrap_or_default();
+        let resp_body = anodizer_core::http::body_of_blocking(resp);
         // Artifactory's error envelope is
         // `{"errors": [{"status": 401, "message": "..."}]}`. Surface both
         // status and message so a 200 OK with a partial-failure body

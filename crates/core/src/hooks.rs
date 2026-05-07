@@ -11,7 +11,7 @@ use std::process::Command;
 /// This catches both well-known and user-defined secrets.
 fn redact_secrets(output: &str) -> String {
     let env: Vec<(String, String)> = std::env::vars().collect();
-    crate::redact::redact_string(output, &env)
+    crate::redact::string(output, &env)
 }
 
 /// Render a hook template string through the full Tera engine.

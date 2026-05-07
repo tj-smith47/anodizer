@@ -52,7 +52,7 @@ pub fn send_telegram(
         .with_context(|| "telegram: failed to send POST request")?;
 
     let status = resp.status();
-    let body = resp.text().unwrap_or_default();
+    let body = anodizer_core::http::body_of_blocking(resp);
 
     if !status.is_success() {
         anyhow::bail!("telegram: HTTP {} — {}", status, body);

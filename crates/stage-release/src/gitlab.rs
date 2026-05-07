@@ -172,7 +172,7 @@ pub(crate) async fn gitlab_create_release(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = anodizer_core::http::body_of(resp).await;
             bail!("gitlab: create release failed (HTTP {}): {}", status, text);
         }
     } else if get_resp.status().is_success() {
@@ -199,12 +199,12 @@ pub(crate) async fn gitlab_create_release(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = anodizer_core::http::body_of(resp).await;
             bail!("gitlab: update release failed (HTTP {}): {}", status, text);
         }
     } else {
         // Unexpected error.
-        let text = get_resp.text().await.unwrap_or_default();
+        let text = anodizer_core::http::body_of(get_resp).await;
         bail!(
             "gitlab: check existing release failed (HTTP {}): {}",
             status,
@@ -301,7 +301,7 @@ pub(crate) async fn gitlab_upload_asset(
     // If the link already exists (400/422) and replace_existing is enabled,
     // find and delete the conflicting link, then retry the POST.
     if (status_code == 400 || status_code == 422) && replace_existing {
-        let text = resp.text().await.unwrap_or_default();
+        let text = anodizer_core::http::body_of(resp).await;
         // List existing links to find the conflicting one.
         let list_resp = client
             .get(&links_api)
@@ -331,7 +331,7 @@ pub(crate) async fn gitlab_upload_asset(
                             "gitlab: delete existing link '{}' failed (HTTP {}): {}",
                             file_name,
                             del_resp.status(),
-                            del_resp.text().await.unwrap_or_default()
+                            anodizer_core::http::body_of(del_resp).await
                         );
                     }
                     break;
@@ -357,7 +357,7 @@ pub(crate) async fn gitlab_upload_asset(
 
         if !retry_resp.status().is_success() {
             let retry_status = retry_resp.status();
-            let retry_text = retry_resp.text().await.unwrap_or_default();
+            let retry_text = anodizer_core::http::body_of(retry_resp).await;
             bail!(
                 "gitlab: create release link for '{}' failed on retry (HTTP {}): {}",
                 file_name,
@@ -366,7 +366,7 @@ pub(crate) async fn gitlab_upload_asset(
             );
         }
     } else {
-        let text = resp.text().await.unwrap_or_default();
+        let text = anodizer_core::http::body_of(resp).await;
         bail!(
             "gitlab: create release link for '{}' failed (HTTP {}): {}",
             file_name,
@@ -457,7 +457,7 @@ async fn upload_via_package_registry(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = anodizer_core::http::body_of(resp).await;
         bail!(
             "gitlab: package registry upload '{}' failed (HTTP {}): {}",
             file_name,
@@ -509,7 +509,7 @@ async fn upload_via_project_uploads(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = anodizer_core::http::body_of(resp).await;
         bail!(
             "gitlab: project upload '{}' failed (HTTP {}): {}",
             file_name,

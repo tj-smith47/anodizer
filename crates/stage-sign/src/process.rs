@@ -128,8 +128,8 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
 
-    let stdout_str = anodizer_core::redact::redact_string(&stdout_raw, &env_pairs);
-    let stderr_str = anodizer_core::redact::redact_string(&stderr_raw, &env_pairs);
+    let stdout_str = anodizer_core::redact::string(&stdout_raw, &env_pairs);
+    let stderr_str = anodizer_core::redact::string(&stderr_raw, &env_pairs);
 
     if job.output_flag {
         if !stdout_str.is_empty() {

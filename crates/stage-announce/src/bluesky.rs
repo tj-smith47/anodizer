@@ -34,7 +34,7 @@ pub fn send_bluesky(
 
     if !session_resp.status().is_success() {
         let status = session_resp.status();
-        let body = session_resp.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(session_resp);
         anyhow::bail!("bluesky: login failed ({status}): {body}");
     }
 
@@ -81,7 +81,7 @@ pub fn send_bluesky(
 
     if !create_resp.status().is_success() {
         let status = create_resp.status();
-        let body = create_resp.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(create_resp);
         anyhow::bail!("bluesky: post creation failed ({status}): {body}");
     }
 

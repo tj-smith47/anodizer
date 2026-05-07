@@ -114,7 +114,7 @@ pub(crate) async fn gitea_create_release(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = anodizer_core::http::body_of(resp).await;
             bail!("gitea: update release failed (HTTP {}): {}", status, text);
         }
 
@@ -140,7 +140,7 @@ pub(crate) async fn gitea_create_release(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = anodizer_core::http::body_of(resp).await;
             bail!("gitea: create release failed (HTTP {}): {}", status, text);
         }
 
@@ -189,7 +189,7 @@ async fn find_release_by_tag(
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = anodizer_core::http::body_of(resp).await;
             bail!("gitea: list releases failed (HTTP {}): {}", status, text);
         }
 
@@ -273,7 +273,7 @@ pub(crate) async fn gitea_upload_asset(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = anodizer_core::http::body_of(resp).await;
         bail!(
             "gitea: upload asset '{}' failed (HTTP {}): {}",
             file_name,
@@ -315,7 +315,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = anodizer_core::http::body_of(resp).await;
         bail!(
             "gitea: list release assets failed (HTTP {}): {}",
             status,
@@ -351,7 +351,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
                     "gitea: delete asset '{}' failed (HTTP {}): {}",
                     file_name,
                     del_resp.status(),
-                    del_resp.text().await.unwrap_or_default()
+                    anodizer_core::http::body_of(del_resp).await
                 );
             }
 

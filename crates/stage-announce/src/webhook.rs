@@ -59,7 +59,7 @@ pub fn send_webhook(
     let resp = builder.send()?;
     let status = resp.status().as_u16();
     if !is_expected_status(status, expected_status_codes) {
-        let body = resp.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(resp);
         anyhow::bail!(
             "webhook returned unexpected status {status} (expected one of {expected_status_codes:?}): {body}"
         );

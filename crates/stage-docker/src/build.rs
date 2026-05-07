@@ -169,17 +169,13 @@ pub(crate) fn execute_docker_build(
             .collect();
 
         if !output.stdout.is_empty() {
-            let redacted = anodizer_core::redact::redact_string(
-                &String::from_utf8_lossy(&output.stdout),
-                &env_pairs,
-            );
+            let redacted =
+                anodizer_core::redact::string(&String::from_utf8_lossy(&output.stdout), &env_pairs);
             output.stdout = redacted.into_bytes();
         }
         if !output.stderr.is_empty() {
-            let redacted = anodizer_core::redact::redact_string(
-                &String::from_utf8_lossy(&output.stderr),
-                &env_pairs,
-            );
+            let redacted =
+                anodizer_core::redact::string(&String::from_utf8_lossy(&output.stderr), &env_pairs);
             output.stderr = redacted.into_bytes();
         }
 
@@ -312,14 +308,14 @@ pub(crate) fn execute_docker_build(
                 let mut stdout_bytes = push_output.stdout;
                 let mut stderr_bytes = push_output.stderr;
                 if !stdout_bytes.is_empty() {
-                    let redacted = anodizer_core::redact::redact_string(
+                    let redacted = anodizer_core::redact::string(
                         &String::from_utf8_lossy(&stdout_bytes),
                         &env_pairs,
                     );
                     stdout_bytes = redacted.into_bytes();
                 }
                 if !stderr_bytes.is_empty() {
-                    let redacted = anodizer_core::redact::redact_string(
+                    let redacted = anodizer_core::redact::string(
                         &String::from_utf8_lossy(&stderr_bytes),
                         &env_pairs,
                     );

@@ -177,7 +177,7 @@ pub(super) fn package_feed_hash(push_source: &str, name: &str, version: &str) ->
     };
 
     let body = match client.get(&url).send() {
-        Ok(resp) if resp.status().is_success() => resp.text().unwrap_or_default(),
+        Ok(resp) if resp.status().is_success() => anodizer_core::http::body_of_blocking(resp),
         _ => return FeedHashResult::Absent,
     };
 
@@ -334,7 +334,7 @@ pub(super) fn push_nupkg(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_ascii_lowercase();
-        let body = response.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(response);
         let body_looks_html =
             content_type.contains("text/html") || body.trim_start().starts_with('<');
         let edge_transient = matches!(status.as_u16(), 403 | 502 | 503 | 504) && body_looks_html;

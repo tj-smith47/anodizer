@@ -67,12 +67,12 @@ pub fn send_linkedin(access_token: &str, message: &str, log: &StageLogger) -> Re
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(resp);
         anyhow::bail!("linkedin: share failed ({status}): {body}");
     }
 
     // Extract activity URL from response (matches GoReleaser behavior).
-    let resp_text = resp.text().unwrap_or_default();
+    let resp_text = anodizer_core::http::body_of_blocking(resp);
     let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
         .map_err(|e| anyhow::anyhow!("linkedin: failed to parse share response: {e}"))?;
     let activity = resp_json
@@ -104,7 +104,7 @@ fn get_profile_urn(client: &reqwest::blocking::Client, access_token: &str) -> Re
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(resp);
         anyhow::bail!("linkedin: GET /v2/userinfo failed ({status}): {body}");
     }
 
@@ -132,7 +132,7 @@ fn get_profile_urn_legacy(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(resp);
         anyhow::bail!("linkedin: GET /v2/me failed ({status}): {body}");
     }
 

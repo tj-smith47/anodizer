@@ -32,7 +32,7 @@ pub fn send_discourse(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().unwrap_or_default();
+        let body = anodizer_core::http::body_of_blocking(resp);
         anyhow::bail!("discourse: failed to create topic ({status}): {body}");
     }
     Ok(())
