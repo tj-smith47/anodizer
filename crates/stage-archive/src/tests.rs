@@ -15,7 +15,7 @@ use crate::entries::{ArchiveEntry, deduplicate_entries, sort_entries};
 use crate::file_specs::{render_file_info, resolve_default_extra_files};
 use crate::formats::{
     self, copy_binary, create_gz, create_tar, create_tar_gz, create_tar_xz, create_tar_zst,
-    create_zip, resolve_glob_patterns,
+    create_xz, create_zip, resolve_glob_patterns,
 };
 use crate::{
     ArchiveStage, default_binary_name_template, default_name_template, format_for_target,
@@ -2835,6 +2835,167 @@ fn test_create_gz_nonexistent_fails() {
     let nonexistent = tmp.path().join("does_not_exist");
     let result = create_gz(&nonexistent, &archive_path);
     assert!(result.is_err(), "gz with nonexistent file should fail");
+}
+
+// -----------------------------------------------------------------------
+// Q17.1 — `xz` single-file format. Mirrors GoReleaser commit bb532b6
+// (#6520, pkg/archive/xz/xz.go): a top-level xz container holds exactly
+// one file. The unit-level writer + the stage-level dispatch both pin
+// this contract.
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_create_xz_single_file_roundtrip() {
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("mybin");
+    fs::write(&bin_path, b"binary content for xz").unwrap();
+
+    let archive_path = tmp.path().join("mybin.xz");
+    create_xz(&bin_path, &archive_path).unwrap();
+
+    assert!(archive_path.exists());
+    let len = fs::metadata(&archive_path).unwrap().len();
+    assert!(len > 0, "xz archive should not be empty");
+
+    // Decompress and verify the original content survives the round-trip.
+    let compressed = fs::read(&archive_path).unwrap();
+    let mut dec = xz2::read::XzDecoder::new(&compressed[..]);
+    let mut decompressed = Vec::new();
+    std::io::Read::read_to_end(&mut dec, &mut decompressed).unwrap();
+    assert_eq!(decompressed, b"binary content for xz");
+}
+
+#[test]
+fn test_create_xz_nonexistent_fails() {
+    let tmp = TempDir::new().unwrap();
+    let archive_path = tmp.path().join("empty.xz");
+    let nonexistent = tmp.path().join("does_not_exist");
+    let result = create_xz(&nonexistent, &archive_path);
+    assert!(result.is_err(), "xz with nonexistent file should fail");
+}
+
+#[test]
+fn test_archive_stage_xz_format_single_binary() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    // Crate dir is an isolated subdirectory with no LICENSE/README so
+    // `resolve_default_extra_files` returns nothing and the binary is
+    // the only file fed to the xz writer.
+    let crate_dir = tmp.path().join("crate");
+    fs::create_dir_all(&crate_dir).unwrap();
+    let bin = crate_dir.join("myapp");
+    fs::write(&bin, b"binary content").unwrap();
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: crate_dir.to_string_lossy().to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+            formats: Some(vec!["xz".to_string()]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = dist;
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        size: None,
+    });
+
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1);
+    assert_eq!(archives[0].metadata.get("format"), Some(&"xz".to_string()));
+    assert!(archives[0].path.exists(), "xz archive file should exist");
+    assert!(
+        archives[0].path.to_string_lossy().ends_with(".xz"),
+        "xz archive should have .xz extension"
+    );
+    assert!(
+        !archives[0].path.to_string_lossy().ends_with(".tar.xz"),
+        "single-file xz must not be confused with the tar.xz container"
+    );
+}
+
+#[test]
+fn test_archive_stage_xz_format_multi_file_errors() {
+    use anodizer_core::config::{
+        ArchiveConfig, ArchiveFileSpec, ArchivesConfig, Config, CrateConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+
+    let crate_dir = tmp.path().join("crate");
+    fs::create_dir_all(&crate_dir).unwrap();
+    let bin = crate_dir.join("myapp");
+    fs::write(&bin, b"binary content").unwrap();
+    let license = tmp.path().join("LICENSE");
+    fs::write(&license, b"MIT License").unwrap();
+    let license_path = license.to_string_lossy().to_string();
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: crate_dir.to_string_lossy().to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+            formats: Some(vec!["xz".to_string()]),
+            // Adding an extra file forces a multi-file payload, which xz
+            // (a single-file format) must reject — mirrors the upstream
+            // `xz: failed to add %s, only one file can be archived in xz`
+            // error from `pkg/archive/xz/xz.go`.
+            files: Some(vec![ArchiveFileSpec::Glob(license_path)]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = dist;
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        size: None,
+    });
+
+    let result = ArchiveStage.run(&mut ctx);
+    assert!(result.is_err(), "xz with multiple files must error");
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("only one file can be archived in xz format"),
+        "error must reference single-file xz contract, got: {err}"
+    );
 }
 
 #[test]

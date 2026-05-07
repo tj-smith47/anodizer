@@ -229,6 +229,25 @@ pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Create a standalone .xz file from a single input file.
+/// Unlike tar.xz, this compresses one file directly with xz (xz cannot hold
+/// multiple files without tar). Mirrors GoReleaser commit bb532b6 / #6520
+/// (`pkg/archive/xz/xz.go`): the xz container is single-file, so callers
+/// must dispatch with exactly one source. Error mirrors upstream's
+/// `xz: failed to add %s, only one file can be archived in xz format`.
+pub fn create_xz(file: &Path, output: &Path) -> Result<()> {
+    if !file.exists() {
+        bail!("xz: source file does not exist: {}", file.display());
+    }
+    let out_file =
+        File::create(output).with_context(|| format!("create xz: {}", output.display()))?;
+    let mut enc = xz2::write::XzEncoder::new(out_file, 9);
+    let data = fs::read(file).with_context(|| format!("xz: read {}", file.display()))?;
+    enc.write_all(&data).context("xz: write compressed data")?;
+    enc.finish().context("xz: finish")?;
+    Ok(())
+}
+
 /// Create a zip archive containing the given files.
 /// Each file is stored under its own filename (no directory prefix).
 /// If `wrap_dir` is provided, all archive entries are prefixed with that directory.

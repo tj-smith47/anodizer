@@ -227,8 +227,10 @@ pub struct ArchiveConfig {
     pub id: Option<String>,
     /// Archive filename template (supports templates, e.g., "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}").
     pub name_template: Option<String>,
-    /// Archive formats: tar.gz, tar.xz, tar.zst, zip, or binary. Plural list;
-    /// one archive per format is produced for each target.
+    /// Archive formats: tar.gz, tar.xz, tar.zst, tar, zip, gz, xz, or binary.
+    /// `gz` and `xz` are single-file compressors — supplying multiple input
+    /// files errors. Plural list; one archive per format is produced for each
+    /// target.
     pub formats: Option<Vec<String>>,
     /// Per-OS format overrides for this archive config.
     pub format_overrides: Option<Vec<FormatOverride>>,
@@ -258,7 +260,8 @@ pub struct ArchiveConfig {
 pub struct FormatOverride {
     /// Operating system this override applies to (e.g., "windows", "darwin", "linux").
     pub os: String,
-    /// Plural format overrides for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.
+    /// Plural format overrides for this OS: tar.gz, tar.xz, tar.zst, tar, zip,
+    /// gz, xz, or binary.
     pub formats: Option<Vec<String>>,
 }
 
@@ -331,7 +334,7 @@ pub fn parse_octal_mode(s: &str) -> Option<u32> {
 /// Used for early validation so typos are caught at config load time rather
 /// than mid-pipeline.
 pub const VALID_ARCHIVE_FORMATS: &[&str] = &[
-    "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar", "zip", "gz", "binary", "none",
+    "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar", "zip", "gz", "xz", "binary", "none",
 ];
 
 // ---------------------------------------------------------------------------

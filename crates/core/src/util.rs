@@ -448,6 +448,12 @@ mod tests {
             msg.contains("not a valid timestamp"),
             "unexpected error: {msg}"
         );
+        // Mirrors GoReleaser commit 50a034d: the parse error must include
+        // the offending mtime value so misconfigurations are diagnosable.
+        assert!(
+            msg.contains("not-a-timestamp"),
+            "error must include the bad value, got: {msg}"
+        );
     }
 
     #[test]

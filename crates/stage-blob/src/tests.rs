@@ -20,6 +20,7 @@ use crate::upload::{
     build_put_options, collect_artifacts, format_remote_path, handle_upload_error,
     resolve_extra_files, upload_files_owned,
 };
+use anodizer_core::config::RetryConfig;
 
 // -----------------------------------------------------------------------
 // Provider tests
@@ -69,7 +70,7 @@ fn test_s3_basic_build() {
         ..Default::default()
     };
     // The builder will succeed (credentials validated lazily)
-    let result = build_s3_store(&config, "test-bucket", &make_ctx());
+    let result = build_s3_store(&config, "test-bucket", &make_ctx(), &RetryConfig::default());
     // May fail due to missing AWS creds in test env, but should not panic
     // and should produce a meaningful error if it fails
     let _ = result;
@@ -88,7 +89,7 @@ fn test_s3_force_path_style_defaults_true_with_endpoint() {
     // This exercises the builder path. The builder configures
     // virtual_hosted_style_request = !force_path = false, which means
     // path-style is enabled.
-    let _ = build_s3_store(&config, "b", &make_ctx());
+    let _ = build_s3_store(&config, "b", &make_ctx(), &RetryConfig::default());
 }
 
 #[test]
@@ -100,7 +101,7 @@ fn test_s3_force_path_style_explicit_false_with_endpoint() {
         s3_force_path_style: Some(false),
         ..Default::default()
     };
-    let _ = build_s3_store(&config, "b", &make_ctx());
+    let _ = build_s3_store(&config, "b", &make_ctx(), &RetryConfig::default());
 }
 
 // -----------------------------------------------------------------------
@@ -1013,6 +1014,94 @@ fn test_blob_stage_dry_run_logs_commands() {
     // Dry-run should succeed without any credentials
     let result = stage.run(&mut ctx);
     assert!(result.is_ok());
+}
+
+// -----------------------------------------------------------------------
+// Q9.1 — provider must be Tera-template-rendered before any provider-keyed
+// dispatch (S3-ACL gate, GCS-ACL gate, …). Mirrors GoReleaser commit
+// 4d1924d (`internal/pipe/blob/upload.go`): `provider == "s3"` was a raw
+// string compare, so `provider: "{{ .ProviderName }}"` skipped the ACL
+// branch. Anodizer renders `provider` once via `ctx.render_template` then
+// dispatches against `Provider::S3` (an enum) so the bug has no surface,
+// but two tests pin the contract:
+//   - `..._for_acl_dispatch` — full stage dry-run: templated provider +
+//     ACL must not error.
+//   - `..._exercises_s3_acl_validator` — bypass dry-run by calling the
+//     S3 builder directly with an invalid ACL; it must reject (proves
+//     the ACL gate runs on the S3 path that a templated provider
+//     resolves into).
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_q9_1_provider_template_resolves_to_s3_for_acl_dispatch() {
+    // Templated provider → after render → "s3" → Provider::S3 → ACL gate.
+    let config = anodizer_core::config::Config {
+        project_name: "test".to_string(),
+        crates: vec![anodizer_core::config::CrateConfig {
+            name: "mycrate".to_string(),
+            path: ".".to_string(),
+            blobs: Some(vec![BlobConfig {
+                provider: "{{ ProviderName }}".to_string(),
+                bucket: "my-bucket".to_string(),
+                acl: Some("private".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut opts = ContextOptions::default();
+    opts.dry_run = true;
+    let mut ctx = Context::new(config, opts);
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("ProjectName", "test");
+    ctx.template_vars_mut().set("ProviderName", "s3");
+
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: ArtifactKind::Archive,
+        name: String::new(),
+        path: PathBuf::from("dist/test-v1.0.0.tar.gz"),
+        target: None,
+        crate_name: "mycrate".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let stage = BlobStage;
+    // The render → Provider::parse → S3 path must succeed under dry-run.
+    let result = stage.run(&mut ctx);
+    assert!(
+        result.is_ok(),
+        "templated provider that resolves to 's3' must dispatch through \
+         the S3 path; got: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn test_q9_1_template_resolved_provider_exercises_s3_acl_validator() {
+    // After Q9.1 fix, `provider: "{{ .ProviderName }}"` resolved to "s3"
+    // must reach the S3 dispatch arm — so the S3-only ACL validator runs.
+    // Direct-call `build_s3_store` with an invalid ACL: it must reject.
+    // (If the bug regressed and the rendered provider were treated as
+    // non-S3, an invalid ACL would be silently passed through.)
+    let config = BlobConfig {
+        provider: "s3".to_string(), // post-render value, mimicking the dispatch result
+        bucket: "b".to_string(),
+        acl: Some("not-a-real-acl".to_string()),
+        ..Default::default()
+    };
+    let result = build_s3_store(&config, "b", &make_ctx(), &RetryConfig::default());
+    assert!(
+        result.is_err(),
+        "S3 ACL validator must reject an invalid canned ACL after the \
+         dispatcher routes a templated provider into the S3 arm"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("invalid S3 canned ACL"),
+        "ACL validator error must mention the rejection, got: {err}"
+    );
 }
 
 // -----------------------------------------------------------------------

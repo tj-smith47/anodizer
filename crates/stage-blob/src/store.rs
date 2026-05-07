@@ -1,10 +1,11 @@
 use anyhow::{Context as _, Result};
 
-use anodizer_core::config::BlobConfig;
+use anodizer_core::config::{BlobConfig, RetryConfig};
 use anodizer_core::context::Context;
 use anodizer_core::template;
 
 use object_store::ObjectStore;
+use object_store::RetryConfig as ObjectStoreRetryConfig;
 
 use crate::kms::{KmsProvider, parse_kms_provider};
 use crate::provider::Provider;
@@ -12,6 +13,19 @@ use crate::provider::Provider;
 // ---------------------------------------------------------------------------
 // Store construction — one function per provider
 // ---------------------------------------------------------------------------
+
+/// Bridge anodizer's user-facing [`RetryConfig`] (top-level `retry:` block)
+/// into [`object_store::RetryConfig`] so the bucket SDK retries align with
+/// every other HTTP-uploading publisher. `attempts` includes the first try
+/// (matches GoReleaser semantics), so we subtract one to get `max_retries`.
+pub(crate) fn to_object_store_retry(cfg: &RetryConfig) -> ObjectStoreRetryConfig {
+    let max_retries = cfg.attempts.saturating_sub(1) as usize;
+    ObjectStoreRetryConfig {
+        max_retries,
+        retry_timeout: cfg.max_delay.duration().saturating_mul(cfg.attempts.max(1)),
+        ..Default::default()
+    }
+}
 
 /// Build an `ObjectStore` for the given provider and config.
 /// All env-based credential chains are handled by the builder's `from_env()`.
@@ -21,10 +35,11 @@ pub(crate) fn build_store(
     rendered_bucket: &str,
     ctx: &Context,
 ) -> Result<Box<dyn ObjectStore>> {
+    let retry = ctx.config.retry.unwrap_or_default();
     match provider {
-        Provider::S3 => build_s3_store(config, rendered_bucket, ctx),
-        Provider::Gcs => build_gcs_store(rendered_bucket, config),
-        Provider::AzBlob => build_azure_store(rendered_bucket),
+        Provider::S3 => build_s3_store(config, rendered_bucket, ctx, &retry),
+        Provider::Gcs => build_gcs_store(rendered_bucket, config, &retry),
+        Provider::AzBlob => build_azure_store(rendered_bucket, &retry),
     }
 }
 
@@ -32,10 +47,13 @@ pub(crate) fn build_s3_store(
     config: &BlobConfig,
     bucket: &str,
     ctx: &Context,
+    retry: &RetryConfig,
 ) -> Result<Box<dyn ObjectStore>> {
     use object_store::aws::AmazonS3Builder;
 
-    let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
+    let mut builder = AmazonS3Builder::from_env()
+        .with_bucket_name(bucket)
+        .with_retry(to_object_store_retry(retry));
 
     if let Some(ref region) = config.region {
         let rendered = template::render(region, ctx.template_vars())
@@ -111,10 +129,16 @@ pub(crate) fn build_s3_store(
     ))
 }
 
-pub(crate) fn build_gcs_store(bucket: &str, config: &BlobConfig) -> Result<Box<dyn ObjectStore>> {
+pub(crate) fn build_gcs_store(
+    bucket: &str,
+    config: &BlobConfig,
+    retry: &RetryConfig,
+) -> Result<Box<dyn ObjectStore>> {
     use object_store::gcp::GoogleCloudStorageBuilder;
 
-    let mut builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(bucket);
+    let mut builder = GoogleCloudStorageBuilder::from_env()
+        .with_bucket_name(bucket)
+        .with_retry(to_object_store_retry(retry));
 
     // GCS predefined ACL via x-goog-acl header.
     // Match the public list documented at
@@ -155,10 +179,15 @@ pub(crate) fn build_gcs_store(bucket: &str, config: &BlobConfig) -> Result<Box<d
     ))
 }
 
-pub(crate) fn build_azure_store(container: &str) -> Result<Box<dyn ObjectStore>> {
+pub(crate) fn build_azure_store(
+    container: &str,
+    retry: &RetryConfig,
+) -> Result<Box<dyn ObjectStore>> {
     use object_store::azure::MicrosoftAzureBuilder;
 
-    let builder = MicrosoftAzureBuilder::from_env().with_container_name(container);
+    let builder = MicrosoftAzureBuilder::from_env()
+        .with_container_name(container)
+        .with_retry(to_object_store_retry(retry));
 
     Ok(Box::new(
         builder

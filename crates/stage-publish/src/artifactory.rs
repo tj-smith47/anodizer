@@ -2,9 +2,11 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::hashing::sha256_file;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::fs;
+use std::ops::ControlFlow;
 
 // ---------------------------------------------------------------------------
 // validate_upload_mode
@@ -240,6 +242,12 @@ pub fn render_artifact_url(
 // ---------------------------------------------------------------------------
 
 /// Upload a single artifact to the target URL.
+///
+/// Wraps the request in [`retry_sync`] using `policy` so transport errors,
+/// 5xx responses, and 429s retry per the user's `retry:` config (mirrors
+/// GoReleaser `internal/pipe/upload/upload.go::doUpload` which also wraps
+/// uploads in `retryx.Do`). 4xx responses fast-fail through
+/// [`ControlFlow::Break`].
 #[allow(clippy::too_many_arguments)]
 pub fn upload_single_artifact(
     client: &reqwest::blocking::Client,
@@ -251,6 +259,7 @@ pub fn upload_single_artifact(
     custom_headers: &HashMap<String, String>,
     artifact: &Artifact,
     ctx: &Context,
+    policy: &RetryPolicy,
     log: &StageLogger,
 ) -> Result<()> {
     let path = &artifact.path;
@@ -278,102 +287,143 @@ pub fn upload_single_artifact(
         url
     ));
 
-    // Build request
-    let mut req = match method.to_uppercase().as_str() {
-        "PUT" => client.put(url),
-        "POST" => client.post(url),
-        other => bail!("artifactory: unsupported HTTP method '{}'", other),
-    };
-
-    // Basic Auth
-    if !username.is_empty() && !password.is_empty() {
-        req = req.basic_auth(username, Some(password));
-    }
-
-    // Checksum header
-    if !checksum_header.is_empty() {
-        req = req.header(checksum_header, &checksum);
-    }
-
-    // Custom header values are template-rendered with the artifact context
-    // (ArtifactName, Os, Arch, Target) so per-asset metadata can be sent
-    // through `custom_headers:` rather than only global template vars.
+    // Pre-compute rendered custom-header values so we don't re-render on
+    // every retry attempt (and so render failures fail-fast outside the
+    // retry loop, where they belong).
+    let mut rendered_headers: Vec<(String, String)> = Vec::with_capacity(custom_headers.len());
     for (k, v) in custom_headers {
-        let rendered_v = {
-            let mut vars = ctx.template_vars().clone();
-            vars.set("ArtifactName", artifact.name());
-            vars.set(
-                "ArtifactExt",
-                anodizer_core::template::extract_artifact_ext(artifact.name()),
-            );
-            if let Some(ref target) = artifact.target {
-                let (os, arch) = anodizer_core::target::map_target(target);
-                vars.set("Os", &os);
-                vars.set("Arch", &arch);
-                vars.set("Target", target);
-            }
-            anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.clone())
-        };
-        req = req.header(k.as_str(), rendered_v);
-    }
-
-    // Content-Length is set automatically by reqwest from body length
-    req = req.header("Content-Length", body.len().to_string());
-
-    let resp = req
-        .body(body)
-        .send()
-        .with_context(|| format!("artifactory: HTTP request failed for '{}'", url))?;
-
-    let status = resp.status();
-    if !status.is_success() {
-        let resp_body = anodizer_core::http::body_of_blocking(resp);
-        // Artifactory's error envelope is
-        // `{"errors": [{"status": 401, "message": "..."}]}`. Surface both
-        // status and message so a 200 OK with a partial-failure body
-        // explains itself.
-        let detail = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp_body) {
-            if let Some(errors) = json.get("errors").and_then(|e| e.as_array()) {
-                errors
-                    .iter()
-                    .map(|e| {
-                        let msg = e.get("message").and_then(|m| m.as_str()).unwrap_or("");
-                        match e.get("status") {
-                            Some(s) if !s.is_null() => {
-                                let s_str = s
-                                    .as_str()
-                                    .map(str::to_owned)
-                                    .or_else(|| s.as_i64().map(|n| n.to_string()))
-                                    .unwrap_or_else(|| s.to_string());
-                                if msg.is_empty() {
-                                    format!("status={}", s_str)
-                                } else {
-                                    format!("status={} {}", s_str, msg)
-                                }
-                            }
-                            _ => msg.to_string(),
-                        }
-                    })
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            } else {
-                resp_body
-            }
-        } else {
-            resp_body
-        };
-        bail!(
-            "artifactory: upload of '{}' failed: {} {} — {}",
-            artifact.name(),
-            method.to_uppercase(),
-            status,
-            detail
+        let mut vars = ctx.template_vars().clone();
+        vars.set("ArtifactName", artifact.name());
+        vars.set(
+            "ArtifactExt",
+            anodizer_core::template::extract_artifact_ext(artifact.name()),
         );
+        if let Some(ref target) = artifact.target {
+            let (os, arch) = anodizer_core::target::map_target(target);
+            vars.set("Os", &os);
+            vars.set("Arch", &arch);
+            vars.set("Target", target);
+        }
+        let rendered_v = anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.clone());
+        rendered_headers.push((k.clone(), rendered_v));
     }
 
-    log.status(&format!("uploaded {} ({})", artifact.name(), status));
+    let method_upper = method.to_uppercase();
+    let resp = retry_sync(policy, |attempt| {
+        if attempt > 1 {
+            log.verbose(&format!(
+                "artifactory: retrying upload of {} (attempt {})",
+                artifact.name(),
+                attempt
+            ));
+        }
+
+        let mut req = match method_upper.as_str() {
+            "PUT" => client.put(url),
+            "POST" => client.post(url),
+            other => {
+                return Err(ControlFlow::Break(anyhow::anyhow!(
+                    "artifactory: unsupported HTTP method '{}'",
+                    other
+                )));
+            }
+        };
+
+        if !username.is_empty() && !password.is_empty() {
+            req = req.basic_auth(username, Some(password));
+        }
+        if !checksum_header.is_empty() {
+            req = req.header(checksum_header, &checksum);
+        }
+        for (k, v) in &rendered_headers {
+            req = req.header(k.as_str(), v);
+        }
+        req = req.header("Content-Length", body.len().to_string());
+
+        match req.body(body.clone()).send() {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() || status.is_redirection() {
+                    Ok(status)
+                } else {
+                    // Decode Artifactory's `{"errors":[{...}]}` envelope so
+                    // the error message carries upstream status + message,
+                    // then wrap in HttpError so `is_retriable` routes
+                    // 5xx/429 to retry and 4xx to fast-fail.
+                    let resp_body = anodizer_core::http::body_of_blocking(resp);
+                    let detail = decode_artifactory_error_body(&resp_body);
+                    let inner = anyhow::anyhow!(
+                        "artifactory: upload of '{}' failed: {} {} — {}",
+                        artifact.name(),
+                        method_upper,
+                        status,
+                        detail
+                    );
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.as_ref()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+            Err(e) => {
+                // Transport-layer (DNS/connect/TLS/timeout) — always retriable.
+                // Same shape as `core::retry::classify_http_sync` for the
+                // `Err` branch.
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context(format!("artifactory: HTTP request failed for '{}'", url));
+                Err(ControlFlow::Continue(err))
+            }
+        }
+    })?;
+
+    log.status(&format!("uploaded {} ({})", artifact.name(), resp));
     Ok(())
+}
+
+/// Decode Artifactory's `{"errors":[{"status":N,"message":"..."}]}` error
+/// envelope into a human-readable string. Falls back to the raw body when
+/// JSON decoding fails or the envelope shape doesn't match.
+fn decode_artifactory_error_body(body: &str) -> String {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
+        return body.to_string();
+    };
+    let Some(errors) = json.get("errors").and_then(|e| e.as_array()) else {
+        return body.to_string();
+    };
+    let joined: String = errors
+        .iter()
+        .map(|e| {
+            let msg = e.get("message").and_then(|m| m.as_str()).unwrap_or("");
+            match e.get("status") {
+                Some(s) if !s.is_null() => {
+                    let s_str = s
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| s.as_i64().map(|n| n.to_string()))
+                        .unwrap_or_else(|| s.to_string());
+                    if msg.is_empty() {
+                        format!("status={}", s_str)
+                    } else {
+                        format!("status={} {}", s_str, msg)
+                    }
+                }
+                _ => msg.to_string(),
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if joined.is_empty() {
+        body.to_string()
+    } else {
+        joined
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +440,11 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         Some(ref v) if !v.is_empty() => v,
         _ => return Ok(()),
     };
+
+    // Single retry policy resolved from the top-level `retry:` block; reused
+    // for every entry's per-artifact upload (mirrors GoReleaser, where the
+    // `retryx` policy is captured once per pipe invocation).
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
 
     for entry in entries {
         // Check skip flag.
@@ -592,6 +647,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
                 custom_headers,
                 artifact,
                 ctx,
+                &policy,
                 log,
             )?;
         }

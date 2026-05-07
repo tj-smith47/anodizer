@@ -17,6 +17,10 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         _ => return Ok(()),
     };
 
+    // One retry policy resolved from the top-level `retry:` block, reused
+    // for every entry. Mirrors GoReleaser `internal/pipe/upload`.
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+
     for entry in entries {
         // Check skip flag
         if let Some(ref d) = entry.skip {
@@ -167,6 +171,7 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
                 custom_headers,
                 artifact,
                 ctx,
+                &policy,
                 log,
             )?;
         }

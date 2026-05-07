@@ -859,7 +859,7 @@
           }
         },
         "formats": {
-          "description": "Archive formats: tar.gz, tar.xz, tar.zst, zip, or binary. Plural list; one archive per format is produced for each target.",
+          "description": "Archive formats: tar.gz, tar.xz, tar.zst, tar, zip, gz, xz, or binary. `gz` and `xz` are single-file compressors — supplying multiple input files errors. Plural list; one archive per format is produced for each target.",
           "default": null,
           "type": [
             "array",
@@ -5038,7 +5038,7 @@
       ],
       "properties": {
         "formats": {
-          "description": "Plural format overrides for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.",
+          "description": "Plural format overrides for this OS: tar.gz, tar.xz, tar.zst, tar, zip, gz, xz, or binary.",
           "type": [
             "array",
             "null"

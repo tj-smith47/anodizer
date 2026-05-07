@@ -863,6 +863,69 @@ fn test_reverse_filter_removes_matches() {
     assert!(!result.contains("avocado"));
 }
 
+// Q15.2 — `filter` and `reverseFilter` must return an error (not panic)
+// when the user supplies an invalid regex. Mirrors GoReleaser commit
+// c2f16b9 (internal/tmpl/tmpl.go): upstream replaced `regexp.MustCompilePOSIX`
+// (panicking) with `regexp.CompilePOSIX` (returning error). Rust's
+// `regex::Regex::new` already returns `Result`, so this contract is
+// panic-free by construction; this test pins it.
+#[test]
+fn test_filter_function_invalid_regex_returns_error() {
+    let vars = test_vars();
+    let result = render(
+        // `[` is an unterminated character class — invalid regex.
+        "{{ filter(items=[\"apple\"], regexp=\"[\") }}",
+        &vars,
+    );
+    assert!(result.is_err(), "invalid regex must produce an error");
+    // Use full-chain debug formatter so the inner regex-compile error
+    // (wrapped by Tera + anyhow context) is visible to the assertion.
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.contains("invalid regex") || err.contains("filter"),
+        "error chain should mention the invalid regex, got: {err}"
+    );
+}
+
+#[test]
+fn test_reverse_filter_function_invalid_regex_returns_error() {
+    let vars = test_vars();
+    let result = render(
+        "{{ reverseFilter(items=[\"apple\"], regexp=\"[\") }}",
+        &vars,
+    );
+    assert!(result.is_err(), "invalid regex must produce an error");
+}
+
+#[test]
+fn test_filter_pipe_invalid_regex_returns_error() {
+    // Pipe form: `{{ value | filter(regexp="...") }}`.
+    let vars = test_vars();
+    let result = render("{{ ProjectName | filter(regexp=\"[\") }}", &vars);
+    assert!(
+        result.is_err(),
+        "invalid regex in pipe form must produce an error"
+    );
+    // Tera wraps the inner filter error in the template render error.
+    // Use the alternate-debug formatter to render the full anyhow chain
+    // (`.to_string()` only shows the outermost context).
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.contains("invalid regex"),
+        "error chain should mention 'invalid regex', got: {err}"
+    );
+}
+
+#[test]
+fn test_reverse_filter_pipe_invalid_regex_returns_error() {
+    let vars = test_vars();
+    let result = render("{{ ProjectName | reverseFilter(regexp=\"[\") }}", &vars);
+    assert!(
+        result.is_err(),
+        "invalid regex in pipe form must produce an error"
+    );
+}
+
 // ---- indexOrDefault tests ----
 
 #[test]

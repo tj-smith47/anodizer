@@ -6,6 +6,16 @@
 //! `PublishRelease` as a no-op), so we follow that same approach.
 //!
 //! Reference: GoReleaser `internal/client/gitea.go`.
+//!
+//! ## Note on commit 4a9d25f (default-branch fallback)
+//!
+//! GoReleaser commit 4a9d25f fixes a `CreateFile` path that hard-coded
+//! `master` when the server-side default-branch lookup failed. Anodizer
+//! does not call Gitea's `repos/{owner}/{repo}/contents/{path}` create-file
+//! endpoint — every publisher (homebrew, scoop, krew, nix, aur, …) targets
+//! Gitea via `git clone` + `git push` over SSH/HTTPS, not via the REST
+//! contents API. The `branch`-defaulting bug therefore has no surface in
+//! anodizer (n/a-by-construction).
 
 use std::path::Path;
 

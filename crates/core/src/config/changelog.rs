@@ -132,8 +132,15 @@ impl ChangelogConfig {
     }
 
     /// Resolve `abbrev`, falling back to [`Self::DEFAULT_ABBREV`] (0 = full SHA).
+    ///
+    /// Mirrors GoReleaser `internal/pipe/changelog/changelog.go` (commit
+    /// 88daaf3): values below `-1` are clamped to `-1`. Upstream's `git log
+    /// --abbrev=N` panics for `-2`, `-3`, etc.; anodizer renders SHAs in
+    /// Rust so it would not panic, but we still clamp for behavioural parity
+    /// — a configuration like `abbrev: -5` produces the same "omit hash"
+    /// output as `abbrev: -1`.
     pub fn resolved_abbrev(&self) -> i32 {
-        self.abbrev.unwrap_or(Self::DEFAULT_ABBREV)
+        self.abbrev.unwrap_or(Self::DEFAULT_ABBREV).max(-1)
     }
 
     /// Resolve the per-entry `format:` template. When the user did not

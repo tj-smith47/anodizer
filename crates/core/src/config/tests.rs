@@ -916,6 +916,35 @@ fn test_changelog_resolved_abbrev_user_value_wins() {
     assert_eq!(cfg.resolved_abbrev(), 7);
 }
 
+// Q15.1 — abbrev clamp. Mirrors GoReleaser commit 88daaf3
+// (internal/pipe/changelog/changelog.go): values below `-1` are clamped
+// to `-1`. Upstream's `git log --abbrev=N` panics on `-2`, `-3`, …;
+// anodizer renders SHAs in Rust so it would not panic, but the clamp
+// keeps behavioural parity (negative-of-any-magnitude → "omit hash").
+#[test]
+fn test_changelog_resolved_abbrev_clamps_negative_below_minus_one() {
+    for raw in [-2i32, -5, -100, i32::MIN] {
+        let cfg = ChangelogConfig {
+            abbrev: Some(raw),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_abbrev(),
+            -1,
+            "abbrev={raw} must clamp to -1 (parity with GoReleaser 88daaf3)"
+        );
+    }
+}
+
+#[test]
+fn test_changelog_resolved_abbrev_minus_one_passes_through() {
+    let cfg = ChangelogConfig {
+        abbrev: Some(-1),
+        ..Default::default()
+    };
+    assert_eq!(cfg.resolved_abbrev(), -1);
+}
+
 #[test]
 fn test_changelog_resolved_format_user_value_wins() {
     let cfg = ChangelogConfig {

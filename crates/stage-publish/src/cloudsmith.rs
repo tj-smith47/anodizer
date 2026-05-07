@@ -1,8 +1,10 @@
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -57,6 +59,68 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+/// Retry an HTTP request builder, classifying via [`is_retriable`].
+/// `build_send` is called per attempt — it must construct a fresh request
+/// (so multipart bodies can be rebuilt) and call `.send()`. 5xx/429 +
+/// transport errors retry; 4xx fast-fails. Returns the body string on
+/// success, threading the upstream HTTP status into the error chain so a
+/// subsequent `is_retriable` check (if any) can still see the status.
+fn retry_request<F>(
+    label: &str,
+    art_name: &str,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+    mut build_send: F,
+) -> Result<(reqwest::StatusCode, String)>
+where
+    F: FnMut() -> Result<reqwest::blocking::Response, reqwest::Error>,
+{
+    retry_sync(policy, |attempt| {
+        if attempt > 1 {
+            log.verbose(&format!(
+                "cloudsmith: retrying {} for '{}' (attempt {})",
+                label, art_name, attempt
+            ));
+        }
+        match build_send() {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
+                if status.is_success() {
+                    Ok((status, body))
+                } else {
+                    let inner = anyhow::anyhow!(
+                        "cloudsmith {} for '{}' returned HTTP {}: {}",
+                        label,
+                        art_name,
+                        status,
+                        body.trim()
+                    );
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.as_ref()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None)).context(format!(
+                    "cloudsmith {} transport error for '{}'",
+                    label, art_name
+                ));
+                Err(ControlFlow::Continue(err))
+            }
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // publish_to_cloudsmith
 // ---------------------------------------------------------------------------
@@ -72,6 +136,12 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
         Some(ref v) if !v.is_empty() => v,
         _ => return Ok(()),
     };
+
+    // Single retry policy resolved from the top-level `retry:` block; reused
+    // for every step of the 3-stage upload (files/create → S3 presigned →
+    // packages/upload). Mirrors GoReleaser, where the retry policy is set
+    // once per pipe invocation.
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
 
     for entry in entries {
         // Check skip flag.
@@ -291,30 +361,15 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             });
 
             log.verbose(&format!("[step 1/3] POST {}", files_create_url));
-            let create_resp = client
-                .post(&files_create_url)
-                .header("Authorization", format!("token {}", token))
-                .header("Accept", "application/json")
-                .json(&files_create_body)
-                .send()
-                .with_context(|| {
-                    format!(
-                        "cloudsmith files/create transport error for '{}' at {}",
-                        art_name, files_create_url
-                    )
+            let (_create_status, create_body) =
+                retry_request("files/create", art_name, &policy, log, || {
+                    client
+                        .post(&files_create_url)
+                        .header("Authorization", format!("token {}", token))
+                        .header("Accept", "application/json")
+                        .json(&files_create_body)
+                        .send()
                 })?;
-            let create_status = create_resp.status();
-            let create_body = create_resp
-                .text()
-                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
-            if !create_status.is_success() {
-                bail!(
-                    "cloudsmith files/create for '{}' returned HTTP {}: {}",
-                    art_name,
-                    create_status,
-                    create_body.trim()
-                );
-            }
             let create_json: serde_json::Value =
                 serde_json::from_str(&create_body).with_context(|| {
                     format!(
@@ -358,42 +413,34 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             // parts exactly as given, and the actual file goes under the
             // `file` key (not `package_file`).
             log.verbose(&format!("[step 2/3] POST {} (presigned)", presigned_url));
-            let mut form = reqwest::blocking::multipart::Form::new();
-            for (k, v) in &upload_fields {
-                let val = v
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| v.to_string());
-                form = form.text(k.clone(), val);
-            }
-            let file_part = reqwest::blocking::multipart::Part::bytes(file_bytes)
-                .file_name(art_name.to_string())
-                .mime_str("application/octet-stream")
-                .context("cloudsmith: failed to build multipart file part")?;
-            form = form.part("file", file_part);
-
-            let upload_resp = client
-                .post(&presigned_url)
-                .multipart(form)
-                .send()
-                .with_context(|| {
-                    format!(
-                        "cloudsmith presigned upload transport error for '{}'",
-                        art_name
-                    )
-                })?;
-            let upload_status = upload_resp.status();
-            if !upload_status.is_success() {
-                let upload_body = upload_resp
-                    .text()
-                    .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
-                bail!(
-                    "cloudsmith presigned upload for '{}' returned HTTP {}: {}",
-                    art_name,
-                    upload_status,
-                    upload_body.trim()
-                );
-            }
+            // Multipart Form is move-only, so we rebuild it on every retry
+            // attempt. Cloning `file_bytes` and `upload_fields` per-attempt
+            // is the price of retriability; the bytes are already in memory.
+            let _ = retry_request("presigned upload", art_name, &policy, log, || {
+                let mut form = reqwest::blocking::multipart::Form::new();
+                for (k, v) in &upload_fields {
+                    let val = v
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string());
+                    form = form.text(k.clone(), val);
+                }
+                let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.clone())
+                    .file_name(art_name.to_string())
+                    .mime_str("application/octet-stream")
+                {
+                    Ok(p) => p,
+                    Err(_e) => {
+                        // mime_str only fails on unparsable MIME; "application/octet-stream"
+                        // is always valid, so this branch is unreachable in practice.
+                        // Synthesize a transport-style error so the retry helper sees a
+                        // reqwest::Error and we don't widen the closure return type.
+                        return client.post("data:,").body(Vec::<u8>::new()).send();
+                    }
+                };
+                form = form.part("file", file_part);
+                client.post(&presigned_url).multipart(form).send()
+            })?;
 
             // --- Step 3/3: create the package record in the repo ---
             //
@@ -422,31 +469,15 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                 "[step 3/3] POST {} (identifier={})",
                 package_upload_url, identifier
             ));
-            let pkg_resp = client
-                .post(&package_upload_url)
-                .header("Authorization", format!("token {}", token))
-                .header("Accept", "application/json")
-                .json(&package_body)
-                .send()
-                .with_context(|| {
-                    format!(
-                        "cloudsmith packages/upload/{} transport error for '{}' at {}",
-                        fmt, art_name, package_upload_url
-                    )
-                })?;
-            let pkg_status = pkg_resp.status();
-            let pkg_body = pkg_resp
-                .text()
-                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
-            if !pkg_status.is_success() {
-                bail!(
-                    "cloudsmith packages/upload/{} for '{}' returned HTTP {}: {}",
-                    fmt,
-                    art_name,
-                    pkg_status,
-                    pkg_body.trim()
-                );
-            }
+            let label = format!("packages/upload/{}", fmt);
+            let (pkg_status, pkg_body) = retry_request(&label, art_name, &policy, log, || {
+                client
+                    .post(&package_upload_url)
+                    .header("Authorization", format!("token {}", token))
+                    .header("Accept", "application/json")
+                    .json(&package_body)
+                    .send()
+            })?;
 
             let slug = serde_json::from_str::<serde_json::Value>(&pkg_body)
                 .ok()

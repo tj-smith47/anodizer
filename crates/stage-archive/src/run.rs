@@ -21,7 +21,7 @@ use crate::entries::{
 use crate::file_specs::{
     ResolvedExtraFile, render_file_info, resolve_default_extra_files, resolve_file_specs,
 };
-use crate::formats::{self, copy_binary, create_gz};
+use crate::formats::{self, copy_binary, create_gz, create_xz};
 use crate::{
     ArchiveStage, default_binary_name_template, default_name_template,
     default_name_template_multi_crate,
@@ -813,6 +813,25 @@ impl Stage for ArchiveStage {
                                         ));
                                     }
                                     create_gz(path_refs[0], &archive_path)?;
+                                }
+                                "xz" => {
+                                    // Mirrors GoReleaser commit bb532b6
+                                    // (pkg/archive/xz/xz.go): xz is a
+                                    // single-file format. Multiple inputs
+                                    // are a hard error, not a warning —
+                                    // upstream returns
+                                    // `xz: failed to add %s, only one file
+                                    // can be archived in xz format`.
+                                    if path_refs.is_empty() {
+                                        bail!("xz format requires exactly one file");
+                                    }
+                                    if path_refs.len() > 1 {
+                                        bail!(
+                                            "xz: failed to add {}, only one file can be archived in xz format",
+                                            path_refs[1].display()
+                                        );
+                                    }
+                                    create_xz(path_refs[0], &archive_path)?;
                                 }
                                 "binary" => copy_binary(&path_refs, &archive_path)?,
                                 _ => bail!("unsupported archive format: {format}"),
