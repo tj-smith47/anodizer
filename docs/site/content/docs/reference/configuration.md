@@ -48,6 +48,7 @@ List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY
 | `publishers` | list of PublisherConfig | — | Generic artifact publisher configurations. |
 | `release` | ReleaseConfig | — | GitHub release configuration shared by all crates. |
 | `report_sizes` | bool | — | When true, log artifact file sizes after building. |
+| `retry` | RetryConfig | — | Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — matching GoReleaser `Project.Retry`). |
 | `sboms` | list of SbomConfig | `[]` | Software bill of materials (SBOM) generation configurations. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `snapshot` | SnapshotConfig | — | Snapshot release configuration (local/non-tag builds). |
@@ -485,6 +486,16 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
 | `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature. |
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
+
+## `retry`
+User-facing retry configuration block (`retry:` at config root).
+
+All fields are optional in YAML; missing fields fall back to GoReleaser's defaults (10 attempts, 10s base delay, 5m cap).
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `attempts` | integer | `10` | Total attempts (including the first). Default `10`. Values < 1 are clamped up to 1 by the policy layer. |
+| `delay` | HumanDuration | `10s` | Initial delay before the second attempt. Default `10s`. Subsequent delays grow exponentially (`delay × 2^(n-2)`) up to [`Self::max_delay`]. |
+| `max_delay` | HumanDuration | `5m` | Upper bound on any individual sleep between attempts. Default `5m`. Without this cap, an exponential backoff with `delay=10s` would stretch attempt 9 to ~42 minutes. |
 
 ## `sboms`
 | Field | Type | Default | Description |

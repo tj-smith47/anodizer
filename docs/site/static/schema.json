@@ -360,6 +360,18 @@
         "null"
       ]
     },
+    "retry": {
+      "description": "Top-level retry configuration applied to network-bound operations (announcers, git providers, HTTP uploads, docker pipes). When omitted, `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap — matching GoReleaser `Project.Retry`).",
+      "default": null,
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RetryConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "sboms": {
       "description": "Software bill of materials (SBOM) generation configurations.",
       "default": [],
@@ -9636,6 +9648,38 @@
           ]
         }
       }
+    },
+    "RetryConfig": {
+      "description": "User-facing retry configuration block (`retry:` at config root).\n\nAll fields are optional in YAML; missing fields fall back to GoReleaser's defaults (10 attempts, 10s base delay, 5m cap).",
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "description": "Total attempts (including the first). Default `10`. Values < 1 are clamped up to 1 by the policy layer.",
+          "default": 10,
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "delay": {
+          "description": "Initial delay before the second attempt. Default `10s`. Subsequent delays grow exponentially (`delay × 2^(n-2)`) up to [`Self::max_delay`].",
+          "default": "10s",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            }
+          ]
+        },
+        "max_delay": {
+          "description": "Upper bound on any individual sleep between attempts. Default `5m`. Without this cap, an exponential backoff with `delay=10s` would stretch attempt 9 to ~42 minutes.",
+          "default": "5m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "SbomConfig": {
       "type": "object",

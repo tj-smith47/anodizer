@@ -189,6 +189,11 @@ pub struct Config {
     pub uploads: Option<Vec<UploadConfig>>,
     /// AUR source package publishing configurations (source-only PKGBUILD, not -bin).
     pub aur_sources: Option<Vec<AurSourceConfig>>,
+    /// Top-level retry configuration applied to network-bound operations
+    /// (announcers, git providers, HTTP uploads, docker pipes). When omitted,
+    /// `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap —
+    /// matching GoReleaser `Project.Retry`).
+    pub retry: Option<RetryConfig>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -273,6 +278,7 @@ impl Default for Config {
             milestones: None,
             uploads: None,
             aur_sources: None,
+            retry: None,
         }
     }
 }
@@ -864,6 +870,13 @@ pub use tag::*;
 
 mod workspace;
 pub use workspace::*;
+
+// ---------------------------------------------------------------------------
+// RetryConfig (top-level `retry:` block — bridges to crate::retry::RetryPolicy)
+// ---------------------------------------------------------------------------
+
+mod retry;
+pub use retry::*;
 
 // ---------------------------------------------------------------------------
 // StringOrBool — accepts bool or template string in YAML

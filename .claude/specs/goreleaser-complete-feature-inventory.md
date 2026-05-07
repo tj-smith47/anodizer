@@ -1,9 +1,11 @@
 # GoReleaser Complete Feature Inventory
 
 > **Authoritative parity reference** for anodizer v0.x ↔ GoReleaser.
-> Source: `/opt/repos/goreleaser/` (OSS, at HEAD — last sync commit `f7e73e3`, fetched 2026-04-16).
-> Pro: `https://goreleaser.com/pro/` + `https://goreleaser.com/customization/*` — fetched 2026-04-16.
+> Source: `/opt/repos/goreleaser/` (OSS, at HEAD — last sync commit `8976559`, fetched 2026-05-07; tag `v2.16.0-17315a55-nightly-1-g8976559`; prior sync was `f7e73e3` 2026-04-16).
+> Pro: `https://goreleaser.com/pro/` + `https://goreleaser.com/customization/*` — refreshed 2026-05-07.
 > Anodizer ground truth: `/opt/repos/anodizer/crates/` (grepped for `implemented` status).
+>
+> **2026-05-07 refresh.** Walked 50 commits in v2.15.0..HEAD. New rows + downgrades captured in §2.18 Refresh delta and inline with `2026-05-07` evidence dates. Net: 1 new pipe (`mcp` reclassified), 1 new builder (`node` SEA, n-a), 1 new archive format (`xz` single-file), 1 new global config (`retry:`), and ~10 behavioral fixes — see §5.delta.
 >
 > **How to read this file.** The Parity Row Matrix (Section 2) is the audit-driving surface. One row per feature/feature-group. Columns:
 > - `name` — feature identifier (config key or conceptual name)
@@ -171,7 +173,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | signs[].cmd (gpg default, cosign) | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | Subprocess. |
 | signs[].signature template | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | Wired. |
 | signs[].args templated | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | Wired. |
-| signs[].artifacts (none/all/checksum/source/package/installer/diskimage/archive/sbom/binary) | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | All enum values wired (Session G). |
+| signs[].artifacts (none/all/checksum/source/package/installer/diskimage/archive/sbom/binary) | sign | OSS | portable | required | partial | — | internal/pipe/sign/sign.go | All enum values wired (Session G). **Divergence**: when `artifacts: all`, anodizer includes `Signature` + `Certificate` artifacts (stage-sign/src/tests.rs:113-114 explicit assertion) — GR fix 87a55ea (2026-03-30, #6509) **excluded** them to break the recursive sign-then-checksum loop where `.sig` files were checksummed and re-signed. Anodizer must follow upstream. Verified 2026-05-07. |
 | signs[].ids | sign | OSS | portable | strongly-suggested | implemented | — | internal/pipe/sign/sign.go | Wired. |
 | signs[].if | sign | Pro | portable | strongly-suggested | implemented | — | docs: /customization/sign/ (fetched 2026-04-16) | Templated conditional. |
 | signs[].stdin / stdin_file | sign | OSS | portable | strongly-suggested | implemented | — | internal/pipe/sign/sign.go | Wired. |
@@ -196,7 +198,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | docker.skip_build | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ | Wired. |
 | docker.skip_push (bool / auto) | docker | OSS | portable | required | implemented | — | internal/pipe/docker/docker.go | `SkipPushConfig`. |
 | docker.push_flags | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
-| docker.retry (attempts / delay / max_delay) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | `DockerRetryConfig`. |
+| docker.retry (attempts / delay / max_delay) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | `DockerRetryConfig`. **Deprecated upstream since v2.15.3 (commit a176567, doc: deprecations.md)** in favor of project-level `retry:`. Same applies to `docker_manifests.retry` and `dockers_v2.retry`. Anodizer accepts both shapes today. See §2.18 for the new global `retry:` row. Verified 2026-05-07. |
 | docker_v2 pipe | docker | OSS | portable | required | implemented | — | internal/pipe/docker/v2/ | `DockerV2Config` — `stage-docker` v2 path. V2 retry predicate (`is_retriable_error_v2`) deliberately narrow — only `"manifest verification failed for digest"` retries, matching upstream v2/docker.go:544-549. Reviewed 2026-04-18. |
 | docker_v2.platforms (multi-arch) | docker | OSS | portable | required | implemented | — | internal/pipe/docker/v2/ | Wired. |
 | docker_v2.sbom (inline SBOM) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/v2/ | Wired. |
@@ -261,10 +263,10 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | homebrew.commit_author.* | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
 | homebrew.commit_author.signing | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/brew/brew.go | v2.11+. |
 | homebrew.app (DMG app) | publish-homebrew | Pro | portable | niche | implemented | — | docs: /customization/homebrew/ | Wired. |
-| homebrew_casks[] | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | `HomebrewCaskConfig` — distinct from brew formula. |
+| homebrew_casks[] | publish-homebrew | OSS | portable | strongly-suggested | partial | — | internal/pipe/cask/cask.go | `HomebrewCaskConfig` wired. **Per-arch block field order diverges from upstream**: anodizer emits `url` then `sha256` (`stage-publish/src/homebrew/cask.rs:24-25`), GR fix 87b542b (2026-04-16) flipped to `sha256` then `url` for golden-file alignment. Behavioral parity (the cask still installs); cosmetic divergence breaks downstream golden-file tests. Verified 2026-05-07. |
 | homebrew_casks.binaries / app / manpages | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | Wired. |
 | homebrew_casks.completions (bash/zsh/fish) | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | Wired. |
-| homebrew_casks.generate_completions_from_executable | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/cask/cask.go | Wired. |
+| homebrew_casks.generate_completions_from_executable | publish-homebrew | OSS | portable | niche | partial | — | internal/pipe/cask/cask.go | Config field present (`HomebrewCaskGeneratedCompletions` in core/src/config/publishers/homebrew.rs); cask template (`stage-publish/src/homebrew/cask.rs`) does NOT render the directive — parsed-but-ignored. GR cask.rb template emits it after `postflight` (cask.rb fix bb9062f, 2026-05-01); anodizer must add. Verified 2026-05-07. |
 | homebrew_casks.url.* (template/verified/using/cookies/referer/headers/user_agent/data) | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | Wired. |
 | homebrew_casks.hooks (v2.13+) | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/cask/cask.go | Wired. |
 | homebrew_casks.service / zap / uninstall | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/cask/cask.go | Wired. |
@@ -375,7 +377,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | includes[].from_file / from_url | misc | Pro | portable | niche | implemented | — | docs: /customization/includes/ (fetched 2026-04-16) | `IncludeSpec` enum. |
 | metadata.mod_timestamp / maintainers / license / homepage / description | metadata | Pro | portable | strongly-suggested | implemented | — | docs: /customization/metadata/ (fetched 2026-04-16) | `MetadataConfig` with `full_description: ContentSource` + `commit_author: CommitAuthorConfig` (config.rs:4497,4501). Verified 2026-04-18. |
 | metadata.full_description.from_url | metadata | Pro | portable | niche | partial | — | docs: /customization/metadata/ (fetched 2026-04-16) | `ContentSource::FromUrl` variant parses, but core/src/context.rs:754 errors "`from_url` is not yet supported at metadata context time". Inline + FromFile work. |
-| mcp registry (MCP server manifest publish) | publish-mcp | OSS | portable | niche | missing | — | internal/pipe/mcp/mcp.go | New GoReleaser pipe (2026-03+): publishes MCP server manifests to registry. MCP ecosystem still forming; no Rust analogue in anodizer yet. |
+| mcp registry (MCP server manifest publish) | publish-mcp | OSS | portable | niche | missing | — | internal/pipe/mcp/mcp.go | New 2026-03+ pipe; publishes server-manifest JSON to MCP registry (`/v0/publish`). v2.16+ now wraps the publish call in `retryx.Do` against `Project.Retry`. Auth methods: `none`, `github`, `github-oidc`. Schema: `name`, `title`, `description`, `homepage`, `auth.{type,token}`, `repository.{url,source,id,subfolder}`, `packages[].{registry_type,identifier,transport.type}`, `disable`. Rust MCP servers exist (rmcp); reclassify-candidate for `strongly-suggested` once Rust MCP ecosystem matures. |
 | env (global env list) | misc | OSS | portable | required | implemented | — | internal/pipe/env/ | Wired. |
 | env_files.github_token / gitlab_token / gitea_token | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/env/ | `EnvFilesConfig`. |
 | template_files[] | misc | Pro | portable | niche | implemented | — | docs: /customization/template_files/ (fetched 2026-04-16) | `TemplateFileConfig` + `stage-templatefiles`. |
@@ -449,6 +451,79 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | skip memento (operator-visible skip summary) | misc | — | rust-additive | strongly-suggested | implemented | — | — | `anodizer_core::pipe_skip::SkipMemento`; end-of-pipeline report of intentional skips. |
 
 ---
+
+### 2.18 Refresh delta (2026-05-07)
+
+Rows added / re-classified after walking 50 commits in `v2.15.0..HEAD` (HEAD `8976559`, tag `v2.16.0-17315a55-nightly-1-g8976559`). Each row cites both upstream source path and anodizer source/test path. Status reflects whether anodizer's behavior matches the **new** upstream behavior — pre-existing matching rows are not duplicated here.
+
+#### 2.18.1 New OSS features
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| `retry:` (project-level global) | misc | OSS | portable | required | missing | — | internal/retryx/retryx.go + pkg/config/config.go::Project.Retry | New v2.15.3 (#6528, commit a176567). Fields: `attempts` (default 10), `delay` (default 10s), `max_delay` (default 5m). Applied across **all** network ops: GitHub/GitLab/Gitea API, every announcer (Discord/Telegram/Slack/Mastodon/Teams/Reddit/Twitter/Bluesky/LinkedIn/Discourse/Mattermost/Webhook/OpenCollective/MCP), HTTP uploads (artifactory/custom/snapcraft store/gomod proxy), and docker push/manifest. Retriable: network errors, HTTP 5xx, HTTP 429. Anodizer has per-stage ad-hoc retry (stage-docker/src/retry.rs, stage-release/src/lib.rs::retry_upload, stage-publish/src/chocolatey/package.rs ad-hoc) but **no unified `Project.Retry`** struct nor cross-pipe wiring. Doc: /customization/general/retry/. |
+| `archives.formats: xz` (single-file) | archive | OSS | portable | niche | missing | — | pkg/archive/xz/xz.go + pkg/archive/archive.go (commit bb532b6, v2.15+) | New single-file format parallel to `gz`. xz writer single-file constraint: returns "only one file can be archived in xz format" if multiple files added. anodizer supports compound `tar.xz`/`txz` only (`stage-archive/src/formats.rs`); plain `xz` not in `formats:` enum (`core/src/config/archives.rs:list`). |
+| builder: node (Node.js SEA) | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/node/build.go (commit 9500ead, 2026-05-03) | Node.js Single-Executable-Application builder: shells out to `node ≥v25.5 --build-sea sea-config.json`, fetches per-target Node binary from nodejs.org/dist (verifies SHA-256), ad-hoc-signs Mach-O via quill on darwin. Inputs: `package.json`, JS entrypoint. **n-a — anodize is a Rust binary builder; Node SEA is a JS-to-binary tool, no Rust analogue.** |
+| build target syntax: `<triple>.<glibc-version>` (Rust) | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/rust/build.go (commits 634a0cb, e4262d5, 9ee7477) | User-pinnable glibc via target suffix, e.g. `x86_64-unknown-linux-gnu.2.38`. anodizer already strips the suffix for cargo invocation (`stage-build/src/validation.rs::strip_glibc_suffix` + tests). Verified parity 2026-05-07. |
+| Rust targets: `arm-unknown-linux-musleabihf`, `armv7-unknown-linux-musleabihf` | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/rust/all_targets.txt (commit e35ff62) | Two musl-soft-float ARM targets added upstream. anodizer already lists both (`stage-build/src/targets.rs`). Verified 2026-05-07. |
+| Rust ARM grouping: per-armv level archive grouping | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/rust/build.go (commit 03735a4, #6582) | Upstream now sets `Goarch=t.Arch` and `Goarm=t.Arm` so archives group by armv5/v6/v7 instead of merging under generic `arm`. anodizer's `core/src/target.rs::map_target` already returns `armv7`/`armv6` (Rust-style arch) directly; archive grouping uses target triple, so groups are correct by construction. |
+| Rust workspace error message lists all members | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/rust/build.go (commit 889107f) | Cosmetic: GR's error string now lists every workspace member, not just the first. anodizer's workspace error path bypasses this code (uses `cargo metadata` directly); the upstream behavior is informational not a divergence. |
+
+#### 2.18.2 New behavioral fixes (rows where anodizer must update to track upstream)
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| `release.publish` preserves prerelease/name/make_latest on un-draft PATCH | release | OSS | portable | required | partial | — | internal/client/github.go (commits 6ecba31 + 2e17678) | When converting draft → published, GR PATCH body now includes: `name` (from `name_template`), `prerelease: true` if `ctx.PreRelease`, and `make_latest: false` if prerelease. anodizer's PATCH body (`stage-release/src/github/mod.rs:655`) sends only `{draft:false}` plus optional `make_latest`/`discussion_category_name`; missing the `name` re-template and the auto `make_latest=false` for prereleases. GitHub PATCH preserves unset fields server-side, so `prerelease` and original `name` carry through, but the auto-`make_latest=false` for prereleases is missing. |
+| GitHub author lookup via Search Users API removed | changelog | OSS | portable | required | partial (superset) | — | internal/client/github.go (commit 17315a5, #6601) | Upstream **removed** `c.client.Search.Users(...)` fallback for resolving author username from email. Now only the noreply pattern `ID+USERNAME@users.noreply.github.com` is honored; other emails get no `Username`. Reasons cited upstream: secondary rate-limit hits on big releases; private emails make lookup useless anyway. anodizer's `stage-release/src/github/username.rs:83` still calls `/search/users?q={}+in:email`. **Decide**: track upstream simplification (fewer API calls, no rate-limit hits) OR keep as superset (better UX for users with public emails). Recommend tracking upstream. |
+| github prerelease `make_latest=false` default | release | OSS | portable | required | partial | — | internal/client/github.go (commit 6ecba31) | When `ctx.PreRelease == true`, GR forces `make_latest = "false"` regardless of user template. anodizer's stage-release passes through user-templated `make_latest` only — does not auto-suppress on prereleases. |
+| `cask.rb` per-arch block: `sha256` precedes `url` | publish-homebrew | OSS | portable | strongly-suggested | partial | — | internal/pipe/cask/templates/{linux_packages,macos_packages}.rb (commit 87b542b) | See §2.9 row downgrade. anodizer template emits `url` first; align to upstream order (cosmetic but breaks downstream golden-file diffing). |
+| `cask.rb` `generate_completions_from_executable` emitted after postflight | publish-homebrew | OSS | portable | niche | partial | — | internal/pipe/cask/templates/cask.rb (commit bb9062f, issue #5958) | See §2.9 row downgrade. anodizer's cask template doesn't render the field at all. Must add after postflight stanza so quarantine-removal in postflight runs before completion-generation. |
+| sign `artifacts: all` excludes Signature + Certificate | sign | OSS | portable | required | partial | — | internal/pipe/sign/sign.go (commit 87a55ea, #6509) | See §2.6 row downgrade. anodizer explicitly includes them for parity with **old** GR behavior; new GR excludes to break recursion. |
+| `checksums` excludes Signature + Certificate | checksum | OSS | portable | required | implemented | — | internal/pipe/checksums/checksums.go (commit b5eabc8) | anodizer's `stage-checksum/src/run.rs:572-578` skip set already includes `Signature` + `Certificate` + `Checksum`. Verified 2026-05-07. |
+| `dockers/v2` Dockerfile-template emptiness check after rendering | docker | OSS | portable | required | partial | — | internal/pipe/docker/v2/docker.go (commit d788340) | GR now checks rendered Dockerfile (post-template) for emptiness, not the raw template. So `{{ if .IsSnapshot }}Dockerfile{{ end }}` correctly skips during release. anodizer must verify it renders before the empty-check; gated as partial pending grep. |
+| `dockers/v2 parsePlatform` nil-safe on missing arch | docker | OSS | portable | strongly-suggested | partial | — | internal/pipe/docker/v2/docker.go (commit 9e9f87c) | GR allows platform string `"linux"` (no arch) without panic. anodizer must verify equivalent in `stage-docker/src/v2/`; gate as partial pending grep. |
+| `dockers/v2` digest log fields split: `images` + `digest` | docker | OSS | portable | niche | partial | — | internal/pipe/docker/v2/docker.go (commit e7a4afa) | Cosmetic: GR previously logged `images` field with embedded `@digest` per line; now logs `images` and `digest` as separate fields. Affects observability tools matching log structure. |
+| `dockers v1` healthcheck delegates to v2 when `use: buildx` | docker | OSS | portable | strongly-suggested | partial | — | internal/pipe/docker/docker.go (commit e09e23a, #6526) | GR now runs the `buildx version` probe through v1 docker pipe when `use: buildx` is configured, plus registers `docker.Pipe{}` in `DependencyCheckers`. anodizer's `stage-docker` healthcheck path covers this for v2 only — verify v1+buildx code path. |
+| `dockers/v1` deprecated marker | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go (commit e09e23a) | GR's `Pipe` and `ManifestPipe` carry `// Deprecated: use docker v2.` comment; informational. anodizer recommends `docker_v2` in its README; no behavioral change. |
+| docker manifest "did you mean?" suggests other image, not input | docker | OSS | portable | niche | implemented | — | internal/pipe/docker/manifest.go (commit 921e6cb) | GR fixed bug where suggestion echoed input back. anodizer's `stage-docker/src/run.rs:687` already filters `d > 0 && d <= img.len() / 2`, sidestepping the bug. Verified 2026-05-07. |
+| `changelog.abbrev` panic-safe for negative values < -1 | changelog | OSS | portable | required | implemented (superset) | — | internal/pipe/changelog/changelog.go (commit 88daaf3) | GR now clamps `abbr = max(abbr, -1)`. anodizer's changelog uses Rust pattern-match — no panic on out-of-range; verify clamp parity. |
+| `changelog.format` debug log uses %t for bool | changelog | OSS | portable | niche | implemented | — | internal/pipe/changelog/changelog.go (commit 6c7798f) | GR fixed `%b` → `%t`. Cosmetic; anodizer uses tracing `?match` debug — no Go-printf format, no divergence. |
+| `checksums refreshAll` sort tolerates lines without double-space | checksum | OSS | portable | niche | partial | — | internal/pipe/checksums/checksums.go (commit f39c233) | GR's sort now uses `strings.Cut` instead of indexing `Split[1]`. anodizer's checksum sort path (`stage-checksum/src/run.rs`) uses Rust slicing — verify no panic on malformed lines. |
+| `nfpm` content mtime parse error reports the bad value | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/nfpm.go (commit 50a034d) | Cosmetic error-message fix. anodizer's nfpm-content parse uses anyhow context — verify error includes the offending mtime. |
+| `aur`/`aursources`/`krew` template expansion of `skip_upload` before bool check | publish-aur/krew | OSS | portable | strongly-suggested | partial | — | internal/pipe/aur/aur.go + aursources/aursources.go + krew/krew.go (commit cba5b9f) | GR now templates `skip_upload` so `{{ .IsSnapshot }}` works. anodizer must verify all three publishers run the value through the template engine before `bool/auto/empty` parsing. |
+| `release` log uses correct repo (gitlab/gitea), not always github | release | OSS | portable | strongly-suggested | partial | — | internal/pipe/release/release.go (commit 44133de) | GR helper `releaseRepo(ctx)` switches on `ctx.TokenType`. anodizer must verify the publish log uses the matching `Release.GitLab` / `Release.Gitea` / `Release.GitHub` based on detected token. |
+| `srpm` no double-close on package file | srpm | OSS | portable | niche | implemented | — | internal/pipe/srpm/srpm.go (commit 053c68a) | GR removed double Close. anodizer's `stage-srpm` writes via owned File — Drop closes once. |
+| `blob` provider is templated before S3-ACL gate | blob | OSS | portable | niche | partial | — | internal/pipe/blob/upload.go (commit 4d1924d) | GR now applies tmpl to `conf.Provider` before `provider == "s3"` check. anodizer must verify provider value flows through `Tmpl::apply()` before stage routing. |
+| `gitea` create-file falls back to server default branch (no hard-coded "master") | release | OSS | portable | niche | partial | — | internal/client/gitea.go (commit 4a9d25f) | GR now leaves branch empty so Gitea uses repo's default branch. anodizer's gitea client path (publishers + release) must verify same. |
+| `bun` builder parse-error includes raw target | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/bun/targets.go (commit 2a10e3e) | Bun is a JS runtime builder — n-a (anodize is Rust). |
+| `partial` adds `ppc64le → GGOPPC64/GOPPC64` env mapping | partial | OSS | go-specific | not-applicable | n-a | — | internal/pipe/partial/partial.go (commit e15276b) | Go-specific env-mapping table. anodizer uses target triples directly, no GGOOS/GGOARCH layer. n-a (rust-native-replacement). |
+| `partial` mips64/mips64le use GGOMIPS64/GOMIPS64 | partial | OSS | go-specific | not-applicable | n-a | — | internal/pipe/partial/partial.go (commit a05ecb8) | Same as above — Go matrix axes. n-a. |
+| `tmpl.filter` returns error instead of panicking on bad regex | template-helpers | OSS | portable | required | implemented (superset) | — | internal/tmpl/tmpl.go (commit c2f16b9) | GR's `filter`/`reverseFilter` now return `(string, error)` from `regexp.CompilePOSIX`. anodizer uses Rust `regex::Regex::new` returning `Result`, never panics. Already superset. |
+| `redact.Writer` returns 0 bytes on underlying write failure | misc | OSS | portable | niche | partial | — | internal/redact/redact.go (commit f48613d) | GR's `redactWriter.Write` now returns `(0, err)` on inner-write failure (was `(len(p), err)`). anodizer's redaction layer must verify write-error bytes-written contract. |
+| sec: removed env-vars + git-remote + http-auth + webhook-headers from logs; redact target/request URLs; redact length≥1 (was ≥10) | misc | OSS | portable | required | partial | — | commit d1cdbb2 | Anodizer must audit log statements in `stage-build`, `core/src/git`, `core/src/http_redact` (if exists), `stage-publish/src/util/http.rs`, and any webhook headers logging. Threshold change: redact every secret with length ≥ 1, not ≥ 10. Sweep target. |
+| `build/base.Exec` log handles single-element command | build | OSS | portable | niche | implemented | — | internal/builders/base/build.go (commit ff02d82) | GR's panic on `command[1]` access for 1-element command (e.g. `["true"]`); now `strings.Join`. anodizer's `stage-build` invokes via Tokio `Command` — no array-index panic possible. |
+| `winget` writes local YAML via filepath.Join (not path.Join) | publish-winget | OSS | portable | niche | implemented | — | internal/pipe/winget/template.go (commit ed201bd) | Windows path-sep correctness. anodizer uses `std::path::PathBuf::push` — already correct. |
+| `mattermost` defaults `Color` from `Mattermost.Color` (not `Teams.Color`) | announce-mattermost | OSS | portable | niche | partial | — | internal/pipe/mattermost/mattermost.go (commit 7e7f9b2, #6533) | GR bug: mattermost default-Color and announce-Color both read from `Teams.Color`. Fixed to use `Mattermost.Color`. anodizer must verify mattermost stage reads its own struct's Color, not Teams'. |
+| `linkedin` API responses parsed via typed structs | announce-linkedin | OSS | portable | niche | implemented (superset) | — | internal/pipe/linkedin/client.go (commit e31f01d) | GR replaced `map[string]any` + type-assertion (panic risk) with typed `profileResponse`/`shareResponse`. anodizer always parses via serde-typed structs — already superset. |
+| `linkedin` error handling improvements | announce-linkedin | OSS | portable | niche | partial | — | internal/pipe/linkedin/client.go (commit 0944b0e) | Wrap-and-context error chain refactor. anodizer must mirror error categorisation (auth vs share vs profile-fetch). |
+| `webhook` error handling improvements | announce-webhook | OSS | portable | niche | partial | — | internal/pipe/webhook/webhook.go (commit bba909e) | Mirror error wrapping. |
+| `opencollective` handles mutation errors (was failing silently) | announce-opencollective | OSS | portable | niche | partial | — | internal/pipe/opencollective/opencollective.go (commit 206120a, #6512) | GR now reports GraphQL mutation errors (e.g. token lacks permission). anodizer must verify response-error parsing for mutation queries. |
+| `snapcraft` retries upload on 5xx (hardcoded constants) | publish-snap | OSS | portable | niche | partial | — | internal/pipe/snapcraft/snapcraft.go (commit eb944f9, #6504) | GR removed user-configurable `Retry` from `config.Snapcraft` and hardcoded 10×10s exponential backoff for `snapcraft push` 5xx. **NB**: Now superseded by Project.Retry. anodizer's `stage-snapcraft` must wrap snapcraft push in retry. |
+| `gomod proxy` 404 retry with backoff | misc | OSS | go-specific | not-applicable | n-a | — | internal/pipe/gomod/gomod_proxy.go (commit a176567) | Go module proxy fetch retry. n-a (rust-native-replacement: anodizer uses Cargo.lock fidelity). |
+| Rate-limit checker: single check + ctx-aware sleep (no recursion) | release | OSS | portable | strongly-suggested | partial | — | internal/client/github.go (commit 60028b1) | GR's old recursive `rateLimitChecker` had no depth bound (stack overflow risk if rate-limit never recovered). Now: `checkRateLimit` does single-check, `time.After + ctx.Done()` select. anodizer's `stage-release/src/github/rate_limit.rs` must verify it's iterative (not recursive) and ctx-cancellable. |
+| GitHub `updateRelease` nil-guards `resp` | release | OSS | portable | niche | partial | — | internal/client/github.go (commit 1ca21f0) | Defensive nil-check on `resp` before accessing `resp.Header.Get("X-GitHub-Request-Id")`. anodizer must check octocrab response handling for nil panic. |
+| Gitea push log: removed duplicate `name` field | publish-* (gitea) | OSS | portable | niche | implemented | — | internal/client/gitea.go (commit 68ebdd7) | Cosmetic. |
+| `git config` extraction preserves underlying error context | misc | OSS | portable | niche | partial | — | internal/git/config.go (commit 5042b84) | Wrap `err` instead of replacing with sentinel string. anodizer's `core/src/git/config.rs` must verify `?` propagation preserves underlying message. |
+| `bodyOf` returns descriptive error on `io.ReadAll` failure | misc | OSS | portable | niche | partial | — | internal/client/* (commit 8b77358) | Was discarded; now wrapped. anodizer's HTTP body-reader paths should return errors, not silently truncate. |
+| `sbom` artifact Name uses matched filename (not glob pattern) | sbom | OSS | portable | required | partial | — | internal/pipe/sbom/sbom.go (commit 292203e) | GR fixed `Name: filepath.Base(path)` → `Name: filepath.Base(match)`. Affects SBOM artifact names when `documents:` glob matches multiple files. anodizer's `stage-sbom` must verify it uses the matched filename, not the input glob. |
+| `dockers/v2` no duplicate `WithOutput` in error wrapping | docker | OSS | portable | niche | implemented | — | internal/pipe/docker/v2/docker.go (commit a0875e5) | Cosmetic dedup. anodizer error wraps don't double-attach output. |
+| `targz` package closes gzip reader in `Copy` | misc | OSS | portable | niche | implemented | — | pkg/archive/targz/targz.go (commit 0099417) | Resource cleanup. anodizer's `stage-archive/src/formats.rs` uses `?` + Drop; flate2 GzDecoder closes on drop. |
+| `build` per-binary artifact IDs for `./...` builds | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go (commit 3140abb) | Go `./...` ellipsis support. n-a — Rust uses `--bin` selectors, no go-style ellipsis. |
+| `build` allow explicit `binary` with ellipsis when single main resolves | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go (commit d077fe1) | Same. n-a. |
+
+#### 2.18.3 Action layer changes (rolled into separate file)
+
+See `goreleaser-action-feature-inventory.md` §refresh-2026-05-07 for `version: nightly` immutable-tag resolution (action ≥ v7.2.0) and the new tag format `vX.Y.Z-<sha>-nightly`.
+
 
 ## 3. Rust-additive features (beyond GoReleaser)
 
@@ -533,6 +608,43 @@ Each row below was flagged `partial` or `missing` in the 2026-04-16 A5 pro-skept
 
 Since the A5 countersign marked these as BLOCKERs and they are all now closed at the source level, the inventory's `Completion achieved` flips to `yes` — verification of wiring-plus-tests is a continuing parity-audit responsibility (A2/A3/A5), but the A1 inventory contract is satisfied.
 
+### 5.delta — 2026-05-07 refresh (ROLLBACK on completion)
+
+The 2026-05-07 walk of `v2.15.0..HEAD` identifies 1 new required-tier missing row (`retry:` global config) and ~14 partial rows where anodizer must update behavior to track upstream. Completion **flips back to `no`** for this refresh cycle.
+
+| row | 2026-04-18 status | 2026-05-07 evidence | new status |
+|-----|-------------------|---------------------|------------|
+| `retry:` (project-level) | n/a (didn't exist upstream) | New v2.15.3 (#6528, commit a176567); cross-pipe retry; deprecates `dockers.retry`/`docker_manifests.retry`/`dockers_v2.retry` | **missing (required)** |
+| `archives.formats: xz` | n/a (didn't exist upstream) | New v2.15+ (commit bb532b6); single-file format | **missing (niche)** |
+| `signs[].artifacts: all` includes Sig+Cert | implemented | GR fix #6509 excluded them; anodizer still includes (sign-test asserts inclusion) | **partial (required)** |
+| `release.publish` un-draft body preserves prerelease/name/make_latest | implemented | GR fixes #6591 + 2e17678 expanded PATCH body; anodizer body is minimal | **partial (required)** |
+| GitHub author lookup via Search Users API | implemented (superset, fallback) | GR removed in #6601; anodizer still calls Search Users — divergence | **partial (required)** |
+| github prerelease forces `make_latest=false` | implemented (template-only) | GR fix #6591: auto-suppress make_latest for prereleases | **partial (required)** |
+| `homebrew_casks[]` per-arch sha256/url ordering | implemented | GR fix 87b542b reordered; anodizer still emits url-then-sha256 | **partial (strongly-suggested)** |
+| `homebrew_casks.generate_completions_from_executable` | implemented | Config-only; cask template doesn't render the directive | **partial (niche)** |
+| `dockers/v2 parsePlatform` nil-safe | implemented | GR commit 9e9f87c | **partial (strongly-suggested)** — verify in stage-docker/v2 |
+| `dockers/v2` Dockerfile-template emptiness check after rendering | implemented | GR commit d788340 | **partial (required)** — verify in stage-docker/v2 |
+| `dockers v1` healthcheck delegates to v2 when `use: buildx` | implemented | GR commit e09e23a | **partial (strongly-suggested)** — verify in stage-docker |
+| sec sweep: redact target/request URL, no env-vars/git-remote/auth/webhook-headers in logs, redact length≥1 | implemented | GR commit d1cdbb2 | **partial (required)** — sweep anodizer log statements |
+| `sbom` artifact name uses matched filename | implemented | GR commit 292203e | **partial (required)** — verify in stage-sbom |
+| `aur`/`aursources`/`krew` template `skip_upload` before bool check | implemented | GR commit cba5b9f | **partial (strongly-suggested)** — verify all three publishers |
+| `release` log uses correct repo for gitlab/gitea | implemented | GR commit 44133de | **partial (strongly-suggested)** — verify TokenType-driven repo selection |
+| `mattermost` defaults `Color` from own struct | implemented | GR commit 7e7f9b2 (#6533) | **partial (niche)** — verify in stage-announce/mattermost |
+| `linkedin`/`webhook`/`opencollective` error handling | implemented | GR commits e31f01d/0944b0e/bba909e/206120a | **partial (niche)** — mirror error wrapping |
+| `snapcraft` retries upload on 5xx | partial (no retry) | GR commit eb944f9; supersede via Project.Retry once implemented | **partial (niche)** |
+| `blob` provider templated before S3-ACL gate | implemented | GR commit 4d1924d | **partial (niche)** — verify in stage-blob |
+| `gitea` create-file falls back to server default branch | implemented | GR commit 4a9d25f | **partial (niche)** — verify in stage-publish gitea path |
+| GitHub `updateRelease` nil-guards `resp` | implemented | GR commit 1ca21f0 | **partial (niche)** — verify octocrab path |
+| Rate-limit checker iterative + ctx-cancellable | implemented | GR commit 60028b1 | **partial (strongly-suggested)** — verify in stage-release/github/rate_limit.rs |
+| `git config` extraction preserves underlying error | implemented | GR commit 5042b84 | **partial (niche)** — verify in core/src/git/config.rs |
+| `redact.Writer` returns 0 bytes on inner-write failure | implemented | GR commit f48613d | **partial (niche)** — verify in anodizer redact layer |
+| `bodyOf` returns descriptive error on ReadAll failure | implemented | GR commit 8b77358 | **partial (niche)** — verify HTTP body-reader paths |
+| `mcp registry` global-retry integration | missing | GR mcp.go now uses retryx.Do(ctx.Config.Retry, ...) | **missing (niche)** — depends on Project.Retry implementation |
+
+n-a (rust-native-replacement) rows added 2026-05-07: builder:node (Node SEA), gomod proxy retry, partial pipe ppc64le/GOMIPS64 env mapping, build per-binary IDs for ./..., build allow explicit binary with ellipsis, bun parse-error message.
+
+
+
 ---
 
 ## 6. Reference tables (preserved)
@@ -589,36 +701,36 @@ Head-count sources: community READMEs (fetched 2026-04-16 via prior sessions; no
 
 ## Completion statement
 
-- Total GoReleaser OSS features catalogued: 279 (adds `mcp registry` pipe vs 2026-04-16)
-- Total GoReleaser Pro features catalogued: 51 (adds `metadata.full_description.from_url` split row)
-- Rows with `ecosystem_relevance = required`: 89
-- Rows with `ecosystem_relevance = strongly-suggested`: 128
-- Rows with `ecosystem_relevance = niche`: 99
-- Rows with `ecosystem_relevance = not-applicable`: 20
-- anodizer implemented (required): 89/89
-- anodizer implemented (strongly-suggested): 128/128 — **no partials or missings among required+strongly-suggested**
-- niche missings/partials: 5 (`goreleaser man`, `--soft`, `continue_on_error`, `metadata.full_description.from_url`, `mcp registry`) — all explicitly deferred-or-niche; not audit-driving
-- Completion achieved: **yes**
-- Reasoning: All 11 rows flagged by the 2026-04-16 A5 pro-features-skeptic countersign are closed (see §5.closures). Every `required` + `strongly-suggested` row now has field-level evidence in anodizer source with file:line citations. The remaining gaps are 3 pre-existing niche items (`man`, `--soft`, `continue_on_error`), 1 new niche partial (`metadata.full_description.from_url` — FromUrl variant deferred; inline + from_file work), and 1 new niche missing (`mcp registry` — new upstream pipe for an ecosystem still forming). No blocker carries into A2/A3/A4/A5.
+- Total GoReleaser OSS features catalogued: 326 (adds 47 new rows from 2026-05-07 §2.18 refresh delta)
+- Total GoReleaser Pro features catalogued: 51 (no Pro-tier additions in this refresh)
+- Rows with `ecosystem_relevance = required`: 96 (+7: `retry:` global + 6 sec/release/sign/sbom downgrades)
+- Rows with `ecosystem_relevance = strongly-suggested`: 134 (+6: docker behavioral fixes + cask ordering + aur/krew template)
+- Rows with `ecosystem_relevance = niche`: 119 (+20: cosmetic and observability fixes)
+- Rows with `ecosystem_relevance = not-applicable`: 28 (+8: builder:node, partial-pipe Go-matrix env, build ./... ellipsis, bun parse-error, gomod proxy retry, npm Pro)
+- anodizer implemented (required): 89/96 (1 missing — Project.Retry; 6 partial — sign-all-exclusion, github-publish PATCH body, github author lookup, prerelease make_latest=false, dockers v2 dockerfile-empty-after-render, sbom matched-filename, sec-sweep)
+- anodizer implemented (strongly-suggested): 124/134 (10 partial — see §5.delta)
+- niche missings/partials: ~25 — see §2.18.2 + §5.delta
+- Completion achieved: **no**
+- Reasoning: 2026-05-07 walk against HEAD `8976559` (50 commits since `f7e73e3`) flipped 16 implemented rows to partial and added 1 required missing row (`Project.Retry` global config). The 2026-04-18 completion-yes claim held against `f7e73e3` and is no longer valid. Sessions P + Q appended to parity-session-index carry the actionable list. Not all partials require code changes — several are "verify-in-anodizer" gates (e.g. `parsePlatform` nil-safe; anodizer's Rust pattern-match likely prevents that panic class). Triage required.
 
 ## Completion statement (generated)
 
-Parity target: GoReleaser HEAD (commit `f7e73e3`, refreshed 2026-04-18).
+Parity target: GoReleaser HEAD (commit `8976559`, tag `v2.16.0-17315a55-nightly-1-g8976559`, refreshed 2026-05-07).
 
-- Rust-appropriate features (ecosystem_relevance ∈ {required, strongly-suggested}): 217
-  - parity_status=implemented: 217
-  - parity_status=partial:     0
-  - parity_status=missing:     0
+- Rust-appropriate features (ecosystem_relevance ∈ {required, strongly-suggested}): 224
+  - parity_status=implemented: 207
+  - parity_status=partial:     16   ← blocks completion (see §5.delta)
+  - parity_status=missing:     1    ← blocks completion (`retry:` global)
 - Bloat (implemented ∧ not-applicable): 0
   - dispositioned:  0
   - undecided:      0
   - resolved (disposition executed): 0
   - unresolved:     0
 - Rust-additive rows: 12 (§3; enumerated for dogfooding matrix)
-- Permanent negative space (ecosystem_relevance=not-applicable): 21
+- Permanent negative space (ecosystem_relevance=not-applicable): 28 (added 7 in 2026-05-07 refresh: builder:node + 6 Go-matrix/n-a items)
 
-Completion achieved: **yes**
+Completion achieved: **no — 17 rows downgraded by 2026-05-07 walk; tracked in `parity-session-index.md` Session P+Q**.
 
-Every Rust-appropriate GoReleaser feature is implemented in anodizer with equal or superior behavior; every already-added inappropriate feature has been dispositioned and resolved (none present — bloat set is empty); rust-additive features extend beyond parity where they add real UX value (crates.io publish, cargo-binstall metadata, workspace monorepo, version_sync, SkipMemento, ConventionalFileName per-packager, parallel helper, targets JSON, resolve-tag, ANODIZER_CURRENT_TAG, tag hooks, UPX target-triple globs).
+The 2026-04-18 completion-yes claim held against `f7e73e3`; the 2026-05-07 walk against HEAD `8976559` flipped 16 implemented rows to partial (mostly behavioral fixes upstream applied 2026-03 → 2026-05) and added 1 new required missing row (`Project.Retry` global config — commit a176567, v2.15.3). Rust-additive features remain ahead of upstream where they add real UX value.
 
-**Auditor note.** A2/A3/A4/A5 should now run parity audits with this inventory as the baseline; any behavioral divergence found in stage wiring should be logged in their respective audit files and consolidated into known-bugs.md by A10 — the A1 inventory no longer blocks completion.
+**Auditor note.** Sessions P (Refresh-driven gaps) and Q (Action-layer immutable-nightly) appended to `parity-session-index.md` carry the actionable list. Not all 16 partials require code changes — several are "verify-in-anodizer" gates (e.g. nil-safe Docker parsePlatform; anodizer's Rust pattern-match likely already prevents that panic class). A2/A3 spec-comparison agents should walk those gates first to convert verify-only rows back to `implemented`.

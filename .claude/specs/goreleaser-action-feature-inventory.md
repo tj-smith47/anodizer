@@ -91,9 +91,21 @@ Downstream teammates (`Action-A8` parity audit + `Action-A9` composite safety) s
 
 ---
 
+## Refresh 2026-05-07 — Immutable nightly resolution
+
+goreleaser-action HEAD remains `01cbe07` (action.yml unchanged: 5 inputs, 2 outputs). Behavioral change ships in the **action's compiled JS** (≥ v7.2.0) and is documented in goreleaser/www `customization/ci/actions.md` + blog/`immutable-releases.md`:
+
+- `version: nightly` no longer resolves to a moving tag. Action ≥ v7.2.0 enumerates GitHub Releases via API, picks the newest tag matching `vX.Y.Z-<sha>-nightly` (e.g. `v2.16.0-abc1234-nightly`), and installs that exact build.
+- The action requires `GITHUB_TOKEN` on the step to avoid the unauthenticated rate limit while listing releases.
+
+| name | surface | goreleaser-action_ref | anodizer-action_ref | parity_status | notes |
+|------|---------|------------------------|---------------------|---------------|-------|
+| `version: nightly` immutable resolution | input | docs `customization/ci/actions.md::Nightly builds` (action ≥ v7.2.0) | (unverified) | partial | anodize-action must mirror: enumerate Releases, pick newest `*-nightly` tag, install. Cite source on completion. Tracked as Session S in parity-session-index. |
+| Tag format `vX.Y.Z-<sha>-nightly` | distribution | blog `immutable-releases.md` (2026-04-26) | n-a | n-a | Format owned by the goreleaser CLI release process, not the action. Anodizer adopts only if it ships nightlies — informational. |
+
 ## Completion statement (Action inventory)
 
-Refreshed 2026-04-18 — goreleaser-action HEAD `01cbe07`; action.yml unchanged since last sync (5 inputs, 2 outputs).
+Refreshed 2026-05-07 — goreleaser-action HEAD `01cbe07`; action.yml unchanged since prior 2026-04-18 sync (5 inputs, 2 outputs). New behavioral change in compiled JS + docs (immutable nightly).
 
 - Total goreleaser-action inputs catalogued: 5 (distribution, version, args, workdir, install-only)
 - Total goreleaser-action outputs catalogued: 2 (artifacts, metadata)
@@ -105,9 +117,10 @@ Refreshed 2026-04-18 — goreleaser-action HEAD `01cbe07`; action.yml unchanged 
   - required (GITHUB_TOKEN / artifacts / metadata / args / workdir / install-only / version default resolution): 7 implemented
   - strongly-suggested (rest of inputs/outputs/composite steps): 18 implemented or additive
   - niche missing: 2 (semver-range, nightly) — niche because anodizer-action users pin exact versions; nightly channel absent at the CLI level
+  - niche partial: 1 (immutable-nightly resolution per refresh-2026-05-07; anodize-action must mirror Releases-API listing once it ships nightlies)
   - not-applicable: 3 (Pro distribution flag, GORELEASER_KEY, Node24-runtime distribution choice)
-- Parity achieved: **yes** — goreleaser-action's 5 inputs + 2 outputs are all equivalent-or-additive in anodizer-action. The 2 missing items are narrow (semver-range resolution, nightly) and anodizer-action far exceeds goreleaser-action's feature set (dep auto-install, monorepo tag resolution, split/merge artifact plumbing, GPG/cosign inline, retry, split-matrix output).
+- Parity achieved: **yes (with one new niche partial: immutable-nightly resolution)** — goreleaser-action's 5 inputs + 2 outputs remain equivalent-or-additive in anodizer-action. anodizer-action far exceeds goreleaser-action's feature set (dep auto-install, monorepo tag resolution, split/merge artifact plumbing, GPG/cosign inline, retry, split-matrix output). Immutable-nightly tracking deferred until anodizer ships nightlies.
 
-Completion achieved: **yes**.
+Completion achieved: **yes (with documented immutable-nightly carry-over)**.
 
 The `Action-A8` parity audit should confirm behavioral equivalence by running both actions against a fake release in a CI fixture; findings flow to `anodizer-action/.claude/audits/2026-04-v0.x/` and, ultimately, to `anodizer-action/.claude/known-bugs.md` via the team lead.

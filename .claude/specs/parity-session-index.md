@@ -872,3 +872,140 @@ Items identified by the deep audit that are intentional architectural difference
 - [x] `publish/scm/gitea` — Gitea release
 - [x] `publish/milestone` — milestone closing
 - [x] `publish/beforepublish` — before-publish hooks
+
+
+---
+
+## Phase 3: 2026-05-07 GoReleaser refresh (HEAD `8976559`, tag `v2.16.0-17315a55-nightly-1-g8976559`)
+
+Walked 50 commits in `v2.15.0..HEAD`. Inventory delta captured in `goreleaser-complete-feature-inventory.md` §2.18 + §5.delta. Sessions P and Q below carry the actionable rows.
+
+> **Triage rule.** Rows are *pending* by default. Rows tagged "verify-only" mean the upstream fix may already be impossible-by-construction in Rust (e.g. nil-deref panics on missing array index don't apply to Rust pattern-match). Verify-only rows can flip to *done* by adding a regression test mirroring the upstream test, no code change required. Rows tagged "code change" require behavior modification.
+
+### Session P: Required-tier refresh gaps (2026-05-07)
+
+GoReleaser source: see per-row source_ref. Each row carries upstream commit SHA for blame-traceable diffing.
+
+**P1. Project-level `retry:` config (NEW required gap)**
+- [ ] **P1.1** Add `RetryConfig { attempts: u32, delay: Duration, max_delay: Duration }` to `crates/core/src/config/mod.rs::Config` (new top-level field). Defaults: `attempts=10`, `delay=10s`, `max_delay=5m`. Upstream ref: `pkg/config/config.go::Project.Retry` + `internal/retryx/retryx.go`. Doc: `/customization/general/retry/`.
+- [ ] **P1.2** Implement `anodizer_core::retry::do_retry(cfg, op)` and `do_retry_with_data(cfg, op)` analogous to `retryx.Do/DoWithData`. Retriable predicate: network errors (connection reset/refused, TLS handshake timeout, i/o timeout, broken pipe, EOF, "context deadline exceeded"), HTTP 5xx, HTTP 429.
+- [ ] **P1.3** Wire `Project.Retry` through every announcer pipe: discord, telegram, slack, mastodon, teams, reddit, twitter, bluesky, linkedin, discourse, mattermost, webhook, opencollective, mcp.
+- [ ] **P1.4** Wire through every git-provider client: github (release create, asset upload, draft find, milestone, PR), gitlab, gitea (each ReleaseURLTemplater).
+- [ ] **P1.5** Wire through HTTP uploads: artifactory, custom upload (custompublishers), snapcraft store push (replace ad-hoc 10×10s constants), blob upload retries.
+- [ ] **P1.6** Wire through docker pipes: replace per-pipe `DockerRetryConfig` reads with `Project.Retry` fallback (keep per-pipe override for back-compat; emit deprecation warning matching GR doc deprecations.md). Upstream ref: `pkg/config/config.go::Docker.Retry // Deprecated`.
+- [ ] **P1.7** Tests: unit tests for retriable predicate, integration tests for cross-pipe propagation, deprecation-warning emission.
+
+**P2. GitHub release publish-fields preservation (commit 6ecba31 + 2e17678)**
+- [ ] **P2.1** When un-drafting (`draft=false` PATCH), include `name` (re-rendered from `name_template`) in the PATCH body. Path: `crates/stage-release/src/github/mod.rs::~655`.
+- [ ] **P2.2** When `ctx.PreRelease` is true, force `make_latest=false` in the PATCH body, regardless of user's `make_latest` template result. Path: same.
+- [ ] **P2.3** Regression test: prerelease draft → publish flow asserts payload includes `name` and `make_latest=false`.
+
+**P3. GitHub author lookup simplification (commit 17315a5, #6601)**
+- [ ] **P3.1** Decision: track upstream removal of Search Users API fallback OR keep as anodizer-superset.
+- [ ] **P3.2** If tracking upstream: remove `/search/users?q={email}+in:email` call from `crates/stage-release/src/github/username.rs::~83` and the rate-limit-checker call. Resolve username only via `noreply.github.com` pattern.
+- [ ] **P3.3** If keeping superset: document divergence in inventory row notes; add rate-limit guard so big releases don't trip secondary rate limit.
+
+**P4. Sign `artifacts: all` excludes Signature + Certificate (commit 87a55ea, #6509)**
+- [ ] **P4.1** Update `crates/stage-sign/src/helpers.rs::should_sign_artifact` so `"all"` excludes `ArtifactKind::Signature` and `ArtifactKind::Certificate`. Path: also update `tests.rs:113-114` assertions.
+- [ ] **P4.2** Regression test: re-sign idempotency — running sign-all twice does not produce `.sig.sig`.
+
+**P5. dockers/v2 Dockerfile-template emptiness check after rendering (commit d788340)**
+- [ ] **P5.1** Verify `crates/stage-docker/src/v2/` checks rendered Dockerfile string (post-template) for emptiness; bail with `Skip("no dockerfile")`. Test case: `{{ if .IsSnapshot }}Dockerfile{{ end }}` during release skips.
+
+**P6. dockers v1 healthcheck delegates to v2 buildx probe (commit e09e23a, #6526)**
+- [ ] **P6.1** Verify `crates/stage-docker/src/healthcheck.rs` (or equivalent) probes buildx version when any v1 docker config has `use: buildx`.
+
+**P7. Sec sweep: log-statement audit + redact length threshold (commit d1cdbb2)**
+- [ ] **P7.1** Audit log statements in `crates/stage-build/`, `crates/core/src/git/`, `crates/core/src/http*`, webhook custom-headers logging, and any HTTP target/request URL logging. Remove env-var dumps, raw git-remote URLs, HTTP Authorization headers, webhook header values; redact target/request URLs.
+- [ ] **P7.2** Update `crates/core/src/redact*` (or wherever the redaction layer lives): redact every secret with length ≥ 1, not ≥ 10.
+- [ ] **P7.3** Add `redact::string()` public helper for inline redaction.
+
+**P8. SBOM artifact name uses matched filename (commit 292203e)**
+- [ ] **P8.1** Verify `crates/stage-sbom/` sets artifact `name` from the matched glob result, not the input glob pattern. Test: `documents: ["*.spdx.json"]` matching multiple files produces distinct artifact names.
+
+**P9. AUR/AURSources/Krew template-expand `skip_upload` before bool check (commit cba5b9f)**
+- [ ] **P9.1** Verify `crates/stage-publish/src/aur*.rs` and `krew.rs` run `skip_upload` value through Tera template before parsing as `bool`/`auto`/empty. Regression test: `skip_upload: "{{ .IsSnapshot }}"` honored on snapshot.
+
+**P10. Release log uses correct repo for gitlab/gitea (commit 44133de)**
+- [ ] **P10.1** Verify `crates/stage-release/src/lib.rs::publish` log path picks `Release.GitLab` or `Release.Gitea` based on detected token type, not always `Release.GitHub`.
+
+### Session Q: Strongly-suggested + niche refresh (2026-05-07)
+
+**Q1. Cask template fixes (commits 87b542b + bb9062f)**
+- [ ] **Q1.1** Reorder per-arch block in `crates/stage-publish/src/homebrew/cask.rs:24-25` so `sha256` precedes `url`. Update goldens.
+- [ ] **Q1.2** Render `generate_completions_from_executable` in cask template, emitting AFTER `postflight` stanza. Format: `generate_completions_from_executable "<binary>", ["<sub>"], base_name: "<n>", shell_parameter_format: :<fmt>, shells: [:<s>...]`. Verify struct → template wiring.
+
+**Q2. dockers/v2 nil-safe parsePlatform (commit 9e9f87c)**
+- [ ] **Q2.1** Verify `crates/stage-docker/src/v2/` parses platform string `"linux"` (no arch component) without panic. Add regression test.
+
+**Q3. dockers/v2 digest log split (commit e7a4afa)**
+- [ ] **Q3.1** Update v2 build log to emit `images` and `digest` as separate fields, not embedded `images@digest`. Affects observability tooling.
+
+**Q4. dockers/v1 marked deprecated (commit e09e23a)**
+- [ ] **Q4.1** Add `// Deprecated: prefer docker_v2` comment to `DockerConfig` and `DockerManifestConfig` (or the Rust equivalent) so docs-generators surface it.
+
+**Q5. Rate-limit checker iterative + ctx-cancellable (commit 60028b1)**
+- [ ] **Q5.1** Verify `crates/stage-release/src/github/rate_limit.rs` uses iterative wait + Tokio cancellation token (or futures select with ctx.Done equivalent), not recursion.
+
+**Q6. Mattermost Color from own struct (commit 7e7f9b2)**
+- [ ] **Q6.1** Verify `crates/stage-announce/src/mattermost.rs` reads `Mattermost.Color`, not `Teams.Color`. Add regression test.
+
+**Q7. LinkedIn / Webhook / OpenCollective error wrapping**
+- [ ] **Q7.1** Mirror error categorisation upstream applied: linkedin (commit 0944b0e), webhook (commit bba909e), opencollective (commit 206120a, #6512).
+
+**Q8. Snapcraft 5xx retry (commit eb944f9)**
+- [ ] **Q8.1** Wrap snapcraft push in `do_retry` once P1 lands (or 10×10s expo backoff if P1 not yet ready).
+
+**Q9. Blob provider templated before S3-ACL gate (commit 4d1924d)**
+- [ ] **Q9.1** Verify `crates/stage-blob/` applies template to `provider` before routing on `provider == "s3"`.
+
+**Q10. Gitea create-file falls back to server default branch (commit 4a9d25f)**
+- [ ] **Q10.1** Verify `crates/stage-publish/src/util/gitea*.rs` (or wherever) leaves branch empty so Gitea API uses repo default; do not hard-code `master`.
+
+**Q11. GitHub updateRelease nil-guard resp (commit 1ca21f0)**
+- [ ] **Q11.1** Verify octocrab response handling does not panic on nil `resp` while accessing `X-GitHub-Request-Id`.
+
+**Q12. `git config` extraction preserves underlying error (commit 5042b84)**
+- [ ] **Q12.1** Verify `crates/core/src/git/config.rs` (or wherever) wraps the underlying error rather than replacing with sentinel string.
+
+**Q13. `bodyOf` returns descriptive error on ReadAll failure (commit 8b77358)**
+- [ ] **Q13.1** Verify HTTP body-reader paths return `Result` and don't silently truncate on read failure.
+
+**Q14. Redact writer returns 0 bytes on inner-write failure (commit f48613d)**
+- [ ] **Q14.1** Verify anodizer's redact `Write` impl returns `(0, err)` not `(len(p), err)` on inner write failure.
+
+**Q15. Changelog abbrev clamp + filter regex error (commits 88daaf3 + c2f16b9)**
+- [ ] **Q15.1** Verify changelog stage clamps `abbrev` to ≥ -1 (no panic on -2 etc.).
+- [ ] **Q15.2** Confirm `tmpl.filter`/`reverseFilter` return Result on bad regex (already true via Rust regex crate; document in row notes).
+
+**Q16. Checksums refreshAll sort tolerates lines without double-space (commit f39c233)**
+- [ ] **Q16.1** Verify `crates/stage-checksum/src/run.rs` sort path handles malformed `<hash>  <name>` lines without panic.
+
+**Q17. Archive xz format (single-file) (commit bb532b6)**
+- [ ] **Q17.1** Add `xz` to the `formats:` enum (`crates/core/src/config/archives.rs` accept-list). Implement single-file xz writer (use `xz2` crate or similar). Constraint: error if multiple files supplied. Test: `formats: [xz]` with single binary produces `<name>.xz`.
+
+**Q18. nfpm content-mtime parse error reports the bad value (commit 50a034d)**
+- [ ] **Q18.1** Verify nfpm-content mtime parse error includes the offending mtime string (anyhow context-string).
+
+**Q19. MCP registry pipe (refresh visibility) (commit a176567 + mcp.go)**
+- [ ] **Q19.1** *Tracked, not promoted*: keep `mcp registry` row at `niche-missing` until either (a) Rust MCP server ecosystem matures (rmcp adoption metrics) or (b) user demand. Reclassify candidate noted in §2.18.1.
+
+### Session R: n/a-go-specific exclusions (2026-05-07)
+
+These rows are added with `parity_status=n-a` and `notes` justifying. They never re-adjudicate.
+
+- [x] **R1** `builder: node` (Node.js SEA) — JS-to-binary; anodize is Rust. Source: internal/builders/node/build.go.
+- [x] **R2** `partial.archExtraEnvs[ppc64le]` — Go GGOPPC64/GOPPC64 env mapping; Rust uses target triples. Source: internal/pipe/partial/partial.go (commit e15276b).
+- [x] **R3** `partial.archExtraEnvs[mips64*]` — Go GGOMIPS64/GOMIPS64 env mapping. Source: same (commit a05ecb8).
+- [x] **R4** `build per-binary IDs for ./...` — Go ellipsis package selector. Source: internal/builders/golang/build.go (commit 3140abb).
+- [x] **R5** `build allow explicit binary with ellipsis when single main` — Go ellipsis. Source: same (commit d077fe1).
+- [x] **R6** `bun parse-error message` — Bun is a JS runtime builder. Source: internal/builders/bun/targets.go (commit 2a10e3e).
+- [x] **R7** `gomod proxy 404 retry` — Go module proxy fetch retry; Rust-native replacement is Cargo.lock fidelity. Source: internal/pipe/gomod/gomod_proxy.go (commit a176567).
+
+### Session S: Action layer refresh (2026-05-07)
+
+Tracked separately from CLI-parity work because the action repo (`/opt/repos/goreleaser-action`) has its own release cadence (action ≥ v7.2.0 for immutable nightly).
+
+- [ ] **S1** Update `anodize-action/action.yml` and README to handle `version: nightly` immutable-tag resolution. Goreleaser-action ≥ v7.2.0 resolves `nightly` to the latest `vX.Y.Z-<sha>-nightly` tag via GitHub Releases API. Anodizer-action must mirror — list Releases, pick newest tag matching `*-nightly`, install. Source: `www/content/customization/ci/actions.md::Nightly builds` + `goreleaser-action-feature-inventory.md::refresh-2026-05-07`.
+- [ ] **S2** Document the new tag format `vX.Y.Z-<sha>-nightly` in anodize-action README, mirroring goreleaser-action.
+
