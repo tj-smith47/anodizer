@@ -331,6 +331,43 @@ crates:
 }
 
 #[test]
+fn test_man_renders_roff() {
+    // Smoke test for `anodizer man`: the parser test in main.rs asserts the
+    // subcommand dispatches; this asserts the rendering path actually emits
+    // valid roff via clap_mangen, so a regression in clap/clap_mangen wiring
+    // (not just parsing) is caught.
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .arg("man")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "man should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty(), "man output should not be empty");
+    // clap_mangen emits a `.ie ` macro on the first line followed by `.TH`
+    // for the program. Either anchor proves we got roff and not help text.
+    assert!(
+        stdout.starts_with(".ie ") || stdout.contains(".TH anodizer"),
+        "man output should be roff (start with .ie or contain .TH anodizer), got first 200 bytes: {}",
+        &stdout.chars().take(200).collect::<String>()
+    );
+    assert!(
+        stdout.contains("anodizer"),
+        "man output should reference the program name 'anodizer'"
+    );
+    // The SUBCOMMANDS section should reference at least one known subcommand.
+    // clap_mangen escapes the dash, so the name appears as `anodizer\-release`.
+    assert!(
+        stdout.contains("release"),
+        "man output should reference the 'release' subcommand"
+    );
+}
+
+#[test]
 fn test_completion_bash_produces_output() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["completion", "bash"])
