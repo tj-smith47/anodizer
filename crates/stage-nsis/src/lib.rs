@@ -168,6 +168,25 @@ impl Stage for NsisStage {
                     });
                 }
 
+                // M8 — `goamd64` filter (GR Pro `nsis.goamd64: string`).
+                // Mirrors `goreleaser/internal/artifact/artifact.go::ByGoamd64`:
+                // only constrains `amd64` artifacts. Non-amd64 always passes.
+                // Unset `amd64_variant` metadata is treated as `v1`.
+                if let Some(ref want) = nsis_cfg.goamd64 {
+                    filtered.retain(|b| {
+                        let target = b.target.as_deref().unwrap_or("");
+                        let (_, arch) = anodizer_core::target::map_target(target);
+                        if arch != "amd64" {
+                            return true;
+                        }
+                        b.metadata
+                            .get("amd64_variant")
+                            .map(String::as_str)
+                            .unwrap_or("v1")
+                            == want
+                    });
+                }
+
                 // Warn and skip if no Windows binaries found
                 if filtered.is_empty() && windows_binaries.is_empty() {
                     log.warn(&format!(

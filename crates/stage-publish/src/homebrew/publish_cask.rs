@@ -89,7 +89,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
     );
 
     let cask_lossy = cask_path.to_string_lossy();
-    let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref());
+    let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(
         repo_path,

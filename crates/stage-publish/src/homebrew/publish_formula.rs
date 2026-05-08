@@ -371,7 +371,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         kind,
     );
 
-    let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref());
+    let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(
         repo_path,

@@ -234,7 +234,7 @@ fn publish_aur_source_entry(
             &version,
             "package",
         );
-        let commit_opts = util::resolve_commit_opts(cfg.commit_author.as_ref());
+        let commit_opts = util::resolve_commit_opts(ctx, cfg.commit_author.as_ref());
         util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, label, &commit_opts)?;
 
         log.status(&format!(

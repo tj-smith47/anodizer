@@ -939,7 +939,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     // Use repository.branch if set, otherwise auto-generate from package_id + version.
     let auto_branch = format!("{}-{}", package_id, version);
     let branch_name = util::resolve_branch(winget_cfg.repository.as_ref()).unwrap_or(&auto_branch);
-    let commit_opts = util::resolve_commit_opts(winget_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, winget_cfg.commit_author.as_ref());
     util::commit_and_push_with_opts(
         repo_path,
         &["."],

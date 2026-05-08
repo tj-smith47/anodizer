@@ -203,7 +203,7 @@ impl Stage for NfpmStage {
                     } else {
                         // Apply ids filter: when the nfpm config specifies `ids`,
                         // only include artifacts whose metadata "id" is in the list.
-                        let filtered: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
+                        let id_filtered: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
                             linux_binaries
                                 .iter()
                                 .filter(|b| {
@@ -215,6 +215,37 @@ impl Stage for NfpmStage {
                                 .collect()
                         } else {
                             linux_binaries.iter().collect()
+                        };
+
+                        // M8 — `goamd64: []string` filter (GR `nfpm.go:147`,
+                        // calls `artifact.ByGoamd64s(fpm.GoAmd64...)`). When
+                        // the config sets one or more variants, only `amd64`
+                        // artifacts whose `amd64_variant` is in the list pass;
+                        // non-amd64 artifacts are unaffected. Unset
+                        // `amd64_variant` metadata is treated as `v1`. Empty
+                        // `Vec` (`goamd64: []`) is a no-op (matches GR's
+                        // `autoOr` zero-arg shape).
+                        let filtered: Vec<_> = if let Some(ref wants) = nfpm_cfg.goamd64
+                            && !wants.is_empty()
+                        {
+                            id_filtered
+                                .into_iter()
+                                .filter(|b| {
+                                    let target = b.target.as_deref().unwrap_or("");
+                                    let (_, arch) = anodizer_core::target::map_target(target);
+                                    if arch != "amd64" {
+                                        return true;
+                                    }
+                                    let v = b
+                                        .metadata
+                                        .get("amd64_variant")
+                                        .map(String::as_str)
+                                        .unwrap_or("v1");
+                                    wants.iter().any(|w| w == v)
+                                })
+                                .collect()
+                        } else {
+                            id_filtered
                         };
 
                         // If the ids filter matched nothing but there ARE artifacts,

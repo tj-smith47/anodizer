@@ -440,7 +440,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         &previous_tag,
         "nix",
     );
-    let commit_opts = util::resolve_commit_opts(nix_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, nix_cfg.commit_author.as_ref());
     let branch = util::resolve_branch(nix_cfg.repository.as_ref());
     util::commit_and_push_with_opts(
         repo_path,

@@ -956,3 +956,113 @@ mod redact_output_token_tests {
         assert_eq!(out, b"X bar X bar");
     }
 }
+
+// ===========================================================================
+// Q-author1: resolve_commit_opts template-rendering tests
+// ===========================================================================
+
+#[cfg(test)]
+mod commit_opts_tests {
+    use super::super::commit::resolve_commit_opts;
+    use anodizer_core::config::{CommitAuthorConfig, Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    /// Build a minimal Context where ProjectName, Version, and one Env var
+    /// are set, so `{{ ProjectName }}` and `{{ Env.X }}` template expressions
+    /// render predictably.
+    fn ctx_for_template_tests() -> Context {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set_env("BOT_NAME", "release-bot");
+        ctx
+    }
+
+    /// Q-author1 regression: GR's `commitauthor.Get()` runs Tera/Go templates
+    /// over `name` and `email`. Anodizer must do the same so a config like
+    ///
+    ///     commit_author:
+    ///       name: "{{ Env.BOT_NAME }}"
+    ///       email: "{{ ProjectName }}-bot@example.com"
+    ///
+    /// produces the rendered values, not the raw template strings.
+    #[test]
+    fn test_resolve_commit_opts_renders_name_and_email() {
+        let ctx = ctx_for_template_tests();
+        let ca = CommitAuthorConfig {
+            name: Some("{{ Env.BOT_NAME }}".to_string()),
+            email: Some("{{ ProjectName }}-bot@example.com".to_string()),
+            signing: None,
+            use_github_app_token: false,
+        };
+        let opts = resolve_commit_opts(&ctx, Some(&ca));
+        assert_eq!(opts.author_name.as_deref(), Some("release-bot"));
+        assert_eq!(opts.author_email.as_deref(), Some("myapp-bot@example.com"));
+    }
+
+    /// If a template references a variable that is not bound, the rendered
+    /// value falls back to the literal string rather than failing the whole
+    /// publish stage. Matches `resolve_token`'s fail-soft behaviour.
+    #[test]
+    fn test_resolve_commit_opts_unrendered_template_falls_back_to_literal() {
+        let ctx = ctx_for_template_tests();
+        let ca = CommitAuthorConfig {
+            name: Some("{{ Env.NOT_SET_AT_ALL_!!! }}".to_string()),
+            email: None,
+            signing: None,
+            use_github_app_token: false,
+        };
+        let opts = resolve_commit_opts(&ctx, Some(&ca));
+        // The name is the literal template (because rendering failed).
+        assert_eq!(
+            opts.author_name.as_deref(),
+            Some("{{ Env.NOT_SET_AT_ALL_!!! }}")
+        );
+    }
+
+    /// `use_github_app_token: true` propagates onto the resulting
+    /// `CommitOptions`, so downstream `commit_and_push_with_opts` knows to
+    /// skip the explicit `-c user.name=` / `-c user.email=` overrides.
+    #[test]
+    fn test_resolve_commit_opts_propagates_use_github_app_token() {
+        let ctx = ctx_for_template_tests();
+        let ca = CommitAuthorConfig {
+            name: Some("override-name".to_string()),
+            email: Some("override@example.com".to_string()),
+            signing: None,
+            use_github_app_token: true,
+        };
+        let opts = resolve_commit_opts(&ctx, Some(&ca));
+        assert!(
+            opts.use_github_app_token,
+            "use_github_app_token must propagate from config to CommitOptions"
+        );
+        // Resolved name/email are still present (in case the consumer ever
+        // wants to surface them in logs); the consumer toggle is what
+        // determines whether they are emitted on the wire.
+        assert_eq!(opts.author_name.as_deref(), Some("override-name"));
+        assert_eq!(opts.author_email.as_deref(), Some("override@example.com"));
+    }
+
+    /// When neither commit_author nor legacy fields are set and `git config
+    /// user.{name,email}` has nothing useful, the built-in anodizer defaults
+    /// are returned. Templates do not enter the picture in this path.
+    #[test]
+    fn test_resolve_commit_opts_no_config_uses_defaults() {
+        let ctx = ctx_for_template_tests();
+        let opts = resolve_commit_opts(&ctx, None);
+        // We can't assert the exact value because it depends on the local
+        // git config of the test environment, but it must be Some(...).
+        assert!(opts.author_name.is_some());
+        assert!(opts.author_email.is_some());
+        assert!(!opts.use_github_app_token);
+    }
+}

@@ -2,6 +2,7 @@
 //! by every publisher that touches a remote git repo (homebrew, scoop,
 //! winget, krew, aur, aur_source, nix, chocolatey).
 
+use anodizer_core::context::Context;
 use anyhow::Result;
 use std::path::Path;
 use std::process::Command;
@@ -19,6 +20,12 @@ pub(crate) struct CommitOptions<'a> {
     pub author_email: Option<String>,
     /// Enable GPG/SSH signing for the commit.
     pub signing: Option<&'a anodizer_core::config::CommitSigningConfig>,
+    /// Q-author1: when true, suppress emitting `-c user.name=` /
+    /// `-c user.email=` so the running git client uses the GitHub App's
+    /// identity (already configured in the repo's local git config by the
+    /// Actions checkout step). Mirrors GR
+    /// `internal/git/config/github.go:381`.
+    pub use_github_app_token: bool,
 }
 
 /// Default commit author name used when no author is configured.
@@ -41,21 +48,46 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 /// Returns CommitOptions whose `author_name` / `author_email` are owned strings
 /// so that values read from git config (which need allocation) can be returned
 /// alongside borrowed config values.
+///
+/// Q-author1: GoReleaser's `commitauthor.Get(ctx, og)`
+/// (`internal/commitauthor/author.go`) template-renders `Name`, `Email`, and
+/// `Signing.{Key, Program, Format}` before applying built-in defaults. We
+/// mirror that here by passing each non-empty config-supplied value through
+/// `ctx.render_template(...)` before the local-git / built-in fallbacks.
+/// Templates that fail to render fall back to the literal string (rather
+/// than returning an error that would break the publish stage), matching
+/// the fail-soft behaviour of `resolve_token` and friends in this module —
+/// diagnostic logging still surfaces the underlying issue at the call site.
+///
+/// `use_github_app_token` is propagated from the config struct onto the
+/// resulting `CommitOptions`. When true, downstream
+/// `commit_and_push_with_opts` skips the `-c user.name=…` / `-c user.email=…`
+/// overrides so the local git config (configured by the Actions checkout
+/// step) wins. Mirrors GR `internal/git/config/github.go:381`.
 pub(crate) fn resolve_commit_opts<'a>(
+    ctx: &Context,
     commit_author: Option<&'a anodizer_core::config::CommitAuthorConfig>,
 ) -> CommitOptions<'a> {
-    let (cfg_name, cfg_email, signing) = if let Some(ca) = commit_author {
-        (ca.name.as_deref(), ca.email.as_deref(), ca.signing.as_ref())
+    let render =
+        |raw: &str| -> String { ctx.render_template(raw).unwrap_or_else(|_| raw.to_string()) };
+
+    let (cfg_name, cfg_email, signing, use_github_app_token) = if let Some(ca) = commit_author {
+        (
+            ca.name.as_deref(),
+            ca.email.as_deref(),
+            ca.signing.as_ref(),
+            ca.use_github_app_token,
+        )
     } else {
-        (None, None, None)
+        (None, None, None, false)
     };
 
     let name = cfg_name
-        .map(|s| s.to_string())
+        .map(render)
         .or_else(anodizer_core::git::local_git_user_name)
         .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_NAME.to_string());
     let email = cfg_email
-        .map(|s| s.to_string())
+        .map(render)
         .or_else(anodizer_core::git::local_git_user_email)
         .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string());
 
@@ -63,6 +95,7 @@ pub(crate) fn resolve_commit_opts<'a>(
         author_name: Some(name),
         author_email: Some(email),
         signing,
+        use_github_app_token,
     }
 }
 
@@ -193,6 +226,12 @@ pub(crate) fn commit_and_push_with_opts(
     }
 
     // Build commit args, optionally injecting -c user.name / -c user.email / signing.
+    //
+    // Q-author1: when `use_github_app_token` is set on the CommitAuthorConfig,
+    // skip the explicit `-c user.name=` / `-c user.email=` overrides so the
+    // local git config (already populated by the GitHub Actions checkout step
+    // with the App's `<app-slug>[bot]` identity) is the authority on commit
+    // identity. Mirrors GR `internal/git/config/github.go:381`.
     let mut commit_args: Vec<&str> = Vec::new();
     let name_cfg;
     let email_cfg;
@@ -200,13 +239,15 @@ pub(crate) fn commit_and_push_with_opts(
     let sign_key_cfg;
     let sign_program_cfg;
     let sign_format_cfg;
-    if let Some(ref name) = opts.author_name {
-        name_cfg = format!("user.name={}", name);
-        commit_args.extend_from_slice(&["-c", &name_cfg]);
-    }
-    if let Some(ref email) = opts.author_email {
-        email_cfg = format!("user.email={}", email);
-        commit_args.extend_from_slice(&["-c", &email_cfg]);
+    if !opts.use_github_app_token {
+        if let Some(ref name) = opts.author_name {
+            name_cfg = format!("user.name={}", name);
+            commit_args.extend_from_slice(&["-c", &name_cfg]);
+        }
+        if let Some(ref email) = opts.author_email {
+            email_cfg = format!("user.email={}", email);
+            commit_args.extend_from_slice(&["-c", &email_cfg]);
+        }
     }
     // Handle commit signing config
     let do_sign = opts.signing.and_then(|s| s.enabled).unwrap_or(false);

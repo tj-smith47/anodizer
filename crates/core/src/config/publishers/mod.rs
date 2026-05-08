@@ -98,6 +98,20 @@ pub struct CommitAuthorConfig {
     pub email: Option<String>,
     /// Commit signing configuration.
     pub signing: Option<CommitSigningConfig>,
+    /// When true, omit the explicit `-c user.name=` / `-c user.email=`
+    /// overrides at commit time and let the running git client use the
+    /// invoking GitHub App's identity (i.e. the `<app-slug>[bot]@users.noreply.github.com`
+    /// account that the GitHub Actions checkout step has already configured
+    /// in the repo's local git config).
+    ///
+    /// Mirrors GoReleaser's `CommitAuthor.UseGithubAppToken`
+    /// (`internal/git/config/github.go:381`); the canonical use-case is
+    /// PRs against `homebrew/homebrew-core` / `kubernetes-sigs/krew-index`
+    /// / `microsoft/winget-pkgs` opened from a GitHub App workflow, where
+    /// EasyCLA / DCO / signed-commit policies require the App's identity
+    /// (rather than a per-user bot identity) to land the merge.
+    #[serde(default)]
+    pub use_github_app_token: bool,
 }
 
 impl CommitAuthorConfig {

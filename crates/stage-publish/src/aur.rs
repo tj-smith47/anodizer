@@ -649,7 +649,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         &version,
         "package",
     );
-    let commit_opts = util::resolve_commit_opts(aur_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, aur_cfg.commit_author.as_ref());
     // AUR repositories are always on `master`. Pin the push branch explicitly
     // rather than relying on `git clone`'s default, which varies by git
     // version / config and once surfaced pushes that silently went to `main`

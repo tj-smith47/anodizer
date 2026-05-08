@@ -480,7 +480,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     );
 
     let manifest_lossy = manifest_path.to_string_lossy();
-    let commit_opts = util::resolve_commit_opts(scoop_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, scoop_cfg.commit_author.as_ref());
     let branch = util::resolve_branch(scoop_cfg.repository.as_ref());
     util::commit_and_push_with_opts(
         repo_path,

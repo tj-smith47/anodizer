@@ -471,7 +471,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         "plugin",
     );
     let branch_name = format!("{}-v{}", plugin_name, version);
-    let commit_opts = util::resolve_commit_opts(krew_cfg.commit_author.as_ref());
+    let commit_opts = util::resolve_commit_opts(ctx, krew_cfg.commit_author.as_ref());
     // Always create a versioned branch for Krew PRs.
     let branch = Some(branch_name.as_str());
     util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, branch, "krew", &commit_opts)?;

@@ -1848,6 +1848,7 @@ mod tests {
                 name: Some("Alice Developer".to_string()),
                 email: Some("alice@example.com".to_string()),
                 signing: None,
+                use_github_app_token: false,
             }),
             ..Default::default()
         });
