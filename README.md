@@ -6,7 +6,7 @@ Anodizer reads a declarative config file and executes a full release pipeline: b
 
 Written by [Claude](https://claude.ai); maintained by us.
 
-See the [Feature Dogfooding Matrix](https://tj-smith47.github.io/anodizer/dogfooding/) for a per-feature tested / partial / untested status with proof links (CI runs, live release assets, unit + integration tests).
+See [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/) for a per-feature status — every "live" claim links to a real published artifact you can verify yourself.
 
 ## Features
 

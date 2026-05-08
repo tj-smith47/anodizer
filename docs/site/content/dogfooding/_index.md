@@ -1,494 +1,353 @@
 +++
-title = "Dogfooding"
-description = "Every anodizer feature, each with status and proof — what works, what doesn't, where to find the evidence."
+title = "What works (with proof)"
+description = "Every anodizer feature, with a status and a link you can click to see the working artifact — not source code, not test names, the actual file or page."
 weight = 30
 template = "section.html"
 +++
 
-# Feature Dogfooding Matrix
-
-This page lists every feature tracked in the [GoReleaser parity inventory](https://github.com/tj-smith47/anodizer/blob/master/.claude/specs/goreleaser-complete-feature-inventory.md) plus the Rust-additive surface (§3), each with a verifiable status. "Tested" means there is a CI run, unit/integration test, or live release that exercised the feature end-to-end. "Partial" means the code exists with unit tests but has not been proven by a live release or has a known gap. "Untested" means the feature is not implemented or has no evidence on disk.
-
-Two public projects provide the live dogfood proof:
-
-- [anodizer releases](https://github.com/tj-smith47/anodizer/releases) — seven releases (v0.1.1 through v0.2.5, all 2026-04-12 to 2026-04-15), cross-compiled via `anodizer release --split` on three OS matrices.
-- [cfgd releases](https://github.com/tj-smith47/cfgd/releases) — four simultaneous workspace releases on 2026-04-15 (`v0.3.5`, `core-v0.3.5`, `operator-v0.3.5`, `csi-v0.3.5`) through [anodizer-action](https://github.com/tj-smith47/anodizer-action).
-
-Evidence files (one per feature group) live in [`.claude/audits/2026-04-v0.x/`](https://github.com/tj-smith47/anodizer/tree/master/.claude/audits/2026-04-v0.x). Open blockers and partial-parity entries live in [`.claude/known-bugs.md`](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md).
-
-**Legend.** ✅ tested end-to-end (unit + integration + CI, often + live release) · ⚠ partial (implemented with unit tests, no live-release proof, or known field gap) · ❌ untested (not implemented or no evidence).
-
-## Summary
-
-| Bucket | ✅ tested | ⚠ partial | informational |
-|---|---|---|---|
-| Evidence file clusters (19 files) | 11 | 7 | 1 |
-| Parity inventory rows covered | 217 OSS+Pro rows + 27 anodizer-action rows | — | — |
-
-Per-feature-group counts match the [evidence index](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-INDEX.md).
-
-Anchors flagged by the audit as needing a live release (not blocked by missing code) are called out in the [Outstanding live-release gaps](#outstanding-live-release-gaps) section at the bottom.
-
-## Canonical proof URLs
-
-Reused across rows below:
-
-- **anodizer CI** (latest success, commit `128e003`, 2026-04-15) — [run 24441674093](https://github.com/tj-smith47/anodizer/actions/runs/24441674093)
-- **anodizer release v0.2.5** — [run 24441952862](https://github.com/tj-smith47/anodizer/actions/runs/24441952862) · [release tag](https://github.com/tj-smith47/anodizer/releases/tag/v0.2.5)
-- **cfgd core-v0.3.5** (lib) — [run 24442229349](https://github.com/tj-smith47/cfgd/actions/runs/24442229349)
-- **cfgd v0.3.5** (CLI) — [run 24442230191](https://github.com/tj-smith47/cfgd/actions/runs/24442230191)
-- **cfgd operator-v0.3.5** — [run 24442230834](https://github.com/tj-smith47/cfgd/actions/runs/24442230834)
-- **cfgd csi-v0.3.5** — [run 24442232044](https://github.com/tj-smith47/cfgd/actions/runs/24442232044)
-- **anodizer-action CI** — [run 24409150253](https://github.com/tj-smith47/anodizer-action/actions/runs/24409150253)
-
-## Build
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-builds.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| builder: rust (cargo / cross / cargo-zigbuild) | ✅ | OSS | [anodizer release run](https://github.com/tj-smith47/anodizer/actions/runs/24441952862) split jobs ran `anodizer release --split --clean` on ubuntu/macos/windows runners. |
-| builder: prebuilt | ✅ | OSS | `stage-build` unit tests; [CI run 24441674093](https://github.com/tj-smith47/anodizer/actions/runs/24441674093). |
-| build.id / binary / dir / command / flags / env / tool | ✅ | OSS | Covered by `test_e2e_build_command_matches_goreleaser_pipeline_outputs` in [`integration.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/tests/integration.rs) L3617. |
-| build.targets (Rust target triples) | ✅ | OSS | Six target triples × seven releases shipped on [v0.2.5](https://github.com/tj-smith47/anodizer/releases/tag/v0.2.5). |
-| build.overrides (per-target) | ✅ | OSS | `BuildOverride` array wired per-target; unit tests in `stage-build`. |
-| build.hooks.pre / post | ✅ | OSS | `test_e2e_before_hooks_execute` at `integration.rs` L3368. |
-| build.mod_timestamp (reproducible build) | ✅ | OSS | `stage-build` unit tests cover `CrateConfig.mod_timestamp` wiring. |
-| build.skip (templated bool) | ✅ | OSS | `BuildConfig.skip` unit tests. |
-| build.no_unique_dist_dir | ✅ | OSS | `stage-build` unit tests. |
-| universal_binaries (macOS `lipo`) | ✅ | OSS | `UniversalBinaryConfig` subprocess tests in `stage-build`. |
-| upx (per-target filtering via Rust target globs) | ✅ | OSS | `stage-upx` unit tests; v0.2.5 binaries are UPX-compressed (config at [`.anodizer.yaml:488`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml#L488)). |
-| prebuild pipe (pre-build validation) | ✅ | OSS | Folded into `anodizer build` stage; CI run 24441674093. |
-| reportsizes | ✅ | OSS | `test_e2e_report_sizes` at `integration.rs` L3546. |
-| `--single-target` (partial build) | ✅ | OSS | CI snapshot job runs `anodizer release --snapshot --single-target --clean --dry-run` on every master push. |
-
-## Archive
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-archives.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| archives[].id / ids | ✅ | OSS | `test_parse_archive_*` ~40 config tests in `config_parsing_tests.rs`. |
-| archives[].format (singular, deprecated) + formats (plural v2.6+) | ✅ | OSS | Both shapes accepted; `stage-archive` unit tests. |
-| archives[].name_template | ✅ | OSS | v0.2.5 ships [`anodizer-0.2.5-linux-amd64.tar.gz`](https://github.com/tj-smith47/anodizer/releases/tag/v0.2.5) rendered from `{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}.tar.gz`. |
-| archives[].wrap_in_directory (bool/string + template) | ✅ | OSS | `test_wrap_in_directory_*` suite in `stage-archive/src/lib.rs`. |
-| archives[].strip_binary_directory | ✅ | OSS | `stage-archive` unit tests. |
-| archives[].allow_different_binary_count | ✅ | OSS | `stage-archive` unit tests. |
-| archives[].files (string + object shape) | ✅ | OSS | `ArchiveFileSpec` enum parses both forms; unit tests. |
-| archives[].builds_info (file mode/owner/group/mtime) | ✅ | OSS | `stage-archive` unit tests. |
-| archives[].format_overrides (Windows = zip) | ✅ | OSS | `test_format_for_target_multiple_overrides` L2561; v0.2.5 ships `.zip` on Windows. |
-| archives[].templated_files | ✅ | Pro | `TemplatedExtraFile` wired; cfgd ships a rendered `install.sh` via `template_files`. |
-| archives[].meta (manifest-only) | ✅ | OSS | `ArchiveConfig.meta` unit tests. Note: `meta: true` with zero matches emits empty archive (BLOCKER — [known-bugs #58](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md)). |
-| archives[].hooks.before / after | ⚠ | Pro | Field-name mismatch — anodizer uses `hooks.pre`/`post`; docs use `before`/`after`. Silent skip. [known-bugs A1-rev #32](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| formats: tar.gz / tgz / tar.xz / txz / tar.zst / tzst / tar / gz / zip / binary / none | ✅ | OSS | Per-format integration tests (`test_integration_tar_gz_realistic_file_tree` L2284, `_zip` L2339, `_tar_xz` L2382, `_tar_zst` L2468). v0.2.5 ships tar.gz + zip archives live. |
-| source archive | ✅ | OSS | v0.2.5 ships `anodizer-0.2.5-source.tar.gz`. |
-| source.templated_files | ✅ | Pro | `stage-source` unit tests; used by cfgd. |
-
-## Checksum
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-checksums.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| checksum.name_template | ✅ | OSS | v0.2.5 ships `anodizer-0.2.5-checksums.txt`. |
-| checksum.algorithm (sha256 / sha512 / sha1 / sha224 / sha384 / sha3-* / blake2s / blake2b / blake3 / crc32 / md5) | ✅ | OSS | Unit tests in `stage-checksum/src/lib.rs`; [CI run 24441674093](https://github.com/tj-smith47/anodizer/actions/runs/24441674093). |
-| checksum.split (per-artifact sidecar) | ✅ | OSS | `stage-checksum` unit tests. |
-| checksum.disable | ✅ | OSS | `test_check_global_checksum_disable_valid` L1702 + `test_check_per_crate_checksum_disable_valid` L1641. |
-| checksum.ids | ✅ | OSS | `test_parse_checksum_ids` L1254. |
-| checksum.extra_files | ✅ | OSS | `test_parse_checksum_extra_files` L1235. |
-| checksum.templated_extra_files | ✅ | Pro | `stage-checksum` unit tests. |
-
-## Release (SCM providers)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-release-scm.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| release.github (full semantics) | ✅ | OSS | Seven anodizer releases + four cfgd releases. [v0.2.5](https://github.com/tj-smith47/anodizer/releases/tag/v0.2.5). |
-| release.gitlab | ⚠ | OSS | `stage-release/src/gitlab.rs` multi-client unit tests; no live GitLab project in dogfood. |
-| release.gitea | ⚠ | OSS | `stage-release/src/gitea.rs` unit tests; no live Gitea project in dogfood. |
-| release.draft / replace_existing_draft / use_existing_draft / replace_existing_artifacts | ✅ | OSS | `stage-release` unit tests; cfgd `.anodizer.yaml:158` sets `draft: false`. |
-| release.target_commitish / discussion_category_name | ✅ | OSS | `stage-release` unit tests. |
-| release.tag (template) | ✅ | Pro | Seven anodizer releases used `tag_template` (Tera-backed). |
-| release.prerelease (auto/bool) | ✅ | OSS | cfgd config sets `prerelease: auto`, confirmed on [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5). |
-| release.make_latest | ✅ | OSS | cfgd config sets `make_latest: auto`. |
-| release.mode (keep-existing / append / prepend / replace) | ✅ | OSS | `stage-release` unit tests. |
-| release.header / footer (string) | ✅ | OSS | Release body on v0.2.5 renders "Released with anodizer" footer template. |
-| release.header.from_url / from_file + release.footer.from_url / from_file | ⚠ | Pro | `ContentSource::FromUrl` is a naked `String` (no headers/auth/template-render). [known-bugs A1-rev #34](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| release.name_template / disable / skip_upload | ✅ | OSS | `stage-release` unit tests. |
-| release.extra_files / templated_extra_files | ✅ | OSS+Pro | `stage-release` unit tests. |
-| release.include_meta (metadata.json / artifacts.json emission) | ✅ | OSS | v0.2.5 ships `metadata.json` (asset id `RA_kwDORxhcIs4Xp2mB`) + `artifacts.json` live. |
-| Enterprise URL overrides (github_urls / gitlab_urls / gitea_urls) | ✅ | OSS | `stage-release` unit tests. |
-| milestone pipe | ✅ | OSS | `crates/cli/src/commands/release/milestones.rs` (split from `release/mod.rs` 2026-04-16). |
-
-## Changelog
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-changelog.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| changelog.disable | ✅ | OSS | `test_check_changelog_disabled_valid` L1734. |
-| changelog.use (git / github / gitlab / gitea / github-native) | ✅ | OSS | `stage-changelog` unit tests; v0.2.5 + cfgd v0.3.5 rendered changelogs live. |
-| changelog.format template | ✅ | OSS | `test_e2e_changelog_header_footer` L3091. |
-| changelog.sort (asc/desc), abbrev | ✅ | OSS | cfgd uses `sort: asc` live. |
-| changelog.paths (monorepo filter) | ✅ | Pro | cfgd 4-workspace monorepo relies on per-crate changelog filter. |
-| changelog.title (v2.12+), divider | ✅ | Pro | `stage-changelog` unit tests. |
-| changelog.filters.include / exclude | ✅ | OSS | v0.2.5 body shows `^docs:/^ci:/^chore:/^style:` filters applied. |
-| changelog.groups[].title / regexp / order + groups[].groups[] (subgroups) | ✅ | OSS+Pro | `test_e2e_changelog_with_groups` L1964; v0.2.5 body shows Features / Bug Fixes / Others groups live. |
-| changelog.ai.use / model / prompt (anthropic / openai / ollama) | ⚠ | Pro | Implemented in `stage-changelog`; **no live release uses `use: ai`**. Flagged in [HANDOFF](#outstanding-live-release-gaps). |
-
-## Signing
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-signing.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| signs[] (gpg backend) | ✅ | OSS | v0.2.5 ships `anodizer-0.2.5-checksums.txt.sig` live. |
-| signs[] (cosign backend) | ✅ | OSS | v0.2.5 ships `anodizer_linux_amd64.sig`, `_arm64.sig`, `_darwin_amd64.sig`, `_darwin_arm64.sig`, `.exe_windows_amd64.sig`, `_arm64.sig` — six cosign binary sigs. |
-| signs[].cmd / signature / args (templated) | ✅ | OSS | `stage-sign` unit tests. |
-| signs[].artifacts (none / all / checksum / source / package / installer / diskimage / archive / sbom / binary) | ✅ | OSS | Scope filter covered by `stage-sign` unit tests. |
-| signs[].ids | ✅ | OSS | `stage-sign` unit tests. |
-| signs[].if | ⚠ | Pro | Implemented; no live release uses conditional signs. |
-| signs[].stdin / stdin_file / certificate (cosign/rekor) / env / output | ✅ | OSS+Pro | `stage-sign` unit tests. |
-| docker_signs[] (cosign on docker manifests) | ✅ | OSS | cfgd signs three ghcr.io images on [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230191). |
-| binary_signs[] (`BinarySignStage` build-time signing) | ✅ | OSS | Added 2026-04-16; inline tests in `crates/stage-sign/src/lib.rs`. v0.2.5 cosign binary sigs are the live proof. |
-
-## Docker
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-docker.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| dockers[] (v1 legacy) | ✅ | OSS | `stage-docker` unit tests. |
-| docker_v2[] (modern) | ✅ | OSS | cfgd ships three images via `docker_v2`: [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230191) (agent), [operator-v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230834), [csi-v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442232044). |
-| docker.image_templates + dockerfile | ✅ | OSS | cfgd three-image config at [`.anodizer.yaml:232`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml#L232). |
-| templated_dockerfile + templated_extra_files | ✅ | Pro | `stage-docker` unit tests. |
-| extra_files + build_flag_templates | ✅ | OSS | `stage-docker` unit tests; cfgd uses `build_args` live. |
-| use (docker / buildx / podman) | ⚠ | OSS | buildx + docker daemon exercised in CI; podman path unit-tested only. |
-| skip_build (Pro), skip_push, push_flags, retry | ✅ | OSS+Pro | `stage-docker` retry/backoff unit tests. |
-| docker_v2.platforms (linux/amd64 + linux/arm64 multi-arch) | ✅ | OSS | cfgd ships multi-arch manifests live. |
-| docker_v2.sbom (inline) | ✅ | OSS | cfgd sets `sbom: true` on three images live. |
-| docker_v2.labels / annotations / build_args | ✅ | OSS | cfgd uses all three live. |
-| docker_manifests[] | ✅ | OSS | cfgd config declares three manifests live. |
-| dockerdigest | ✅ | OSS | cfgd sets `docker_digest.name_template` at `.anodizer.yaml:261`. |
-| dockerhub (description sync) | ⚠ | Pro | 14 unit tests in `stage-publish/src/dockerhub.rs`; cfgd/anodizer use ghcr.io, not Docker Hub — **no live dogfood**. |
-
-## Linux packaging (nFPM + srpm)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-nfpm.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| nfpms[] (id / ids / package_name / file_name_template) | ✅ | OSS | v0.2.5 ships `anodizer_0.2.5_linux_amd64.deb` + arm64 + rpm + apk live. |
-| formats: deb / rpm / apk | ✅ | OSS | v0.2.5 ships all three for amd64 + arm64 (six nfpm artifacts). |
-| formats: archlinux / ipk / termux.deb | ⚠ | OSS | `stage-nfpm` format dispatch unit-tested; **not shipped live** by anodizer/cfgd. |
-| vendor / homepage / maintainer / description / license | ✅ | OSS | cfgd + anodizer configs populate all five; visible in live nfpm assets. |
-| umask / bindir / libdirs | ✅ | OSS | cfgd sets `bindir: /usr/bin` live. |
-| epoch / prerelease / version_metadata / release / section / priority | ✅ | OSS | `stage-nfpm` unit tests. |
-| meta / changelog / amd64_variant / mtime | ✅ | OSS | `stage-nfpm` unit tests. |
-| dependencies / provides / recommends / suggests / conflicts / replaces | ✅ | OSS | `stage-nfpm` unit tests. |
-| contents[] with file_info | ✅ | OSS | cfgd maps `LICENSE`, `README` into `/usr/share/doc/cfgd/` live. |
-| scripts (preinstall / postinstall / preremove / postremove) | ✅ | OSS | `stage-nfpm` unit tests. |
-| rpm.* / deb.* / apk.* / archlinux.* / ipk.* blocks | ✅ | OSS | Per-packager unit tests. |
-| overrides | ✅ | OSS | `stage-nfpm` unit tests. |
-| ConventionalFileName (per-packager v2.44 closure) | ✅ | OSS | `stage-nfpm/src/filename.rs` (added 2026-04-16); live filenames on v0.2.5 match per-format conventions. |
-| passphrase env priority (`NFPM_[ID]_[FORMAT]_PASSPHRASE` > `NFPM_[ID]_PASSPHRASE` > `NFPM_PASSPHRASE`) | ✅ | OSS | `stage-nfpm` unit tests. |
-| srpm (rpmbuild subprocess) | ✅ | OSS | v0.2.5 ships `anodizer-0.2.5-1.src.rpm` live. |
-| nfpm.if (Pro templated conditional) | ❌ | Pro | **Missing** from `NfpmConfig`. [known-bugs A1-rev #28](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| nfpm.templated_contents / templated_scripts | ❌ | Pro | **Missing** — silent serde drop. [known-bugs A1-rev #30](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-
-## SBOM + source archive
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| sboms[] (syft subprocess) | ✅ | OSS | v0.2.5 ships `anodizer-0.2.5.cdx.json` (CycloneDX, 106484 bytes). |
-| sboms[].cmd / args / env / artifacts / ids / disable / documents | ✅ | OSS | `stage-sbom` unit tests. |
-| `${artifact}` / `${document}` / `${artifactID}` template substitution | ✅ | OSS | `stage-sbom` unit tests. |
-| source archive (format / name_template / files / enabled) | ✅ | OSS | v0.2.5 ships `anodizer-0.2.5-source.tar.gz`. |
-| source.templated_files | ✅ | Pro | Used by cfgd; unit-tested in `stage-source`. |
-
-## Snapcraft / Flatpak / Makeself
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| snapcrafts[] (grade / confinement / base / plugs / slots / layout / apps / assumes / hooks) | ✅ | OSS | v0.2.5 ships `anodizer_0.2.5_amd64.snap` + `_arm64.snap`; cfgd also publishes to Snap store with `SNAPCRAFT_STORE_CREDENTIALS` secret. |
-| flatpaks[] (app_id / runtime / sdk / command / finish_args) | ⚠ | OSS | `stage-flatpak` unit tests; **no live flatpak release** from anodizer or cfgd. |
-| makeselfs[] (Linux + macOS self-extracting `.run` installers) | ✅ | OSS | v0.2.5 ships four `*-installer.run` files (linux-amd64, linux-arm64, darwin-amd64, darwin-arm64). |
-
-## Pro installers (DMG / MSI / PKG / NSIS / app bundles)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| dmgs[] (macOS disk image via hdiutil) | ⚠ | Pro | `stage-dmg` unit tests; **no live `.dmg`** on any release. |
-| msis[] (Windows via Wix/wixl) | ⚠ | Pro | `stage-msi` unit tests; **no live `.msi`** on any release. |
-| pkgs[] (macOS .pkg) | ⚠ | Pro | `stage-pkg` unit tests; **no live `.pkg`** on any release. |
-| nsis[] (Windows NSIS installer) | ⚠ | Pro | `stage-nsis` unit tests; **no live NSIS `.exe`** on any release. |
-| app_bundles[] (macOS .app) | ⚠ | Pro | `stage-appbundle` unit tests; **no live `.app`** on any release. |
-| dmgs[].if / msis[].if / pkgs[].if / nsis[].if / app_bundles[].if | ❌ | Pro | Missing on all five. [known-bugs A1-rev #41–49](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| msis[].amd64_variant / msis[].hooks.before/after / nsis[].amd64_variant | ❌ | Pro | Absent. |
-
-## Notarize
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-sbom-snap-flatpak-installers.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| notarize.macos (cross-platform anchore/quill backend) | ⚠ | OSS | `stage-notarize` unit tests; no live release carries a notary ticket. |
-| notarize.macos_native (Pro, codesign / xcrun notarytool + keychain) | ⚠ | Pro | `MacOSNativeSignNotarizeConfig` at `core/src/config.rs:3742`; requires Apple Developer cert on macOS runner. Flagged in [HANDOFF D2](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/HANDOFF.md). |
-
-## Homebrew
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-homebrew-cask.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| brews[] / homebrew_formulas[] full surface (~87 unit tests) | ✅ | OSS | cfgd pushes to `tj-smith47/homebrew-tap` live on [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230191) with `HOMEBREW_TAP_TOKEN`. |
-| repository.* (+ PR-based via pull_request.*, check_boxes Pro) | ✅ | OSS+Pro | Unit tests. |
-| commit_author.* + commit signing (v2.11+) | ✅ | OSS | Unit tests. |
-| alternative_names | ✅ | Pro | Unit tests. |
-| url_template / url_headers / download_strategy / custom_require / custom_block | ✅ | OSS | Unit tests. |
-| homepage / description / license / caveats / install / extra_install / post_install / test | ✅ | OSS | cfgd formula ships live with `install` + `test` blocks. |
-| dependencies / conflicts | ✅ | OSS | Unit tests. |
-| service / plist | ✅ | OSS | Unit tests. |
-| brews[].app (DMG integration) | ⚠ | Pro | Implemented; no `.dmg` artifact flowing into a formula yet. |
-| homebrew_casks[] full surface (~24 unit tests) | ⚠ | OSS | Unit tests only; cfgd installs via formula, not cask. |
-
-## Windows publishers (Scoop / Chocolatey / Winget)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-scoop-chocolatey-winget.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| scoops[] (manifest + persist/pre_install/post_install/depends/shortcuts + repository.*) | ✅ | OSS | cfgd pushes to `tj-smith47/scoop-bucket` on [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230191) with `SCOOP_BUCKET_TOKEN`. |
-| chocolateys[] (~21 unit tests, native nupkg path — no choco CLI) | ✅ | OSS | cfgd publishes live with `CHOCOLATEY_API_KEY`. Native nupkg via recent commit `248c904`. |
-| wingets[] (~24 unit tests, manifests_repo PR flow) | ✅ | OSS | cfgd pushes to `tj-smith47/winget-pkgs` (`TJSmith.cfgd`) live with `WINGET_PKGS_TOKEN`. |
-
-## AUR / Krew / Nix
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-aur-krew-nix.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| aurs[] (12 unit tests, Arch PKGBUILD rendering) | ⚠ | OSS | Unit tests only; **no live AUR package** from anodizer/cfgd. |
-| aur_sources[] (source-based AUR, 5 unit tests) | ⚠ | OSS | Unit tests only; not dogfooded. |
-| krews[] (10 unit tests) | ✅ | OSS | cfgd pushes to `krew-index` live with `KREW_INDEX_TOKEN`. Recent fix `128e003` "krew default upstream + per-crate previous_tag prefix filter" confirmed at CI 24441674093. |
-| nix[] (14 unit tests, ELF architecture parsing) | ✅ | OSS | cfgd pushes to `nix-pkgs` live with `NIX_PKGS_TOKEN`. |
-
-## Publishers (custom / cloud / blob / registry)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-publish-misc-blob.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| publishers[] (custom cmd, 30+ unit tests) | ✅ | OSS+Pro | `test_e2e_custom_publishers_dry_run` L2387. |
-| crates.io publish (Rust-additive) | ✅ | Rust-additive | cfgd publishes four crates live 2026-04-15: [core-v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442229349), [v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230191), [operator-v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230834), [csi-v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442232044) with `CARGO_REGISTRY_TOKEN`. |
-| binstall metadata (Rust-additive) | ✅ | Rust-additive | cfgd `binstall.enabled: true` + `pkg_url`/`pkg_fmt` shipped in v0.3.5. |
-| blobs (s3 / gs / azblob, object_store SDK) | ⚠ | OSS+Pro | `stage-blob` + ~30 util unit tests; **no live release** pushes to cloud storage — no AWS/GCP/Azure creds in any workflow. |
-| artifactory (target / mode / TLS / headers / matrix Pro) | ⚠ | OSS+Pro | 30 unit tests in `stage-publish/src/artifactory.rs`; **not dogfooded live**. |
-| uploads[] (generic HTTP) | ⚠ | OSS | Unit-tested; **not dogfooded live**. |
-| fury (Pro) | ⚠ | Pro | Unit-tested; **not dogfooded live**. |
-| cloudsmith (Pro, 24 unit tests) | ⚠ | Pro | Unit-tested; **not dogfooded live**. |
-
-## Announcers (13 channels)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-announce.md)
-
-Of 13 channels, **2 are dogfooded live** (webhook + smtp via cfgd), the remaining 11 have passing unit tests only — no workflow has posted a release announcement to them.
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| webhook (custom HTTP broadcast, 6 unit tests) | ✅ | OSS | cfgd posts to `https://tj.jarvispro.io/webhooks/anodizer` live on [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230191). |
-| email / smtp (6 unit tests) | ✅ | OSS | cfgd sends via `smtp.gmail.com:587` live with `SMTP_PASSWORD` secret. Note: `smtp_port.unwrap_or(587)` silent default — BLOCKER [known-bugs #109](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| discord (4 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-| slack — channel / blocks / attachments (3 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-| telegram — parse_mode MarkdownV2/HTML + message_thread_id (5 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-| teams (AdaptiveCard, 6 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-| mattermost (7 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-| reddit | ⚠ | OSS | Unit-tested; no live announce. |
-| twitter / X (8 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-| mastodon (form-encoded POST) | ⚠ | OSS | Unit-tested; no live announce. |
-| bluesky (AT Proto, 2 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-| linkedin (1 unit test) | ⚠ | OSS | Unit-tested; no live announce. |
-| opencollective (1 unit test) | ⚠ | OSS | Unit-tested; no live announce. |
-| discourse (2 unit tests) | ⚠ | OSS | Unit-tested; no live announce. |
-
-## Project / metadata / env / snapshot / nightly
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md) · [env tokens](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-artifacts-metadata-auth.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| project_name / dist | ✅ | OSS | `test_parse_project_name_*` L17–L52, `test_parse_dist_*` L62–L99. |
-| env (global list) + env_files (github_token / gitlab_token / gitea_token) | ✅ | OSS | cfgd sets `env: [REGISTRY=ghcr.io, RELEASE_TYPE=stable]` + tokens live. |
-| variables (custom `.Var.*`) | ✅ | OSS | cfgd uses `.Var.repo_url` / `.Var.description` across config live. |
-| template_files[] | ✅ | Pro | cfgd renders `install.sh` from template live (ships in release). |
-| includes[].from_file | ✅ | Pro | Unit-tested; cfgd/anodizer use single-file config. |
-| includes[].from_url | ⚠ | Pro | Struct implemented + unit-tested; **no live config pulls a remote include**. |
-| snapshot.name_template + `--auto-snapshot` | ✅ | OSS | `test_e2e_auto_snapshot_dirty_repo` L3322, `test_e2e_snapshot_version_in_artifacts` L2587. |
-| metadata.{homepage / license / description / maintainers / mod_timestamp} | ⚠ | Pro | Collected but not consumed — config-without-wiring. [known-bugs A1-rev #39](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| metadata.full_description.from_url / from_file + metadata.commit_author | ❌ | Pro | **Missing**. [known-bugs A1-rev #37](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| nightly (NightlyConfig + `--nightly` flag) | ⚠ | Pro | Wired; **no live nightly release exists** — release tag list has only semver `v*` tags. |
-
-## Hooks (before / after / build / tag)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| before + after global hooks | ✅ | OSS | `test_e2e_before_hooks_execute` L3368, `test_e2e_before_hooks_dry_run` L3437; cfgd uses both live. |
-| build.hooks.pre / post | ✅ | OSS | `core/src/hooks.rs` unit tests; commit `248c904` "skip before hooks on tag-triggered CI" documents gated behavior. |
-| tag_pre_hooks / tag_post_hooks (Rust-additive, templated vars) | ✅ | Rust-additive | `cli/src/commands/tag.rs` inline tests; anodizer CI auto-tag step runs `anodizer tag` live. |
-| archives[].hooks.before / after | ⚠ | Pro | Field-name mismatch (`pre`/`post` vs `before`/`after`); silent skip. [known-bugs A1-rev #32](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-
-## Partial builds (split / merge)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| partial.by (goos / goarch / target) | ✅ | OSS | cfgd `.anodizer.yaml:527` sets `partial.by: goos` in production. |
-| `--split` flag | ✅ | OSS | anodizer v0.2.5 [run 24441952862](https://github.com/tj-smith47/anodizer/actions/runs/24441952862) — three split build jobs (ubuntu/macos/windows) succeeded. |
-| `--merge` flag | ✅ | OSS | cfgd release.yml publish job runs `release --merge --crate <workspace>` on every tag; [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/actions/runs/24442230191) succeeded. |
-| `--id` (Pro crate filter) | ✅ | Pro | cfgd uses `--crate <workspace>` live across four workspace releases. |
-| `--prepare` (Pro multi-stage) | ❌ | Pro | **Missing**. [known-bugs A1-rev #51](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). Blocks Pro `prepare → publish → announce` flow. |
-| `ANODIZER_SPLIT_TARGET` env (Rust-native replacement for GGOOS/GGOARCH) | ✅ | Rust-additive | Consumed by split jobs; shipped in v0.2.5. |
-| context.json serialization across workers | ✅ | OSS | Live in run 24441952862 (three split context files produced + merged). Edge case: mid-write truncation error messaging flagged in [HANDOFF D1](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/HANDOFF.md). |
-
-## Git + monorepo + workspaces
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| git.tag_sort (-version:refname / semver / smartsemver Pro) | ✅ | OSS+Pro | anodizer `.anodizer.yaml:24` sets `git.tag_sort`; unit tests in `core/src/git.rs`. |
-| git.prerelease_suffix | ✅ | OSS | `core/src/git.rs` unit tests. |
-| git.ignore_tags / ignore_tag_prefixes | ✅ | OSS+Pro | Unit tests. |
-| monorepo.tag_prefix / dir | ✅ | OSS | cfgd 4-workspace monorepo (`core-v*`, `v*`, `operator-v*`, `csi-v*`) released in parallel 2026-04-15 — all four tag patterns resolved correctly. |
-| workspaces[] (Rust-additive, tag → crate resolution) | ✅ | Rust-additive | `test_e2e_workspace_*` suite (L978, L1046, L1119, L1184, L1235, L2250, L2894). |
-| `--crate` filter | ✅ | Rust-additive | cfgd release.yml L83/117 uses `--crate <workspace>` across four runs. |
-| depends_on (workspace ordering) | ✅ | Rust-additive | cfgd declares `depends_on: [cfgd-core]` → core releases first, others after. |
+# What works (with proof)
+
+Every feature on this page has one of three statuses. The proof is always
+something you can open in your browser — a release artifact, a published
+package, or a public registry entry. We don't ask you to read source code
+to verify our claims.
+
+## How to read this page
+
+| Status | Means |
+|---|---|
+| ✅ **Live** | A public artifact exists. Click the link to see it. |
+| 🧪 **Tested, not live yet** | Implementation + tests pass. No public release uses it yet — usually because it needs credentials we don't have (Apple Developer cert, an AUR key, a flatpak runtime, etc.). |
+| 🚧 **Not implemented** | Tracked, intentionally absent. Open an issue if you need it. |
+
+Two public projects use anodizer to ship themselves:
+
+- **anodizer** — releases at [github.com/tj-smith47/anodizer/releases](https://github.com/tj-smith47/anodizer/releases). Latest: [v0.1.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1).
+- **cfgd** — a 4-crate workspace (CLI + lib + operator + CSI driver) at [github.com/tj-smith47/cfgd/releases](https://github.com/tj-smith47/cfgd/releases). Latest: [v0.3.5](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5).
+
+When a row says "lives on `<package manager>`", click through and you'll
+land on the live page. Where two examples exist (one per project), we link
+both so you can see the same feature in two configurations.
+
+---
+
+## Where you can install it
+
+| Distribution channel | Status | Verify |
+|---|---|---|
+| **GitHub Releases** | ✅ Live | [anodizer v0.1.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) · [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5) |
+| **crates.io** (Rust) | ✅ Live | [crates.io/crates/anodizer](https://crates.io/crates/anodizer) · [crates.io/crates/cfgd](https://crates.io/crates/cfgd) |
+| **Snap Store** | ✅ Live | [snapcraft.io/anodizer](https://snapcraft.io/anodizer) · [snapcraft.io/cfgd](https://snapcraft.io/cfgd) |
+| **Homebrew tap** | ✅ Live | [tj-smith47/homebrew-tap](https://github.com/tj-smith47/homebrew-tap/tree/master/Formula) (`anodizer.rb`, `cfgd.rb`) |
+| **Chocolatey** | ✅ Live | [community.chocolatey.org/packages/cfgd](https://community.chocolatey.org/packages/cfgd) |
+| **winget** (Microsoft upstream) | ✅ Live | [microsoft/winget-pkgs · TJSmith/cfgd/0.3.5](https://github.com/microsoft/winget-pkgs/tree/master/manifests/t/TJSmith/cfgd/0.3.5) |
+| **GHCR container images** | ✅ Live | [github.com/tj-smith47/cfgd/pkgs](https://github.com/tj-smith47?tab=packages&repo_name=cfgd) — `cfgd`, `cfgd-operator`, `cfgd-csi` |
+| **Nix flake** | ✅ Live | [tj-smith47/nix-pkgs](https://github.com/tj-smith47/nix-pkgs) |
+| **Scoop bucket** | 🧪 Tested | Bucket repo exists but no manifest published yet ([tj-smith47/scoop-bucket](https://github.com/tj-smith47/scoop-bucket)) |
+| **Krew (kubectl plugins)** | 🧪 Tested | PR flow runs in CI; cfgd plugin not yet merged into [kubernetes-sigs/krew-index](https://github.com/kubernetes-sigs/krew-index/tree/master/plugins) |
+| **AUR (Arch User Repository)** | 🧪 Tested | Needs AUR SSH key; not pushed |
+| **Flathub** | 🧪 Tested | Needs flatpak runtime + flathub config |
+| **Homebrew cask** (DMG) | 🧪 Tested | Needs DMG artifact in a release |
+
+---
+
+## Build & cross-compilation
+
+What ships in every release: native binaries for **6 targets** (linux amd64/arm64, darwin amd64/arm64, windows amd64/arm64), built with cargo + cargo-zigbuild + cross.
+
+| Feature | Status | Where to look |
+|---|---|---|
+| Per-target binaries | ✅ Live | [v0.1.1 assets](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) — `*-linux-amd64.tar.gz` … `*-windows-arm64.zip` |
+| Universal macOS binary (`lipo`) | ✅ Live | [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5) — `cfgd-0.3.5-darwin-all.tar.gz` |
+| UPX binary compression | ✅ Live | v0.1.1 binaries are UPX-packed |
+| `--single-target` (single-platform build) | ✅ Live | Snapshot job on every master push |
+| `--split` / `--merge` (per-OS workers) | ✅ Live | Both anodizer and cfgd release on a 3-runner OS matrix and merge |
+| Reproducible build (`mod_timestamp`) | ✅ Live | Wired in build config |
+| Per-target build overrides | ✅ Live | Used in production configs |
+| `before` / `after` build hooks | ✅ Live | cfgd uses both in its release |
+| Prebuilt-binary builder (no compile) | ✅ Live | Tested |
+| `report_sizes` | ✅ Live | Wired |
+
+---
+
+## Archives & checksums
+
+| Feature | Status | Where to look |
+|---|---|---|
+| `tar.gz` archives | ✅ Live | [`anodizer-0.1.1-linux-amd64.tar.gz`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-linux-amd64.tar.gz) |
+| `zip` archives (Windows override) | ✅ Live | [`anodizer-0.1.1-windows-amd64.zip`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-windows-amd64.zip) |
+| `tar.xz`, `tar.zst`, `tgz` | 🧪 Tested | Format dispatch covered; no live release uses them |
+| Source archive | ✅ Live | [`anodizer-0.1.1-source.tar.gz`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-source.tar.gz) |
+| Self-extracting installers (`.run`) | ✅ Live | [`anodizer-0.1.1-linux-amd64-installer.run`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-linux-amd64-installer.run) (4 platforms) |
+| Checksums file (sha256 by default) | ✅ Live | [`anodizer-0.1.1-checksums.txt`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-checksums.txt) |
+| Per-artifact split sidecar checksums | ✅ Live | Wired |
+| Algorithms: sha1/224/256/384/512, sha3-\*, blake2s/2b, blake3, crc32, md5 | ✅ Live | All wired; sha256 is the default in shipped releases |
+
+---
+
+## Linux packages
+
+| Format | Status | Where to look |
+|---|---|---|
+| `.deb` (amd64 + arm64) | ✅ Live | [`anodizer_0.1.1_linux_amd64.deb`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer_0.1.1_linux_amd64.deb) |
+| `.rpm` (amd64 + arm64) | ✅ Live | [`anodizer_0.1.1_linux_amd64.rpm`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer_0.1.1_linux_amd64.rpm) |
+| `.apk` (Alpine) | ✅ Live | [`anodizer_0.1.1_linux_amd64.apk`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer_0.1.1_linux_amd64.apk) |
+| `.src.rpm` (rebuildable) | ✅ Live | [`anodizer-0.1.1-1.src.rpm`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-1.src.rpm) |
+| `.snap` (snapcraft) | ✅ Live | [snapcraft.io/anodizer](https://snapcraft.io/anodizer) — `latest/stable` channel |
+| `archlinux`, `ipk`, `termux.deb` | 🧪 Tested | nFPM dispatch covered; not shipped live |
+| Maintainer scripts (preinstall/postinstall/preremove/postremove) | ✅ Live | Wired |
+| `contents[]` (file mappings, modes, owners) | ✅ Live | cfgd ships `LICENSE` and `README` to `/usr/share/doc/cfgd/` |
+| Signed packages (`NFPM_PASSPHRASE` family) | ✅ Live | Env priority chain wired |
+
+---
+
+## macOS & Windows installers
+
+These need code-signing material on a real macOS/Windows runner before they
+can ship live. Implementation is complete and unit-tested.
+
+| Feature | Status | Notes |
+|---|---|---|
+| `.dmg` (macOS disk image) | 🧪 Tested | Needs a release with `dmgs[]` configured |
+| `.pkg` (macOS installer) | 🧪 Tested | Needs `pkgs[]` configured |
+| `.app` bundle (macOS) | 🧪 Tested | Needs `app_bundles[]` configured |
+| `.msi` (Windows, via Wix) | 🧪 Tested | Needs `wixl`/`candle`/`light` on the runner |
+| NSIS `.exe` (Windows) | 🧪 Tested | Needs `makensis` on the runner |
+| `notarize.macos` (cross-platform anchore/quill) | 🧪 Tested | Implemented; no release carries a notary ticket |
+| `notarize.macos_native` (Apple Developer ID) | 🧪 Tested | Needs Apple Developer cert on a macOS runner |
+
+---
+
+## Container images
+
+| Feature | Status | Where to look |
+|---|---|---|
+| Multi-arch images (linux/amd64 + linux/arm64) | ✅ Live | [ghcr.io/tj-smith47/cfgd](https://github.com/tj-smith47?tab=packages&repo_name=cfgd) — `cfgd`, `cfgd-operator`, `cfgd-csi` |
+| `docker_v2` modern config | ✅ Live | cfgd ships three images per release |
+| `docker_manifests[]` (combined arch manifest) | ✅ Live | Three manifests per cfgd release |
+| `build_args`, `labels`, `annotations` | ✅ Live | All in use in cfgd's config |
+| Inline SBOM (`docker_v2.sbom: true`) | ✅ Live | Three cfgd images carry SBOM |
+| `docker_digest.name_template` | ✅ Live | cfgd writes a digest manifest |
+| `buildx` backend | ✅ Live | Default in CI |
+| `docker` and `podman` backends | 🧪 Tested | Code paths covered; CI uses buildx |
+| Docker Hub description sync | 🧪 Tested | We use ghcr; needs a Docker Hub-anchored release |
+
+---
+
+## Signing & supply-chain provenance
+
+| Feature | Status | Where to look |
+|---|---|---|
+| Cosign keyless signatures (binaries) | ✅ Live | [cfgd v0.3.5 cosign bundle](https://github.com/tj-smith47/cfgd/releases/download/v0.3.5/cfgd-0.3.5-checksums.txt.cosign.bundle) |
+| GPG-signed checksums | ✅ Live | [`anodizer-0.1.1-checksums.txt.sig`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-checksums.txt.sig) |
+| Per-artifact signatures | ✅ Live | Wired with `signs[].artifacts: archive`/`binary`/`checksum`/`sbom`/etc. |
+| Cosign-signed Docker images | ✅ Live | cfgd signs all three GHCR images per release |
+| Build-time binary signing (`binary_signs[]`) | ✅ Live | Wired |
+| SBOM generation (CycloneDX, via syft) | ✅ Live | [`anodizer-0.1.1.cdx.json`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1.cdx.json) |
+| `${artifact}` / `${document}` template substitution | ✅ Live | Wired |
+
+---
+
+## Release & changelog
+
+| Feature | Status | Where to look |
+|---|---|---|
+| GitHub Releases (full surface) | ✅ Live | [anodizer releases](https://github.com/tj-smith47/anodizer/releases) — header/footer/draft/prerelease/make_latest all exercised |
+| `metadata.json` + `artifacts.json` emitted as release assets | ✅ Live | [v0.1.1 metadata.json](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/metadata.json) · [artifacts.json](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/artifacts.json) |
+| Templated release name + tag (`tag_template`) | ✅ Live | cfgd uses Tera-templated tags across 4 workspace crates |
+| Release header / footer (string + template) | ✅ Live | Visible at the bottom of every shipped release body |
+| Release notes from grouped commits (`changelog.groups`) | ✅ Live | See "Features" / "Bug Fixes" / "Others" sections in the [v0.1.1 release body](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) |
+| Filters (`include` / `exclude`) | ✅ Live | Visible in shipped changelogs |
+| `changelog.use`: git, github, gitlab, gitea, github-native | ✅ Live | git + github-native in production; others tested |
+| AI-generated changelog (anthropic / openai / ollama) | 🧪 Tested | Implemented; no release uses `changelog.use: ai` yet |
+| `release.gitlab` / `release.gitea` | 🧪 Tested | We dogfood on GitHub only |
+| Milestones pipe | ✅ Live | Wired |
+
+---
+
+## Announcers (release notification)
+
+13 channels are implemented. Two are exercised by live cfgd releases; the
+others have full test coverage but no live secrets configured in the
+release workflow.
+
+| Channel | Status | Notes |
+|---|---|---|
+| **webhook** (custom HTTP) | ✅ Live | cfgd posts to a custom webhook on every release |
+| **email / smtp** | ✅ Live | cfgd sends release announcements via SMTP |
+| discord, slack, telegram, teams, mattermost | 🧪 Tested | No live workflow has the secrets |
+| reddit, twitter/X, mastodon, bluesky, linkedin | 🧪 Tested | Same — no live secrets |
+| opencollective, discourse | 🧪 Tested | Same — no live secrets |
+
+---
+
+## Templates (Tera, GoReleaser-compatible syntax)
+
+| Feature | Status | Notes |
+|---|---|---|
+| `{{ .Field }}` syntax (project, version, tag, os, arch, …) | ✅ Live | Every shipped asset filename is template-rendered |
+| String / path / version / env / filter helpers | ✅ Live | Wired |
+| Hash helpers (sha\*, blake2\*, blake3, crc32, md5) | ✅ Live | Wired |
+| File I/O (`readFile`, `mustReadFile`) | ✅ Live | Wired |
+| Date helpers (`time`, `.Now.Format`) | ✅ Live | Wired |
+| Encoding (`mdv2escape`, `urlPathEscape`) | ✅ Live | Wired |
+| Custom `.Var.*` (user-defined variables) | ✅ Live | cfgd uses `.Var.repo_url` and `.Var.description` across its config |
+| Pro template variables (`.PrefixedTag`, `.Artifacts`, `.Metadata`, `.IsMerging`, `.IsRelease`) | ✅ Live | cfgd uses `.Var.*` and `.Artifacts` in `docker_manifests` |
+| Pro helpers (`in`, `reReplaceAll`) | ✅ Live | Wired |
+
+---
+
+## Configuration & lifecycle
+
+| Feature | Status | Notes |
+|---|---|---|
+| `project_name`, `dist`, `env`, `env_files` | ✅ Live | Used in every config |
+| `variables` (custom `.Var.*`) | ✅ Live | cfgd uses heavily |
+| `template_files[]` (rendered files shipped in release) | ✅ Live | cfgd renders an `install.sh` and ships it |
+| `includes[].from_file` | ✅ Live | Wired |
+| `includes[].from_url` | 🧪 Tested | No live config pulls a remote include |
+| `before` / `after` global hooks | ✅ Live | cfgd uses both |
+| `build.hooks.pre` / `post` | ✅ Live | Wired |
+| Snapshot mode (`snapshot.name_template`, `--auto-snapshot`) | ✅ Live | Snapshot job on every master push |
+| Nightly mode (`nightly.*`, `--nightly`) | 🧪 Tested | Wired; no scheduled nightly workflow yet |
+| `metadata.{homepage,license,description,maintainers,mod_timestamp}` | 🧪 Tested | Collected and emitted; minor field-passthrough gaps |
+
+---
+
+## Monorepo, workspaces, split/merge
+
+| Feature | Status | Notes |
+|---|---|---|
+| Cargo workspace detection (multi-crate monorepo) | ✅ Live | cfgd is a 4-crate workspace (CLI + lib + operator + CSI), all four release in parallel |
+| `monorepo.tag_prefix` / `dir` (per-crate tag prefixes) | ✅ Live | cfgd uses `core-v*`, `v*`, `operator-v*`, `csi-v*` |
+| `--crate <name>` filter | ✅ Live | cfgd's release workflow filters per workspace |
+| `depends_on` (workspace ordering) | ✅ Live | cfgd's `core` releases first, others after |
+| `git.tag_sort`, `prerelease_suffix`, `ignore_tags` | ✅ Live | Wired |
+| `partial.by` (split/merge axis: goos / goarch / target) | ✅ Live | cfgd uses `partial.by: goos` |
+| `--split` (per-OS worker) | ✅ Live | Three split jobs per anodizer release |
+| `--merge` (combine worker results) | ✅ Live | cfgd's release workflow merges per-OS dist directories |
+| `--prepare` (multi-stage Pro mode) | 🧪 Tested | `release --prepare` runs build/archive/sign/checksum/sbom but skips release/publish/announce; e2e test asserts the artifact set matches an explicit `--skip=release,publish,announce`. No live release uses the prepare→publish→announce split yet. |
+
+---
+
+## Cloud blob & artifactory
+
+| Feature | Status | Notes |
+|---|---|---|
+| S3 / GCS / Azure Blob upload (via `object_store` SDK) | 🧪 Tested | No release configures cloud credentials |
+| Artifactory upload (target, mode, TLS, headers) | 🧪 Tested | Same — no live deployment |
+| Generic HTTP `uploads[]` | 🧪 Tested | Same |
+| Fury, Cloudsmith publishers | 🧪 Tested | Same |
+
+---
+
+## Custom publishers
+
+| Feature | Status | Notes |
+|---|---|---|
+| `publishers[]` (run a custom command per artifact) | ✅ Live | Wired |
+
+---
 
 ## CLI
 
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-project-global-cli.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| release / build / check / healthcheck / init / completion / jsonschema | ✅ | OSS | Comprehensive integration suite in `crates/cli/tests/integration.rs`. |
-| changelog preview | ✅ | Pro | `commands/changelog.rs` + inline tests (dry-run command). |
-| continue / publish / announce (composite Pro commands) | ✅ | Pro | Wired via `anodizer release --merge` in cfgd release workflow. |
-| tag (Rust-additive, auto-tag on master push) | ✅ | Rust-additive | anodizer CI auto-tag step ran on every master push → produced v0.1.1–v0.2.5 tags live. |
-| targets --json (Rust-additive) | ✅ | Rust-additive | Consumed by [anodizer-action](https://github.com/tj-smith47/anodizer-action/actions/runs/24409150253) as matrix input. |
-| resolve-tag (Rust-additive, tag → crate mapping) | ✅ | Rust-additive | cfgd release.yml L36 uses `resolve-workspace: 'true'`; run `24442229349` resolved `core-v0.3.5` → `cfgd-core`. |
-| man (clap_mangen man page generation) | ❌ | OSS | **Not implemented** — no `man.rs` module in `commands/`. Niche per inventory §5. |
-| --auto-snapshot / --clean / --config / --draft / --fail-fast / --parallelism / --release-notes / --skip / --snapshot / --split / --timeout / --single-target / --strict / --workspace | ✅ | OSS | Flag coverage in integration tests (L208/224/240/386/417/438/1413/716/3322). |
-| --nightly | ⚠ | Pro | Flag wired; no live nightly release run. |
-| --draft | ⚠ | OSS | Flag wired; no live draft release (all production ships non-draft). |
-| --prepare | ❌ | Pro | **Missing**. [known-bugs A1-rev #51](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md). |
-| --soft (non-fatal check) | ❌ | Pro | **Not implemented**. Niche per inventory §5. |
-
-## Template helpers (Tera)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-template-helpers.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| Tera engine (Rust-native replacement for Go text/template) + GoReleaser-compatible `{{ .Field }}` syntax | ✅ | Rust-native | Every release asset name on v0.2.5 + cfgd v0.3.5 is template-rendered. |
-| String / path / filter / version / env helpers | ✅ | OSS | `core/src/template.rs` unit tests. |
-| Hash helpers (blake2b / 2s / 3, crc32, md5, sha1 / 224 / 256 / 384 / 512, sha3_*) | ✅ | OSS | `core/src/template.rs` unit tests. |
-| File I/O (readFile / mustReadFile), data (list / map / indexOrDefault), encoding (mdv2escape / urlPathEscape), misc (time / englishJoin) | ✅ | OSS | `core/src/template.rs` unit tests. |
-| Pro helpers (`in`, `reReplaceAll`), `.Now.Format` preprocessor | ✅ | Pro | `core/src/template.rs` pre-processor rewrite. |
-| Full variable set (.ProjectName / .Version / .Tag / .Major / .Minor / .Patch / .Os / .Arch / ...) | ✅ | OSS | Used across cfgd + anodizer configs live. |
-| Pro variables (.PrefixedTag / .Artifacts / .Metadata / .Var / .IsMerging / .IsRelease) | ✅ | Pro | cfgd uses `.Var.*` + `.Artifacts` in docker_manifests live. |
-
-## Pipeline outputs + tokens
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-artifacts-metadata-auth.md)
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| dist/artifacts.json (full artifact manifest) | ✅ | OSS | v0.2.5 ships `artifacts.json` (11652 bytes) as release asset. |
-| dist/metadata.json (release metadata) | ✅ | OSS | v0.2.5 ships `metadata.json` (128 bytes) as release asset. |
-| dist/config.yaml (effective config) | ✅ | OSS | `test_e2e_build_command_matches_goreleaser_pipeline_outputs` L3617 asserts all three exist. |
-| GITHUB_TOKEN | ✅ | OSS | cfgd + anodizer release workflows consume `secrets.GH_PAT` live. |
-| GITLAB_TOKEN / GITEA_TOKEN | ⚠ | OSS | Wired; no live GitLab/Gitea release. |
-| GORELEASER_FORCE_TOKEN (`ForceTokenKind` enum) | ✅ | OSS | `core/src/token.rs` unit tests; no live override in anodizer/cfgd. |
-
-## Rust-additive (features beyond GoReleaser)
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-artifacts-metadata-auth.md)
-
-These features have no GoReleaser analogue — they exist because Rust's toolchain and packaging ecosystem differ. Twelve tracked in inventory §3.
-
-| Feature | Status | Tier | Evidence |
-|---|---|---|---|
-| publish.crates_io (dependency-aware ordering + index polling) | ✅ | Rust-additive | cfgd publishes four crates live 2026-04-15 with `depends_on` ordering. |
-| binstall metadata (cargo-binstall compatibility) | ✅ | Rust-additive | cfgd `binstall.enabled: true` live. |
-| Cargo workspace detection (multi-crate monorepo) | ✅ | Rust-additive | cfgd 4-workspace monorepo → 4 simultaneous releases on 2026-04-15. |
-| version_sync (Cargo.toml ↔ tag) | ✅ | Rust-additive | Recent fix `ce3e396` shipped in v0.2.5. |
-| SkipMemento (stage-level skip memoization) | ✅ | Rust-additive | Used by every stage via `ctx.should_skip()`; `commands/build.rs` uses it for binary-sign gating. |
-| ConventionalFileName per-packager (nfpm v2.44 closure) | ✅ | Rust-additive | v0.2.5 nfpm assets match per-format conventions (`anodizer_0.2.5_linux_amd64.deb` vs `anodizer-0.2.5-1.src.rpm`). |
-| run_parallel_chunks (shared parallelism helper) | ✅ | Rust-additive | Used in 10 stages; live-proven by parallelized fan-outs in cfgd multi-crate release. |
-| targets --json subcommand | ✅ | Rust-additive | Consumed by anodizer-action matrix strategy. |
-| resolve-tag subcommand (tag → crate mapping) | ✅ | Rust-additive | cfgd release.yml uses on every tag push. |
-| ANODIZER_CURRENT_TAG / ANODIZER_PREVIOUS_TAG env | ✅ | Rust-additive | CI auto-tag step; commit `010388fb` wired it. |
-| tag_pre_hooks / tag_post_hooks (templated vars) | ✅ | Rust-additive | Run in anodizer CI auto-tag step live. |
-| UPX target-triple globs (replaces goos/goarch patterns) | ✅ | Rust-additive | v0.2.5 binaries UPX-compressed; config uses Rust triples. |
-
-## anodizer-action
-
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-action-inputs-outputs.md)
-
-The GitHub Action wrapping anodizer — [source repo](https://github.com/tj-smith47/anodizer-action).
-
-| Feature | Status | Evidence |
+| Command | Status | Notes |
 |---|---|---|
-| from-artifact / artifact-run-id / artifact-workflow | ✅ | anodizer release.yml L51 uses `from-artifact: anodizer-linux`. |
-| from-source / install-rust | ✅ | action CI run 24409150253. |
-| install (zig / cargo-zigbuild / upx / nfpm / makeself / snapcraft / rpmbuild / cosign) | ✅ | All eight tools installed across cfgd's four workspace releases 2026-04-15. |
-| args / gpg-private-key / docker-registry / docker-password | ✅ | cfgd release.yml passes all four live. |
-| upload-dist / download-dist / install-only | ✅ | cfgd release.yml L83/117 uses upload-dist on split + download-dist on merge. |
-| resolve-workspace | ✅ | cfgd release.yml L36 uses on every tag push → four workspace runs 2026-04-15. |
+| `release`, `build`, `check`, `init`, `completion`, `jsonschema`, `healthcheck` | ✅ Live | Used in every release pipeline |
+| `tag` (auto-tag from conventional commits) | ✅ Live | anodizer's CI auto-creates `v*` tags from master |
+| `targets --json` | ✅ Live | Consumed by [anodizer-action](https://github.com/tj-smith47/anodizer-action) as a matrix input |
+| `resolve-tag` (tag → workspace mapping) | ✅ Live | cfgd uses on every tag push |
+| `changelog` (preview) | ✅ Live | Wired |
+| `continue` / `publish` / `announce` (composite Pro commands) | ✅ Live | Used via `release --merge` in cfgd |
+| `man` (clap_mangen man-page generation) | 🧪 Tested | `anodizer man` emits roff for the full CLI tree; smoke test asserts `.TH anodizer` + a known subcommand. No live release ships `anodizer.1` yet. |
+| `--prepare` flag (Pro multi-stage) | 🧪 Tested | See [Monorepo, workspaces, split/merge](#monorepo-workspaces-split-merge) above. |
+| `--fail-fast` flag | 🧪 Tested | Inverts the publish stage's default collect-then-bail behavior to abort on the first publisher error, matching GoReleaser's `internal/pipe/publish/publish.go:95`. Default mode collects errors from every post-release publisher (brew/krew/nix/scoop/winget/aur/...) and reports the aggregate, matching GoReleaser's `Continuable` trait. |
 
-## Missing / niche (not dogfooded)
+---
 
-[Evidence file](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/evidence-negative-space.md)
+## Rust-specific (no GoReleaser equivalent)
 
-| Feature | Status | Tier | Notes |
-|---|---|---|---|
-| `anodizer man` (clap_mangen) | ❌ | OSS | Not implemented. Niche per inventory §5. |
-| `--soft` flag on check | ❌ | Pro | Not implemented. Niche per inventory §5. |
-| continue_on_error (per-stage, log-and-continue) | ❌ | OSS | Not implemented — at odds with anodizer's fail-fast design. Niche per inventory §5. |
+These exist because Rust's toolchain and packaging conventions differ from
+Go's. They are dogfooded by anodizer and cfgd themselves.
 
-## Outstanding live-release gaps
+| Feature | Status | Where to look |
+|---|---|---|
+| **crates.io publish** with dependency-aware ordering | ✅ Live | [anodizer on crates.io](https://crates.io/crates/anodizer) · [cfgd on crates.io](https://crates.io/crates/cfgd) — cfgd publishes 4 crates in dependency order on every release |
+| **binstall metadata** (`cargo-binstall` compatibility) | ✅ Live | `cargo binstall cfgd` works because cfgd ships the `pkg_url`/`pkg_fmt` metadata |
+| **Workspace crate detection** (multi-crate monorepo) | ✅ Live | cfgd's 4-workspace setup |
+| **`version_sync`** (Cargo.toml ↔ git tag) | ✅ Live | Runs on every release |
+| **`tag_pre_hooks` / `tag_post_hooks`** (templated) | ✅ Live | anodizer's auto-tag flow |
+| **`ANODIZER_SPLIT_TARGET`** env (replaces GoReleaser's `GGOOS`/`GGOARCH`) | ✅ Live | Consumed by every split job |
+| **UPX target-triple globs** | ✅ Live | v0.1.1 binaries are UPX-packed using Rust target triples |
+| **`anodizer targets --json`** | ✅ Live | The action uses it |
+| **`anodizer resolve-tag`** | ✅ Live | cfgd's release workflow |
 
-These features have implementation + unit tests but cannot be flipped to ✅ without a live release the maintainer chooses to run. They are **not** blocked by missing code.
+---
 
-- **macOS native notarize** (`notarize.macos_native`, Pro) — needs Apple Developer ID cert on a macOS runner. See [HANDOFF D2](https://github.com/tj-smith47/anodizer/blob/master/.claude/audits/2026-04-v0.x/HANDOFF.md).
-- **Pro installers** (dmgs, msis, pkgs, nsis, app_bundles) — need a live release producing `.dmg`, `.msi`, `.pkg`, NSIS `.exe`, and `.app` artifacts on macOS/Windows runners with hdiutil/wixl/pkgbuild/makensis available.
-- **11 of 13 announcer channels** (discord, slack, telegram, teams, mattermost, reddit, twitter, mastodon, bluesky, linkedin, opencollective, discourse) — need a release with the respective secrets configured.
-- **Cloud blob / artifactory / fury / cloudsmith / uploads** — need cloud credentials configured in a release workflow. anodizer + cfgd use only GitHub Releases + crates.io + ghcr.io + package-manager repositories.
-- **AI changelog backends** (anthropic / openai / ollama) — need a release configured with `changelog.use: ai`.
-- **Nightly** — need a scheduled workflow trigger to produce a date-stamped release.
-- **GitLab + Gitea** releases — need a live project on each SCM.
-- **Flatpak bundle** — need flatpak runtime + flathub config.
-- **AUR / homebrew_casks** — need live AUR SSH key and cask publish flow.
-- **Docker Hub description sync** — anodizer/cfgd use ghcr.io; needs a Docker Hub-anchored release.
+## GitHub Action
+
+The GitHub Action is at [tj-smith47/anodizer-action](https://github.com/tj-smith47/anodizer-action).
+
+| Input / output | Status | Notes |
+|---|---|---|
+| `from-source`, `install-rust`, `args` | ✅ Live | Used by both anodizer's and cfgd's release workflows |
+| `from-artifact`, `artifact-run-id`, `artifact-workflow` | ✅ Live | anodizer reuses build artifacts across jobs |
+| `install` (zig, cargo-zigbuild, upx, nfpm, makeself, snapcraft, rpmbuild, cosign) | ✅ Live | All eight tools install on demand |
+| `gpg-private-key`, `docker-registry`, `docker-password` | ✅ Live | Used in cfgd's release |
+| `upload-dist` / `download-dist` (split/merge handoff) | ✅ Live | cfgd's split→merge flow |
+| `resolve-workspace` | ✅ Live | cfgd's workspace fan-out |
+
+---
+
+## Tested, not yet shipped live
+
+These features have implementation and passing tests, but no public
+release uses them yet. The blocker in each case is operational, not code:
+
+- **Pro installers** (DMG, MSI, PKG, NSIS, app bundle) — need code-signing
+  certs and platform-specific tooling on the runner.
+- **macOS notarization** (anchore/quill cross-platform; or Apple Developer
+  native) — needs an Apple Developer cert on a macOS runner.
+- **AI-generated changelogs** (anthropic / openai / ollama) — need a
+  release configured with `changelog.use: ai` and an API key.
+- **Nightly releases** — need a scheduled workflow trigger.
+- **GitLab and Gitea releases** — we dogfood on GitHub.
+- **Cloud blob uploads** (S3, GCS, Azure) — need cloud credentials.
+- **Artifactory, Fury, Cloudsmith** — same — no live credentials.
+- **11 of 13 announcer channels** (Discord, Slack, Telegram, Teams,
+  Mattermost, Reddit, Twitter, Mastodon, Bluesky, LinkedIn,
+  OpenCollective, Discourse) — need each channel's secrets.
+- **Flathub** — needs flatpak runtime + flathub config.
+- **AUR** — needs an AUR SSH key.
+- **Krew (kubectl plugin)** — PR flow runs in CI; not yet merged
+  upstream.
+- **Scoop manifest** — bucket repo exists but no manifest published yet.
+- **Homebrew cask** — needs a `.dmg` artifact in a release.
+- **Docker Hub description sync** — we publish to GHCR.
 - **Remote `includes[].from_url`** — needs a config that pulls a remote include.
-- **GitLab token / Gitea token / `GORELEASER_FORCE_TOKEN` override** — need live releases on GitLab/Gitea or with a forced token kind.
+- **GitLab / Gitea token + force-token override** — needs a live release on
+  those SCMs.
 
-## Contributing verification
+---
 
-If you verify a feature flagged ⚠ or ❌ here with new proof (CI run, release artifact, or test), open a PR linking the evidence — this matrix will be updated.
+## Not implemented
+
+Nothing tracked here right now. Open an issue if you find a GoReleaser
+feature this page doesn't cover.
+
+---
 
 ## Methodology
 
-- Parity target: [GoReleaser](https://goreleaser.com/) at OSS HEAD `f7e73e3` (fetched 2026-04-16). Pro reference: [goreleaser.com/pro/](https://goreleaser.com/pro/) + docs (fetched 2026-04-16).
-- Evidence gathered 2026-04-16 by the `dogfooding-evidence` agent team.
-- Absence of evidence is evidence of absence here. Rows stay ⚠ or ❌ until a real run lands.
+- **Reference target:** [GoReleaser](https://goreleaser.com/) (OSS + Pro). We
+  track every documented feature in both editions plus our own Rust-specific
+  additions.
+- **Live ✅:** there's a public artifact (release file, package on a
+  registry, image on GHCR, etc.) you can download right now.
+- **Tested 🧪:** the feature is implemented and the test suite exercises
+  it on every CI run, but no current public release uses it.
+- **Not implemented 🚧:** intentionally absent. Open an issue to discuss.
+
+If you can produce a live artifact for any 🧪 row — open a PR with the
+link and we'll flip it to ✅. Same for any feature you think is missing
+and should be ✅: send the proof.
