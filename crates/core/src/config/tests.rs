@@ -6124,6 +6124,91 @@ fn test_source_prefix_template_remains_none_when_name_template_unset() {
     assert!(src.prefix_template.is_none());
 }
 
+// ---- Q-brew1: HomebrewConflict accepts both string and object shapes ----
+//
+// GR's Homebrew.Conflicts is `[]string` (just names). anodizer's
+// HomebrewConflict is a strict superset (`Name` | `WithReason`), modeled as
+// an untagged enum so a YAML list of either bare strings, structured
+// `{name, because}` objects, or a mixed list all deserializes correctly.
+// These tests pin that behavior so a refactor cannot accidentally drop the
+// string form, which would silently drop all conflicts: from imported GR
+// configs.
+
+#[test]
+fn test_homebrew_conflicts_string_form_accepted() {
+    use super::publishers::HomebrewConflict;
+    let yaml = r#"
+- foo
+- bar
+"#;
+    let conflicts: Vec<HomebrewConflict> = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(conflicts.len(), 2);
+    assert_eq!(conflicts[0].name(), "foo");
+    assert!(conflicts[0].because().is_none());
+    assert_eq!(conflicts[1].name(), "bar");
+}
+
+#[test]
+fn test_homebrew_conflicts_object_form_accepted() {
+    use super::publishers::HomebrewConflict;
+    let yaml = r#"
+- name: foo
+  because: "both install bin/foo"
+"#;
+    let conflicts: Vec<HomebrewConflict> = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(conflicts[0].name(), "foo");
+    assert_eq!(conflicts[0].because(), Some("both install bin/foo"));
+}
+
+#[test]
+fn test_homebrew_conflicts_mixed_form_accepted() {
+    use super::publishers::HomebrewConflict;
+    let yaml = r#"
+- foo
+- name: bar
+  because: "shared symlink"
+- baz
+"#;
+    let conflicts: Vec<HomebrewConflict> = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(conflicts.len(), 3);
+    assert_eq!(conflicts[0].name(), "foo");
+    assert!(conflicts[0].because().is_none());
+    assert_eq!(conflicts[1].name(), "bar");
+    assert_eq!(conflicts[1].because(), Some("shared symlink"));
+    assert_eq!(conflicts[2].name(), "baz");
+}
+
+#[test]
+fn test_homebrew_conflicts_full_yaml_with_string_list_form() {
+    // End-to-end: a homebrew block with `conflicts: [foo, bar]` (the GR
+    // import shape) must round-trip through Config without issue.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        repository:
+          owner: example
+          name: tap
+        conflicts: [foo, bar]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("string-form conflicts must parse");
+    let brew = config.crates[0]
+        .publish
+        .as_ref()
+        .unwrap()
+        .homebrew
+        .as_ref()
+        .unwrap();
+    let conflicts = brew.conflicts.as_ref().unwrap();
+    assert_eq!(conflicts.len(), 2);
+    assert_eq!(conflicts[0].name(), "foo");
+    assert_eq!(conflicts[1].name(), "bar");
+}
+
 // ---- M3: legacy GR V1 `dockers:` block rejection ----
 
 #[test]
