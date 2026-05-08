@@ -84,14 +84,19 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    // F3: walk the raw YAML pre-parse to detect legacy `snapshot.name_template`
-    // (renamed to `version_template` in GR; serde alias accepts both spellings
-    // but collapses them on parse, losing the user-typed key). Best-effort —
-    // YAML parse failures are reported by the typed loader below.
+    // F3 + M3: walk the raw YAML pre-parse for two checks that lose
+    // information once typed deserialization runs:
+    //   * F3: legacy `snapshot.name_template` (renamed to `version_template`
+    //     in GR; serde alias accepts both but collapses them on parse).
+    //   * M3: GR V1 `dockers:` block — anodizer is V2-only by design;
+    //     without this check `deny_unknown_fields` emits a generic
+    //     "unknown field" error that does not point at `docker_v2:`.
+    // Best-effort — YAML parse failures are reported by the typed loader below.
     if (ext == "yaml" || ext == "yml")
         && let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content)
     {
         anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
+        anodizer_core::config::validate_no_docker_v1(&raw).map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     let mut config = match ext {

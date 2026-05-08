@@ -6124,6 +6124,44 @@ fn test_source_prefix_template_remains_none_when_name_template_unset() {
     assert!(src.prefix_template.is_none());
 }
 
+// ---- M3: legacy GR V1 `dockers:` block rejection ----
+
+#[test]
+fn test_v1_dockers_block_rejected_with_migration_message() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+dockers:
+  - image_templates: ["ghcr.io/example/app:{{ .Version }}"]
+    dockerfile: Dockerfile
+"#;
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = super::validate_no_docker_v1(&raw).unwrap_err();
+    assert!(
+        err.contains("docker_v2") && err.contains("dockers"),
+        "expected migration message naming docker_v2 and dockers, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_no_dockers_block_passes() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+docker_v2:
+  - images: [ghcr.io/example/app]
+"#;
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
+    super::validate_no_docker_v1(&raw).expect("docker_v2 only must pass");
+}
+
 // ---- F3: legacy archive/snapshot/build aliases ----
 
 #[test]

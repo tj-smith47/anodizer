@@ -757,6 +757,31 @@ pub fn apply_archive_legacy_aliases(_config: &mut Config) {
     // Intentionally empty — see Deserialize impls.
 }
 
+/// Reject the GoReleaser V1 `dockers:` block at config-load time with a
+/// clear migration error.
+///
+/// anodizer is V2-only by design (DEC-7): it implements `docker_v2:` and the
+/// associated multi-arch buildx flow, but does not ship the V1
+/// `dockers: -> dockerfile + image_templates` pipe. Without this check the
+/// top-level `Config` struct's `deny_unknown_fields` would emit a generic
+/// "unknown field `dockers`" message that doesn't tell the user how to
+/// migrate. This explicit error names the field, points at `docker_v2:`,
+/// and references the rationale.
+///
+/// M3 from `.claude/audits/2026-05-08-second-opinion/docker-pro.md`
+/// section 2.1.
+pub fn validate_no_docker_v1(raw_yaml: &serde_yaml_ng::Value) -> Result<(), String> {
+    if raw_yaml.get("dockers").is_some() {
+        return Err(
+            "config: legacy GoReleaser `dockers:` block is not supported — anodizer ships \
+             docker_v2: only (multi-arch buildx flow). Port the config to `docker_v2:` per \
+             https://anodize.dev/docs/migration/docker.html."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Fold the deprecated `snapshot.name_template` alias into `version_template`.
 /// Serde already accepts both spellings via `#[serde(alias = "name_template")]`,
 /// so this function only needs to emit the deprecation warning when the
