@@ -100,24 +100,48 @@ enum VersionPart {
     Patch,
 }
 
-fn increment_version(v: &str, part: VersionPart) -> String {
+/// Parse and increment a semver version string, returning a tera-friendly
+/// error when the input isn't valid semver.
+///
+/// Mirrors GoReleaser's `internal/tmpl/tmpl.go:440-449` behavior, which calls
+/// `semver.MustParse(v)` and surfaces a hard template error on non-semver
+/// input. Previously every component was best-effort `unwrap_or(0)`, so
+/// `{{ "garbage" | incpatch }}` silently returned `"0.0.1"` — see Q-bump1
+/// in `.claude/audits/2026-05-08-second-opinion/release-templates-cli.md`
+/// section 2.5.
+fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> {
     let stripped = v.strip_prefix('v').unwrap_or(v);
     let parts: Vec<&str> = stripped.splitn(3, '.').collect();
-    let major: u64 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let minor: u64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let invalid = || {
+        tera::Error::msg(format!(
+            "incpatch/incminor/incmajor: '{}' is not a valid semver version (expected MAJOR.MINOR.PATCH)",
+            v
+        ))
+    };
+    if parts.len() < 3 {
+        return Err(invalid());
+    }
+    let major: u64 = parts
+        .first()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(invalid)?;
+    let minor: u64 = parts
+        .get(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(invalid)?;
     let patch: u64 = parts
         .get(2)
         .and_then(|s| {
             // Handle prerelease suffix: "3-rc.1" → "3"
             s.split('-').next().and_then(|n| n.parse().ok())
         })
-        .unwrap_or(0);
+        .ok_or_else(invalid)?;
     let prefix = if v.starts_with('v') { "v" } else { "" };
-    match part {
+    Ok(match part {
         VersionPart::Major => format!("{}{}.0.0", prefix, major + 1),
         VersionPart::Minor => format!("{}{}.{}.0", prefix, major, minor + 1),
         VersionPart::Patch => format!("{}{}.{}.{}", prefix, major, minor, patch + 1),
-    }
+    })
 }
 
 /// Base Tera instance with custom filters pre-registered.
@@ -202,7 +226,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("v")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("incpatch requires `v` argument"))?;
-            Ok(Value::String(increment_version(v, VersionPart::Patch)))
+            Ok(Value::String(increment_version(v, VersionPart::Patch)?))
         },
     );
 
@@ -214,7 +238,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("v")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("incminor requires `v` argument"))?;
-            Ok(Value::String(increment_version(v, VersionPart::Minor)))
+            Ok(Value::String(increment_version(v, VersionPart::Minor)?))
         },
     );
 
@@ -226,7 +250,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("v")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("incmajor requires `v` argument"))?;
-            Ok(Value::String(increment_version(v, VersionPart::Major)))
+            Ok(Value::String(increment_version(v, VersionPart::Major)?))
         },
     );
 
@@ -1069,19 +1093,19 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // incpatch — filter form: {{ "1.2.3" | incpatch }}
     tera.register_filter("incpatch", |value: &Value, _: &HashMap<String, Value>| {
         let v = tera::try_get_value!("incpatch", "value", String, value);
-        Ok(Value::String(increment_version(&v, VersionPart::Patch)))
+        Ok(Value::String(increment_version(&v, VersionPart::Patch)?))
     });
 
     // incminor — filter form: {{ "1.2.3" | incminor }}
     tera.register_filter("incminor", |value: &Value, _: &HashMap<String, Value>| {
         let v = tera::try_get_value!("incminor", "value", String, value);
-        Ok(Value::String(increment_version(&v, VersionPart::Minor)))
+        Ok(Value::String(increment_version(&v, VersionPart::Minor)?))
     });
 
     // incmajor — filter form: {{ "1.2.3" | incmajor }}
     tera.register_filter("incmajor", |value: &Value, _: &HashMap<String, Value>| {
         let v = tera::try_get_value!("incmajor", "value", String, value);
-        Ok(Value::String(increment_version(&v, VersionPart::Major)))
+        Ok(Value::String(increment_version(&v, VersionPart::Major)?))
     });
 
     // now_format — filter form: {{ Now | now_format(format="2006-01-02") }}

@@ -666,6 +666,67 @@ fn test_incpatch_handles_prerelease() {
     assert_eq!(result, "1.2.4");
 }
 
+// Q-bump1: non-semver input must hard-error rather than silently
+// returning "0.0.1" / "0.1.0" / "1.0.0". Mirrors GR
+// `internal/tmpl/tmpl.go:440-449` `semver.MustParse(v)` panic.
+//
+// `render()` wraps the underlying Tera error in `anyhow::Error`, so we
+// walk the source chain to find the actual semver-validation message.
+fn err_chain(err: &anyhow::Error) -> String {
+    let mut s = String::new();
+    s.push_str(&format!("{}", err));
+    let mut src: Option<&dyn std::error::Error> = err.source();
+    while let Some(e) = src {
+        s.push_str(" | ");
+        s.push_str(&format!("{}", e));
+        src = e.source();
+    }
+    s
+}
+
+#[test]
+fn test_incpatch_rejects_non_semver_function_form() {
+    let vars = test_vars();
+    let err = render("{{ incpatch(v=\"garbage\") }}", &vars).unwrap_err();
+    let s = err_chain(&err);
+    assert!(
+        s.contains("garbage") && s.contains("not a valid semver"),
+        "expected error mentioning the offending input + 'not a valid semver', got: {}",
+        s
+    );
+}
+
+#[test]
+fn test_incpatch_rejects_non_semver_filter_form() {
+    let vars = test_vars();
+    let err = render("{{ \"oops\" | incpatch }}", &vars).unwrap_err();
+    let s = err_chain(&err);
+    assert!(
+        s.contains("oops") && s.contains("not a valid semver"),
+        "expected error mentioning the offending input + 'not a valid semver', got: {}",
+        s
+    );
+}
+
+#[test]
+fn test_incminor_rejects_two_component_version() {
+    let vars = test_vars();
+    let err = render("{{ incminor(v=\"1.2\") }}", &vars).unwrap_err();
+    let s = err_chain(&err);
+    assert!(
+        s.contains("not a valid semver"),
+        "two-component versions must error, got: {}",
+        s
+    );
+}
+
+#[test]
+fn test_incmajor_rejects_alpha_component() {
+    let vars = test_vars();
+    let err = render("{{ incmajor(v=\"a.b.c\") }}", &vars).unwrap_err();
+    assert!(err_chain(&err).contains("not a valid semver"));
+}
+
 // ---- readFile / mustReadFile tests ----
 
 #[test]
