@@ -648,6 +648,104 @@ pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String
     Ok(())
 }
 
+/// Validate that `archives[].id` and `universal_binaries[].id` are unique
+/// within their respective lists.
+///
+/// Mirrors GoReleaser's `ids.New("archives").Inc(...).Validate()` pattern in
+/// `internal/pipe/archive/archive.go:56-102` and the equivalent
+/// `internal/pipe/universalbinary/universalbinary.go:36-50`. Two archive
+/// configs with the same `id` silently both set the same `id` metadata key
+/// on artifacts, breaking publishers that filter `ids: [<id>]`. Anodizer's
+/// build/sign stages already enforce id uniqueness; archive and
+/// universal_binary were missed.
+///
+/// Walks every occurrence of `archives[]` and `universal_binaries[]`:
+/// - `crates[].archives:` / `crates[].universal_binaries:`
+/// - `workspaces[].crates[].archives:` / `.universal_binaries:`
+/// - `defaults.archives:` is a single `ArchiveConfig`, so uniqueness within
+///   itself is vacuously true; not walked here.
+///
+/// Q-arch2 from `.claude/audits/2026-05-08-second-opinion/build-archive.md`
+/// sections 1.1 + 1.2.
+pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
+    fn check_unique<F>(
+        location: &str,
+        kind: &str,
+        ids: impl IntoIterator<Item = (usize, Option<String>)>,
+        empty_ok: F,
+    ) -> Result<(), String>
+    where
+        F: Fn() -> bool,
+    {
+        let _ = empty_ok;
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (idx, maybe_id) in ids {
+            // GoReleaser stores empty as "default" for archives via Default-time
+            // assignment. Anodizer applies `default_archive_id` at deserialize
+            // time, so the option is normally `Some("default")`. A truly empty
+            // / None id here means the user explicitly cleared it; we still
+            // dedupe across `None` so two None-id'd entries collide just like
+            // two "default"-id'd entries would.
+            let key = maybe_id.unwrap_or_else(|| "<unset>".to_string());
+            if let Some(prev_idx) = seen.insert(key.clone(), idx) {
+                return Err(format!(
+                    "{location}: {kind} id \"{key}\" is used by both entry {prev_idx} and entry {idx} — \
+                     ids must be unique within a {kind} list."
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let check_archives = |location: &str, archives: &[ArchiveConfig]| -> Result<(), String> {
+        check_unique(
+            location,
+            "archives",
+            archives.iter().enumerate().map(|(i, a)| (i, a.id.clone())),
+            || true,
+        )
+    };
+    let check_unibins = |location: &str, ubs: &[UniversalBinaryConfig]| -> Result<(), String> {
+        check_unique(
+            location,
+            "universal_binaries",
+            ubs.iter().enumerate().map(|(i, u)| (i, u.id.clone())),
+            || true,
+        )
+    };
+
+    for krate in &config.crates {
+        if let ArchivesConfig::Configs(ref list) = krate.archives {
+            check_archives(&format!("crates[{}].archives", krate.name), list)?;
+        }
+        if let Some(ref ubs) = krate.universal_binaries {
+            check_unibins(&format!("crates[{}].universal_binaries", krate.name), ubs)?;
+        }
+    }
+    if let Some(ws_list) = config.workspaces.as_ref() {
+        for ws in ws_list {
+            for krate in &ws.crates {
+                if let ArchivesConfig::Configs(ref list) = krate.archives {
+                    check_archives(
+                        &format!("workspaces[{}].crates[{}].archives", ws.name, krate.name),
+                        list,
+                    )?;
+                }
+                if let Some(ref ubs) = krate.universal_binaries {
+                    check_unibins(
+                        &format!(
+                            "workspaces[{}].crates[{}].universal_binaries",
+                            ws.name, krate.name
+                        ),
+                        ubs,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // EnvFilesConfig — accepts list of .env paths OR structured token file paths
 // ---------------------------------------------------------------------------

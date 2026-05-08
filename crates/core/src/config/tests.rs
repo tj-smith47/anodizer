@@ -6000,3 +6000,108 @@ crates:
     let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert!(nfpm.goamd64.is_none());
 }
+
+// ---- Q-arch2: ID uniqueness for archives[] and universal_binaries[] ----
+
+#[test]
+fn test_archives_id_uniqueness_rejects_duplicate() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - id: foo
+        formats: [tar.gz]
+      - id: foo
+        formats: [zip]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = super::validate_id_uniqueness(&config).unwrap_err();
+    assert!(
+        err.contains("archives id \"foo\""),
+        "expected duplicate-id error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_archives_id_uniqueness_accepts_distinct() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - id: foo
+        formats: [tar.gz]
+      - id: bar
+        formats: [zip]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::validate_id_uniqueness(&config).expect("distinct ids must pass");
+}
+
+#[test]
+fn test_universal_binaries_id_uniqueness_rejects_duplicate() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    universal_binaries:
+      - id: ub
+        name_template: "{{ .ProjectName }}_macos"
+      - id: ub
+        name_template: "{{ .ProjectName }}_macos2"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = super::validate_id_uniqueness(&config).unwrap_err();
+    assert!(
+        err.contains("universal_binaries id \"ub\""),
+        "expected duplicate-id error, got: {}",
+        err
+    );
+}
+
+#[test]
+fn test_universal_binaries_id_uniqueness_accepts_distinct() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    universal_binaries:
+      - id: ub_main
+        name_template: "{{ .ProjectName }}_macos"
+      - id: ub_alt
+        name_template: "{{ .ProjectName }}_macos_alt"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    super::validate_id_uniqueness(&config).expect("distinct ids must pass");
+}
+
+#[test]
+fn test_archives_id_uniqueness_workspace_crate() {
+    let yaml = r#"
+project_name: test
+workspaces:
+  - name: ws1
+    crates:
+      - name: a
+        path: "."
+        tag_template: "v{{ .Version }}"
+        archives:
+          - id: dup
+            formats: [tar.gz]
+          - id: dup
+            formats: [zip]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = super::validate_id_uniqueness(&config).unwrap_err();
+    assert!(err.contains("workspaces[ws1]"), "got: {}", err);
+}

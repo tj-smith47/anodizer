@@ -104,6 +104,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate homebrew_cask does not set both url_template and url.template (WAVE 4).
     anodizer_core::config::validate_homebrew_cask_url_template(&config)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Validate archives[].id and universal_binaries[].id uniqueness (Q-arch2).
+    anodizer_core::config::validate_id_uniqueness(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Apply monorepo defaults: when monorepo.dir is set and a crate's path
     // is empty or ".", default it to monorepo.dir.
