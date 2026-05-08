@@ -27,7 +27,7 @@ pub use run::NfpmStage;
 #[cfg(test)]
 pub(crate) use command::{KNOWN_FORMATS, validate_format};
 #[cfg(test)]
-pub(crate) use run::format_extension;
+pub(crate) use run::{format_extension, setup_lintian_overrides};
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]

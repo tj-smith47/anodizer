@@ -4722,3 +4722,156 @@ fn test_nfpm_falls_back_to_project_metadata() {
     assert!(yaml.contains("description: Project-level description"));
     assert!(yaml.contains("Alice <alice@project.example>"));
 }
+
+// ---------------------------------------------------------------------------
+// M5: setup_lintian_overrides
+// ---------------------------------------------------------------------------
+
+/// Round-trips: lintian file content equals "<pkg>: <override>" lines, a
+/// single content entry is added with the correct dst/mode/packager, and the
+/// original lintian_overrides field is cleared so the rendered YAML doesn't
+/// carry the dead key into nfpm input.
+#[test]
+fn test_setup_lintian_overrides_emits_file_and_content() {
+    use std::fs;
+
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path();
+    let mut cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        deb: Some(NfpmDebConfig {
+            lintian_overrides: Some(vec![
+                "statically-linked-binary".to_string(),
+                "manpage-not-compressed usr/share/man/man1/myapp.1".to_string(),
+            ]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", dist, false).unwrap();
+
+    // 1. Lintian file exists at the expected GR path.
+    let expected_path = dist.join("deb").join("myapp_amd64").join("lintian");
+    assert!(expected_path.exists(), "lintian file not written");
+    let body = fs::read_to_string(&expected_path).unwrap();
+    assert_eq!(
+        body,
+        "myapp: statically-linked-binary\n\
+         myapp: manpage-not-compressed usr/share/man/man1/myapp.1"
+    );
+
+    // 2. Content entry mapping the file into the package was injected.
+    let contents = cfg.contents.as_ref().expect("contents not injected");
+    let entry = contents
+        .iter()
+        .find(|c| c.dst == "/usr/share/lintian/overrides/myapp")
+        .expect("lintian content entry missing");
+    assert_eq!(entry.src, expected_path.to_string_lossy());
+    assert_eq!(entry.packager.as_deref(), Some("deb"));
+    let mode = entry
+        .file_info
+        .as_ref()
+        .and_then(|fi| fi.mode.as_ref())
+        .expect("file_info.mode set");
+    assert_eq!(
+        mode.0, 0o644,
+        "lintian content entry mode must be 0644, got {:o}",
+        mode.0
+    );
+
+    // 3. lintian_overrides on the rendered config is cleared so the
+    //    emitted nfpm.yaml doesn't carry the now-dead key.
+    assert!(cfg.deb.unwrap().lintian_overrides.is_none());
+}
+
+/// termux.deb shares the GR setupLintian code path, but the dist
+/// subdirectory is the literal format string ("termux.deb"), not just "deb".
+#[test]
+fn test_setup_lintian_overrides_termux_deb_uses_format_dir() {
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path();
+    let mut cfg = NfpmConfig {
+        formats: vec!["termux.deb".to_string()],
+        deb: Some(NfpmDebConfig {
+            lintian_overrides: Some(vec!["binary-without-manpage".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    setup_lintian_overrides(&mut cfg, "termux.deb", "myapp", "arm64", dist, false).unwrap();
+    assert!(
+        dist.join("termux.deb")
+            .join("myapp_arm64")
+            .join("lintian")
+            .exists()
+    );
+}
+
+/// setupLintian is debian-specific in GR (`format == "deb" || format == "termux.deb"`).
+/// For rpm/apk/etc. the helper must not write a lintian file or alter
+/// contents, even if a stray `lintian_overrides:` is present on the deb
+/// config (which can happen in shared-defaults configs).
+#[test]
+fn test_setup_lintian_overrides_noop_for_rpm() {
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path();
+    let mut cfg = NfpmConfig {
+        formats: vec!["rpm".to_string()],
+        deb: Some(NfpmDebConfig {
+            lintian_overrides: Some(vec!["statically-linked-binary".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    setup_lintian_overrides(&mut cfg, "rpm", "myapp", "amd64", dist, false).unwrap();
+    assert!(
+        !dist.join("rpm").exists(),
+        "rpm format must not write a lintian dir under dist"
+    );
+    assert!(cfg.contents.is_none() || cfg.contents.as_ref().unwrap().is_empty());
+    // The original deb.lintian_overrides is left intact (we only clear it
+    // when we actually emit the override file).
+    assert!(cfg.deb.unwrap().lintian_overrides.is_some());
+}
+
+/// In dry-run mode, no on-disk write happens (so the lintian file does NOT
+/// land on disk), but the content entry is still injected so the rendered
+/// nfpm.yaml reflects what would ship in a wet run.
+#[test]
+fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
+    use super::setup_lintian_overrides;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path();
+    let mut cfg = NfpmConfig {
+        formats: vec!["deb".to_string()],
+        deb: Some(NfpmDebConfig {
+            lintian_overrides: Some(vec!["statically-linked-binary".to_string()]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    setup_lintian_overrides(&mut cfg, "deb", "myapp", "amd64", dist, true).unwrap();
+    // No file on disk.
+    assert!(
+        !dist
+            .join("deb")
+            .join("myapp_amd64")
+            .join("lintian")
+            .exists()
+    );
+    // But the content entry was injected.
+    let contents = cfg.contents.as_ref().expect("contents not injected");
+    assert!(
+        contents
+            .iter()
+            .any(|c| c.dst == "/usr/share/lintian/overrides/myapp")
+    );
+}

@@ -632,6 +632,40 @@ impl Stage for NfpmStage {
                             deb.arch_variant = variant;
                         }
 
+                        // Determine package file name (template or default).
+                        // GoReleaser nfpm.go:68-70 — default is ProjectName
+                        // (not the crate/binary name). Fall back to crate name
+                        // only if project_name is empty.
+                        //
+                        // Computed BEFORE yaml generation because the lintian
+                        // emission below needs `pkg_name` for both the file
+                        // path and the destination key.
+                        let pkg_name_owned: String =
+                            if let Some(n) = nfpm_cfg.package_name.as_deref() {
+                                n.to_string()
+                            } else if !ctx.config.project_name.is_empty() {
+                                ctx.config.project_name.clone()
+                            } else {
+                                krate.name.clone()
+                            };
+                        let pkg_name: &str = pkg_name_owned.as_str();
+                        let ext = format_extension(format);
+
+                        // M5: setupLintian — see `setup_lintian_overrides`
+                        // for full rationale. Emits the lintian override
+                        // file and injects the content entry, then clears
+                        // the now-orphaned `lintian_overrides:` field on
+                        // the rendered_cfg clone so the generated nfpm.yaml
+                        // does not carry the dead key into nfpm input.
+                        setup_lintian_overrides(
+                            &mut rendered_cfg,
+                            format,
+                            pkg_name,
+                            &arch,
+                            &dist,
+                            dry_run,
+                        )?;
+
                         // Generate YAML per format so format-specific deps are selected.
                         // Pass the anodizer ctx env map so passphrase lookups
                         // see project `env:` / `env_files:` values (W6 fix).
@@ -652,22 +686,6 @@ impl Stage for NfpmStage {
                                 format!("create nfpm output dir: {}", output_dir.display())
                             })?;
                         }
-
-                        // Determine package file name (template or default).
-                        // GoReleaser nfpm.go:68-70 — default is ProjectName
-                        // (not the crate/binary name). Fall back to crate name
-                        // only if project_name is empty. Copy into an owned
-                        // String so we can mutably reborrow ctx for template vars.
-                        let pkg_name_owned: String =
-                            if let Some(n) = nfpm_cfg.package_name.as_deref() {
-                                n.to_string()
-                            } else if !ctx.config.project_name.is_empty() {
-                                ctx.config.project_name.clone()
-                            } else {
-                                krate.name.clone()
-                            };
-                        let pkg_name: &str = pkg_name_owned.as_str();
-                        let ext = format_extension(format);
 
                         // Set nfpm-specific template vars (Os, Arch, Format,
                         // PackageName, ConventionalExtension, ConventionalFileName,
@@ -882,4 +900,80 @@ pub(crate) fn format_extension(format: &str) -> &str {
         "ipk" => ".ipk",
         _ => "",
     }
+}
+
+/// Emit a Debian `lintian` override file and inject the matching content
+/// entry into the rendered nfpm config, then clear the now-orphaned
+/// `lintian_overrides:` field so the YAML output stays clean.
+///
+/// M5: GoReleaser's `setupLintian` (`internal/pipe/nfpm/nfpm.go:601-623`)
+/// writes a file to `<dist>/<format>/<package>_<arch>/lintian` whose body
+/// is one `<package>: <override>` line per entry in `deb.lintian_overrides`,
+/// then appends a `Content` mapping that path into the package at
+/// `/usr/share/lintian/overrides/<package>` (mode 0644, packager-scoped to
+/// `"deb"`). Anodizer previously parsed `deb.lintian_overrides` into a YAML
+/// key but `nfpm` itself does not consume that key, so the override file
+/// was silently dropped from the resulting `.deb` / `termux.deb`.
+///
+/// This helper performs the file emission and content injection in
+/// lockstep with GR. When `dry_run` is true the on-disk write is skipped
+/// (the content entry is still injected so the generated YAML reflects
+/// what would ship). The helper is a no-op for non-deb formats and for
+/// configs where `lintian_overrides` is unset / empty.
+///
+/// Returns an error only when the on-disk write fails — a configured
+/// override list always reaches the `contents:` array.
+pub(crate) fn setup_lintian_overrides(
+    rendered_cfg: &mut anodizer_core::config::NfpmConfig,
+    format: &str,
+    pkg_name: &str,
+    arch: &str,
+    dist: &std::path::Path,
+    dry_run: bool,
+) -> Result<()> {
+    if format != "deb" && format != "termux.deb" {
+        return Ok(());
+    }
+    let Some(deb_cfg) = rendered_cfg.deb.as_mut() else {
+        return Ok(());
+    };
+    let Some(overrides) = deb_cfg.lintian_overrides.take() else {
+        return Ok(());
+    };
+    if overrides.is_empty() {
+        return Ok(());
+    }
+
+    let pkg_dir = dist.join(format).join(format!("{pkg_name}_{arch}"));
+    let lintian_path = pkg_dir.join("lintian");
+    if !dry_run {
+        fs::create_dir_all(&pkg_dir)
+            .with_context(|| format!("nfpm lintian: create dir {}", pkg_dir.display()))?;
+        let body: String = overrides
+            .iter()
+            .map(|ov| format!("{pkg_name}: {ov}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&lintian_path, body)
+            .with_context(|| format!("nfpm lintian: write {}", lintian_path.display()))?;
+    }
+
+    let entry = anodizer_core::config::NfpmContent {
+        src: lintian_path.to_string_lossy().into_owned(),
+        dst: format!("/usr/share/lintian/overrides/{pkg_name}"),
+        content_type: None,
+        file_info: Some(anodizer_core::config::NfpmFileInfo {
+            owner: None,
+            group: None,
+            mode: Some(anodizer_core::config::StringOrU32(0o644)),
+            mtime: None,
+        }),
+        packager: Some("deb".to_string()),
+        expand: None,
+    };
+    rendered_cfg
+        .contents
+        .get_or_insert_with(Vec::new)
+        .push(entry);
+    Ok(())
 }
