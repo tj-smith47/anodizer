@@ -80,7 +80,14 @@ pub struct DockerV2Config {
     /// Arbitrary extra flags passed to the docker build command.
     pub flags: Option<Vec<String>>,
     /// When truthy, skip this docker build entirely. Supports templates.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs (GR's docker config field is
+    /// `pkg/config/config.go:1149` `Disable string`).
+    #[serde(
+        default,
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
     pub skip: Option<StringOrBool>,
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]

@@ -62,7 +62,14 @@ pub struct SnapcraftConfig {
     pub name_template: Option<String>,
     /// Skip this snapcraft config. Accepts bool or template string
     /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs (GR's snapcraft config field is
+    /// `pkg/config/config.go:1033` `Disable string`).
+    #[serde(
+        default,
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
     pub skip: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only snap.
     pub replace: Option<bool>,

@@ -49,7 +49,14 @@ pub struct ReleaseConfig {
     /// Skip the release stage. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
     /// GoReleaser supports template strings here since v1.15.0.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs (GR's release config field is
+    /// `pkg/config/config.go:909` `Disable string`).
+    #[serde(
+        default,
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
     pub skip: Option<StringOrBool>,
     /// Release mode: "keep-existing", "append", "prepend", or "replace".
     pub mode: Option<String>,

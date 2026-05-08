@@ -5807,3 +5807,98 @@ fn test_try_evaluates_to_true_bool_variant_skips_render() {
             .unwrap()
     );
 }
+
+// ---- F2: `disable` → `skip` serde aliases (GR import compat) ----
+//
+// GoReleaser's docker_v2/snapcraft/nsis/msi/release configs use `disable:`;
+// anodizer renamed to `skip:` per DEC-6. With `deny_unknown_fields` on the
+// strictly-validated structs, an imported GR YAML carrying `disable:`
+// would fail to parse. The `#[serde(alias = "disable")]` attribute lets
+// both spellings deserialize into the same field.
+
+#[test]
+fn test_docker_v2_disable_alias_accepts_legacy_spelling() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    docker_v2:
+      - images: [ghcr.io/example/app]
+        disable: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("disable: alias must parse");
+    let docker = &config.crates[0].docker_v2.as_ref().unwrap()[0];
+    assert_eq!(docker.skip, Some(StringOrBool::Bool(true)));
+}
+
+#[test]
+fn test_snapcraft_disable_alias_accepts_legacy_spelling() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - disable: "{{ if .IsSnapshot }}true{{ end }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("disable: alias must parse");
+    let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
+    match &snap.skip {
+        Some(StringOrBool::String(s)) => assert!(s.contains("IsSnapshot")),
+        other => panic!("expected template string, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_msi_disable_alias_accepts_legacy_spelling() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - disable: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("disable: alias must parse");
+    let msi = &config.crates[0].msis.as_ref().unwrap()[0];
+    assert_eq!(msi.skip, Some(StringOrBool::Bool(true)));
+}
+
+#[test]
+fn test_nsis_disable_alias_accepts_legacy_spelling() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nsis:
+      - disable: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("disable: alias must parse");
+    let nsis = &config.crates[0].nsis.as_ref().unwrap()[0];
+    assert_eq!(nsis.skip, Some(StringOrBool::Bool(true)));
+}
+
+#[test]
+fn test_release_disable_alias_accepts_legacy_spelling() {
+    let yaml = r#"
+project_name: test
+release:
+  disable: "{{ .IsSnapshot }}"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("disable: alias must parse");
+    let rel = config.release.as_ref().unwrap();
+    match &rel.skip {
+        Some(StringOrBool::String(s)) => assert!(s.contains("IsSnapshot")),
+        other => panic!("expected template string, got {:?}", other),
+    }
+}

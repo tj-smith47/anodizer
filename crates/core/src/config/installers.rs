@@ -62,7 +62,13 @@ pub struct MsiConfig {
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
     /// Skip this MSI config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs (GR docs list `disable: string`).
+    #[serde(
+        default,
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
     pub skip: Option<StringOrBool>,
     /// Additional files available in the WiX build context (simple filenames).
     pub extra_files: Option<Vec<String>>,
@@ -139,7 +145,13 @@ pub struct NsisConfig {
     /// GoReleaser Pro feature.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Skip this NSIS config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    /// Accepts the legacy `disable:` spelling via serde alias for back-compat
+    /// with imported GoReleaser configs (GR docs list `disable: string`).
+    #[serde(
+        default,
+        alias = "disable",
+        deserialize_with = "deserialize_string_or_bool_opt"
+    )]
     pub skip: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only the installer.
     pub replace: Option<bool>,

@@ -4613,7 +4613,7 @@
           ]
         },
         "skip": {
-          "description": "When truthy, skip this docker build entirely. Supports templates.",
+          "description": "When truthy, skip this docker build entirely. Supports templates. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's docker config field is `pkg/config/config.go:1149` `Disable string`).",
           "default": null,
           "anyOf": [
             {
@@ -7228,7 +7228,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this MSI config. Accepts bool or template string.",
+          "description": "Skip this MSI config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR docs list `disable: string`).",
           "default": null,
           "anyOf": [
             {
@@ -8643,7 +8643,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this NSIS config. Accepts bool or template string.",
+          "description": "Skip this NSIS config. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR docs list `disable: string`).",
           "default": null,
           "anyOf": [
             {
@@ -9521,7 +9521,7 @@
           ]
         },
         "skip": {
-          "description": "Skip the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip). GoReleaser supports template strings here since v1.15.0.",
+          "description": "Skip the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip). GoReleaser supports template strings here since v1.15.0. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's release config field is `pkg/config/config.go:909` `Disable string`).",
           "default": null,
           "anyOf": [
             {
@@ -10743,7 +10743,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this snapcraft config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip).",
+          "description": "Skip this snapcraft config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's snapcraft config field is `pkg/config/config.go:1033` `Disable string`).",
           "default": null,
           "anyOf": [
             {

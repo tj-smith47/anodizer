@@ -480,7 +480,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
 | `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
 | `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
-| `skip` | StringOrBool | — | Skip the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). GoReleaser supports template strings here since v1.15.0. |
+| `skip` | StringOrBool | — | Skip the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). GoReleaser supports template strings here since v1.15.0. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's release config field is `pkg/config/config.go:909` `Disable string`). |
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type). |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
