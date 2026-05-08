@@ -52,6 +52,12 @@ pub struct NfpmConfig {
     pub provides: Option<Vec<String>>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.).
+    /// When set, only amd64 binaries with `amd64_variant` matching one of the
+    /// listed values are included. Mirrors GoReleaser nfpm's
+    /// `goamd64: []string` (`pkg/config/config.go:711`, `nfpm.go:147`).
+    /// When unset, all amd64 variants are included (no filtering).
+    pub goamd64: Option<Vec<String>>,
     /// Package epoch for versioning (integer as string).
     pub epoch: Option<String>,
     /// Package release number.
