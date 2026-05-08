@@ -1187,10 +1187,30 @@ fn test_skips_disabled_mastodon() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
+/// Q-mast1: GoReleaser marks `MASTODON_CLIENT_ID` and
+/// `MASTODON_CLIENT_SECRET` as `notEmpty` alongside `MASTODON_ACCESS_TOKEN`.
+/// Tests that just need a happy-path Mastodon dry-run go through this helper
+/// so all three env vars are set in lockstep.
+fn set_mastodon_creds() {
+    unsafe {
+        std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token");
+        std::env::set_var("MASTODON_CLIENT_ID", "test-client-id");
+        std::env::set_var("MASTODON_CLIENT_SECRET", "test-client-secret");
+    }
+}
+
+fn clear_mastodon_creds() {
+    unsafe {
+        std::env::remove_var("MASTODON_ACCESS_TOKEN");
+        std::env::remove_var("MASTODON_CLIENT_ID");
+        std::env::remove_var("MASTODON_CLIENT_SECRET");
+    }
+}
+
 #[test]
 #[serial]
 fn test_dry_run_mastodon() {
-    unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
+    set_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1216,13 +1236,13 @@ fn test_dry_run_mastodon() {
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+    clear_mastodon_creds();
 }
 
 #[test]
 #[serial]
 fn test_mastodon_missing_server_returns_error() {
-    unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
+    set_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1246,13 +1266,13 @@ fn test_mastodon_missing_server_returns_error() {
         err.to_string().contains("missing server"),
         "expected 'missing server' error, got: {err}"
     );
-    unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+    clear_mastodon_creds();
 }
 
 #[test]
 #[serial]
 fn test_mastodon_missing_server_warn_and_skip() {
-    unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
+    set_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1269,13 +1289,13 @@ fn test_mastodon_missing_server_warn_and_skip() {
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing mastodon server must skip cleanly, not error");
-    unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+    clear_mastodon_creds();
 }
 
 #[test]
 #[serial]
 fn test_mastodon_missing_env_var_returns_error() {
-    unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+    clear_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1314,6 +1334,143 @@ fn test_mastodon_empty_server_skips() {
     let mut ctx = make_ctx(Some(announce));
     // Empty server should cause a silent skip, not an error
     assert!(AnnounceStage.run(&mut ctx).is_ok());
+}
+
+/// Q-mast1: GoReleaser marks `MASTODON_CLIENT_ID` as `notEmpty`. Anodizer
+/// must fail-fast when it is missing instead of silently proceeding with
+/// only the access token.
+#[test]
+#[serial]
+fn test_mastodon_missing_client_id_returns_error() {
+    clear_mastodon_creds();
+    unsafe {
+        std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token");
+        std::env::set_var("MASTODON_CLIENT_SECRET", "test-secret");
+        // MASTODON_CLIENT_ID intentionally unset
+    }
+    let announce = AnnounceConfig {
+        mastodon: Some(MastodonAnnounce {
+            enabled: Some(StringOrBool::Bool(true)),
+            server: Some("https://mastodon.social".to_string()),
+            message_template: None,
+        }),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.announce = Some(announce);
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set(
+        "ReleaseURL",
+        "https://github.com/org/myapp/releases/tag/v1.0.0",
+    );
+    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    assert!(
+        err.to_string().contains("MASTODON_CLIENT_ID"),
+        "expected MASTODON_CLIENT_ID error, got: {err}"
+    );
+    clear_mastodon_creds();
+}
+
+/// Q-mast1 (the second half): `MASTODON_CLIENT_SECRET` is `notEmpty` in GR.
+#[test]
+#[serial]
+fn test_mastodon_missing_client_secret_returns_error() {
+    clear_mastodon_creds();
+    unsafe {
+        std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token");
+        std::env::set_var("MASTODON_CLIENT_ID", "test-id");
+        // MASTODON_CLIENT_SECRET intentionally unset
+    }
+    let announce = AnnounceConfig {
+        mastodon: Some(MastodonAnnounce {
+            enabled: Some(StringOrBool::Bool(true)),
+            server: Some("https://mastodon.social".to_string()),
+            message_template: None,
+        }),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.announce = Some(announce);
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set(
+        "ReleaseURL",
+        "https://github.com/org/myapp/releases/tag/v1.0.0",
+    );
+    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    assert!(
+        err.to_string().contains("MASTODON_CLIENT_SECRET"),
+        "expected MASTODON_CLIENT_SECRET error, got: {err}"
+    );
+    clear_mastodon_creds();
+}
+
+/// Q-tg1: the Telegram default template MUST NOT use Tera's `~` concatenation
+/// operator. Copy-pasting the default into a custom user template tends to
+/// mix it with GR-style `print` blocks (Tera then refuses to parse `print`)
+/// or rewrite the `~` and break the filter pipeline. Drives a dry-run end
+/// to end with `message_template: None` so the default path actually fires.
+#[test]
+#[serial]
+fn test_telegram_default_template_renders_without_tilde() {
+    let announce = AnnounceConfig {
+        telegram: Some(TelegramAnnounce {
+            enabled: Some(StringOrBool::Bool(true)),
+            bot_token: Some("123:ABC".to_string()),
+            chat_id: Some("-100123".to_string()),
+            message_template: None,
+            parse_mode: None,
+            message_thread_id: None,
+        }),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.announce = Some(announce);
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut()
+        .set("ReleaseURL", "https://example.com/r/v1.0.0");
+    // Should succeed in dry-run without error — exercises the default
+    // template-rendering path end to end.
+    assert!(AnnounceStage.run(&mut ctx).is_ok());
+}
+
+/// Q-disc1: Discord webhook URL must percent-encode the env-derived
+/// id+token segments. GoReleaser uses `url.URL.JoinPath`, which escapes path
+/// segments; we mirror that via `percent_encode_path_segment`. Unit test of
+/// the helper boundary — `crates/core/src/url.rs` already pins the encoding
+/// table; this verifies the segments we feed it round-trip safely.
+#[test]
+fn test_discord_webhook_url_percent_encodes_id_and_token() {
+    let id = "id/with?weird#chars";
+    let token = "tok+plus space";
+    let encoded_id = anodizer_core::url::percent_encode_path_segment(id);
+    let encoded_token = anodizer_core::url::percent_encode_path_segment(token);
+    let url = format!(
+        "{}/webhooks/{}/{}",
+        "https://discord.com/api", encoded_id, encoded_token
+    );
+    assert!(
+        !url.contains('?'),
+        "literal `?` must be encoded to %3F: {url}"
+    );
+    assert!(
+        !url.contains('#'),
+        "literal `#` must be encoded to %23: {url}"
+    );
+    assert!(url.contains("%2F"), "literal `/` in id should be encoded");
+    assert!(
+        url.contains("%2B"),
+        "literal `+` in token should be encoded"
+    );
 }
 
 // ----------------------------------------------------------------

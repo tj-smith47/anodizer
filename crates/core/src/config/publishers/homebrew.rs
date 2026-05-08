@@ -173,8 +173,16 @@ pub struct HomebrewCaskConfig {
     // ----- macOS bundle -----
     /// macOS .app bundle name (e.g. "MyApp.app").
     pub app: Option<String>,
-    /// Binary stubs to create in /usr/local/bin (paths inside the .app bundle).
-    pub binaries: Option<Vec<String>>,
+    /// Binary stubs to create in /usr/local/bin.
+    ///
+    /// Each entry is either a bare string (`"my-cli"` → emits
+    /// `binary "my-cli"`) or a structured `{ name, target }` object
+    /// (`{ name: "my-cli", target: "mycli" }` → emits
+    /// `binary "my-cli", target: "mycli"`). The `target:` form mirrors
+    /// the Homebrew Ruby cask DSL for binary renames — without it, a
+    /// wrapped binary installs at the wrong path.
+    /// Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`.
+    pub binaries: Option<Vec<HomebrewCaskBinary>>,
 
     // ----- Metadata -----
     /// Cask description.
@@ -292,6 +300,51 @@ pub struct HomebrewCaskCompletions {
     pub zsh: Option<String>,
     /// Path to fish completion file.
     pub fish: Option<String>,
+}
+
+/// Cask `binary` stanza entry.
+///
+/// Two shapes accepted in YAML:
+/// - bare string — `"my-cli"` → renders `binary "my-cli"`.
+/// - `{ name, target }` object — `{ name: "my-cli", target: "mycli" }`
+///   → renders `binary "my-cli", target: "mycli"`. The `target:` form is
+///   the Homebrew Ruby cask DSL rename: install the symlink at
+///   `/usr/local/bin/<target>` instead of `/usr/local/bin/<name>`.
+///
+/// GR ref: `internal/pipe/brew/templates/cask.rb.tmpl` — search for
+/// `binary` to see the canonical Ruby form.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(untagged)]
+pub enum HomebrewCaskBinary {
+    /// Bare binary name. Equivalent to `{ name: "<n>", target: None }`.
+    Name(String),
+    /// Structured `{ name, target }` rename form.
+    WithTarget {
+        /// Path inside the .app bundle (e.g. `"my-cli"`).
+        name: String,
+        /// Optional rename target — the symlink name in `/usr/local/bin`.
+        /// When `None`, the symlink uses `name`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+    },
+}
+
+impl HomebrewCaskBinary {
+    /// The binary name (the path inside the .app bundle).
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(n) => n,
+            Self::WithTarget { name, .. } => name,
+        }
+    }
+    /// The optional rename target. `None` for bare-string entries and for
+    /// `{ name, target }` objects without `target` set.
+    pub fn target(&self) -> Option<&str> {
+        match self {
+            Self::Name(_) => None,
+            Self::WithTarget { target, .. } => target.as_deref(),
+        }
+    }
 }
 
 /// Cask dependency (on another cask or formula).

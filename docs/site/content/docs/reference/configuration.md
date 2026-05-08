@@ -342,7 +342,9 @@ Fields from both original types are present; any field may be `None` at either c
 |-------|------|---------|-------------|
 | `alternative_names` | list of string | — | Alternative cask names (aliases). |
 | `app` | string | — | macOS .app bundle name (e.g. "MyApp.app"). |
-| `binaries` | list of string | — | Binary stubs to create in /usr/local/bin (paths inside the .app bundle). |
+| `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
+
+Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |

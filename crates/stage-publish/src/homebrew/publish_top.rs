@@ -137,16 +137,30 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             .unwrap_or_default();
 
         let empty_vec: Vec<String> = Vec::new();
-        let binaries = cask_cfg.binaries.as_deref().unwrap_or_else(|| {
-            // GoReleaser defaults binaries to [name]
-            &empty_vec
-        });
+        // Map config-side `HomebrewCaskBinary` (untagged enum: bare string OR
+        // `{ name, target }`) into the template-side `CaskBinaryEntry` shape
+        // — same translation used in the per-crate cask renderer. Defaults
+        // to `[{ name: cask_name, target: None }]` so the bare default still
+        // emits `binary "<n>"`.
+        let configured_binaries: Vec<super::cask::CaskBinaryEntry> = cask_cfg
+            .binaries
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(|b| super::cask::CaskBinaryEntry {
+                name: b.name().to_string(),
+                target: b.target().map(str::to_string),
+            })
+            .collect();
         let default_binaries;
-        let binaries = if binaries.is_empty() {
-            default_binaries = vec![cask_name.to_string()];
+        let binaries: &[super::cask::CaskBinaryEntry] = if configured_binaries.is_empty() {
+            default_binaries = vec![super::cask::CaskBinaryEntry {
+                name: cask_name.to_string(),
+                target: None,
+            }];
             &default_binaries
         } else {
-            binaries
+            &configured_binaries
         };
 
         // Build depends_on directives from structured config

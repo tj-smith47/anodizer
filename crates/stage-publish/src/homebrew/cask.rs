@@ -30,7 +30,7 @@ cask "{{ name }}" do
 {% endif %}{% endfor %}
 
 {% endif %}{% if app %}  app "{{ app }}"
-{% endif %}{% for binary in binaries %}  binary "{{ binary }}"
+{% endif %}{% for binary in binaries %}  binary "{{ binary.name }}"{% if binary.target %}, target: "{{ binary.target }}"{% endif %}
 {% endfor %}{% for manpage in manpages %}  manpage "{{ manpage }}"
 {% endfor %}{% if has_completions_bash %}  bash_completion "{{ completions_bash }}"
 {% endif %}{% if has_completions_zsh %}  zsh_completion "{{ completions_zsh }}"
@@ -64,6 +64,21 @@ cask "{{ name }}" do
 // ---------------------------------------------------------------------------
 // generate_cask
 // ---------------------------------------------------------------------------
+
+/// Cask `binary` template entry.
+///
+/// The bare-string YAML form `"my-cli"` deserialises to `name = "my-cli",
+/// target = None`, which renders `binary "my-cli"`. The structured form
+/// `{ name, target }` preserves the rename so the template emits
+/// `binary "my-cli", target: "mycli"`. Mirrors GR
+/// `internal/pipe/brew/templates/cask.rb.tmpl`.
+#[derive(serde::Serialize, Clone)]
+pub struct CaskBinaryEntry {
+    /// Path inside the .app bundle.
+    pub name: String,
+    /// Optional rename target — symlink name in `/usr/local/bin`.
+    pub target: Option<String>,
+}
 
 /// Multi-platform cask architecture entry (within an OS block).
 #[derive(serde::Serialize, Clone)]
@@ -101,7 +116,10 @@ pub struct CaskParams<'a> {
     /// macOS .app bundle name (e.g. "MyApp.app").
     pub app: Option<&'a str>,
     /// Binary stubs to create in /usr/local/bin (inside the .app).
-    pub binaries: &'a [String],
+    /// Each entry carries `{ name, target: Option<String> }` so the
+    /// template can emit `binary "<n>"` (bare) or `binary "<n>", target: "<t>"`
+    /// (rename form).
+    pub binaries: &'a [CaskBinaryEntry],
     /// Post-install user-facing notes.
     pub caveats: Option<&'a str>,
     /// Pre-rendered `zap` stanza Ruby (full `zap launchctl: [...], quit: [...]`
@@ -759,6 +777,21 @@ pub(super) fn generate_cask_from_context(
     let display_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
     let empty_vec: Vec<String> = Vec::new();
 
+    // Map config-side `HomebrewCaskBinary` entries (untagged enum: bare string
+    // OR `{ name, target }`) into the template-side `CaskBinaryEntry` shape so
+    // the template renders `binary "<n>"` for the bare form and
+    // `binary "<n>", target: "<t>"` when the rename target is set.
+    let cask_binaries: Vec<CaskBinaryEntry> = cask_cfg
+        .binaries
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .map(|b| CaskBinaryEntry {
+            name: b.name().to_string(),
+            target: b.target().map(str::to_string),
+        })
+        .collect();
+
     // Build dependency and conflict directive strings for the template
     let cask_depends: Vec<String> = cask_cfg
         .dependencies
@@ -830,7 +863,7 @@ pub(super) fn generate_cask_from_context(
             .as_deref()
             .or(hb_cfg.description.as_deref()),
         app: cask_cfg.app.as_deref(),
-        binaries: cask_cfg.binaries.as_deref().unwrap_or(&empty_vec),
+        binaries: &cask_binaries,
         caveats: cask_cfg.caveats.as_deref(),
         zap_block: &zap_block,
         uninstall_block: &uninstall_block,

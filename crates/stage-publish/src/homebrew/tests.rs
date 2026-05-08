@@ -1264,3 +1264,149 @@ fn test_cask_template_emits_url_extras() {
         "url line should end with `,` to splice into kwargs\nline: {url_line}\n{cask}"
     );
 }
+
+// -----------------------------------------------------------------------
+// C7 — cask `binary "<n>", target: "<t>"` rename form
+// -----------------------------------------------------------------------
+
+/// Bare-string YAML form (`binaries: [my-cli]`) deserialises to the bare
+/// `HomebrewCaskBinary::Name` variant and the template emits
+/// `binary "my-cli"` — i.e. **no** `target:` kwarg.
+#[test]
+fn test_cask_binary_bare_string_form_round_trip() {
+    use anodizer_core::config::{HomebrewCaskBinary, HomebrewCaskConfig};
+    let yaml = r#"
+binaries:
+  - my-cli
+"#;
+    let cfg: HomebrewCaskConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    let bins = cfg.binaries.expect("binaries should deserialise");
+    assert_eq!(bins.len(), 1);
+    match &bins[0] {
+        HomebrewCaskBinary::Name(n) => assert_eq!(n, "my-cli"),
+        other => panic!("expected bare Name variant, got {:?}", other),
+    }
+    assert_eq!(bins[0].name(), "my-cli");
+    assert_eq!(bins[0].target(), None);
+
+    // Render through the template via the same translation the per-crate
+    // path performs, then assert the template output.
+    let entries = vec![super::cask::CaskBinaryEntry {
+        name: bins[0].name().to_string(),
+        target: bins[0].target().map(str::to_string),
+    }];
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.binaries = &entries;
+    let cask = generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("binary \"my-cli\"\n"),
+        "expected bare `binary \"my-cli\"` line\n{cask}"
+    );
+    // Bare form must NOT emit a `target:` kwarg.
+    assert!(
+        !cask.contains("binary \"my-cli\", target:"),
+        "bare form must not include target:\n{cask}"
+    );
+}
+
+/// Structured `{ name, target }` YAML form deserialises to the
+/// `HomebrewCaskBinary::WithTarget` variant and the template emits
+/// `binary "<n>", target: "<t>"`.
+#[test]
+fn test_cask_binary_object_with_target_renders_target_kwarg() {
+    use anodizer_core::config::{HomebrewCaskBinary, HomebrewCaskConfig};
+    let yaml = r#"
+binaries:
+  - name: my-cli
+    target: mycli
+"#;
+    let cfg: HomebrewCaskConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    let bins = cfg.binaries.expect("binaries should deserialise");
+    assert_eq!(bins.len(), 1);
+    match &bins[0] {
+        HomebrewCaskBinary::WithTarget { name, target } => {
+            assert_eq!(name, "my-cli");
+            assert_eq!(target.as_deref(), Some("mycli"));
+        }
+        other => panic!("expected WithTarget variant, got {:?}", other),
+    }
+    assert_eq!(bins[0].name(), "my-cli");
+    assert_eq!(bins[0].target(), Some("mycli"));
+
+    let entries = vec![super::cask::CaskBinaryEntry {
+        name: bins[0].name().to_string(),
+        target: bins[0].target().map(str::to_string),
+    }];
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.binaries = &entries;
+    let cask = generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("binary \"my-cli\", target: \"mycli\"\n"),
+        "expected `binary \"my-cli\", target: \"mycli\"` line\n{cask}"
+    );
+}
+
+/// Object form WITHOUT `target` set behaves as the bare string form
+/// (no `target:` kwarg in the rendered Ruby).
+#[test]
+fn test_cask_binary_object_without_target_renders_bare() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let yaml = r#"
+binaries:
+  - name: my-cli
+"#;
+    let cfg: HomebrewCaskConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    let bins = cfg.binaries.expect("binaries should deserialise");
+    assert_eq!(bins[0].name(), "my-cli");
+    assert_eq!(bins[0].target(), None);
+
+    let entries = vec![super::cask::CaskBinaryEntry {
+        name: bins[0].name().to_string(),
+        target: bins[0].target().map(str::to_string),
+    }];
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.binaries = &entries;
+    let cask = generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("binary \"my-cli\"\n"),
+        "expected bare `binary \"my-cli\"` line\n{cask}"
+    );
+    assert!(
+        !cask.contains("target:"),
+        "object-without-target must not render `target:`\n{cask}"
+    );
+}
+
+/// Mixed list — bare and object forms in the same `binaries:` array.
+#[test]
+fn test_cask_binary_mixed_bare_and_target_forms() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let yaml = r#"
+binaries:
+  - bare-tool
+  - name: wrapper
+    target: actual-bin
+"#;
+    let cfg: HomebrewCaskConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    let bins = cfg.binaries.expect("binaries should deserialise");
+    assert_eq!(bins.len(), 2);
+
+    let entries: Vec<super::cask::CaskBinaryEntry> = bins
+        .iter()
+        .map(|b| super::cask::CaskBinaryEntry {
+            name: b.name().to_string(),
+            target: b.target().map(str::to_string),
+        })
+        .collect();
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.binaries = &entries;
+    let cask = generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("binary \"bare-tool\"\n"),
+        "missing bare line\n{cask}"
+    );
+    assert!(
+        cask.contains("binary \"wrapper\", target: \"actual-bin\"\n"),
+        "missing target-renamed line\n{cask}"
+    );
+}

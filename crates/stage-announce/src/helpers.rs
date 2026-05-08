@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anodizer_core::config::StringOrBool;
 use anodizer_core::context::Context;
@@ -58,6 +58,26 @@ pub(crate) fn require_env(provider: &str, name: &str) -> Result<String> {
         anyhow::bail!("announce.{provider}: {name} env var must not be empty");
     }
     Ok(value)
+}
+
+/// Read an env var that is required and must not be empty, returning a clear
+/// error message identifying both the announcer and the missing variable.
+///
+/// Mirrors GoReleaser's `notEmpty` env-tag validation, which fail-fasts before
+/// any network calls when a required credential env var is missing.
+///
+/// Distinct from [`require_env`]: the former bails on missing OR empty (after
+/// trim), and is used for env vars that are *the* credential (a single token).
+/// This helper is intentionally stricter — it bails on **empty after trim**
+/// just like `require_env`, but exists as a named entry-point for the GR
+/// `notEmpty` tag set so call sites read like the GR config they mirror.
+pub(crate) fn require_non_empty_env(provider: &str, name: &str) -> Result<String> {
+    match std::env::var(name) {
+        Ok(v) if !v.trim().is_empty() => Ok(v),
+        _ => Err(anyhow::anyhow!(
+            "announce.{provider}: {name} env var is required and must not be empty"
+        )),
+    }
 }
 
 /// Read multiple required env vars in one shot, returning a single error that
@@ -184,17 +204,23 @@ where
 ///
 /// Pinned by `test_resolve_webhook_headers_*` — drift back to a
 /// case-sensitive `contains_key` will trip those tests.
+///
+/// Q-wh1: returns a [`BTreeMap`] (not a `HashMap`) so the downstream
+/// `send_webhook` iteration order is alphabetical / deterministic. The
+/// callers convert their YAML-derived `HashMap<String, String>` user headers
+/// via this helper so the deterministic order propagates through the whole
+/// webhook pipeline.
 pub(crate) fn resolve_webhook_headers(
     user_headers: HashMap<String, String>,
     basic_auth: Option<&str>,
     bearer_token: Option<&str>,
     user_agent_default: &str,
-) -> HashMap<String, String> {
-    let mut headers = user_headers;
+) -> BTreeMap<String, String> {
+    let mut headers: BTreeMap<String, String> = user_headers.into_iter().collect();
     // O(n) per lookup, O(n²) over the precedence walk. Fine for webhook
     // header counts (typically <10); a future optimizer should not reach
     // for `HeaderMap` reflexively.
-    let has_user_key = |target: &str, h: &HashMap<String, String>| -> bool {
+    let has_user_key = |target: &str, h: &BTreeMap<String, String>| -> bool {
         h.keys().any(|k| k.eq_ignore_ascii_case(target))
     };
 

@@ -266,7 +266,11 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
     });
     if !body.is_empty() {
         let truncated_body = if body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
-            let suffix = "\n\n...(truncated)";
+            // GoReleaser parity: `internal/client/client.go:21` —
+            //     ellipsis = "..."
+            // Anodizer previously appended `"\n\n...(truncated)"` (16 chars);
+            // GR appends a literal three-dot ellipsis. Aligned to GR.
+            let suffix = "...";
             let max_content = GITHUB_RELEASE_BODY_MAX_CHARS - suffix.len();
             let safe_end = body
                 .char_indices()

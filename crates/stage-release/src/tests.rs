@@ -2585,7 +2585,10 @@ fn test_build_release_json_body_exceeds_limit_is_truncated() {
         discussion_category: &None,
     });
     let result = json["body"].as_str().unwrap();
-    let suffix = "\n\n...(truncated)";
+    // GoReleaser parity (`internal/client/client.go:21`): the truncate suffix
+    // is the three-dot ellipsis, not `"\n\n...(truncated)"` (16 chars).
+    let suffix = "...";
+    assert_eq!(suffix.len(), 3);
     // Total length must not exceed the limit.
     assert!(
         result.len() <= GITHUB_RELEASE_BODY_MAX_CHARS,
@@ -2597,6 +2600,30 @@ fn test_build_release_json_body_exceeds_limit_is_truncated() {
     let expected_content_len = GITHUB_RELEASE_BODY_MAX_CHARS - suffix.len();
     assert!(result.starts_with(&"a".repeat(expected_content_len)));
     assert!(result.ends_with(suffix));
+}
+
+#[test]
+fn test_build_release_json_truncate_suffix_matches_goreleaser() {
+    // GR-parity regression: the truncate suffix is exactly `"..."` (3 chars),
+    // matching `goreleaser/internal/client/client.go:21::ellipsis`. Any drift
+    // back to `"\n\n...(truncated)"` (16 chars) — anodizer's old shape — must
+    // fail this test.
+    let body = "a".repeat(GITHUB_RELEASE_BODY_MAX_CHARS + 100);
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: &body,
+        draft: false,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+    });
+    let result = json["body"].as_str().unwrap();
+    assert_eq!(result.len(), GITHUB_RELEASE_BODY_MAX_CHARS);
+    assert!(result.ends_with("..."));
+    assert!(!result.ends_with("(truncated)"));
+    assert!(!result.contains("\n\n...(truncated)"));
 }
 
 #[test]

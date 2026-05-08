@@ -118,7 +118,7 @@ pub fn run_publishers(
                         .unwrap_or_default()
                 };
                 extra_artifacts.push(Artifact {
-                    kind: ArtifactKind::Archive,
+                    kind: ArtifactKind::UploadableFile,
                     name,
                     path: r.path,
                     target: None,
@@ -146,7 +146,7 @@ pub fn run_publishers(
                     )?;
                 for (path, name) in rendered {
                     extra_artifacts.push(Artifact {
-                        kind: ArtifactKind::Archive,
+                        kind: ArtifactKind::UploadableFile,
                         name,
                         path,
                         target: None,

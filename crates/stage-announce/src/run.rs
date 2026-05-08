@@ -7,7 +7,8 @@ use anyhow::{Context as _, Result};
 use crate::dispatch::dispatch;
 use crate::helpers::{
     DEFAULT_DISPLAY_NAME, WEBHOOK_DEFAULT_MESSAGE_TEMPLATE, is_enabled, render_json_template,
-    render_message, require_env, require_env_all, resolve_smtp_port, resolve_webhook_headers,
+    render_message, require_env, require_env_all, require_non_empty_env, resolve_smtp_port,
+    resolve_webhook_headers,
 };
 use crate::{
     bluesky, discord, discourse, email, linkedin, mastodon, mattermost, opencollective, reddit,
@@ -81,7 +82,20 @@ impl Stage for AnnounceStage {
                             .ok()
                             .filter(|s| !s.is_empty())
                             .unwrap_or_else(|| "https://discord.com/api".to_string());
-                        format!("{}/webhooks/{}/{}", base.trim_end_matches('/'), id, token)
+                        // Q-disc1: GoReleaser builds the webhook URL via
+                        // `url.URL.JoinPath(...)`, which percent-encodes path
+                        // segments. Discord webhook IDs and tokens are
+                        // alphanumeric+`_-` in practice, but a malformed env
+                        // value (`/`, `?`, `#`, …) used to splice straight
+                        // into the URL and silently corrupt the request.
+                        // Encoding the segments produces a clean 4xx that
+                        // can actually be debugged.
+                        format!(
+                            "{}/webhooks/{}/{}",
+                            base.trim_end_matches('/'),
+                            anodizer_core::url::percent_encode_path_segment(&id),
+                            anodizer_core::url::percent_encode_path_segment(&token),
+                        )
                     }
                     _ => match cfg.webhook_url.as_deref() {
                         Some(raw) => ctx.render_template(raw)?,
@@ -380,13 +394,24 @@ impl Stage for AnnounceStage {
                 // Telegram defaults to MarkdownV2 parse mode, so the default
                 // message template must apply the mdv2escape filter.
                 //
-                // GoReleaser telegram.go:18 uses Go-template syntax:
+                // Q-tg1: GoReleaser telegram.go:18 uses Go-template syntax:
                 //   `{{ print .ProjectName " " .Tag " is out! ... " .ReleaseURL | mdv2escape }}`
-                // anodizer renders via Tera, where string concat is `~`. A user
-                // copy-pasting GR's `{{ print ... }}` form from upstream docs
-                // will hit a Tera parse error — document an anodizer template
-                // example in the per-template-engine cheat sheet.
-                const TELEGRAM_DEFAULT_TEMPLATE: &str = "{{ ProjectName ~ \" \" ~ Tag ~ \" is out! Check it out at \" ~ ReleaseURL | mdv2escape }}";
+                // anodizer renders via Tera. Previously this template used
+                // Tera's `~` concatenation operator (`{{ A ~ " " ~ B | filter }}`)
+                // — which works, but is hostile to copy-paste: a user pulling
+                // the default into a custom template tends to mix it with
+                // GR-style `print` blocks (Tera then refuses to parse `print`)
+                // or rewrite the `~` and break the filter pipeline.
+                //
+                // The new form uses one `mdv2escape` filter per dynamic value
+                // plus pre-escaped literal text (`is out\!` — `!` must be
+                // backslash-escaped in MarkdownV2 per the Telegram docs). The
+                // rendered output is byte-equivalent to GR's
+                // `{{ print … | mdv2escape }}` form, but the template itself
+                // is `{{ … }}`-only and copy-pastes cleanly into custom
+                // user templates. Pinned by
+                // `test_telegram_default_template_renders_without_tilde`.
+                const TELEGRAM_DEFAULT_TEMPLATE: &str = "{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\\! Check it out at {{ ReleaseURL | mdv2escape }}";
                 let message = ctx.render_template(
                     cfg.message_template
                         .as_deref()
@@ -674,7 +699,17 @@ impl Stage for AnnounceStage {
                     return Ok(());
                 }
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let access_token = require_env("mastodon", "MASTODON_ACCESS_TOKEN")?;
+                // Q-mast1: GoReleaser's `mastodon.Config` declares all three
+                // env-backed fields (ClientID, ClientSecret, AccessToken) as
+                // `notEmpty`, so missing any one of them fails fast at
+                // validation time. Anodizer used to require only
+                // ACCESS_TOKEN, silently sending without the credentials GR
+                // requires for its OAuth refresh flow. Mirror the GR
+                // fail-fast here so misconfigured releases die up front
+                // instead of mid-announce.
+                let access_token = require_non_empty_env("mastodon", "MASTODON_ACCESS_TOKEN")?;
+                require_non_empty_env("mastodon", "MASTODON_CLIENT_ID")?;
+                require_non_empty_env("mastodon", "MASTODON_CLIENT_SECRET")?;
                 dispatch(ctx, "mastodon", &message, || {
                     mastodon::send_mastodon(&server, &access_token, &message, &retry_policy)
                 })

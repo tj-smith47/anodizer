@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::ops::ControlFlow;
 
 use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
@@ -35,10 +35,19 @@ pub(crate) fn is_expected_status(status: u16, expected: &[u16]) -> bool {
 /// upstream rejections without re-running with verbose logs (mirrors
 /// upstream commit bba909e). `policy` enables retry on 5xx / 429 / network
 /// failures (P1.3).
+///
+/// Q-wh1 — `headers` is a [`BTreeMap`] (not a `HashMap`) so the iteration
+/// order in the request builder loop is deterministic (alphabetical by header
+/// name). This makes wire traces reproducible across runs and matches
+/// GoReleaser's first-set-wins ordering for the env-supplied `Authorization`
+/// header. Sort order is irrelevant on the wire because RFC 7230 §3.2.2
+/// forbids semantically meaningful ordering for headers with distinct names;
+/// the user-supplied `headers.Authorization` precedence is enforced at the
+/// builder level (`resolve_webhook_headers`) before we get here.
 pub fn send_webhook(
     endpoint_url: &str,
     message: &str,
-    headers: &HashMap<String, String>,
+    headers: &BTreeMap<String, String>,
     content_type: &str,
     skip_tls_verify: bool,
     expected_status_codes: &[u16],
@@ -126,5 +135,18 @@ mod tests {
     fn test_default_expected_status_codes() {
         let defaults = default_expected_status_codes();
         assert_eq!(defaults, vec![200, 201, 202, 204]);
+    }
+
+    #[test]
+    fn test_headers_iterate_in_alphabetical_order() {
+        // Q-wh1 regression: BTreeMap guarantees alphabetical iteration order
+        // regardless of insertion order, so request traces are reproducible
+        // across runs. Insertion is intentionally non-alphabetical here.
+        let mut headers: BTreeMap<String, String> = BTreeMap::new();
+        headers.insert("X-Zulu".into(), "z".into());
+        headers.insert("Authorization".into(), "Bearer x".into());
+        headers.insert("Content-Type".into(), "application/json".into());
+        let order: Vec<&str> = headers.keys().map(String::as_str).collect();
+        assert_eq!(order, vec!["Authorization", "Content-Type", "X-Zulu"]);
     }
 }

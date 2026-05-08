@@ -5247,6 +5247,35 @@
       },
       "additionalProperties": false
     },
+    "HomebrewCaskBinary": {
+      "description": "Cask `binary` stanza entry.\n\nTwo shapes accepted in YAML: - bare string — `\"my-cli\"` → renders `binary \"my-cli\"`. - `{ name, target }` object — `{ name: \"my-cli\", target: \"mycli\" }` → renders `binary \"my-cli\", target: \"mycli\"`. The `target:` form is the Homebrew Ruby cask DSL rename: install the symlink at `/usr/local/bin/<target>` instead of `/usr/local/bin/<name>`.\n\nGR ref: `internal/pipe/brew/templates/cask.rb.tmpl` — search for `binary` to see the canonical Ruby form.",
+      "anyOf": [
+        {
+          "description": "Bare binary name. Equivalent to `{ name: \"<n>\", target: None }`.",
+          "type": "string"
+        },
+        {
+          "description": "Structured `{ name, target }` rename form.",
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "description": "Path inside the .app bundle (e.g. `\"my-cli\"`).",
+              "type": "string"
+            },
+            "target": {
+              "description": "Optional rename target — the symlink name in `/usr/local/bin`. When `None`, the symlink uses `name`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    },
     "HomebrewCaskCompletions": {
       "description": "Shell completion file paths for Homebrew Cask.",
       "type": "object",
@@ -5301,14 +5330,14 @@
           ]
         },
         "binaries": {
-          "description": "Binary stubs to create in /usr/local/bin (paths inside the .app bundle).",
+          "description": "Binary stubs to create in /usr/local/bin.\n\nEach entry is either a bare string (`\"my-cli\"` → emits `binary \"my-cli\"`) or a structured `{ name, target }` object (`{ name: \"my-cli\", target: \"mycli\" }` → emits `binary \"my-cli\", target: \"mycli\"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Mirrors GoReleaser `internal/pipe/brew/templates/cask.rb.tmpl`.",
           "default": null,
           "type": [
             "array",
             "null"
           ],
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/HomebrewCaskBinary"
           }
         },
         "caveats": {
