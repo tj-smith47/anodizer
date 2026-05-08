@@ -158,7 +158,7 @@ can ship live. Implementation is complete and unit-tested.
 | Release header / footer (string + template) | ✅ Live | Visible at the bottom of every shipped release body |
 | Release notes from grouped commits (`changelog.groups`) | ✅ Live | See "Features" / "Bug Fixes" / "Others" sections in the [v0.1.1 release body](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) |
 | Filters (`include` / `exclude`) | ✅ Live | Visible in shipped changelogs |
-| `changelog.use`: git, github, gitlab, gitea, github-native | ✅ Live (⚠ see [Known correctness issues](#known-correctness-issues-in-shipping-features) C3 — `github-native` calls the wrong endpoint and miscomputes commit ranges in monorepo / re-release flows) | git + github-native in production; gitlab/gitea tested |
+| `changelog.use`: git, github, gitlab, gitea, github-native | ✅ Live | git + github-native in production; gitlab/gitea tested |
 | AI-generated changelog (anthropic / openai / ollama) | 🧪 Tested | Implemented; no release uses `changelog.use: ai` yet |
 | `release.gitlab` / `release.gitea` | 🧪 Tested | We dogfood on GitHub only |
 | Milestones pipe | ✅ Live | Wired |
@@ -332,41 +332,9 @@ release uses them yet. The blocker in each case is operational, not code:
 
 ## Not implemented
 
-A second-opinion parity sweep against [GoReleaser HEAD `8976559`](https://github.com/goreleaser/goreleaser/commit/8976559) (2026-05-08) caught the following gaps. Each is tracked in [`.claude/known-bugs.md`](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md) under *Second-opinion parity audit — 2026-05-08* and in [`.claude/specs/parity-session-index.md`](https://github.com/tj-smith47/anodizer/blob/master/.claude/specs/parity-session-index.md) Session T.
-
 | GR feature | Status | Notes |
 |---|---|---|
-| `xz` (single-file) archive format | 🚧 Not implemented | Distinct from `tar.xz`. GR has both. Tracked as Q17.1 / M1. |
-| Top-level `retry { attempts, delay, max_delay }` config | 🚧 Not implemented | Wires into ~15 announcer / git-provider / HTTP-upload / docker pipes. Tracked as Session P P1.x / M2. |
-| Docker V1 (`dockers:` config block) | 🚧 Not implemented | V2-only by design. The YAML loader currently silently ignores `dockers:` blocks on import; needs an explicit error or deprecation warning. Tracked as M3. |
-| Cask `additional_url_params` (verified/using/cookies/referer/headers/user_agent/data — 7 sub-fields) | 🚧 Not implemented | M4. |
-| Cask `binary <name>, target: <target>` rename form | 🚧 Not implemented | C7 — wrapped binaries currently install at the wrong path. |
-| Cask `zap` per-directive emission (`launchctl`, `quit`, `login_item`, `delete`, …) | 🚧 Not implemented | C6 — `trash:` is hard-coded. |
-| nfpm `lintian_overrides` file emission | 🚧 Not implemented | Field is parsed but not wired to `setupLintian()`-equivalent. M5. |
-| Notarize retry (`rcodesign sign` / `notary-submit`) | 🚧 Not implemented | Zero retry today; network blip → stage failure. M6. |
-| `goreleaser continue` (without `--merge`) | 🚧 Not implemented | `continue_cmd.rs:40` hard-codes `merge: true`. Single-host stage-resume not yet wired. M7. |
-| `goamd64` field on DMG / MSI / NSIS / nfpm structs | 🚧 Not implemented | Multi-amd64-variant builds (`v1`/`v2`/`v3`/`v4`) cannot filter on these surfaces. M8. |
-| `changelog.use: github-native` monorepo / re-release commit ranges | 🚧 Not implemented | Calls `generate_release_notes:true` on POST instead of GR's dedicated `POST /releases/generate-notes` endpoint with explicit `previous_tag_name`. C3. |
-| Full `url_template` variable surface across publishers + cask | 🚧 Not implemented | Only 4 vars exposed; GR exposes 30+ (`.Tag`, `.ArtifactName`, `.Env.*`, full artifact context). F1. |
-| GR config back-compat aliases (`disable`→`skip`, `archives.format`, `archives.builds`, `snapshot.name_template`, `builds.gobinary`) | 🚧 Not implemented | Imported GR YAML either silently ignored or parse-errors. F2 / F3. |
-
----
-
-## ⚠ Known correctness issues in shipping features
-
-These features are wired and exercised in production releases, but a second-opinion audit caught silent wrong-output bugs that don't fail loudly. They are tracked under [`.claude/known-bugs.md`](https://github.com/tj-smith47/anodizer/blob/master/.claude/known-bugs.md) (Second-opinion parity audit — 2026-05-08, *Correctness bugs* section). Until each is fixed, downstream consumers can hit the listed effects:
-
-| ID | Bug | Effect | Reference |
-|---|---|---|---|
-| C1 | Archive `ndynlink` propagation never fires (build writes `DynamicallyLinked` camel; archive reads `dynamically_linked` snake) | `if .DynamicallyLinked` template branches in archives never reach the *true* arm | `crates/stage-build/src/run.rs` ↔ `crates/stage-archive/src/run.rs` |
-| C2 | Archive metadata copy path drops `amd64_variant` | winget / scoop / aur / krew silently match v2/v3/v4 binaries as v1 and publish wrong manifests | `crates/stage-archive/src/run.rs` |
-| C3 | `changelog.use: github-native` calls wrong API | Cannot reproduce monorepo / re-release commit ranges; release notes show too many / too few commits | `crates/stage-changelog/src/run.rs`, `crates/stage-release/src/release_body.rs` |
-| C4 | Release ignores `replace_existing_artifacts: false` and always overwrites on HTTP 422 | Re-running a release silently replaces published assets even when the user opted out | `crates/stage-release/src/github/mod.rs` |
-| C5 | Chocolatey accepts `arm64` artifacts (GR rejects `amd64` + `386` only) | Generates a broken install script when an arm64 archive happens to be present | `crates/stage-publish/src/chocolatey.rs` |
-| C6 | Cask `zap` stanza hard-codes `trash:` | `launchctl` / `quit` / `login_item` / `delete` directives produce broken Ruby | `crates/stage-publish/src/homebrew/cask.rs` |
-| C7 | Cask `binary <name>, target: <target>` rename form not emitted | Wrapped binaries install at the wrong path under `/usr/local/bin` | `crates/stage-publish/src/homebrew/cask.rs` |
-
-**~25 additional quality-tier divergences** (per-target template var surface, truncate suffix length, telegram default whitespace-trim, mastodon env-var fail-fast, webhook header ordering, …) are tracked in the same known-bugs section under *Quality gaps*.
+| Top-level `retry { attempts, delay, max_delay }` config | 🚧 Not implemented | Wires into ~15 announcer / git-provider / HTTP-upload / docker pipes. Tracked as Session P P1.x in `.claude/specs/parity-session-index.md`. |
 
 ---
 
