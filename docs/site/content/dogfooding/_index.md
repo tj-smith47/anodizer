@@ -18,7 +18,6 @@ to verify our claims.
 |---|---|
 | ✅ **Live** | A public artifact exists. Click the link to see it. |
 | 🧪 **Tested, not live yet** | Implementation + tests pass. No public release uses it yet — usually because it needs credentials we don't have (Apple Developer cert, an AUR key, a flatpak runtime, etc.). |
-| 🚧 **Not implemented** | Tracked, intentionally absent. Open an issue if you need it. |
 
 Two public projects use anodizer to ship themselves:
 
@@ -330,14 +329,6 @@ release uses them yet. The blocker in each case is operational, not code:
 
 ---
 
-## Not implemented
-
-| GR feature | Status | Notes |
-|---|---|---|
-| Top-level `retry { attempts, delay, max_delay }` config | 🚧 Not implemented | Wires into ~15 announcer / git-provider / HTTP-upload / docker pipes. Tracked as Session P P1.x in `.claude/specs/parity-session-index.md`. |
-
----
-
 ## Methodology
 
 - **Reference target:** [GoReleaser](https://goreleaser.com/) (OSS + Pro). We
@@ -347,7 +338,6 @@ release uses them yet. The blocker in each case is operational, not code:
   registry, image on GHCR, etc.) you can download right now.
 - **Tested 🧪:** the feature is implemented and the test suite exercises
   it on every CI run, but no current public release uses it.
-- **Not implemented 🚧:** intentionally absent. Open an issue to discuss.
 
 If you can produce a live artifact for any 🧪 row — open a PR with the
 link and we'll flip it to ✅. Same for any feature you think is missing
