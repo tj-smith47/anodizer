@@ -16,7 +16,7 @@ use super::command::{
     is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend, resolve_digest_config,
     resolve_manifester, resolve_skip_push,
 };
-use super::detect::{check_buildx_driver, is_docker_daemon_available};
+use super::detect::{check_buildx_driver, check_buildx_version, is_docker_daemon_available};
 use super::platform::tag_suffix;
 use super::retry::resolve_retry_params;
 use super::spelling::{find_image_digest, levenshtein_distance};
@@ -72,8 +72,14 @@ impl Stage for super::DockerStage {
             }
         }
 
-        // Validate the buildx driver once if any V2 configs exist (V2 always uses buildx).
+        // Validate the buildx plugin once if any V2 configs exist (V2 always
+        // uses buildx). `check_buildx_version` confirms the plugin is
+        // reachable (mirrors GoReleaser commit e09e23a / #6526), and
+        // `check_buildx_driver` validates the active driver supports
+        // multi-platform builds. Both are warn-only: downstream `buildx
+        // build` surfaces a hard error if it cannot actually run.
         if !dry_run && crates.iter().any(|c| c.docker_v2.is_some()) {
+            check_buildx_version(&log);
             check_buildx_driver(&log);
         }
 

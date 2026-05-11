@@ -104,6 +104,86 @@ pub(crate) fn is_docker_daemon_available() -> bool {
 // check_buildx_driver
 // ---------------------------------------------------------------------------
 
+/// Outcome of probing `docker buildx version`.
+///
+/// Modelled as a small enum so [`format_buildx_version_warning`] is pure and
+/// table-testable independent of the host's docker install. Production code
+/// produces values from [`check_buildx_version`]; tests can construct them
+/// directly to exercise the warning surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BuildxVersionProbe {
+    /// `docker buildx version` exited 0.
+    Available,
+    /// `Command::new("docker")` failed to launch (binary missing or unspawnable).
+    DockerMissing,
+    /// `docker` ran but `buildx version` returned a non-zero status. Stderr
+    /// is captured verbatim so the user-facing warning can echo it.
+    BuildxMissing { stderr: String },
+}
+
+/// Format the user-facing warning for a buildx-version probe outcome.
+///
+/// Returns `None` when buildx is available (no warning needed). The
+/// "DockerMissing" and "BuildxMissing" variants both produce warnings that
+/// name buildx explicitly so the user can act, mirroring GoReleaser's
+/// `docker buildx version` healthcheck added in commit e09e23a (#6526).
+pub(crate) fn format_buildx_version_warning(probe: &BuildxVersionProbe) -> Option<String> {
+    match probe {
+        BuildxVersionProbe::Available => None,
+        BuildxVersionProbe::DockerMissing => Some(
+            "docker is not installed or not in PATH; docker_v2 configs require docker \
+             with the buildx plugin"
+                .to_string(),
+        ),
+        BuildxVersionProbe::BuildxMissing { stderr } => Some(format!(
+            "docker buildx version probe failed; docker_v2 configs require the buildx \
+             plugin to be installed. stderr: {}",
+            stderr.trim()
+        )),
+    }
+}
+
+/// Run the buildx-version probe and emit a warning on the supplied logger if
+/// the probe reports an actionable failure. The probe is supplied as a
+/// closure so tests can inject deterministic outcomes; production callers
+/// pass [`probe_buildx_version`] (which shells out to `docker buildx
+/// version`).
+pub(crate) fn run_buildx_version_check<F>(log: &StageLogger, probe: F)
+where
+    F: FnOnce() -> BuildxVersionProbe,
+{
+    if let Some(msg) = format_buildx_version_warning(&probe()) {
+        log.warn(&msg);
+    }
+}
+
+/// Probe `docker buildx version` and classify the outcome.
+///
+/// Used by [`check_buildx_version`] to feed [`run_buildx_version_check`].
+/// Lives next to the other `Command::new` probes in this module so the
+/// `module-boundaries.md` allow-list stays accurate.
+pub(crate) fn probe_buildx_version() -> BuildxVersionProbe {
+    // Capability probe — no context env injection needed (reads version only).
+    let output = Command::new("docker").args(["buildx", "version"]).output();
+    match output {
+        Err(_) => BuildxVersionProbe::DockerMissing,
+        Ok(o) if o.status.success() => BuildxVersionProbe::Available,
+        Ok(o) => BuildxVersionProbe::BuildxMissing {
+            stderr: String::from_utf8_lossy(&o.stderr).to_string(),
+        },
+    }
+}
+
+/// Convenience wrapper: probe `docker buildx version` and warn on the supplied
+/// logger if buildx is unavailable. Complements [`check_buildx_driver`]: this
+/// confirms the plugin is reachable, while `check_buildx_driver` validates
+/// the active driver. Both are lenient (warn-only) because docker setups vary
+/// and downstream `buildx build` will surface a hard error if it actually
+/// cannot run.
+pub(crate) fn check_buildx_version(log: &StageLogger) {
+    run_buildx_version_check(log, probe_buildx_version);
+}
+
 /// Check the current buildx driver and warn if it is not one of the standard
 /// types ("docker-container" or "docker").
 ///

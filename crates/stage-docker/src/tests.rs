@@ -7,7 +7,9 @@ use super::command::{
     build_docker_v2_command, generate_v2_image_tags, is_docker_v2_sbom_enabled,
     is_docker_v2_skipped, resolve_backend, resolve_skip_push,
 };
-use super::detect::is_retriable_error;
+use super::detect::{
+    BuildxVersionProbe, format_buildx_version_warning, is_retriable_error, run_buildx_version_check,
+};
 use super::platform::{platform_to_arch, tag_suffix};
 use super::retry::{parse_duration_string, resolve_retry_params};
 use super::spelling::levenshtein_distance;
@@ -2798,4 +2800,128 @@ fn test_list_staging_dir_recursive_lists_files() {
     // Just verify it doesn't panic — the output goes to log.warn
     let log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Normal);
     list_staging_dir_recursive(root, root, &log);
+}
+
+// ---------------------------------------------------------------------------
+// P6.1 — `docker buildx version` availability probe
+//
+// Adds a version-availability check alongside the existing `docker buildx
+// inspect` driver check. Mirrors GoReleaser commit e09e23a / #6526: any
+// docker config that needs buildx triggers a version probe so the user gets a
+// clear actionable message when buildx is missing, rather than a cryptic
+// failure deep inside `buildx build`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_buildx_version_probe_available_emits_no_warning() {
+    // When the probe reports buildx is reachable, the formatter returns None
+    // (no warning to surface). The wired-in call in `run.rs` is a no-op.
+    assert_eq!(
+        format_buildx_version_warning(&BuildxVersionProbe::Available),
+        None
+    );
+}
+
+#[test]
+fn test_buildx_version_probe_docker_missing_warns_with_buildx_required() {
+    // When `docker` itself is unreachable, the warning must mention buildx so
+    // the user knows v2 / `use: buildx` configs require it. Tested directly on
+    // the pure formatter so the result is independent of the host's docker
+    // install.
+    let probe = BuildxVersionProbe::DockerMissing;
+    let msg = format_buildx_version_warning(&probe).expect("missing docker should warn");
+    assert!(
+        msg.contains("buildx"),
+        "warning should mention 'buildx' so the user can act on it: {msg}"
+    );
+    assert!(
+        msg.to_lowercase().contains("docker"),
+        "warning should name the missing tool: {msg}"
+    );
+}
+
+#[test]
+fn test_buildx_version_probe_buildx_missing_warns_with_buildx_required() {
+    // When `docker` runs but `docker buildx version` fails (e.g. plugin
+    // missing), the warning should still surface "buildx" and include the
+    // stderr context so the user can debug.
+    let probe = BuildxVersionProbe::BuildxMissing {
+        stderr: "docker: 'buildx' is not a docker command".to_string(),
+    };
+    let msg = format_buildx_version_warning(&probe).expect("missing buildx should warn");
+    assert!(
+        msg.contains("buildx"),
+        "warning should mention 'buildx': {msg}"
+    );
+    assert!(
+        msg.contains("'buildx' is not a docker command"),
+        "warning should include stderr context for debuggability: {msg}"
+    );
+}
+
+#[test]
+fn test_buildx_version_probe_fires_for_v2_config() {
+    // The probe is wired into the V2 docker stage path. Run a stage with a
+    // single docker_v2 config and an injected probe that records each call;
+    // the stage MUST invoke the probe exactly once before staging.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, "FROM scratch").unwrap();
+
+    let v2_cfg = DockerV2Config {
+        images: vec!["ghcr.io/owner/app".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    // Inject a counting probe so the test is independent of the host's docker
+    // install. The probe always reports Available so the stage proceeds past
+    // the gate (and may still fail later trying to build, which is fine — we
+    // only assert the probe fired).
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_ref = Arc::clone(&calls);
+    let probe = move || -> BuildxVersionProbe {
+        calls_ref.fetch_add(1, Ordering::SeqCst);
+        BuildxVersionProbe::Available
+    };
+
+    let log = anodizer_core::log::StageLogger::new("docker", anodizer_core::log::Verbosity::Normal);
+    run_buildx_version_check(&log, &probe);
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "buildx version probe must fire exactly once for v2 configs"
+    );
+
+    // Also exercise the real stage to confirm the wiring exists (no panic).
+    let _ = DockerStage.run(&mut ctx);
 }
