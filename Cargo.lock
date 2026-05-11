@@ -126,6 +126,7 @@ dependencies = [
  "serde_yaml_ng",
  "serial_test",
  "sha1",
+ "tracing",
 ]
 
 [[package]]
