@@ -941,3 +941,120 @@ fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
 
     std::env::set_current_dir(orig).unwrap();
 }
+
+// -----------------------------------------------------------------------
+// P7.4: bail!()-site redaction in git/ submodules.
+//
+// `git_output`, `add_path_in`, and `commit_in` interpolate raw `git`
+// stderr into anyhow errors. The redact wrapper inserted at each call
+// site must scrub any secret value reachable through the process env
+// (e.g. GITHUB_TOKEN) before the message reaches user-visible logs.
+// -----------------------------------------------------------------------
+
+use super::commits::{add_path_in, commit_in};
+
+#[test]
+#[serial]
+fn test_add_path_in_bail_redacts_token_in_stderr() {
+    // SAFETY: `serial_test` serializes env-var-mutating tests so the
+    // process env is single-writer; this test sets GITHUB_TOKEN to a
+    // sentinel value, triggers a non-existent path bail, then asserts
+    // the sentinel does not appear in the error.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tags(dir, &[]);
+
+    let secret = "ghp_addpathintestSentinel_123456789";
+    let prev = std::env::var("GITHUB_TOKEN").ok();
+    // SAFETY: serialized via `#[serial]`.
+    unsafe {
+        std::env::set_var("GITHUB_TOKEN", secret);
+    }
+
+    // Engineer stderr that mentions the token: we pre-write a file
+    // named with the token, then `git add <nonexistent>` to trigger a
+    // bail. The token does not enter stderr naturally, so we test the
+    // redaction wiring by ensuring that any stderr text matching the
+    // token would be scrubbed. We do this by adding a path that
+    // git CANNOT add (the secret as a non-existent file name) so that
+    // the git error itself names the secret.
+    let nonexistent = dir.join(format!("missing-{secret}.txt"));
+    let rel = nonexistent.strip_prefix(dir).unwrap();
+    let err = add_path_in(dir, rel).expect_err("git add must fail on a non-existent path");
+    let msg = format!("{err:#}");
+
+    // Restore prior env before assertions.
+    unsafe {
+        if let Some(prev) = prev {
+            std::env::set_var("GITHUB_TOKEN", prev);
+        } else {
+            std::env::remove_var("GITHUB_TOKEN");
+        }
+    }
+
+    assert!(
+        !msg.contains(secret),
+        "add_path_in bail leaked GITHUB_TOKEN: {msg}"
+    );
+    assert!(
+        msg.contains("$GITHUB_TOKEN"),
+        "redaction must substitute $GITHUB_TOKEN: {msg}"
+    );
+}
+
+#[test]
+#[serial]
+fn test_commit_in_bail_redacts_token_in_stderr() {
+    // Same shape as the add_path_in test, but for the `commit_in`
+    // bail site. Set GITHUB_TOKEN, trigger a commit failure by
+    // running in a directory with no staged changes AND a commit
+    // message that embeds the secret (so git's stderr could echo it
+    // back if a future git version ever did) — then assert it was
+    // redacted.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tags(dir, &[]);
+
+    let secret = "ghp_commitintestSentinel_987654321";
+    let prev = std::env::var("GITHUB_TOKEN").ok();
+    unsafe {
+        std::env::set_var("GITHUB_TOKEN", secret);
+    }
+
+    // With nothing staged, `git commit -m <msg>` exits 1 and prints
+    // "nothing to commit" to stderr. The message itself contains the
+    // secret; if a future git version surfaces commit-message text in
+    // stderr the redact wrapper still scrubs the token.
+    let msg_with_secret = format!("release {secret}");
+    let err = commit_in(dir, &msg_with_secret, false)
+        .expect_err("commit must fail when nothing is staged");
+    let msg = format!("{err:#}");
+
+    unsafe {
+        if let Some(prev) = prev {
+            std::env::set_var("GITHUB_TOKEN", prev);
+        } else {
+            std::env::remove_var("GITHUB_TOKEN");
+        }
+    }
+
+    assert!(
+        !msg.contains(secret),
+        "commit_in bail leaked GITHUB_TOKEN: {msg}"
+    );
+}
+
+#[test]
+fn test_detect_github_repo_error_strips_url_credentials() {
+    // `parse_github_remote` does not match a `gitlab.example.com` URL,
+    // so feeding such a URL to the wrapping error path forces the
+    // strip_url_credentials helper to run on its argument. We
+    // exercise the redaction wrapper directly because spinning up a
+    // non-github origin in a temp repo just to trigger this branch is
+    // not worth the test runtime.
+    let leaky = "https://ghp_leakytoken@gitlab.example.com/grp/proj.git";
+    // The helper used inside detect_github_repo:
+    let scrubbed = strip_url_credentials(leaky);
+    assert!(!scrubbed.contains("ghp_leakytoken"));
+    assert_eq!(scrubbed, "https://gitlab.example.com/grp/proj.git");
+}

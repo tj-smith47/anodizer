@@ -1031,8 +1031,10 @@ impl Stage for super::BuildStage {
                             let job_mod_timestamp = job.mod_timestamp.clone();
                             let job_amd64_variant = job.amd64_variant.clone();
                             let thread_tvars = template_vars.clone();
-                            // StageLogger is not Clone, so create a fresh one per thread
-                            let thread_log = anodizer_core::log::StageLogger::new("build", log.verbosity());
+                            // Per-thread logger: clone the parent so it inherits
+                            // the env-pairs attached for redaction (P7.4).
+                            let thread_log = log.clone();
+                            let warn_log = log.clone();
 
                             s.spawn(move || -> Result<BuildResult> {
                                 let program = program.ok_or_else(|| anyhow::anyhow!(
@@ -1068,8 +1070,14 @@ impl Stage for super::BuildStage {
                                     .with_context(|| format!("failed to spawn {}", program))?;
 
                                 if !output.status.success() {
-                                    let stderr = String::from_utf8_lossy(&output.stderr);
-                                    let stdout = String::from_utf8_lossy(&output.stdout);
+                                    // Redact secrets in stderr/stdout before
+                                    // interpolating into the bail message
+                                    // (P7.4). thread_log inherits the env
+                                    // attached at `ctx.logger("build")`.
+                                    let stderr = thread_log
+                                        .redact(&String::from_utf8_lossy(&output.stderr));
+                                    let stdout = thread_log
+                                        .redact(&String::from_utf8_lossy(&output.stdout));
                                     let mut msg = format!(
                                         "{} failed with exit code: {}",
                                         program,
@@ -1102,7 +1110,7 @@ impl Stage for super::BuildStage {
                                     if let Some(epoch) = resolve_reproducible_epoch(&commit_ts) {
                                         anodizer_core::util::set_file_mtime_epoch(&bin_path, epoch)?;
                                     } else {
-                                        log.warn(
+                                        warn_log.warn(
                                             "reproducible build requested but could not determine epoch \
                                              from SOURCE_DATE_EPOCH or CommitTimestamp; mtime will not be set",
                                         );

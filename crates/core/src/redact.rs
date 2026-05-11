@@ -57,6 +57,62 @@ pub fn string(input: &str, env: &[(String, String)]) -> String {
     result
 }
 
+/// Convenience wrapper: redact secrets in `input` using the current
+/// process env (`std::env::vars()`) PLUS strip inline URL credentials.
+///
+/// Used by modules that don't have a `Context` in scope (e.g. the `git/`
+/// shell-out helpers) and still want the same redaction surface as the
+/// `StageLogger`. Equivalent to `redact_url_credentials(input)` followed
+/// by `string(..., &process_env_vec)`.
+pub fn redact_process_env(input: &str) -> String {
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    let stripped = redact_url_credentials(input);
+    string(&stripped, &env)
+}
+
+/// Strip embedded userinfo (credentials) from any URLs found in `input`.
+///
+/// For each occurrence of `<scheme>://<userinfo>@<host>...`, the substring
+/// between `://` and the first `@` is replaced with `<redacted>`. Non-URL
+/// text is left untouched, and URLs without a userinfo component are
+/// unchanged. Handles `http`, `https`, and any other `<scheme>://` form.
+///
+/// Use this as a defense-in-depth complement to [`string`] when the secret
+/// is inlined in a URL but the bare token value is not necessarily exported
+/// as an env var (e.g. a `git_url` config string the user templated with a
+/// literal `https://user:pass@host`).
+pub fn redact_url_credentials(input: &str) -> String {
+    // Walk the string and rewrite each `<scheme>://<userinfo>@` segment.
+    // For each `://` we find, look up to the next path / query / fragment /
+    // whitespace boundary; if that authority segment contains an `@`, the
+    // text before the LAST `@` is the userinfo (RFC 3986 §3.2.1 allows
+    // unreserved `@` in the password subcomponent only when percent-encoded,
+    // but real-world tokens contain literal `@` often enough that we treat
+    // the last `@` as the host separator).
+    let mut result = String::with_capacity(input.len());
+    let mut rest = input;
+    while let Some(scheme_end) = rest.find("://") {
+        let after_scheme_start = scheme_end + 3;
+        result.push_str(&rest[..after_scheme_start]);
+        let after_scheme = &rest[after_scheme_start..];
+        let terminator = after_scheme
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..terminator];
+        if let Some(last_at) = authority.rfind('@') {
+            // userinfo = authority[..last_at], host-start = last_at + 1
+            result.push_str("<redacted>@");
+            result.push_str(&authority[last_at + 1..]);
+            rest = &after_scheme[terminator..];
+        } else {
+            result.push_str(authority);
+            rest = &after_scheme[terminator..];
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +230,74 @@ mod tests {
         ];
         let result = string("prefix a_longer_secret_value_here suffix", &env);
         assert_eq!(result, "prefix $A_TOKEN suffix");
+    }
+
+    #[test]
+    fn test_redact_url_credentials_https_with_token() {
+        let input = "remote: https://ghp_abc123def@github.com/owner/repo.git";
+        let result = redact_url_credentials(input);
+        assert_eq!(
+            result,
+            "remote: https://<redacted>@github.com/owner/repo.git"
+        );
+        assert!(!result.contains("ghp_abc123def"));
+    }
+
+    #[test]
+    fn test_redact_url_credentials_user_pass_pair() {
+        let input = "pushing to https://user:p@ssw0rd@gitlab.example.com/foo/bar";
+        let result = redact_url_credentials(input);
+        assert_eq!(
+            result, "pushing to https://<redacted>@gitlab.example.com/foo/bar",
+            "userinfo must cover the entire user:pass segment up to the host-@"
+        );
+    }
+
+    #[test]
+    fn test_redact_url_credentials_no_userinfo_unchanged() {
+        let input = "fetching https://github.com/owner/repo.git";
+        assert_eq!(redact_url_credentials(input), input);
+    }
+
+    #[test]
+    fn test_redact_url_credentials_ssh_unchanged() {
+        // SSH-style `git@github.com:owner/repo.git` has no `://`, so the
+        // helper leaves it alone. The `git@` is part of the SSH user, not
+        // an embedded credential. Mirrors `git::remote::strip_url_credentials`.
+        let input = "fetching git@github.com:owner/repo.git";
+        assert_eq!(redact_url_credentials(input), input);
+    }
+
+    #[test]
+    fn test_redact_url_credentials_multiple_urls_in_one_line() {
+        let input = "from https://token1@a.com/x to https://token2@b.com/y";
+        let result = redact_url_credentials(input);
+        assert_eq!(
+            result, "from https://<redacted>@a.com/x to https://<redacted>@b.com/y",
+            "both URLs must be redacted, leaving the connecting prose intact"
+        );
+    }
+
+    #[test]
+    fn test_redact_url_credentials_does_not_consume_path_at_sign() {
+        // `@` in a path segment (after the first `/`) must NOT be treated
+        // as a userinfo terminator.
+        let input = "GET https://api.example.com/users/foo@bar.com/profile";
+        assert_eq!(
+            redact_url_credentials(input),
+            input,
+            "an `@` after the first `/` is part of the path, not userinfo"
+        );
+    }
+
+    #[test]
+    fn test_redact_url_credentials_empty_input() {
+        assert_eq!(redact_url_credentials(""), "");
+    }
+
+    #[test]
+    fn test_redact_url_credentials_plain_text() {
+        let input = "no URLs here, just words";
+        assert_eq!(redact_url_credentials(input), input);
     }
 }

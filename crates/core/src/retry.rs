@@ -30,7 +30,19 @@ use std::time::Duration;
 /// Retry policy used by `retry_sync` / `retry_async`.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
-    /// Total attempts, including the first. Must be ≥ 1.
+    /// Total attempts, including the first.
+    ///
+    /// Invariant: must be `>= 1`. The clamp is enforced at two layers so
+    /// every construction path is safe:
+    ///
+    /// 1. [`crate::config::RetryConfig::to_policy`] clamps user YAML
+    ///    (`attempts: 0` -> `1`) at the config-surface boundary.
+    /// 2. [`retry_sync`] / [`retry_async`] clamp again at the loop boundary
+    ///    to protect direct `RetryPolicy { max_attempts: 0, .. }`
+    ///    constructions (e.g. test fixtures).
+    ///
+    /// Callers therefore do NOT need to clamp `max_attempts` again at the
+    /// call site.
     pub max_attempts: u32,
     /// Delay before the second attempt (no wait before the first).
     pub base_delay: Duration,

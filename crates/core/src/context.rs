@@ -336,9 +336,29 @@ impl Context {
         Verbosity::from_flags(self.options.quiet, self.options.verbose, self.options.debug)
     }
 
-    /// Create a [`StageLogger`] for the given stage name.
+    /// Create a [`StageLogger`] for the given stage name, pre-attached to
+    /// the context's env-pairs list so that subprocess stderr / stdout
+    /// flowing through [`StageLogger::check_output`] is automatically
+    /// redacted (P7.4). The env list combines the template-engine env
+    /// (process + config + `.env` files) and the current `std::env::vars`
+    /// snapshot, so any secret value reachable to a hook or subprocess is
+    /// available for scrubbing.
     pub fn logger(&self, stage: &'static str) -> StageLogger {
-        StageLogger::new(stage, self.verbosity())
+        StageLogger::new(stage, self.verbosity()).with_env(self.env_for_redact())
+    }
+
+    /// Build the env-pairs list used to seed every [`StageLogger`] created
+    /// via [`Context::logger`]. Combines the template-engine env map
+    /// (process env + config env + `.env` file values) with the current
+    /// `std::env::vars` snapshot, deduplicating by key (template-engine
+    /// values win because they reflect any user overrides).
+    fn env_for_redact(&self) -> Vec<(String, String)> {
+        use std::collections::HashMap;
+        let mut map: HashMap<String, String> = std::env::vars().collect();
+        for (k, v) in self.template_vars.all_env() {
+            map.insert(k.clone(), v.clone());
+        }
+        map.into_iter().collect()
     }
 
     /// Populate template variables from `self.git_info`.

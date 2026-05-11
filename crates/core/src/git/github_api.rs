@@ -21,11 +21,30 @@ pub fn gh_api_get(endpoint: &str, token: Option<&str>) -> Result<serde_json::Val
         .output()
         .context("failed to spawn gh CLI")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        let stderr = redact_gh_stderr(&stderr_raw, token);
         bail!("gh api GET {} failed: {}", endpoint, stderr.trim());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).context("failed to parse gh api response")
+}
+
+/// Redact secrets from `gh` CLI stderr before interpolating into a bail
+/// message (P7.4). `token` is the `GITHUB_TOKEN` value passed to the
+/// subprocess; if the user-supplied token leaks (e.g. via a verbose `gh`
+/// error that echoes the auth header), it is replaced with `$GITHUB_TOKEN`
+/// regardless of whether the value matches the `redact::is_secret`
+/// heuristics. Also strips inline URL credentials and any other secret
+/// env-var values reachable from the parent process env.
+fn redact_gh_stderr(stderr: &str, token: Option<&str>) -> String {
+    let stripped = crate::redact::redact_url_credentials(stderr);
+    let mut env: Vec<(String, String)> = std::env::vars().collect();
+    if let Some(tok) = token
+        && !tok.is_empty()
+    {
+        env.push(("GITHUB_TOKEN".to_string(), tok.to_string()));
+    }
+    crate::redact::string(&stripped, &env)
 }
 
 /// GET a GitHub API endpoint via the `gh` CLI, with pagination.
@@ -45,7 +64,8 @@ pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<s
         .context("failed to spawn gh CLI")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        let stderr = redact_gh_stderr(&stderr_raw, token);
         bail!("gh api GET {} failed: {}", endpoint, stderr.trim());
     }
 
@@ -111,7 +131,12 @@ fn gh_api_post(endpoint: &str, body: &serde_json::Value) -> Result<serde_json::V
 
     let output = child.wait_with_output()?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        // `gh_api_post` does not currently accept a token argument, but
+        // routing through `redact_process_env` still covers any token
+        // exported as `GITHUB_TOKEN` / `GH_TOKEN` in the parent env, plus
+        // inline URL credentials.
+        let stderr = crate::redact::redact_process_env(&stderr_raw);
         bail!("gh api POST {} failed: {}", endpoint, stderr.trim());
     }
 
