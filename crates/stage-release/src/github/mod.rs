@@ -28,8 +28,26 @@ mod retry_classify;
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit;
-pub(crate) use retry_call::retry_octocrab_call;
-pub(crate) use retry_classify::classify_octocrab_error;
+pub(crate) use retry_call::{format_retry_warn, is_octocrab_404, retry_octocrab_call};
+
+/// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
+///
+/// Returns `(max_upload_attempts, initial_retry_delay, max_retry_delay)` in
+/// the order the upload loop binds them. The single point of translation
+/// from policy to locals lives here so a future formula change is visible
+/// in one place (and so tests can pin the formula against the backend without
+/// re-deriving it inline).
+///
+/// `max_upload_attempts` mirrors [`RetryPolicy::max_attempts`] directly:
+/// the `>= 1` invariant is enforced by [`anodizer_core::config::RetryConfig::to_policy`]
+/// (clamps `attempts: 0` -> `1`) and `retry_async` / `retry_sync` (defensive
+/// clamp at the loop boundary). No additional clamp is needed at the call
+/// site.
+pub(crate) fn upload_retry_locals(
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> (u32, std::time::Duration, std::time::Duration) {
+    (policy.max_attempts, policy.base_delay, policy.max_delay)
+}
 // NOTE: A `resolve_github_username` helper used to live alongside this mod
 // (search-users API fallback for resolving commit author emails). Upstream
 // removed the Search API call entirely in commit 17315a5 (parity item P3),
@@ -41,7 +59,7 @@ pub(crate) use retry_classify::classify_octocrab_error;
 
 /// Runtime / context infrastructure for [`run_github_backend`].
 ///
-/// Bundles the four "ambient" handles every backend call needs — the
+/// Bundles the four "ambient" handles every backend call needs: the
 /// shared tokio runtime, the global anodizer [`Context`], the per-stage
 /// logger, and the resolved GitHub token. Pulling them into a struct
 /// drains four positional arguments off the call site.
@@ -96,14 +114,14 @@ pub(crate) struct UploadOpts {
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum AlreadyExistsAction {
-    /// Local + remote bytes match — treat as a no-op (idempotency); a
+    /// Local + remote bytes match: treat as a no-op (idempotency); a
     /// prior attempt in this same release already uploaded the file.
     SkipIdempotent,
-    /// `replace_existing_artifacts: false` and bytes differ — bail with
+    /// `replace_existing_artifacts: false` and bytes differ: bail with
     /// the conflict instead of overwriting.
     BailReplaceForbidden,
     /// Different bytes and the user opted in via
-    /// `replace_existing_artifacts: true` — delete the stale asset and
+    /// `replace_existing_artifacts: true`: delete the stale asset and
     /// retry the upload.
     DeleteAndRetry,
 }
@@ -116,7 +134,7 @@ pub(crate) fn classify_already_exists(
     remote_size: Option<u64>,
     local_size: u64,
 ) -> AlreadyExistsAction {
-    // Idempotency check first — bytes that already match the local
+    // Idempotency check first: bytes that already match the local
     // artifact aren't an "overwrite", so the user's
     // `replace_existing_artifacts: false` does NOT block this path.
     if remote_size == Some(local_size) {
@@ -224,7 +242,7 @@ pub(crate) fn run_github_backend(
         // call only: once a page returns OK, we move to the next page; we
         // never re-fetch a page we've already received.
         async fn find_draft_by_name(
-            octo: Arc<octocrab::Octocrab>,
+            octo: &Arc<octocrab::Octocrab>,
             owner: &str,
             repo: &str,
             name: &str,
@@ -243,7 +261,6 @@ pub(crate) fn run_github_backend(
                         async move { octo.get(route, None::<&()>).await }
                     })
                     .await
-                    .map_err(anyhow::Error::from_boxed)
                     .with_context(|| {
                         format!(
                             "release: list releases on {}/{} (page {})",
@@ -256,8 +273,8 @@ pub(crate) fn run_github_backend(
                 {
                     return Ok(Some(found.clone()));
                 }
-                // If we got fewer than 100 results, there are no more pages —
-                // matches GR's `resp.NextPage == 0` terminator.
+                // If we got fewer than 100 results, there are no more pages
+                // (matches GR's `resp.NextPage == 0` terminator).
                 if releases.len() < 100 {
                     break;
                 }
@@ -274,7 +291,7 @@ pub(crate) fn run_github_backend(
         if replace_existing_draft
             && draft
             && let Some(existing) =
-                find_draft_by_name(octo.clone(), &github.owner, &github.name, release_name, &policy)
+                find_draft_by_name(&octo, &github.owner, &github.name, release_name, &policy)
                     .await?
         {
             log.status(&format!(
@@ -296,7 +313,6 @@ pub(crate) fn run_github_backend(
                 }
             })
             .await
-            .map_err(anyhow::Error::from_boxed)
             .with_context(|| {
                 format!(
                     "release: delete existing draft release '{}' on {}/{}",
@@ -308,7 +324,7 @@ pub(crate) fn run_github_backend(
         // Handle use_existing_draft: look for an existing draft release
         // with the same NAME and update it instead of creating a new one.
         let existing_draft = if use_existing_draft {
-            match find_draft_by_name(octo.clone(), &github.owner, &github.name, release_name, &policy)
+            match find_draft_by_name(&octo, &github.owner, &github.name, release_name, &policy)
                 .await?
             {
                 Some(existing) => {
@@ -337,19 +353,58 @@ pub(crate) fn run_github_backend(
             // For new releases, check if a release exists for mode != "replace".
             if release_mode != "replace" {
                 check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
-                match octo
-                    .repos(&github.owner, &github.name)
-                    .releases()
-                    .get_by_tag(tag)
-                    .await
-                {
+                // Look up an existing release by tag through the shared retry
+                // helper so a transient 5xx / 429 / transport failure retries
+                // instead of mis-classifying as "no existing release", which
+                // would fall through to the create-release POST and surface
+                // GitHub's confusing "tag already exists" 422.
+                //
+                // Error handling: a real 404 means "no release for that tag"
+                // and yields `(release_body, None)` so the create-release POST
+                // runs. Any other error (auth, validation, exhausted retries
+                // on 5xx) propagates with `with_context` so the user sees the
+                // real GitHub error instead of a downstream 422.
+                let owner = github.owner.clone();
+                let repo = github.name.clone();
+                let tag_owned = tag.to_string();
+                let lookup: Result<octocrab::models::repos::Release, octocrab::Error> =
+                    retry_octocrab_call(&policy, "get release by tag", || {
+                        let octo = octo.clone();
+                        let owner = owner.clone();
+                        let repo = repo.clone();
+                        let tag_owned = tag_owned.clone();
+                        async move {
+                            octo.repos(&owner, &repo)
+                                .releases()
+                                .get_by_tag(&tag_owned)
+                                .await
+                        }
+                    })
+                    .await;
+                match lookup {
                     Ok(existing) => {
                         let existing_body = existing.body.as_deref();
                         let body =
                             compose_body_for_mode(release_mode, existing_body, release_body);
                         (body, Some(existing))
                     }
-                    Err(_) => (release_body.to_string(), None),
+                    Err(err) if is_octocrab_404(&err) => {
+                        // A real 404 is the only non-error fall-through: no
+                        // release exists for that tag, so the create-release
+                        // POST below is the right next step. Every other
+                        // status (auth, validation, exhausted retries on 5xx)
+                        // propagates so the user sees the real GitHub error
+                        // instead of a downstream 422 "tag already exists".
+                        (release_body.to_string(), None)
+                    }
+                    Err(err) => {
+                        return Err(anyhow::Error::new(err)).with_context(|| {
+                            format!(
+                                "release: look up existing release by tag '{}' on {}/{}",
+                                tag, github.owner, github.name
+                            )
+                        });
+                    }
                 }
             } else {
                 (release_body.to_string(), None)
@@ -404,7 +459,6 @@ pub(crate) fn run_github_backend(
                 }
             })
             .await
-            .map_err(anyhow::Error::from_boxed)
             .with_context(|| {
                 format!(
                     "release: update existing draft release '{}' on {}/{}",
@@ -444,7 +498,6 @@ pub(crate) fn run_github_backend(
                 }
             })
             .await
-            .map_err(anyhow::Error::from_boxed)
             .with_context(|| {
                 format!(
                     "release: update existing release '{}' on {}/{}",
@@ -464,7 +517,6 @@ pub(crate) fn run_github_backend(
                 }
             })
             .await
-            .map_err(anyhow::Error::from_boxed)
             .with_context(|| {
                 format!(
                     "release: create GitHub release '{}' on {}/{}",
@@ -574,17 +626,17 @@ pub(crate) fn run_github_backend(
                     // `delay`/`max_delay` shape the exponential backoff. The
                     // loop body remains bespoke (resume-stream + 422
                     // already-exists handling); only the knobs are
-                    // user-configurable now. `attempts.max(1)` mirrors
-                    // `RetryPolicy::to_policy` (config attempts=0 → 1).
-                    let max_upload_attempts: u32 = policy.max_attempts.max(1);
-                    let initial_retry_delay: std::time::Duration = policy.base_delay;
-                    let max_retry_delay: std::time::Duration = policy.max_delay;
+                    // user-configurable. The `>= 1` clamp lives at
+                    // `RetryConfig::to_policy` (see `RetryPolicy::max_attempts`
+                    // rustdoc); no additional clamp is needed here.
+                    let (max_upload_attempts, initial_retry_delay, max_retry_delay) =
+                        upload_retry_locals(&policy);
 
                     let mut last_err: Option<anyhow::Error> = None;
                     // One-shot overwrite guard: once we've successfully deleted a
                     // stale asset and the upload *still* hits `already_exists`, give
                     // up gracefully instead of looping. This happens when GitHub's
-                    // release-asset delete is eventually consistent — our delete
+                    // release-asset delete is eventually consistent: our delete
                     // returns Ok immediately but the subsequent upload still sees
                     // the stale asset for a short window. Rather than burn 10
                     // retries (and ultimately fail the whole release), accept the
@@ -615,7 +667,7 @@ pub(crate) fn run_github_backend(
                                 );
                                 // `already_exists` lives in GitHubError.errors[].code,
                                 // not in the outer Display. octocrab::Error::GitHub's
-                                // generated Display is just "GitHub" — inspect the
+                                // generated Display is just "GitHub", inspect the
                                 // source struct directly.
                                 let is_already_exists = matches!(
                                     &err,
@@ -642,7 +694,7 @@ pub(crate) fn run_github_backend(
                                         release_log().warn(&format!(
                                             "existing asset '{file_name}' on release '{tag_c}' \
                                              reappeared after delete+retry; \
-                                             skipping — stale asset kept"
+                                             skipping, stale asset kept"
                                         ));
                                         last_err = None;
                                         break;
@@ -687,7 +739,7 @@ pub(crate) fn run_github_backend(
                                         AlreadyExistsAction::BailReplaceForbidden => {
                                             // User explicitly set
                                             // `replace_existing_artifacts: false`
-                                            // and the bytes differ — surface the
+                                            // and the bytes differ: surface the
                                             // conflict rather than overwriting.
                                             // Mirrors GR's `Unrecoverable(err)`
                                             // return at `github.go:736`.
@@ -710,11 +762,11 @@ pub(crate) fn run_github_backend(
                                     }
 
                                     // Size mismatch + user opted in via
-                                    // `replace_existing_artifacts: true` — delete
+                                    // `replace_existing_artifacts: true`: delete
                                     // the stale asset and retry. If the delete
                                     // itself fails (perms, asset disappeared
                                     // mid-flight, etc.), warn and treat the
-                                    // upload as skipped — a stale asset is
+                                    // upload as skipped: a stale asset is
                                     // better than aborting the release.
                                     match delete_release_asset_by_name(
                                         &octo,
@@ -740,7 +792,7 @@ pub(crate) fn run_github_backend(
                                         Err(del_err) => {
                                             release_log().warn(&format!(
                                                 "could not overwrite existing asset '{file_name}' on release '{tag_c}' \
-                                                 (size mismatch and delete failed: {del_err}); skipping — stale asset kept"
+                                                 (size mismatch and delete failed: {del_err}); skipping, stale asset kept"
                                             ));
                                             last_err = None;
                                             break;
@@ -780,11 +832,23 @@ pub(crate) fn run_github_backend(
                                     // Transient transport / proxy issues during upload.
                                     // Serde / Json here means GitHub returned a non-JSON
                                     // body (typically an nginx/HAProxy 502/503 HTML page)
-                                    // while our error-mapping expected JSON — always
-                                    // transient, safe to retry. Log the variant so
-                                    // future diagnostics don't have to guess.
-                                    release_log().warn(&format!(
-                                        "transient upload error on '{file_name}' attempt {attempt}/{max_upload_attempts}: {err:?}"
+                                    // while our error-mapping expected JSON: always
+                                    // transient, safe to retry. Route the per-attempt
+                                    // warn through the shared `format_retry_warn` helper
+                                    // so this bespoke loop can't drift from the
+                                    // `retry_octocrab_call` helper's format.
+                                    let status = match &err {
+                                        octocrab::Error::GitHub { source, .. } => {
+                                            source.status_code.as_u16()
+                                        }
+                                        _ => 0,
+                                    };
+                                    let label = format!("upload of '{file_name}'");
+                                    release_log().warn(&format_retry_warn(
+                                        &label,
+                                        attempt,
+                                        max_upload_attempts,
+                                        status,
                                     ));
                                     last_err = Some(anyhow::anyhow!(err));
                                     if attempt < max_upload_attempts {
@@ -796,7 +860,7 @@ pub(crate) fn run_github_backend(
                                     }
                                     continue;
                                 } else {
-                                    // Non-retryable error — fail immediately.
+                                    // Non-retryable error: fail immediately.
                                     return Err(anyhow::anyhow!(err)).with_context(|| {
                                         format!(
                                             "release: upload artifact '{}' to release '{}'",
@@ -862,58 +926,32 @@ pub(crate) fn run_github_backend(
                 make_latest,
                 discussion_category_name,
             );
-            // Wire `Config.retry` (Wave 1 RetryConfig) into the publish PATCH:
-            // GitHub occasionally 502s during un-draft if the release has many
-            // assets attached, and the retry policy is the user-configurable
-            // surface for this. Under-default (10 attempts × 10s base × 5m
-            // cap) matches GoReleaser's `pkg/config.Retry` defaults. Re-uses
-            // the outer `policy` (resolved once at the top of the backend)
-            // so a single `retry:` block controls every retriable octocrab
-            // call site uniformly.
-            anodizer_core::retry::retry_async(&policy, |attempt| {
-                let publish_route = publish_route.clone();
-                let publish_body = publish_body.clone();
-                let octo = octo.clone();
-                async move {
-                    use std::ops::ControlFlow;
-                    match octo
-                        .patch::<octocrab::models::repos::Release, _, _>(
+            // Run the publish PATCH through the same `policy` used by every
+            // other retriable octocrab call site. GitHub occasionally 502s
+            // during un-draft when the release has many assets attached, and
+            // the user-configurable `retry:` block is the surface that
+            // controls how aggressively to retry. Defaults (10 attempts, 10s
+            // base, 5m cap) match GoReleaser's `pkg/config.Retry` defaults.
+            let _published: octocrab::models::repos::Release =
+                retry_octocrab_call(&policy, "publish PATCH", || {
+                    let publish_route = publish_route.clone();
+                    let publish_body = publish_body.clone();
+                    let octo = octo.clone();
+                    async move {
+                        octo.patch::<octocrab::models::repos::Release, _, _>(
                             publish_route,
                             Some(&publish_body),
                         )
                         .await
-                    {
-                        Ok(release) => Ok(release),
-                        Err(err) => {
-                            // Shared classifier — same rule as the
-                            // upload-asset retry above (Hyper / Http /
-                            // Service / Other / Serde / Json all force-
-                            // wrap into `Retriable` because their Display
-                            // strings don't match `is_network_error`'s
-                            // substring needles).
-                            let (wrapped, status) = classify_octocrab_error(err);
-                            if anodizer_core::retry::is_retriable(&*wrapped) {
-                                release_log().warn(&format!(
-                                    "release: publish PATCH failed (retriable, \
-                                     attempt {attempt}, status={status})"
-                                ));
-                                Err(ControlFlow::Continue(anyhow::Error::from_boxed(
-                                    wrapped,
-                                )))
-                            } else {
-                                Err(ControlFlow::Break(anyhow::Error::from_boxed(wrapped)))
-                            }
-                        }
                     }
-                }
-            })
-            .await
-            .with_context(|| {
-                format!(
-                    "release: publish (un-draft) release '{}' on {}/{}",
-                    tag, github.owner, github.name
-                )
-            })?;
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "release: publish (un-draft) release '{}' on {}/{}",
+                        tag, github.owner, github.name
+                    )
+                })?;
             log.status(&format!(
                 "published release '{}' (draft -> live)",
                 release_name
@@ -938,7 +976,7 @@ mod already_exists_tests {
     #[test]
     fn idempotent_when_remote_matches_local_regardless_of_flag() {
         // Even with `replace_existing_artifacts: false`, a byte-identical
-        // remote asset is a no-op — the user's guard rail is "don't
+        // remote asset is a no-op: the user's guard rail is "don't
         // overwrite different bytes", not "don't probe the API".
         assert_eq!(
             classify_already_exists(false, Some(100), 100),
@@ -959,7 +997,7 @@ mod already_exists_tests {
             AlreadyExistsAction::BailReplaceForbidden,
         );
         // `remote_size: None` (asset present but size unknown) is treated
-        // as a size-mismatch — better to bail than silently overwrite.
+        // as a size-mismatch: better to bail than silently overwrite.
         assert_eq!(
             classify_already_exists(false, None, 200),
             AlreadyExistsAction::BailReplaceForbidden,
@@ -976,5 +1014,239 @@ mod already_exists_tests {
             classify_already_exists(true, None, 200),
             AlreadyExistsAction::DeleteAndRetry,
         );
+    }
+}
+
+#[cfg(test)]
+mod get_by_tag_lookup_tests {
+    //! Pin the `get_by_tag` lookup decision rule introduced to prevent the
+    //! "transient 5xx falls through to create-release POST" bug.
+    //!
+    //! Two invariants:
+    //! 1. The lookup is retried per the user's `RetryPolicy` (transient 5xx /
+    //!    429 / transport failures retry). The retry-loop contract itself is
+    //!    pinned by `retry_call::tests` against a real TCP responder.
+    //! 2. Only a real 404 yields "no existing release" (None); every other
+    //!    error (auth, validation, exhausted retries on 5xx) propagates so
+    //!    the user sees the real GitHub error, NOT a downstream 422
+    //!    "tag already exists" from the create-release POST.
+    //!
+    //! The tests below focus on the routing predicate `is_octocrab_404`
+    //! against real `octocrab::Error::GitHub` values. The retry-then-error
+    //! coupling is exercised by `retry_call::tests` plus a single 404
+    //! fast-fail check here so the predicate's "404 only" invariant is
+    //! pinned end-to-end against the helper.
+    use super::*;
+    use anodizer_core::retry::RetryPolicy;
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn is_octocrab_404_matches_only_404_github_variant() {
+        // The pure predicate's contract: returns true for
+        // `Error::GitHub { source }` with status_code 404, false for every
+        // other variant or status.
+        let github_err_404 = synth_github_error(404).await;
+        assert!(
+            is_octocrab_404(&github_err_404),
+            "404 status_code on GitHub variant must classify as 404"
+        );
+        let github_err_503 = synth_github_error(503).await;
+        assert!(
+            !is_octocrab_404(&github_err_503),
+            "503 must NOT classify as 404 (would let the caller fall \
+             through to create-release and surface a downstream 422)"
+        );
+        let github_err_422 = synth_github_error(422).await;
+        assert!(
+            !is_octocrab_404(&github_err_422),
+            "422 must NOT classify as 404"
+        );
+        let github_err_500 = synth_github_error(500).await;
+        assert!(
+            !is_octocrab_404(&github_err_500),
+            "500 must NOT classify as 404"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_by_tag_404_fast_fails_through_helper_to_predicate() {
+        // End-to-end: drive a 404 through `retry_octocrab_call` and confirm
+        // the returned typed error satisfies `is_octocrab_404`, so the
+        // backend's match arm maps the lookup to "no existing release"
+        // (the only non-error fall-through to create-release).
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 23\r\n\r\n{\"message\":\"Not Found\"}",
+        ]);
+        let octo = build_test_octocrab(addr);
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result: Result<Vec<serde_json::Value>, octocrab::Error> =
+            retry_octocrab_call(&policy, "get release by tag", || async {
+                octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
+                    .await
+            })
+            .await;
+        assert!(result.is_err(), "404 must surface as Err from the helper");
+        let err = result.expect_err("err is Some by the assert above");
+        assert!(
+            is_octocrab_404(&err),
+            "404 must classify so the caller maps to None: got {err:?}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "404 must NOT retry (fast-fail honors classifier)"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_by_tag_5xx_retries_then_succeeds_under_helper() {
+        // Pin the regression: a transient 5xx on `get_by_tag` must retry
+        // through `retry_octocrab_call`, NOT fall through to the
+        // create-release POST (which would surface a 422 "tag already
+        // exists" on a tag whose existing release just had a flaky lookup).
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+        ]);
+        let octo = build_test_octocrab(addr);
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result: Result<serde_json::Value, octocrab::Error> =
+            retry_octocrab_call(&policy, "get release by tag", || async {
+                octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
+                    .await
+            })
+            .await;
+        assert!(
+            result.is_ok(),
+            "5xx must retry to success under the get_by_tag label: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "expected 2 retries past 5xx + 1 success"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_by_tag_500_forever_surfaces_real_error_not_404_fallthrough() {
+        // Pin the regression: if every retry sees 5xx, the helper must
+        // surface the typed 500 error (NOT swallow it into None). The
+        // backend's match arm has only one non-error fall-through (a real
+        // 404 via `is_octocrab_404`); 500-forever must propagate so the
+        // user sees the real GitHub error instead of a confusing downstream
+        // 422 "tag already exists" from create-release.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let octo = build_test_octocrab(addr);
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result: Result<serde_json::Value, octocrab::Error> =
+            retry_octocrab_call(&policy, "get release by tag", || async {
+                octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
+                    .await
+            })
+            .await;
+        assert!(
+            result.is_err(),
+            "500-forever must surface as Err, NOT swallow into None"
+        );
+        let err = result.expect_err("err is Some by the assert above");
+        assert!(
+            !is_octocrab_404(&err),
+            "500-forever must NOT classify as 404; the backend's only \
+             non-error fall-through is 404, so misclassifying here would \
+             trigger the original bug: get_by_tag 5xx -> create-release \
+             POST -> 422. Got: {err:?}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "max_attempts=3 must produce exactly 3 octocrab calls"
+        );
+    }
+
+    /// Synthesize an `octocrab::Error::GitHub` with a chosen status code by
+    /// round-tripping a minimal GitHub error body through the live API
+    /// envelope. octocrab's `*Snafu` builders are private, so we cannot
+    /// construct the variant directly; the canonical path is to drive an
+    /// HTTP response through octocrab and capture the resulting `Err`.
+    async fn synth_github_error(status: u16) -> octocrab::Error {
+        let body = serde_json::json!({
+            "message": "synthetic",
+            "documentation_url": "https://example/synthetic"
+        })
+        .to_string();
+        let resp = format!(
+            "HTTP/1.1 {status} STATUS\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let static_resp: &'static str = Box::leak(resp.into_boxed_str());
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![static_resp]);
+        let octo = build_test_octocrab(addr);
+        octo.get::<serde_json::Value, _, _>("/synthetic", None::<&()>)
+            .await
+            .expect_err("synth_github_error: octocrab must surface Err for non-2xx status")
+    }
+
+    /// Bind a loopback listener and feed each accepted connection one
+    /// scripted HTTP response, in order. Same shape as the test responder
+    /// in `retry_call::tests`.
+    fn spawn_oneshot_http_responder(responses: Vec<&'static str>) -> (SocketAddr, Arc<AtomicU32>) {
+        let listener =
+            TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port for retry-helper test");
+        let addr = listener
+            .local_addr()
+            .expect("local_addr on freshly bound listener");
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    fn build_test_octocrab(addr: SocketAddr) -> octocrab::Octocrab {
+        let builder = octocrab::OctocrabBuilder::new()
+            .base_uri(format!("http://{addr}/"))
+            .expect("OctocrabBuilder::base_uri accepts loopback URL");
+        builder
+            .build()
+            .expect("OctocrabBuilder::build succeeds on loopback URL")
     }
 }

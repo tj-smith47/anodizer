@@ -3155,7 +3155,7 @@ fn test_gitea_missing_token_errors() {
     );
 }
 
-// ---- build_publish_patch_body — P2.1 / P2.2 / P2.3 regression tests ----
+// ---- build_publish_patch_body regression tests ----
 //
 // Tracks GoReleaser commits 6ecba31 (preserve prerelease on publish) +
 // 2e17678 (preserve prerelease publish fields). The PATCH body sent when
@@ -3462,37 +3462,29 @@ fn test_populate_checksums_var_split_mode_preserves_map_keyed_by_checksumof() {
 }
 
 // ---------------------------------------------------------------------------
-// P1.4: ctx.config.retry → GitHub backend retry constants
+// RetryConfig -> RetryPolicy wiring for the github backend
 // ---------------------------------------------------------------------------
 //
 // The github backend (`crates/stage-release/src/github/mod.rs`) resolves a
 // single `policy = ctx.config.retry.unwrap_or_default().to_policy()` at the
-// top of `run_github_backend` and threads it through:
-//
-// 1. `find_draft_by_name`  (list-releases pagination via `retry_octocrab_call`)
-// 2. `octo.repos().releases().delete(id)`  (replace-existing-draft path)
-// 3. `octo.post(...releases)`               (create new release)
-// 4. `octo.patch(...releases/{id})`         (update existing draft / by tag)
-// 5. The bespoke `upload_asset` retry loop  (constants now read from policy)
-// 6. The publish (un-draft) PATCH           (already wired pre-P1.4)
+// top of `run_github_backend` and threads it through every retriable
+// octocrab call site (find-draft list pagination, replace-existing-draft
+// delete, create-release POST, update-release PATCH, the bespoke
+// upload-asset retry loop, the un-draft publish PATCH).
 //
 // The unit-level retry-loop contract (5xx-retries, 4xx-fast-fails, honors
 // `attempts`) is pinned by `github::retry_call::tests` against a real TCP
-// responder. The three tests below close the loop at the config-surface
-// layer: they pin the `RetryConfig → RetryPolicy` translation that
-// `run_github_backend` performs at line 1, so the upload constants
+// responder. The tests below pin the config-surface translation
+// (`RetryConfig::to_policy`) so the upload-loop locals
 // (`max_upload_attempts`, `initial_retry_delay`, `max_retry_delay`) and the
 // `retry_octocrab_call` policy argument trace back to the user's YAML.
 //
-// Pre-P1.4, the upload loop hard-coded `MAX_UPLOAD_ATTEMPTS=10` /
-// `INITIAL_RETRY_DELAY=50ms` / `MAX_RETRY_DELAY=30s`. The post-P1.4
-// invariant: the upload's `max_upload_attempts` equals
-// `ctx.config.retry.unwrap_or_default().to_policy().max_attempts.max(1)`.
+// Invariant pinned: the upload loop's `max_upload_attempts` equals
+// `ctx.config.retry.unwrap_or_default().to_policy().max_attempts`.
 
-/// Local helper that mirrors the exact resolution the github backend
-/// performs at the top of `run_github_backend`:
+/// Local helper that mirrors the resolution `run_github_backend` performs:
 /// `ctx.config.retry.unwrap_or_default().to_policy()`. Drift between the
-/// backend and this helper is the failure mode we are pinning against.
+/// backend and this helper is the failure mode the test pins against.
 fn resolve_policy_like_github_backend(
     retry: Option<anodizer_core::config::RetryConfig>,
 ) -> anodizer_core::retry::RetryPolicy {
@@ -3502,9 +3494,9 @@ fn resolve_policy_like_github_backend(
 #[test]
 fn test_retry_config_default_yields_goreleaser_defaults_for_github_backend() {
     // Pin the "no retry: block in YAML" branch: `unwrap_or_default()` must
-    // yield GR's defaults so the github backend's hardcoded constants
-    // (pre-P1.4) translate cleanly to the policy fields. A change to either
-    // the defaults or the github backend's `unwrap_or_default()` call site
+    // yield GR's defaults so the github backend's upload-loop constants
+    // translate cleanly to the policy fields. A change to either the
+    // defaults or the github backend's `unwrap_or_default()` call site
     // breaks this pin and requires a deliberate update.
     let policy = resolve_policy_like_github_backend(None);
     assert_eq!(
@@ -3550,9 +3542,12 @@ fn test_retry_config_attempts_one_short_circuits_github_backend_policy() {
 fn test_retry_config_custom_values_flow_into_upload_constants() {
     // Pin the upload-loop wiring: `policy.max_attempts` seeds
     // `max_upload_attempts`, `policy.base_delay` seeds `initial_retry_delay`,
-    // and `policy.max_delay` seeds `max_retry_delay`. Pre-P1.4 these were
-    // hardcoded as 10 / 50ms / 30s in the upload retry loop, ignoring user
-    // config. Post-P1.4, the YAML controls all three.
+    // and `policy.max_delay` seeds `max_retry_delay`. The YAML controls all
+    // three via `ctx.config.retry`.
+    //
+    // The test calls the same `upload_retry_locals` helper the backend uses,
+    // so a future formula change in the backend fails this test instead of
+    // silently drifting.
     use anodizer_core::config::{HumanDuration, RetryConfig};
     let cfg = RetryConfig {
         attempts: 4,
@@ -3562,9 +3557,8 @@ fn test_retry_config_custom_values_flow_into_upload_constants() {
     let policy = cfg.to_policy();
 
     // The values the github backend assigns into the upload loop locals:
-    let max_upload_attempts: u32 = policy.max_attempts.max(1);
-    let initial_retry_delay: std::time::Duration = policy.base_delay;
-    let max_retry_delay: std::time::Duration = policy.max_delay;
+    let (max_upload_attempts, initial_retry_delay, max_retry_delay) =
+        crate::github::upload_retry_locals(&policy);
 
     assert_eq!(max_upload_attempts, 4, "upload loop honors custom attempts");
     assert_eq!(

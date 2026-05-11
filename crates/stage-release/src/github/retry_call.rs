@@ -29,6 +29,25 @@
 //! PATCH retry, and any new wiring each had their own copy of the same five
 //! `matches!` arms, and the upload loop drifted to use bespoke logging while
 //! the publish PATCH used `release_log().warn`.
+//!
+//! ## Return type
+//!
+//! `retry_octocrab_call` returns `Result<T, octocrab::Error>` so callers can
+//! match on the underlying variant (notably `Error::GitHub { source }` to
+//! route a 404 to "no existing release" vs. propagating every other status
+//! code). The classification used to drive retriability stays internal to
+//! the helper; the original `octocrab::Error` is handed back unchanged on
+//! retry exhaustion or fast-fail.
+//!
+//! ## Divergence with the upload-asset loop
+//!
+//! The bespoke `upload_asset` retry loop in `mod.rs` cannot route through
+//! `retry_octocrab_call` because it carries upload-specific state (the
+//! resume-stream re-read of the artifact, the 422-`already_exists`
+//! delete+retry dance, the one-shot overwrite guard). It re-uses
+//! [`format_retry_warn`] for per-attempt logging so the warn format stays
+//! consistent across both pathways; the format is pinned by a unit test in
+//! this module.
 
 use std::future::Future;
 use std::ops::ControlFlow;
@@ -37,7 +56,14 @@ use anodizer_core::retry::{RetryPolicy, is_retriable, retry_async};
 
 use crate::release_log;
 
-use super::retry_classify::classify_octocrab_error;
+/// Per-attempt warning line shared by every retry-wrapped octocrab call site
+/// (the helper here AND the bespoke upload-asset loop in `mod.rs`).
+///
+/// Extracted so the two retry pathways can't drift on label format. A test
+/// in `mod.rs` pins the exact format string against the upload loop's call.
+pub(crate) fn format_retry_warn(label: &str, attempt: u32, max: u32, status: u16) -> String {
+    format!("release: {label} failed (retriable, attempt {attempt}/{max}, status={status})")
+}
 
 /// Run an octocrab call through the shared retry policy.
 ///
@@ -46,38 +72,95 @@ use super::retry_classify::classify_octocrab_error;
 /// `make_call` is invoked once per attempt and must rebuild the future from
 /// scratch (octocrab's response futures are not `Clone`).
 ///
-/// Returns the inner octocrab result on success. On retry exhaustion, the
-/// last classified `octocrab::Error` is returned as a boxed
-/// `std::error::Error` so callers can `with_context` it via `anyhow`.
+/// Returns the inner octocrab result on success. On retry exhaustion or
+/// fast-fail, the original [`octocrab::Error`] is returned unchanged so the
+/// caller can match on `Error::GitHub { source }` for status-code routing
+/// (e.g. mapping a 404 to "no existing release" while propagating every
+/// other status).
 pub(crate) async fn retry_octocrab_call<T, F, Fut>(
     policy: &RetryPolicy,
     label: &'static str,
     mut make_call: F,
-) -> Result<T, Box<dyn std::error::Error + Send + Sync + 'static>>
+) -> Result<T, octocrab::Error>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, octocrab::Error>>,
 {
+    let max = policy.max_attempts;
     retry_async(policy, |attempt| {
         let fut = make_call();
         async move {
             match fut.await {
                 Ok(v) => Ok(v),
                 Err(err) => {
-                    let (wrapped, status) = classify_octocrab_error(err);
-                    if is_retriable(&*wrapped) {
-                        release_log().warn(&format!(
-                            "release: {label} failed (retriable, attempt {attempt}, status={status})"
-                        ));
-                        Err(ControlFlow::Continue(wrapped))
+                    // Classify retriability without consuming the original
+                    // error: build a temporary wrapper from a clone-shaped
+                    // probe (status code) so the unmodified `err` can be
+                    // returned to the caller. `octocrab::Error` is not
+                    // `Clone`, so we extract just the bits the classifier
+                    // needs from a borrow.
+                    let (status, retriable) = classify_retriability(&err);
+                    if retriable {
+                        release_log().warn(&format_retry_warn(label, attempt, max, status));
+                        Err(ControlFlow::Continue(err))
                     } else {
-                        Err(ControlFlow::Break(wrapped))
+                        Err(ControlFlow::Break(err))
                     }
                 }
             }
         }
     })
     .await
+}
+
+/// Borrow-based retriability probe for [`octocrab::Error`].
+///
+/// Mirrors [`classify_octocrab_error`]'s rules but consumes only a reference
+/// so the original error can be returned to the caller unchanged. Returns
+/// `(status_code, retriable)` where `status_code` is `0` for transport-layer
+/// failures with no HTTP response attached.
+fn classify_retriability(err: &octocrab::Error) -> (u16, bool) {
+    // Build a throwaway wrapper from a synthetic inner so we can reuse the
+    // existing `is_retriable` predicate without taking ownership of `err`.
+    // The wrapper's job is just to set the right "retriable / not" bit for
+    // the shared classifier; the actual error returned to the caller is the
+    // borrowed original.
+    use anodizer_core::retry::{HttpError, Retriable};
+    match err {
+        octocrab::Error::GitHub { source, .. } => {
+            let status = source.status_code.as_u16();
+            let probe = HttpError::new(std::io::Error::other("status probe"), status);
+            (status, is_retriable(&probe))
+        }
+        octocrab::Error::Hyper { .. }
+        | octocrab::Error::Http { .. }
+        | octocrab::Error::Service { .. }
+        | octocrab::Error::Other { .. }
+        | octocrab::Error::Serde { .. }
+        | octocrab::Error::Json { .. } => {
+            let probe = Retriable::new(std::io::Error::other("transport probe"));
+            (0, is_retriable(&probe))
+        }
+        _ => {
+            // Conservative default: unfamiliar future variants fast-fail
+            // rather than spin. Matches `classify_octocrab_error`'s fallback.
+            (0, false)
+        }
+    }
+}
+
+/// Detect a 404 status in an [`octocrab::Error`].
+///
+/// Used by `run_github_backend` to map the `get_by_tag` lookup's only
+/// non-error fall-through (real 404 -> "no existing release") while
+/// propagating every other status (auth, validation, exhausted retries on
+/// 5xx). The match is on the typed variant so transport-layer failures
+/// (which carry no status) cannot accidentally fall through.
+pub(crate) fn is_octocrab_404(err: &octocrab::Error) -> bool {
+    matches!(
+        err,
+        octocrab::Error::GitHub { source, .. } if source.status_code.as_u16() == 404
+    )
 }
 
 #[cfg(test)]
@@ -152,7 +235,7 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(2),
         };
-        let result: Result<Vec<serde_json::Value>, _> =
+        let result: Result<Vec<serde_json::Value>, octocrab::Error> =
             retry_octocrab_call(&policy, "test list", || async {
                 octo.get("/test", None::<&()>).await
             })
@@ -181,7 +264,7 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(2),
         };
-        let result: Result<Vec<serde_json::Value>, _> =
+        let result: Result<Vec<serde_json::Value>, octocrab::Error> =
             retry_octocrab_call(&policy, "test list", || async {
                 octo.get("/test", None::<&()>).await
             })
@@ -198,7 +281,7 @@ mod tests {
     async fn respects_max_attempts_one() {
         // `RetryConfig { attempts: 1 }` must produce exactly one octocrab
         // call even on a retriable 503. This pins the
-        // `RetryConfig::to_policy` → `retry_async` wiring contract.
+        // `RetryConfig::to_policy` -> `retry_async` wiring contract.
         let (addr, calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
         ]);
@@ -208,7 +291,7 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(2),
         };
-        let result: Result<Vec<serde_json::Value>, _> =
+        let result: Result<Vec<serde_json::Value>, octocrab::Error> =
             retry_octocrab_call(&policy, "test list", || async {
                 octo.get("/test", None::<&()>).await
             })
@@ -218,6 +301,18 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "attempts=1 must produce exactly one octocrab call"
+        );
+    }
+
+    #[test]
+    fn format_retry_warn_shape_pins_shared_format() {
+        // Pin the format string used by BOTH the helper's per-attempt warn
+        // and the upload loop's per-attempt warn (mod.rs). Drift between
+        // the two formats is the failure mode the helper exists to prevent.
+        let s = format_retry_warn("delete release", 3, 10, 503);
+        assert_eq!(
+            s,
+            "release: delete release failed (retriable, attempt 3/10, status=503)"
         );
     }
 }

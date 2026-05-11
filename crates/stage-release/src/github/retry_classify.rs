@@ -30,6 +30,7 @@
 //! upload as `RetriableError`; we narrow that to "5xx / 429 / transport"
 //! so genuine 4xx (auth, validation) still fast-fail.
 
+#[cfg(test)]
 use anodizer_core::retry::{HttpError, Retriable};
 
 /// Wrap an `octocrab::Error` so `anodizer_core::retry::is_retriable` reports
@@ -37,7 +38,16 @@ use anodizer_core::retry::{HttpError, Retriable};
 ///
 /// Returns `(boxed_error, status_code)` where `status_code` is `0` for
 /// transport-layer failures with no HTTP response attached.
-pub(crate) fn classify_octocrab_error(
+///
+/// This function consumes the octocrab error. The retry path in
+/// [`super::retry_call`] uses a borrow-based variant
+/// (`classify_retriability`) so the original typed error can flow back to
+/// callers for status-code routing (e.g. mapping 404 to "no existing
+/// release"). The two stay in lock-step via the unit tests in this file:
+/// the consumption-based classifier here is the test oracle that pins the
+/// rule the borrow-based probe must replicate.
+#[cfg(test)]
+fn classify_octocrab_error(
     err: octocrab::Error,
 ) -> (Box<dyn std::error::Error + Send + Sync + 'static>, u16) {
     match &err {
