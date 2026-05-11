@@ -307,7 +307,7 @@ pub(super) fn push_nupkg(
     log: &StageLogger,
     policy: &RetryPolicy,
 ) -> Result<()> {
-    use anodizer_core::retry::{Retriable, retry_sync};
+    use anodizer_core::retry::{HttpError, Retriable, retry_sync};
     use std::ops::ControlFlow;
 
     let filename = nupkg_path
@@ -363,9 +363,10 @@ pub(super) fn push_nupkg(
         {
             Ok(r) => r,
             Err(e) => {
-                // Transport-layer failure — always retry-classified (the
-                // is_network_error check inside is_retriable matches the
-                // usual EOF / connection-reset / timeout substrings).
+                // Transport-layer failure: unconditionally retry. Matches the
+                // historical 3-attempt loop's behavior. The surrounding
+                // retry_sync helper doesn't invoke is_retriable, so we own the
+                // classification.
                 let wrapped =
                     anyhow::Error::new(e).context(format!("chocolatey: push to {}", push_url));
                 return Err(ControlFlow::Continue(wrapped));
@@ -411,9 +412,12 @@ pub(super) fn push_nupkg(
                 status, attempt
             ));
             // Force-retry the edge-challenge case regardless of 4xx fast-fail
-            // default by wrapping in Retriable.
-            let err =
-                anyhow::Error::new(Retriable::new(std::io::Error::other(base_err.to_string())));
+            // default by wrapping in Retriable. Wrap the io::Error in HttpError
+            // so downstream downcast_ref::<HttpError>() walks find the status
+            // (matching the cargo + milestone-close pattern).
+            let http_err =
+                HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16());
+            let err = anyhow::Error::new(Retriable::new(http_err));
             Err(ControlFlow::Continue(err))
         } else if status.is_server_error() || status.as_u16() == 429 {
             // 5xx / 429 retry naturally.
