@@ -943,7 +943,7 @@ fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
 }
 
 // -----------------------------------------------------------------------
-// P7.4: bail!()-site redaction in git/ submodules.
+// bail!()-site redaction in git/ submodules.
 //
 // `git_output`, `add_path_in`, and `commit_in` interpolate raw `git`
 // stderr into anyhow errors. The redact wrapper inserted at each call
@@ -1009,7 +1009,7 @@ fn test_commit_in_bail_redacts_token_in_stderr() {
     // bail site. Set GITHUB_TOKEN, trigger a commit failure by
     // running in a directory with no staged changes AND a commit
     // message that embeds the secret (so git's stderr could echo it
-    // back if a future git version ever did) — then assert it was
+    // back if a future git version ever did), then assert it was
     // redacted.
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();

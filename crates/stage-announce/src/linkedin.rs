@@ -25,7 +25,7 @@ pub(crate) fn format_linkedin_http_error(
 /// Typed sentinel signaling that `/v2/userinfo` returned 403 and the caller
 /// should fall back to the legacy `/v2/me` endpoint. Replaces the previous
 /// `__linkedin_fallback__` magic-string sentinel routed through error
-/// messages — typed downcast is robust to message rewrites.
+/// messages; typed downcast is robust to message rewrites.
 #[derive(Debug)]
 struct LinkedinFallback;
 
@@ -68,7 +68,7 @@ pub fn validate_token_shape(token: &str) -> Result<()> {
     } else if dot_segments != 1 {
         anyhow::bail!(
             "announce.linkedin: LINKEDIN_ACCESS_TOKEN has {dot_segments} dot-separated \
-             segments — expected 1 (opaque token) or 3 (JWT)"
+             segments, expected 1 (opaque token) or 3 (JWT)"
         );
     }
     Ok(())
@@ -81,7 +81,7 @@ pub fn validate_token_shape(token: &str) -> Result<()> {
 ///    Falls back to `/v2/me` (legacy, uses `id` field) only on 403 Forbidden.
 /// 2. POST the share to `/v2/shares`.
 ///
-/// Q7.1 — error categorisation mirrors upstream commit 0944b0e: API errors
+/// Error categorisation mirrors upstream commit 0944b0e: API errors
 /// (HTTP 4xx/5xx) wrap the response body in the surfaced error message,
 /// transport errors are classified separately. `policy` enables retry on
 /// 5xx / 429 / network failures via `retryx.HTTP` semantics.
@@ -125,8 +125,8 @@ pub fn send_linkedin(
                 if status.is_success() {
                     Ok(body)
                 } else {
-                    // Q7.1 mirror: include the body in the error message so
-                    // users can see LinkedIn's structured error response.
+                    // Include the body in the error message so users can
+                    // see LinkedIn's structured error response.
                     let inner =
                         anyhow::anyhow!("{}", format_linkedin_http_error("share", status, &body));
                     let wrapped = anyhow::Error::new(HttpError::new(
@@ -252,7 +252,7 @@ fn get_profile_urn_legacy(
                 let status = resp.status();
                 if status == reqwest::StatusCode::FORBIDDEN {
                     return Err(ControlFlow::Break(anyhow::anyhow!(
-                        "linkedin: forbidden — please check your permissions"
+                        "linkedin: forbidden, please check your permissions"
                     )));
                 }
                 let body = anodizer_core::http::body_of_blocking(resp);
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn http_error_includes_endpoint_status_and_body() {
-        // Q7.1 (upstream commit 0944b0e): the error surfaced to the user must
+        // Upstream commit 0944b0e: the error surfaced to the user must
         // name the endpoint, the HTTP status, AND the response body so
         // LinkedIn's structured error (`message`, `serviceErrorCode`) reaches
         // the user.

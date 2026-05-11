@@ -163,7 +163,7 @@ where
 /// Lives next to the other `Command::new` probes in this module so the
 /// `module-boundaries.md` allow-list stays accurate.
 pub(crate) fn probe_buildx_version() -> BuildxVersionProbe {
-    // Capability probe — no context env injection needed (reads version only).
+    // Capability probe: no context env injection needed (reads version only).
     let output = Command::new("docker").args(["buildx", "version"]).output();
     match output {
         Err(_) => BuildxVersionProbe::DockerMissing,

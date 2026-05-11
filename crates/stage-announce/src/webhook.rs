@@ -43,12 +43,12 @@ pub(crate) fn format_unexpected_status_message(
 ///
 /// The response status is validated against `expected_status_codes`.
 ///
-/// Q7.1 — error messages include the response body so users can debug
+/// Error messages include the response body so users can debug
 /// upstream rejections without re-running with verbose logs (mirrors
 /// upstream commit bba909e). `policy` enables retry on 5xx / 429 / network
-/// failures (P1.3).
+/// failures.
 ///
-/// Q-wh1 — `headers` is a [`BTreeMap`] (not a `HashMap`) so the iteration
+/// `headers` is a [`BTreeMap`] (not a `HashMap`) so the iteration
 /// order in the request builder loop is deterministic (alphabetical by header
 /// name). This makes wire traces reproducible across runs and matches
 /// GoReleaser's first-set-wins ordering for the env-supplied `Authorization`
@@ -102,8 +102,8 @@ pub fn send_webhook(
                     Ok(())
                 } else {
                     let body = anodizer_core::http::body_of_blocking(resp);
-                    // Q7.1 mirror — wrap the status-derived error with the
-                    // response body so users see it in the surfaced message.
+                    // Wrap the status-derived error with the response body
+                    // so users see it in the surfaced message.
                     let inner = anyhow::anyhow!(
                         "{}",
                         format_unexpected_status_message(status, expected_status_codes, &body)
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn unexpected_status_message_includes_body_and_status() {
-        // Q7.1 (upstream commit bba909e): the error surfaced to the user must
+        // Upstream commit bba909e: the error surfaced to the user must
         // include the response body so failures from misconfigured webhooks
         // (auth, validation, etc.) are debuggable without re-running.
         let msg = format_unexpected_status_message(503, &[200, 204], "service down");
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_headers_iterate_in_alphabetical_order() {
-        // Q-wh1 regression: BTreeMap guarantees alphabetical iteration order
+        // Regression: BTreeMap guarantees alphabetical iteration order
         // regardless of insertion order, so request traces are reproducible
         // across runs. Insertion is intentionally non-alphabetical here.
         let mut headers: BTreeMap<String, String> = BTreeMap::new();

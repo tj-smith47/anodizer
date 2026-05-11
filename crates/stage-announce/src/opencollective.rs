@@ -45,8 +45,8 @@ pub fn validate_token_shape(token: &str) -> Result<()> {
     crate::util::validate_token_min_length("opencollective", "OPENCOLLECTIVE_TOKEN", token, 16)?;
     if token.chars().any(|c| c.is_whitespace() || c.is_control()) {
         anyhow::bail!(
-            "opencollective: OPENCOLLECTIVE_TOKEN contains whitespace or control characters \
-             — check for stray quotes or line wraps"
+            "opencollective: OPENCOLLECTIVE_TOKEN contains whitespace or control characters, \
+             check for stray quotes or line wraps"
         );
     }
     Ok(())
@@ -127,10 +127,10 @@ pub(crate) fn extract_create_update_id(body: &serde_json::Value) -> Result<Strin
 
 /// Categorise an OpenCollective HTTP response into a structured error.
 ///
-/// Q7.1 mirror of upstream commit 206120a (#6512): callers see distinct
+/// Mirrors upstream commit 206120a (#6512): callers see distinct
 /// messages for 401-unauthorized, 5xx-server-error, and other 4xx
-/// rejections. GraphQL APIs return HTTP 200 even on mutation failures —
-/// errors are in the response body, not the status code — so this only
+/// rejections. GraphQL APIs return HTTP 200 even on mutation failures
+/// (errors are in the response body, not the status code), so this only
 /// classifies HTTP-level failures (`!status.is_success()`).
 pub(crate) fn classify_opencollective_status(
     stage: &str,
@@ -139,13 +139,13 @@ pub(crate) fn classify_opencollective_status(
 ) -> String {
     match status.as_u16() {
         401 => format!(
-            "opencollective: {stage} unauthorized (401) — check OPENCOLLECTIVE_TOKEN: {body}"
+            "opencollective: {stage} unauthorized (401), check OPENCOLLECTIVE_TOKEN: {body}"
         ),
         403 => format!(
-            "opencollective: {stage} forbidden (403) — token lacks the required scope: {body}"
+            "opencollective: {stage} forbidden (403), token lacks the required scope: {body}"
         ),
         s if (500..600).contains(&s) => format!(
-            "opencollective: {stage} server error ({status}) — upstream is unhealthy, retrying: {body}"
+            "opencollective: {stage} server error ({status}), upstream is unhealthy, retrying: {body}"
         ),
         _ => format!("opencollective: {stage} failed ({status}): {body}"),
     }
@@ -205,18 +205,18 @@ fn do_mutation(
 /// Create and publish an update on OpenCollective.
 ///
 /// Two-step GraphQL flow:
-/// 1. `createUpdate` mutation — creates a draft update with title and HTML body
-/// 2. `publishUpdate` mutation — publishes the update to all collective members
+/// 1. `createUpdate` mutation: creates a draft update with title and HTML body
+/// 2. `publishUpdate` mutation: publishes the update to all collective members
 ///
-/// Q7.1 — error categorisation mirrors upstream commit 206120a: 401, 5xx, and
+/// Error categorisation mirrors upstream commit 206120a: 401, 5xx, and
 /// other 4xx rejections all surface distinct messages, GraphQL `errors` arrays
 /// are decoded and reported, and malformed JSON responses are caught with a
 /// dedicated error rather than panicking.
 ///
-/// The publish step is unconditionally attempted whenever step 1 yields a valid
-/// `update_id`, even if the response also includes a non-fatal `errors` array.
-/// A draft created with warnings is still publishable, and silently abandoning
-/// it would leave the collective with an unpublished update.
+/// Any non-empty GraphQL `errors` array on the createUpdate response aborts
+/// before the publish step, matching upstream PR #6512's
+/// TestCreateUpdateGraphqlError. Only a clean response with a non-empty `id`
+/// proceeds to publishUpdate.
 pub fn send_opencollective(
     token: &str,
     slug: &str,

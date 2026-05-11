@@ -51,7 +51,7 @@ impl Verbosity {
     }
 }
 
-/// Stage logger — wraps a stage name, verbosity level, and an optional
+/// Stage logger: wraps a stage name, verbosity level, and an optional
 /// env-pairs list used for secret redaction.
 ///
 /// All output goes to stderr. Create one per stage via [`StageLogger::new`].
@@ -325,7 +325,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // Redaction inside check_output (P7.4)
+    // Redaction inside check_output
     // -----------------------------------------------------------------
 
     #[cfg(unix)]
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_redact_uses_attached_env() {
-        // P7.4: a logger built via `with_env` must scrub configured secrets.
+        // A logger built via `with_env` must scrub configured secrets.
         let log = StageLogger::new("test", Verbosity::Normal).with_env(vec![(
             "GITHUB_TOKEN".to_string(),
             "ghp_real_secret_token".to_string(),
@@ -377,7 +377,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_check_output_redacts_stderr_on_failure() {
-        // P7.4: stderr from a failing subprocess must be redacted before
+        // Stderr from a failing subprocess must be redacted before
         // the logger surfaces it, so secrets present in `output.stderr`
         // never reach the eprintln sink (or any future log appender).
         let log = StageLogger::new("test", Verbosity::Normal).with_env(vec![(
@@ -401,8 +401,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_check_output_redacts_stdout_on_failure() {
-        // P7.4: stdout on the failure path must be redacted alongside
-        // stderr — some tools dump credentials onto stdout (e.g. helm
+        // Stdout on the failure path must be redacted alongside
+        // stderr. Some tools dump credentials onto stdout (e.g. helm
         // login prints a warning to stdout, not stderr).
         let log = StageLogger::new("test", Verbosity::Normal).with_env(vec![(
             "DOCKER_PASSWORD".to_string(),
@@ -418,7 +418,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_check_output_redacts_stdout_on_verbose_success() {
-        // P7.4: at verbose level, successful subprocess stdout is logged
+        // At verbose level, successful subprocess stdout is logged
         // too; it must also be redacted.
         let log = StageLogger::new("test", Verbosity::Verbose).with_env(vec![(
             "MY_API_KEY".to_string(),
@@ -434,7 +434,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_check_output_strips_inline_url_credentials_without_env() {
-        // P7.4: a logger built without env still strips URL credentials,
+        // A logger built without env still strips URL credentials,
         // so even when the user did not export a matching env var, an
         // inline `https://<user>:<pw>@host` in stderr is scrubbed.
         let log = StageLogger::new("test", Verbosity::Normal);
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn test_check_output_bail_message_excludes_raw_secret() {
         // The error returned by `check_output` is itself short (only
-        // mentions the label + exit code) — but make this explicit so a
+        // mentions the label + exit code), but make this explicit so a
         // refactor that decides to interpolate stderr into the bail
         // message would also have to redact it.
         let log = StageLogger::new("test", Verbosity::Normal).with_env(vec![(

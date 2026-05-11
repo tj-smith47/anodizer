@@ -45,7 +45,7 @@ pub use tags::{
 /// [`crate::redact::redact_process_env`] before interpolation, so any
 /// token-bearing remote URL git might echo (e.g.
 /// `https://ghp_xxx@github.com/...` produced by an `extraHeader` config
-/// leak) is scrubbed in the bail message (P7.4).
+/// leak) is scrubbed in the bail message.
 fn git_output(args: &[&str]) -> Result<String> {
     let output = Command::new("git").args(args).output()?;
     if !output.status.success() {

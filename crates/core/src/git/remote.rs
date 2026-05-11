@@ -50,7 +50,7 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
 pub fn detect_github_repo() -> Result<(String, String)> {
     let url = git_output(&["remote", "get-url", "origin"])?;
     parse_github_remote(&url).ok_or_else(|| {
-        // P7.4: strip inline `https://<token>@...` userinfo before surfacing
+        // Strip inline `https://<token>@...` userinfo before surfacing
         // the URL in a user-visible error.
         let safe = strip_url_credentials(&url);
         anyhow::anyhow!(
@@ -121,7 +121,7 @@ pub fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
 pub fn detect_owner_repo() -> Result<(String, String)> {
     let url = git_output(&["remote", "get-url", "origin"])?;
     parse_remote_owner_repo(&url).ok_or_else(|| {
-        // P7.4: strip inline userinfo before surfacing the URL.
+        // Strip inline userinfo before surfacing the URL.
         let safe = strip_url_credentials(&url);
         anyhow::anyhow!("could not parse owner/repo from remote URL: {}", safe)
     })

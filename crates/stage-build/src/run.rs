@@ -1032,7 +1032,7 @@ impl Stage for super::BuildStage {
                             let job_amd64_variant = job.amd64_variant.clone();
                             let thread_tvars = template_vars.clone();
                             // Per-thread logger: clone the parent so it inherits
-                            // the env-pairs attached for redaction (P7.4).
+                            // the env-pairs attached for redaction.
                             let thread_log = log.clone();
                             let warn_log = log.clone();
 
@@ -1071,9 +1071,9 @@ impl Stage for super::BuildStage {
 
                                 if !output.status.success() {
                                     // Redact secrets in stderr/stdout before
-                                    // interpolating into the bail message
-                                    // (P7.4). thread_log inherits the env
-                                    // attached at `ctx.logger("build")`.
+                                    // interpolating into the bail message.
+                                    // thread_log inherits the env attached
+                                    // at `ctx.logger("build")`.
                                     let stderr = thread_log
                                         .redact(&String::from_utf8_lossy(&output.stderr));
                                     let stdout = thread_log

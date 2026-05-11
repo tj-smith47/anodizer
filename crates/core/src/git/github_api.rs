@@ -30,7 +30,7 @@ pub fn gh_api_get(endpoint: &str, token: Option<&str>) -> Result<serde_json::Val
 }
 
 /// Redact secrets from `gh` CLI stderr before interpolating into a bail
-/// message (P7.4). `token` is the `GITHUB_TOKEN` value passed to the
+/// message. `token` is the `GITHUB_TOKEN` value passed to the
 /// subprocess; if the user-supplied token leaks (e.g. via a verbose `gh`
 /// error that echoes the auth header), it is replaced with `$GITHUB_TOKEN`
 /// regardless of whether the value matches the `redact::is_secret`

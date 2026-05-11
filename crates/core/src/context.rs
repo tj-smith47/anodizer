@@ -339,7 +339,7 @@ impl Context {
     /// Create a [`StageLogger`] for the given stage name, pre-attached to
     /// the context's env-pairs list so that subprocess stderr / stdout
     /// flowing through [`StageLogger::check_output`] is automatically
-    /// redacted (P7.4). The env list combines the template-engine env
+    /// redacted. The env list combines the template-engine env
     /// (process + config + `.env` files) and the current `std::env::vars`
     /// snapshot, so any secret value reachable to a hook or subprocess is
     /// available for scrubbing.
