@@ -47,7 +47,48 @@ pub use staging::PROJECT_MARKERS;
 // ---------------------------------------------------------------------------
 mod run;
 
-pub struct DockerStage;
+use std::sync::Arc;
+
+use detect::BuildxVersionProbe;
+
+/// Probe closure used by `DockerStage` to classify the buildx-version probe
+/// outcome. Production code leaves the override unset; tests inject a
+/// deterministic closure that pins the probe-invocation contract end-to-end
+/// without spawning `docker`.
+pub(crate) type BuildxVersionProbeFn = dyn Fn() -> BuildxVersionProbe + Send + Sync;
+
+pub struct DockerStage {
+    /// Optional override for the buildx-version probe used by `Stage::run`.
+    ///
+    /// `None` => the live probe (`detect::probe_buildx_version`) is used and
+    /// the stage shells out to `docker buildx version`. `Some` => tests
+    /// inject a deterministic closure that returns a chosen
+    /// `BuildxVersionProbe` outcome without spawning a subprocess.
+    probe: Option<Arc<BuildxVersionProbeFn>>,
+}
+
+impl DockerStage {
+    /// Construct a `DockerStage` that uses the live buildx-version probe.
+    pub fn new() -> Self {
+        Self { probe: None }
+    }
+
+    /// Test-only constructor: inject a buildx-version probe closure that the
+    /// stage will call in place of `detect::probe_buildx_version`. The
+    /// closure is invoked at most once per `Stage::run` invocation, and only
+    /// when the probe gate fires (non-dry-run + at least one crate carries a
+    /// `docker_v2` config).
+    #[cfg(test)]
+    pub(crate) fn with_probe(probe: Arc<BuildxVersionProbeFn>) -> Self {
+        Self { probe: Some(probe) }
+    }
+}
+
+impl Default for DockerStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests;

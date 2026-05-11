@@ -775,7 +775,7 @@ pub fn build_release_pipeline() -> Pipeline {
 
     // ── Publish ──────────────────────────────────────────────────────────
     p.add(Box::new(ReleaseStage));
-    p.add(Box::new(DockerStage));
+    p.add(Box::new(DockerStage::new()));
     // DockerSignStage runs after DockerStage so docker image artifacts exist.
     p.add(Box::new(DockerSignStage));
     p.add(Box::new(PublishStage));
@@ -867,7 +867,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
-    p.add(Box::new(DockerStage));
+    p.add(Box::new(DockerStage::new()));
     p.add(Box::new(DockerSignStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(SnapcraftPublishStage));

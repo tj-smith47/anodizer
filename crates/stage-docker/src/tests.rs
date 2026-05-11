@@ -75,7 +75,7 @@ fn test_stage_skips_without_docker_config() {
 
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     assert!(stage.run(&mut ctx).is_ok());
 }
 
@@ -839,7 +839,7 @@ fn test_docker_manifest_dry_run() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     let result = stage.run(&mut ctx);
     assert!(
         result.is_ok(),
@@ -907,7 +907,7 @@ fn test_docker_manifest_create_push_flags_template_rendering() {
     ctx.template_vars_mut().set("Tag", "v1.2.3");
     ctx.template_vars_mut().set_env("CI_BACKEND", "github");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     let result = stage.run(&mut ctx);
     assert!(
         result.is_ok(),
@@ -971,7 +971,7 @@ fn test_docker_manifest_skip_push_auto_prerelease() {
     ctx.template_vars_mut().set("Tag", "v1.0.0-rc.1");
     ctx.template_vars_mut().set("Prerelease", "rc.1");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     let result = stage.run(&mut ctx);
     assert!(
         result.is_ok(),
@@ -1609,7 +1609,7 @@ fn test_docker_v2_dry_run_registers_artifacts() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     stage.run(&mut ctx).unwrap();
 
     let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
@@ -1718,7 +1718,7 @@ fn dockerfile_template_renders_to_empty_skips_pipe() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     // Must succeed with a clean skip — not error out trying to copy a
     // missing Dockerfile.
     stage.run(&mut ctx).expect("clean skip, not copy failure");
@@ -1779,7 +1779,7 @@ fn test_docker_v2_dry_run_multiple_images_and_tags() {
     ctx.template_vars_mut().set("Version", "2.0.0");
     ctx.template_vars_mut().set("Tag", "v2.0.0");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     stage.run(&mut ctx).unwrap();
 
     // 2 images x 3 tags = 6 artifacts
@@ -1838,7 +1838,7 @@ fn test_docker_v2_disable_skips_build() {
     ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     stage.run(&mut ctx).unwrap();
 
     // Disabled config should produce no artifacts
@@ -1900,7 +1900,7 @@ fn test_docker_v2_extra_files_staging_live() {
     ctx.template_vars_mut().set("Tag", "v1.0.0");
 
     // Run the stage (will fail at docker command, but staging is complete)
-    let _result = DockerStage.run(&mut ctx);
+    let _result = DockerStage::new().run(&mut ctx);
 
     // Verify staging directory structure
     let staging_dir = dist.join("docker_v2").join("myapp").join("0");
@@ -2224,7 +2224,7 @@ fn test_docker_v2_build_args_render_in_command() {
     ctx.template_vars_mut().set("Version", "3.0.0");
     ctx.template_vars_mut().set("Tag", "v3.0.0");
 
-    let stage = DockerStage;
+    let stage = DockerStage::new();
     stage.run(&mut ctx).unwrap();
 
     // The stage ran in dry-run mode, so it registered artifacts
@@ -2885,5 +2885,86 @@ fn test_buildx_version_check_increments_counter_on_v2_probe_outcome() {
         calls.load(Ordering::SeqCst),
         1,
         "run_buildx_version_check must invoke the probe exactly once"
+    );
+}
+
+#[test]
+fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
+    // End-to-end seam check: when a `Context` has at least one crate with a
+    // `docker_v2` config and `dry_run = true` (so no real `docker buildx
+    // build` shells out), `DockerStage::with_probe(...).run(&mut ctx)` MUST
+    // route the buildx-version probe through the injected closure. The gate
+    // condition is pinned here so a future refactor that drops the wiring
+    // fails this test instead of silently shelling out to `docker` in tests.
+    //
+    // `dry_run` is intentionally `false` so the probe gate fires
+    // (`!dry_run && any docker_v2`). To stay sandbox-clean we still need to
+    // avoid spawning real `docker buildx build`; the `disable: "true"` skip
+    // on the v2 config short-circuits each config before any subprocess is
+    // launched. The probe gate, however, runs once before the per-config
+    // loop, so the counter ticks exactly once.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+    let v2_cfg = DockerV2Config {
+        id: Some("myapp-v2".to_string()),
+        images: vec!["ghcr.io/owner/myapp".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        // Short-circuit per-config build work; the probe gate runs before
+        // the per-config skip check, so this still exercises the probe seam.
+        skip: Some(StringOrBool::String("true".to_string())),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_ref = Arc::clone(&calls);
+    let probe: Arc<super::BuildxVersionProbeFn> = Arc::new(move || {
+        calls_ref.fetch_add(1, Ordering::SeqCst);
+        BuildxVersionProbe::Available
+    });
+
+    let stage = DockerStage::with_probe(probe);
+    // The stage may still bail later (e.g. on the per-config skip path or a
+    // template render), but the probe gate runs first and unconditionally
+    // invokes the injected closure exactly once. The counter assertion is
+    // what we care about; the stage's `Result` is incidental.
+    let _ = stage.run(&mut ctx);
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "DockerStage::run must invoke the injected buildx probe exactly once \
+         when a docker_v2 config is present and dry_run is false",
     );
 }
