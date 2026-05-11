@@ -1,6 +1,7 @@
 use anodizer_core::config::DockerHubFullDescription;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, anyhow, bail};
 
 // ---------------------------------------------------------------------------
@@ -9,9 +10,14 @@ use anyhow::{Context as _, Result, anyhow, bail};
 
 /// Resolve the full description content from either a local file or a URL.
 /// `from_file` takes precedence over `from_url` when both are set.
+///
+/// The `from_url` branch routes through [`retry_http_blocking`] so transient
+/// 5xx / 429 / network failures retry per the user's top-level `retry:`
+/// policy; 4xx fast-fails so a typo'd URL surfaces immediately.
 pub fn resolve_full_description(
     desc: &DockerHubFullDescription,
     client: &reqwest::blocking::Client,
+    policy: &RetryPolicy,
 ) -> Result<String> {
     if let Some(ref from_file) = desc.from_file {
         return std::fs::read_to_string(&from_file.path)
@@ -19,30 +25,25 @@ pub fn resolve_full_description(
     }
 
     if let Some(ref from_url) = desc.from_url {
-        let mut req = client.get(&from_url.url);
-        if let Some(ref headers) = from_url.headers {
-            for (key, value) in headers {
-                req = req.header(key, value);
-            }
-        }
-        let resp = req
-            .send()
-            .with_context(|| format!("dockerhub: failed to fetch URL '{}'", from_url.url))?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp
-                .text()
-                .unwrap_or_else(|e| format!("<body read failed: {}>", e));
-            bail!(
-                "dockerhub: GET {} returned HTTP {}: {}",
-                from_url.url,
-                status,
-                body
-            );
-        }
-        return resp
-            .text()
-            .with_context(|| format!("dockerhub: failed to read body from '{}'", from_url.url));
+        let url = from_url.url.clone();
+        let headers = from_url.headers.clone();
+        let label = format!("dockerhub: fetch full_description from {}", url);
+        let (_, body) = retry_http_blocking(
+            &label,
+            policy,
+            SuccessClass::Strict,
+            |_| {
+                let mut req = client.get(&url);
+                if let Some(ref h) = headers {
+                    for (key, value) in h {
+                        req = req.header(key, value);
+                    }
+                }
+                req.send()
+            },
+            |status, body| format!("dockerhub: GET {} returned HTTP {}: {}", url, status, body),
+        )?;
+        return Ok(body);
     }
 
     bail!("dockerhub: full_description has neither from_file nor from_url set")
@@ -69,6 +70,11 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .context("dockerhub: failed to build shared HTTP client")?;
+
+    // Single retry policy resolved from the top-level `retry:` block; reused
+    // for every entry's full_description fetch, login, and PATCH (mirrors
+    // GoReleaser, where the retryx policy is captured once per pipe).
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
 
     for entry in entries {
         // Check skip flag.
@@ -183,7 +189,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         // Resolve full description if configured (after dry-run check).
         let full_desc = match entry.full_description {
             Some(ref fd) => Some(
-                resolve_full_description(fd, client)
+                resolve_full_description(fd, client, &policy)
                     .context("dockerhub: failed to resolve full_description")?,
             ),
             None => None,
@@ -210,26 +216,20 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             "password": password,
         });
 
-        let login_resp = client
-            .post("https://hub.docker.com/v2/users/login/")
-            .json(&login_body)
-            .send()
-            .context("dockerhub: failed to authenticate with Docker Hub")?;
+        let (_, login_body_text) = retry_http_blocking(
+            "dockerhub: authenticate",
+            &policy,
+            SuccessClass::Strict,
+            |_| {
+                client
+                    .post("https://hub.docker.com/v2/users/login/")
+                    .json(&login_body)
+                    .send()
+            },
+            |status, body| format!("dockerhub: authentication failed (HTTP {status}): {body}"),
+        )?;
 
-        if !login_resp.status().is_success() {
-            let status = login_resp.status();
-            let body = login_resp
-                .text()
-                .unwrap_or_else(|e| format!("<body read failed: {}>", e));
-            bail!(
-                "dockerhub: authentication failed (HTTP {}): {}",
-                status,
-                body
-            );
-        }
-
-        let login_json: serde_json::Value = login_resp
-            .json()
+        let login_json: serde_json::Value = serde_json::from_str(&login_body_text)
             .context("dockerhub: failed to parse login response")?;
 
         let token = login_json["token"]
@@ -259,29 +259,29 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 );
             }
 
-            let patch_resp = client
-                .patch(format!(
-                    "https://hub.docker.com/v2/repositories/{}/{}/",
-                    namespace, name
-                ))
-                .bearer_auth(token)
-                .json(&patch_body)
-                .send()
-                .with_context(|| format!("dockerhub: failed to PATCH repository '{}'", image))?;
-
-            if !patch_resp.status().is_success() {
-                let status = patch_resp.status();
-                let body = patch_resp
-                    .text()
-                    .unwrap_or_else(|e| format!("<body read failed: {}>", e));
-                bail!(
-                    "dockerhub: PATCH {}/{} failed (HTTP {}): {}",
-                    namespace,
-                    name,
-                    status,
-                    body
-                );
-            }
+            let patch_url = format!(
+                "https://hub.docker.com/v2/repositories/{}/{}/",
+                namespace, name
+            );
+            let label = format!("dockerhub: PATCH {}", image);
+            retry_http_blocking(
+                &label,
+                &policy,
+                SuccessClass::Strict,
+                |_| {
+                    client
+                        .patch(&patch_url)
+                        .bearer_auth(token)
+                        .json(&patch_body)
+                        .send()
+                },
+                |status, body| {
+                    format!(
+                        "dockerhub: PATCH {}/{} failed (HTTP {}): {}",
+                        namespace, name, status, body
+                    )
+                },
+            )?;
 
             log.status(&format!("dockerhub: synced description for '{}'", image));
         }
@@ -419,20 +419,28 @@ mod tests {
         assert!(publish_to_dockerhub(&ctx, &log).is_ok());
     }
 
+    fn fast_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 3,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(2),
+        }
+    }
+
     #[test]
     fn test_resolve_full_description_from_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
         let readme = dir.path().join("README.md");
-        std::fs::write(&readme, "# My App\nDescription here").unwrap();
+        std::fs::write(&readme, "# My App\nDescription here").expect("write");
 
         let client = reqwest::blocking::Client::new();
         let desc = DockerHubFullDescription {
             from_file: Some(DockerHubFromFile {
-                path: readme.to_str().unwrap().to_string(),
+                path: readme.to_str().expect("path utf-8").to_string(),
             }),
             from_url: None,
         };
-        let result = resolve_full_description(&desc, &client).unwrap();
+        let result = resolve_full_description(&desc, &client, &fast_policy()).expect("resolve");
         assert_eq!(result, "# My App\nDescription here");
     }
 
@@ -445,7 +453,7 @@ mod tests {
             }),
             from_url: None,
         };
-        assert!(resolve_full_description(&desc, &client).is_err());
+        assert!(resolve_full_description(&desc, &client, &fast_policy()).is_err());
     }
 
     #[test]
@@ -455,7 +463,7 @@ mod tests {
             from_file: None,
             from_url: None,
         };
-        assert!(resolve_full_description(&desc, &client).is_err());
+        assert!(resolve_full_description(&desc, &client, &fast_policy()).is_err());
     }
 
     #[test]
@@ -498,10 +506,13 @@ mod tests {
 
     #[test]
     fn test_resolve_full_description_from_url_unreachable() {
+        // Port 1 always refuses — exercises the transport-error fast-path of
+        // retry_http_blocking. With a 3-attempt, 1ms-backoff policy this
+        // takes a few ms total.
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(1))
             .build()
-            .unwrap();
+            .expect("client");
         let desc = DockerHubFullDescription {
             from_file: None,
             from_url: Some(DockerHubFromUrl {
@@ -509,11 +520,84 @@ mod tests {
                 headers: None,
             }),
         };
-        let err = resolve_full_description(&desc, &client).unwrap_err();
+        let err = resolve_full_description(&desc, &client, &fast_policy()).expect_err("err");
+        let chain = format!("{err:#}");
         assert!(
-            err.to_string().contains("failed to fetch URL"),
-            "unexpected error: {}",
-            err
+            chain.contains("dockerhub: fetch full_description")
+                || chain.contains("exhausted retry attempts")
+                || chain.contains("transport error"),
+            "unexpected error chain: {chain}"
+        );
+    }
+
+    // Pin: retry_http_blocking wires through from full_description fetch —
+    // a single 503 then a 200 should succeed end-to-end through
+    // resolve_full_description. Exercises the policy-plumbing rather than
+    // the helper itself (which has its own 5xx-then-success test in
+    // crates/core/src/retry.rs).
+    fn spawn_oneshot_http_responder(
+        responses: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    #[test]
+    fn resolve_full_description_from_url_retries_5xx_then_succeeds() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
+        ]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/"),
+                headers: None,
+            }),
+        };
+        let body = resolve_full_description(&desc, &client, &fast_policy())
+            .expect("retries 5xx then succeeds");
+        assert_eq!(body, "hello");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one 503 retry then success"
         );
     }
 }
