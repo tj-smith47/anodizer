@@ -1,6 +1,7 @@
 use anodizer_core::config::Config;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::scm::ScmTokenType;
 use anyhow::{Context as _, Result};
 
@@ -104,6 +105,12 @@ pub(super) fn close_milestones(
     // anti-pattern of `runtime.as_ref().expect(...)` on every iteration.
     let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
 
+    // Single retry policy resolved from the top-level `retry:` block; reused
+    // for every list + close HTTP call across providers so transient 5xx /
+    // 429 / network failures retry per the user's config (defaults: 10
+    // attempts × 10s base × 5m cap).
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+
     for milestone_cfg in milestones {
         let Some(target) = resolve_milestone_for_close(milestone_cfg, ctx, log)? else {
             continue;
@@ -134,7 +141,7 @@ pub(super) fn close_milestones(
         let api_url = resolve_milestone_api_url(milestone_cfg, &ctx.config);
         let close_result = match ctx.token_type {
             ScmTokenType::GitHub => {
-                close_milestone_github(&rt, &token, &owner, &repo_name, &milestone_name)
+                close_milestone_github(&rt, &token, &owner, &repo_name, &milestone_name, &policy)
             }
             ScmTokenType::GitLab => close_milestone_gitlab(
                 &rt,
@@ -143,6 +150,7 @@ pub(super) fn close_milestones(
                 &repo_name,
                 &milestone_name,
                 api_url.as_deref(),
+                &policy,
             ),
             ScmTokenType::Gitea => close_milestone_gitea(
                 &rt,
@@ -151,6 +159,7 @@ pub(super) fn close_milestones(
                 &repo_name,
                 &milestone_name,
                 api_url.as_deref(),
+                &policy,
             ),
         };
         match close_result {
@@ -248,6 +257,7 @@ fn close_milestone_github(
     owner: &str,
     repo: &str,
     milestone_name: &str,
+    policy: &RetryPolicy,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for milestone close");
@@ -257,7 +267,8 @@ fn close_milestone_github(
         let client = reqwest::Client::new();
 
         // List milestones with pagination to find the one with the matching title.
-        // GitHub returns at most 100 per page.
+        // GitHub returns at most 100 per page. Each page request routes through
+        // retry_http_async so transient 5xx / 429 / network failures retry.
         let mut page = 1u32;
         let mut milestone_number: Option<u64> = None;
 
@@ -266,24 +277,21 @@ fn close_milestone_github(
                 "https://api.github.com/repos/{}/{}/milestones?state=open&per_page=100&page={}",
                 owner, repo, page
             );
-            let resp = client
-                .get(&url)
-                .header("Authorization", format!("Bearer {}", token))
-                .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", anodizer_core::http::USER_AGENT)
-                .send()
-                .await
-                .context("milestone: list milestones request failed")?;
-
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = anodizer_core::http::body_of(resp).await;
-                anyhow::bail!(
-                    "milestone: list milestones failed (HTTP {}): {}",
-                    status,
-                    body
-                );
-            }
+            let resp = retry_http_async(
+                "milestone: list milestones",
+                policy,
+                SuccessClass::Strict,
+                |_| {
+                    client
+                        .get(&url)
+                        .header("Authorization", format!("Bearer {}", token))
+                        .header("Accept", "application/vnd.github+json")
+                        .header("User-Agent", anodizer_core::http::USER_AGENT)
+                        .send()
+                },
+                |status, body| format!("milestone: list milestones failed (HTTP {status}): {body}"),
+            )
+            .await?;
 
             let milestones: Vec<serde_json::Value> = resp
                 .json()
@@ -320,21 +328,22 @@ fn close_milestone_github(
             "https://api.github.com/repos/{}/{}/milestones/{}",
             owner, repo, milestone_number
         );
-        let resp = client
-            .patch(&close_url)
-            .header("Authorization", format!("Bearer {}", token))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", anodizer_core::http::USER_AGENT)
-            .json(&serde_json::json!({ "state": "closed" }))
-            .send()
-            .await
-            .context("milestone: close milestone request failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = anodizer_core::http::body_of(resp).await;
-            anyhow::bail!("milestone: close failed (HTTP {}): {}", status, body);
-        }
+        retry_http_async(
+            "milestone: close milestone",
+            policy,
+            SuccessClass::Strict,
+            |_| {
+                client
+                    .patch(&close_url)
+                    .header("Authorization", format!("Bearer {}", token))
+                    .header("Accept", "application/vnd.github+json")
+                    .header("User-Agent", anodizer_core::http::USER_AGENT)
+                    .json(&serde_json::json!({ "state": "closed" }))
+                    .send()
+            },
+            |status, body| format!("milestone: close failed (HTTP {status}): {body}"),
+        )
+        .await?;
 
         Ok(MilestoneCloseOutcome::Closed)
     })
@@ -372,6 +381,7 @@ fn close_milestone_gitlab(
     repo: &str,
     milestone_name: &str,
     api_url: Option<&str>,
+    policy: &RetryPolicy,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for GitLab milestone close");
@@ -391,23 +401,22 @@ fn close_milestone_gitlab(
             encoded_path,
             url_encode(milestone_name)
         );
-        let resp = client
-            .get(&url)
-            .header("PRIVATE-TOKEN", token)
-            .header("User-Agent", anodizer_core::http::USER_AGENT)
-            .send()
-            .await
-            .context("milestone: GitLab list milestones failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = anodizer_core::http::body_of(resp).await;
-            anyhow::bail!(
-                "milestone: GitLab list milestones failed (HTTP {}): {}",
-                status,
-                body
-            );
-        }
+        let resp = retry_http_async(
+            "milestone: GitLab list milestones",
+            policy,
+            SuccessClass::Strict,
+            |_| {
+                client
+                    .get(&url)
+                    .header("PRIVATE-TOKEN", token)
+                    .header("User-Agent", anodizer_core::http::USER_AGENT)
+                    .send()
+            },
+            |status, body| {
+                format!("milestone: GitLab list milestones failed (HTTP {status}): {body}")
+            },
+        )
+        .await?;
 
         let milestones: Vec<serde_json::Value> = resp
             .json()
@@ -432,20 +441,21 @@ fn close_milestone_gitlab(
             "{}/projects/{}/milestones/{}",
             base, encoded_path, milestone_id
         );
-        let resp = client
-            .put(&close_url)
-            .header("PRIVATE-TOKEN", token)
-            .header("User-Agent", anodizer_core::http::USER_AGENT)
-            .json(&serde_json::json!({ "state_event": "close" }))
-            .send()
-            .await
-            .context("milestone: GitLab close milestone failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = anodizer_core::http::body_of(resp).await;
-            anyhow::bail!("milestone: GitLab close failed (HTTP {}): {}", status, body);
-        }
+        retry_http_async(
+            "milestone: GitLab close milestone",
+            policy,
+            SuccessClass::Strict,
+            |_| {
+                client
+                    .put(&close_url)
+                    .header("PRIVATE-TOKEN", token)
+                    .header("User-Agent", anodizer_core::http::USER_AGENT)
+                    .json(&serde_json::json!({ "state_event": "close" }))
+                    .send()
+            },
+            |status, body| format!("milestone: GitLab close failed (HTTP {status}): {body}"),
+        )
+        .await?;
         Ok(MilestoneCloseOutcome::Closed)
     })
 }
@@ -458,6 +468,7 @@ fn close_milestone_gitea(
     repo: &str,
     milestone_name: &str,
     api_url: Option<&str>,
+    policy: &RetryPolicy,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for Gitea milestone close");
@@ -476,23 +487,22 @@ fn close_milestone_gitea(
             repo,
             url_encode(milestone_name)
         );
-        let resp = client
-            .get(&url)
-            .header("Authorization", format!("token {}", token))
-            .header("User-Agent", anodizer_core::http::USER_AGENT)
-            .send()
-            .await
-            .context("milestone: Gitea list milestones failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = anodizer_core::http::body_of(resp).await;
-            anyhow::bail!(
-                "milestone: Gitea list milestones failed (HTTP {}): {}",
-                status,
-                body
-            );
-        }
+        let resp = retry_http_async(
+            "milestone: Gitea list milestones",
+            policy,
+            SuccessClass::Strict,
+            |_| {
+                client
+                    .get(&url)
+                    .header("Authorization", format!("token {}", token))
+                    .header("User-Agent", anodizer_core::http::USER_AGENT)
+                    .send()
+            },
+            |status, body| {
+                format!("milestone: Gitea list milestones failed (HTTP {status}): {body}")
+            },
+        )
+        .await?;
 
         let milestones: Vec<serde_json::Value> = resp
             .json()
@@ -521,24 +531,43 @@ fn close_milestone_gitea(
         // the title and assert it hasn't changed under our feet — a
         // surprising side-effect for an API call meant to close, not
         // rename.
-        let resp = client
-            .patch(&close_url)
-            .header("Authorization", format!("token {}", token))
-            .header("User-Agent", anodizer_core::http::USER_AGENT)
-            .json(&serde_json::json!({ "state": "closed" }))
-            .send()
-            .await
-            .context("milestone: Gitea close milestone failed")?;
-
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(MilestoneCloseOutcome::NotFound);
+        //
+        // 404 on the PATCH is a legitimate "milestone already closed /
+        // deleted between list and close" race signal, so we catch it from
+        // the retry helper's Break path and map to NotFound. Other 4xx
+        // remain hard errors (the helper Breaks them).
+        match retry_http_async(
+            "milestone: Gitea close milestone",
+            policy,
+            SuccessClass::Strict,
+            |_| {
+                client
+                    .patch(&close_url)
+                    .header("Authorization", format!("token {}", token))
+                    .header("User-Agent", anodizer_core::http::USER_AGENT)
+                    .json(&serde_json::json!({ "state": "closed" }))
+                    .send()
+            },
+            |status, body| format!("milestone: Gitea close failed (HTTP {status}): {body}"),
+        )
+        .await
+        {
+            Ok(_) => Ok(MilestoneCloseOutcome::Closed),
+            Err(err) => {
+                let status_code = err
+                    .chain()
+                    .find_map(|e| {
+                        e.downcast_ref::<anodizer_core::retry::HttpError>()
+                            .map(|h| h.status)
+                    })
+                    .unwrap_or(0);
+                if status_code == 404 {
+                    Ok(MilestoneCloseOutcome::NotFound)
+                } else {
+                    Err(err)
+                }
+            }
         }
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = anodizer_core::http::body_of(resp).await;
-            anyhow::bail!("milestone: Gitea close failed (HTTP {}): {}", status, body);
-        }
-        Ok(MilestoneCloseOutcome::Closed)
     })
 }
 
@@ -879,6 +908,92 @@ mod tests {
             err.to_string().contains("not resolvable"),
             "unexpected error: {}",
             err
+        );
+    }
+
+    // ---- retry plumbing through close_milestone_gitlab --------------------
+    //
+    // Pin: each milestone HTTP call must route through retry_http_async so
+    // transient 5xx / 429 / network failures retry per the user's policy.
+    // GitLab is the easiest to test end-to-end because the function already
+    // accepts a base API URL. The GitHub / Gitea functions share the same
+    // retry helper + classifier — proving the wiring on one provider is
+    // sufficient (the helper itself has its own 5xx-then-success test in
+    // crates/core/src/retry.rs).
+
+    fn spawn_oneshot_http_responder(
+        responses: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    #[test]
+    fn close_milestone_gitlab_retries_5xx_then_succeeds() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        // Sequence: 503 on list, then 200 with one milestone, then 200 on
+        // the close PUT. The retry helper should retry past the 503 and the
+        // close succeeds.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 28\r\n\r\n[{\"id\":42,\"title\":\"v1.0.0\"}]",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 18\r\n\r\n{\"state\":\"closed\"}",
+        ]);
+
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let api_url = format!("http://{addr}");
+
+        let outcome = close_milestone_gitlab(
+            &rt,
+            "test-token",
+            "myorg",
+            "myrepo",
+            "v1.0.0",
+            Some(&api_url),
+            &policy,
+        )
+        .expect("retry past 503 then close");
+        assert_eq!(outcome, MilestoneCloseOutcome::Closed);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "expected 3 connections (503 retry GET, 200 GET, 200 PUT)"
         );
     }
 }
