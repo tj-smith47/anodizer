@@ -2,6 +2,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::hashing::sha256_file;
 use anodizer_core::log::StageLogger;
+use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
@@ -418,11 +419,15 @@ pub fn upload_single_artifact(
 /// envelope into a human-readable string. Falls back to the raw body when
 /// JSON decoding fails or the envelope shape doesn't match.
 fn decode_artifactory_error_body(body: &str) -> String {
+    // Defense-in-depth: if Artifactory echoes our Authorization header back
+    // in the error envelope, scrub the token before it lands in the
+    // user-visible log. Applied at the fallback / joined-output boundary so
+    // we redact once regardless of which path produces the message.
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
-        return body.to_string();
+        return redact_bearer_tokens(body);
     };
     let Some(errors) = json.get("errors").and_then(|e| e.as_array()) else {
-        return body.to_string();
+        return redact_bearer_tokens(body);
     };
     let joined: String = errors
         .iter()
@@ -448,9 +453,9 @@ fn decode_artifactory_error_body(body: &str) -> String {
         .collect::<Vec<_>>()
         .join("; ");
     if joined.is_empty() {
-        body.to_string()
+        redact_bearer_tokens(body)
     } else {
-        joined
+        redact_bearer_tokens(&joined)
     }
 }
 
@@ -1230,5 +1235,56 @@ mod tests {
 
         let log = ctx.logger("artifactory");
         assert!(publish_to_artifactory(&ctx, &log).is_ok());
+    }
+
+    /// Defense-in-depth: an Artifactory response body that echoes our
+    /// `Authorization: Bearer <PAT>` header back must not leak the token
+    /// into the user-visible error chain. The decode helper sits on the
+    /// JSON-parse fallback, raw-body fallback, and joined-output paths;
+    /// this test pins all three.
+    #[test]
+    fn decode_artifactory_error_body_redacts_bearer_tokens() {
+        // Path 1: raw body when JSON parsing fails entirely.
+        let raw = "plain-text error: Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg leaked";
+        let out = decode_artifactory_error_body(raw);
+        assert!(
+            !out.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "raw fallback: {out}"
+        );
+        assert!(
+            out.contains("<redacted>"),
+            "raw fallback should contain redaction marker: {out}"
+        );
+
+        // Path 2: JSON without the expected `errors` envelope.
+        let no_errors = r#"{"trace":"Bearer ghp_FAKETOKEN1234567890abcdefg"}"#;
+        let out = decode_artifactory_error_body(no_errors);
+        assert!(
+            !out.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "no-errors fallback: {out}"
+        );
+        assert!(
+            out.contains("<redacted>"),
+            "no-errors fallback should contain redaction marker: {out}"
+        );
+
+        // Path 3: well-formed envelope where the message itself echoes the
+        // bearer token (the realistic Artifactory misbehaviour).
+        let envelope = r#"{"errors":[{"status":401,"message":"bad header Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg"}]}"#;
+        let out = decode_artifactory_error_body(envelope);
+        assert!(
+            !out.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "joined path: {out}"
+        );
+        assert!(
+            out.contains("<redacted>"),
+            "joined path should contain redaction marker: {out}"
+        );
+        // The non-secret prefix of the message is preserved so debugging
+        // doesn't lose the upstream-supplied context.
+        assert!(
+            out.contains("status=401"),
+            "status should survive redaction: {out}"
+        );
     }
 }

@@ -1,6 +1,7 @@
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
@@ -88,7 +89,7 @@ where
         |status, body| {
             format!(
                 "cloudsmith {label} for '{art_name}' returned HTTP {status}: {}",
-                body.trim()
+                redact_bearer_tokens(body.trim())
             )
         },
     )
@@ -854,5 +855,73 @@ mod tests {
 
         let log = ctx.logger("cloudsmith");
         assert!(publish_to_cloudsmith(&ctx, &log).is_ok());
+    }
+
+    /// Defense-in-depth: a Cloudsmith API error response that echoes our
+    /// `Authorization: Bearer <PAT>` header back must not leak the token
+    /// into the user-visible error chain. Exercises the `retry_request`
+    /// helper's error-message closure via a one-shot TCP responder.
+    #[test]
+    fn retry_request_redacts_bearer_in_error_body() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let leaky = "Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg";
+        let body_len = leaky.len();
+        let resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {body_len}\r\n\r\n{leaky}"
+            )
+            .into_boxed_str(),
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            // Serve up to 3 attempts (matches fast_policy max_attempts).
+            for _ in 0..3 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let log = StageLogger::new("cloudsmith", Verbosity::Normal);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let url = format!("http://{addr}/files/");
+        let err = retry_request("upload", "test.deb", &policy, &log, || {
+            client.post(&url).send()
+        })
+        .expect_err("500 must exhaust + error");
+        let chain = format!("{err:#}");
+        assert!(
+            !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "bearer token leaked into error chain: {chain}"
+        );
+        assert!(
+            chain.contains("<redacted>"),
+            "expected `<redacted>` marker in error chain: {chain}"
+        );
     }
 }

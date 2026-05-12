@@ -6,6 +6,7 @@
 //! the Windows-only `choco pack` CLI.
 
 use anodizer_core::log::StageLogger;
+use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result};
 
@@ -196,7 +197,9 @@ pub(super) fn package_feed_hash(
         |status, body| {
             format!(
                 "chocolatey: feed hash lookup returned HTTP {} for {}: {}",
-                status, url, body
+                status,
+                url,
+                redact_bearer_tokens(body)
             )
         },
     ) {
@@ -402,7 +405,7 @@ pub(super) fn push_nupkg(
             push_url,
             attempt,
             hint,
-            body
+            redact_bearer_tokens(&body)
         );
 
         if edge_transient {
@@ -604,5 +607,40 @@ mod tests {
             other => panic!("expected Present, got: {other:?}"),
         }
         assert_eq!(calls.load(Ordering::SeqCst), 2, "one 503 retry then 200");
+    }
+
+    /// Defense-in-depth: a Chocolatey gallery 4xx response that echoes our
+    /// `Authorization: Bearer <PAT>` header back must not leak the token
+    /// into the user-visible error chain. Exercises `push_nupkg`'s
+    /// `base_err` formatter on the 4xx fast-fail path (the same wrap also
+    /// guards `package_feed_hash` and the retry log lines).
+    #[test]
+    fn push_nupkg_redacts_bearer_in_error_body() {
+        let dir = write_dummy_nupkg();
+        let path = dir.path().join("foo.1.0.0.nupkg");
+
+        let leaky = r#"{"error":"Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg"}"#;
+        let body_len = leaky.len();
+        let resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\n\r\n{leaky}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+        let source = format!("http://{addr}/api/v2/package");
+        let log = StageLogger::new("test", Verbosity::Normal);
+
+        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+            .expect_err("401 must fast-fail");
+        let chain = format!("{err:#}");
+        assert!(
+            !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "bearer token leaked into error chain: {chain}"
+        );
+        assert!(
+            chain.contains("<redacted>"),
+            "expected `<redacted>` marker in error chain: {chain}"
+        );
     }
 }

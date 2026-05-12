@@ -1,6 +1,7 @@
 use anodizer_core::config::DockerHubFullDescription;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, anyhow, bail};
 
@@ -41,7 +42,14 @@ pub fn resolve_full_description(
                 }
                 req.send()
             },
-            |status, body| format!("dockerhub: GET {} returned HTTP {}: {}", url, status, body),
+            |status, body| {
+                format!(
+                    "dockerhub: GET {} returned HTTP {}: {}",
+                    url,
+                    status,
+                    redact_bearer_tokens(body)
+                )
+            },
         )?;
         return Ok(body);
     }
@@ -226,7 +234,12 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                     .json(&login_body)
                     .send()
             },
-            |status, body| format!("dockerhub: authentication failed (HTTP {status}): {body}"),
+            |status, body| {
+                format!(
+                    "dockerhub: authentication failed (HTTP {status}): {}",
+                    redact_bearer_tokens(body)
+                )
+            },
         )?;
 
         let login_json: serde_json::Value = serde_json::from_str(&login_body_text)
@@ -278,7 +291,10 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 |status, body| {
                     format!(
                         "dockerhub: PATCH {}/{} failed (HTTP {}): {}",
-                        namespace, name, status, body
+                        namespace,
+                        name,
+                        status,
+                        redact_bearer_tokens(body)
                     )
                 },
             )?;
@@ -598,6 +614,50 @@ mod tests {
             calls.load(Ordering::SeqCst),
             2,
             "one 503 retry then success"
+        );
+    }
+
+    /// Defense-in-depth: if Docker Hub's GET-full-description endpoint
+    /// echoes our `Authorization: Bearer <PAT>` header back in an error
+    /// body, the bearer token must NOT survive into the user-visible
+    /// error chain. The retry helper trips on the 500 and the error
+    /// message goes through `redact_bearer_tokens`.
+    #[test]
+    fn resolve_full_description_redacts_bearer_in_error_body() {
+        use std::time::Duration;
+
+        let leaky_body = "internal error: Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg";
+        let body_len = leaky_body.len();
+        // All 3 attempts return 500 to force exhaustion (the retry helper
+        // surfaces the *last* attempt's body in the error message).
+        let resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {body_len}\r\n\r\n{leaky_body}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp, resp, resp]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let desc = DockerHubFullDescription {
+            from_file: None,
+            from_url: Some(DockerHubFromUrl {
+                url: format!("http://{addr}/"),
+                headers: None,
+            }),
+        };
+        let err = resolve_full_description(&desc, &client, &fast_policy())
+            .expect_err("500 exhaustion must error");
+        let chain = format!("{err:#}");
+        assert!(
+            !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "bearer token leaked into error chain: {chain}"
+        );
+        assert!(
+            chain.contains("<redacted>"),
+            "expected `<redacted>` marker in error chain: {chain}"
         );
     }
 }

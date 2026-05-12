@@ -1,6 +1,7 @@
 use anodizer_core::config::{CargoPublishConfig, CrateConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::util::topological_sort;
 use anyhow::{Context as _, Result};
 use std::collections::{HashMap, HashSet};
@@ -219,7 +220,9 @@ fn is_already_published_at(
         |status, body| {
             format!(
                 "publish: crates.io index returned {} for '{}': {}",
-                status, crate_name, body
+                status,
+                crate_name,
+                redact_bearer_tokens(body)
             )
         },
     );
@@ -1030,5 +1033,34 @@ mod tests {
             .expect("404 is Ok(None)");
         assert_eq!(result, None);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "404 must NOT retry");
+    }
+
+    /// Defense-in-depth: a crates.io sparse-index 4xx response that echoes
+    /// our `Authorization: Bearer <PAT>` header back must not leak the token
+    /// into the user-visible error chain. The sparse index is unauthenticated
+    /// in production, so this is paranoia — but mirror/proxy registries can
+    /// gateway through an auth proxy.
+    #[test]
+    fn is_already_published_at_redacts_bearer_in_error_body() {
+        let leaky = "Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg denied";
+        let body_len = leaky.len();
+        // 401 fast-fails (4xx) so a single response suffices.
+        let resp: &'static str = Box::leak(
+            format!("HTTP/1.1 401 Unauthorized\r\nContent-Length: {body_len}\r\n\r\n{leaky}")
+                .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+        let url = format!("http://{addr}/3/f/foo");
+        let err = is_already_published_at(&url, "foo", "1.2.3", &fast_retry_policy())
+            .expect_err("401 must fast-fail");
+        let chain = format!("{err:#}");
+        assert!(
+            !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "bearer token leaked into error chain: {chain}"
+        );
+        assert!(
+            chain.contains("<redacted>"),
+            "expected `<redacted>` marker in error chain: {chain}"
+        );
     }
 }
