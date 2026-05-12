@@ -546,14 +546,24 @@ fn test_sbom_written_to_file() {
 #[test]
 fn test_stage_dry_run_does_not_create_files() {
     use anodizer_core::config::{SbomConfig, SourceConfig};
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
     let tmp = TempDir::new().unwrap();
     let dist = tmp.path().join("dist");
+    // Construct a real workspace so SourceStage's `get_repo_root` call has
+    // an explicit git tree to anchor to. Without this and an explicit
+    // `project_root` below, the stage falls back to `std::env::current_dir`,
+    // which can be a dangling tempdir under cargo's default parallel test
+    // schedule (a peer test in this file may have `set_current_dir`-ed into
+    // a tempdir that has since been dropped).
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
 
     let mut ctx = TestContextBuilder::new()
         .project_name("test-app")
         .dry_run(true)
         .dist(dist.clone())
+        .project_root(tmp.path().to_path_buf())
         .build();
 
     ctx.config.source = Some(SourceConfig {
@@ -577,6 +587,87 @@ fn test_stage_dry_run_does_not_create_files() {
         ctx.artifacts.all().len(),
         0,
         "no artifacts should be registered in dry-run"
+    );
+}
+
+/// Regression: `SourceStage::run` must not depend on the process cwd when
+/// the caller supplies an explicit `project_root`. CI macOS runners hit a
+/// race where a peer cargo test had `set_current_dir`-ed into a tempdir
+/// that was subsequently dropped, leaving the process cwd dangling; the
+/// stage then fell back to `std::env::current_dir()` and the spawned
+/// `git rev-parse --show-toplevel` aborted with "Unable to read current
+/// working directory".
+///
+/// Here we point the process cwd at a directory that is NOT a git repo
+/// (`/`) and prove the stage still resolves the workspace via the
+/// explicit `project_root`. The test is `#[serial]` because it mutates
+/// the process-wide cwd; if any other cwd-sensitive test joins this crate
+/// the runner will keep them mutually exclusive.
+#[test]
+#[serial_test::serial]
+fn test_stage_run_does_not_depend_on_cwd() {
+    use anodizer_core::config::{SbomConfig, SourceConfig};
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let dist = tmp.path().join("dist");
+
+    let real_commit = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let real_commit = String::from_utf8_lossy(&real_commit.stdout)
+        .trim()
+        .to_string();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("cwd-probe")
+        .commit(&real_commit)
+        .dist(dist.clone())
+        .project_root(tmp.path().to_path_buf())
+        .build();
+
+    ctx.config.source = Some(SourceConfig {
+        enabled: Some(true),
+        format: Some("tar.gz".to_string()),
+        name_template: None,
+        prefix_template: None,
+        files: vec![],
+    });
+    ctx.config.sboms = vec![SbomConfig {
+        ..Default::default()
+    }];
+
+    // Stash the real cwd, then point cwd at a directory that is not a git
+    // repo. `/` is non-traversable for `git rev-parse --show-toplevel`,
+    // mirroring the macOS-CI failure shape. Restore at end-of-test so the
+    // test harness's own pre/post teardown still sees a sane cwd.
+    let saved = std::env::current_dir().ok();
+    std::env::set_current_dir("/").expect("cwd to / must succeed in tests");
+
+    let result = SourceStage.run(&mut ctx);
+
+    // Restore before asserting so a failed assertion does not strand cwd.
+    if let Some(prev) = saved {
+        let _ = std::env::set_current_dir(prev);
+    }
+
+    result.unwrap_or_else(|e| panic!("stage must succeed regardless of cwd: {e}"));
+    let artifacts = ctx.artifacts.all();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "exactly one source archive should be emitted: {artifacts:?}"
+    );
+    assert_eq!(artifacts[0].kind, ArtifactKind::SourceArchive);
+    assert!(
+        artifacts[0].path.exists(),
+        "archive path must exist on disk: {:?}",
+        artifacts[0].path
     );
 }
 
@@ -963,8 +1054,6 @@ fn test_source_archive_strip_parent_with_dst() {
         info: None,
     }];
 
-    std::env::set_current_dir(tmp.path()).unwrap();
-
     let result = create_source_archive(&SourceArchiveInputs {
         dist: &dist,
         format: "tar.gz",
@@ -1026,8 +1115,6 @@ fn test_source_archive_no_strip_parent_dst_is_literal_rename() {
         strip_parent: None,
         info: None,
     }];
-
-    std::env::set_current_dir(tmp.path()).unwrap();
 
     let result = create_source_archive(&SourceArchiveInputs {
         dist: &dist,
@@ -1094,8 +1181,6 @@ fn test_source_extra_files_with_info() {
             mtime: Some("2024-01-01T00:00:00Z".to_string()),
         }),
     }];
-
-    std::env::set_current_dir(tmp.path()).unwrap();
 
     let result = create_source_archive(&SourceArchiveInputs {
         dist: &dist,

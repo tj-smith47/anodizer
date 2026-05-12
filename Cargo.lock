@@ -408,6 +408,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "serial_test",
  "tar",
  "tempfile",
  "toml",
