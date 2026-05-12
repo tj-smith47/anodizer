@@ -358,9 +358,16 @@ fn publish_payload(
                 .send()
         },
         |status, body| {
+            // Defense-in-depth: if the registry echoes our Authorization
+            // header back in an error body, scrub the token before it
+            // lands in the user-visible log. No evidence the registry
+            // does this today, but the cost of redacting is one regex's
+            // worth of CPU vs. the cost of leaking a token to logs.
             format!(
                 "mcp: POST {} returned HTTP {}: {}",
-                publish_url, status, body
+                publish_url,
+                status,
+                anodizer_core::redact::redact_bearer_tokens(body)
             )
         },
     )

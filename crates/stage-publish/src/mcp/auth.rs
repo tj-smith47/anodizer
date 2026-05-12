@@ -150,7 +150,14 @@ impl McpAuthProvider for NoneAuthProvider {
             &self.policy,
             SuccessClass::Strict,
             |_| client.post(&url).send(),
-            |status, body| format!("mcp: POST {} returned HTTP {}: {}", url, status, body),
+            |status, body| {
+                format!(
+                    "mcp: POST {} returned HTTP {}: {}",
+                    url,
+                    status,
+                    anodizer_core::redact::redact_bearer_tokens(body)
+                )
+            },
         )
         .context("mcp: anonymous token exchange")?;
         let parsed: RegistryTokenResponse =
@@ -213,7 +220,14 @@ impl McpAuthProvider for GithubAtAuthProvider {
                     .body(body_json.clone())
                     .send()
             },
-            |status, body| format!("mcp: POST {} returned HTTP {}: {}", url, status, body),
+            |status, body| {
+                format!(
+                    "mcp: POST {} returned HTTP {}: {}",
+                    url,
+                    status,
+                    anodizer_core::redact::redact_bearer_tokens(body)
+                )
+            },
         )
         .context("mcp: github PAT exchange")?;
         let parsed: RegistryTokenResponse =
@@ -287,7 +301,14 @@ impl McpAuthProvider for GithubOidcAuthProvider {
                     .header("Accept", "application/json")
                     .send()
             },
-            |status, body| format!("mcp: GET {} returned HTTP {}: {}", full_url, status, body),
+            |status, body| {
+                format!(
+                    "mcp: GET {} returned HTTP {}: {}",
+                    full_url,
+                    status,
+                    anodizer_core::redact::redact_bearer_tokens(body)
+                )
+            },
         )
         .context("mcp: fetch GitHub Actions id-token")?;
         let oidc: OidcTokenValue =
@@ -319,7 +340,9 @@ impl McpAuthProvider for GithubOidcAuthProvider {
             |status, body| {
                 format!(
                     "mcp: POST {} returned HTTP {}: {}",
-                    exchange_url, status, body
+                    exchange_url,
+                    status,
+                    anodizer_core::redact::redact_bearer_tokens(body)
                 )
             },
         )

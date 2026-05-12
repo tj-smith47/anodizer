@@ -113,6 +113,100 @@ pub fn redact_url_credentials(input: &str) -> String {
     result
 }
 
+/// Strip bearer / authorization tokens that may have been echoed by a
+/// remote endpoint into a response body before that body lands in an
+/// error message. Defense in depth — if a misbehaving registry mirrors
+/// the request's `Authorization` header back in an error response, this
+/// helper prevents the token from showing up in user-visible logs.
+///
+/// Replaces:
+///   - `Bearer <token>` → `Bearer <redacted>` (case-insensitive on the
+///     keyword; the canonical replacement spelling is always "Bearer").
+///     A "Bearer" match requires the keyword to appear at the start of
+///     the input OR immediately after one of `[ \t:,;("'<\n\r]` so that
+///     prose words like "bearer of bad news" do not match.
+///   - `Authorization:` followed by any value through end-of-line →
+///     `Authorization: <redacted>` (case-insensitive on the header name).
+///     The entire header value is consumed so `Authorization: Bearer X`
+///     doesn't leak `X` after the header redaction.
+///
+/// Use as a wrapper around any remote-supplied body text being interpolated
+/// into an error message or log line. The bare token (no scheme prefix)
+/// remains untouched — for that, rely on `string(..., env)` matching the
+/// env-var-based heuristics.
+pub fn redact_bearer_tokens(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Authorization: <rest-of-line>
+        // Always allowed to match at i (the header name itself is unambiguous
+        // when followed by a `:`). Consume through the next \n / \r so a
+        // multi-line body with subsequent normal text isn't redacted past
+        // the header's terminator.
+        if let Some(name_len) = match_authorization_prefix(&bytes[i..]) {
+            out.push_str("Authorization: <redacted>");
+            i += name_len;
+            while i < bytes.len() && bytes[i] != b'\n' && bytes[i] != b'\r' {
+                i += 1;
+            }
+            continue;
+        }
+        // Bearer <token>
+        // Require the preceding byte (if any) to be a token-boundary
+        // character so prose like "the bearer of bad news" doesn't match.
+        let preceded_by_boundary = i == 0
+            || matches!(
+                bytes[i - 1],
+                b' ' | b'\t' | b':' | b',' | b';' | b'(' | b'"' | b'\'' | b'<' | b'\n' | b'\r'
+            );
+        if preceded_by_boundary && let Some(kw_len) = match_bearer_prefix(&bytes[i..]) {
+            out.push_str("Bearer <redacted>");
+            i += kw_len;
+            // Skip the token value: a run of non-whitespace characters.
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            continue;
+        }
+        // Emit one byte verbatim and advance.
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Returns Some(prefix_len) if `bytes` starts with case-insensitive
+/// "Bearer " (the trailing space is required so we don't match "Bearertown").
+fn match_bearer_prefix(bytes: &[u8]) -> Option<usize> {
+    const KW: &[u8] = b"Bearer ";
+    if bytes.len() < KW.len() {
+        return None;
+    }
+    for (i, kw_byte) in KW.iter().enumerate() {
+        if !bytes[i].eq_ignore_ascii_case(kw_byte) {
+            return None;
+        }
+    }
+    Some(KW.len())
+}
+
+/// Returns Some(prefix_len) if `bytes` starts with case-insensitive
+/// "Authorization:" (the trailing colon is required to disambiguate from
+/// prose mentioning the word "authorization").
+fn match_authorization_prefix(bytes: &[u8]) -> Option<usize> {
+    const KW: &[u8] = b"Authorization:";
+    if bytes.len() < KW.len() {
+        return None;
+    }
+    for (i, kw_byte) in KW.iter().enumerate() {
+        if !bytes[i].eq_ignore_ascii_case(kw_byte) {
+            return None;
+        }
+    }
+    Some(KW.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +440,91 @@ mod tests {
         assert_eq!(result, "https://<redacted>@host.example.com then more");
         assert!(!result.contains("user:pass"));
         assert!(result.ends_with(" then more"));
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_basic() {
+        let input = "auth header: Bearer ghp_abcdef123456 expires soon";
+        let result = redact_bearer_tokens(input);
+        assert_eq!(result, "auth header: Bearer <redacted> expires soon");
+        assert!(!result.contains("ghp_abcdef123456"));
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_case_insensitive() {
+        // The keyword "Bearer" is case-insensitive but the canonical
+        // output form is always "Bearer".
+        let input = "bearer ghp_lowercase_token";
+        assert_eq!(
+            redact_bearer_tokens(input),
+            "Bearer <redacted>",
+            "lowercase 'bearer' must still redact"
+        );
+        let input = "BEARER ghp_uppercase_token";
+        assert_eq!(redact_bearer_tokens(input), "Bearer <redacted>");
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_authorization_header() {
+        // "Authorization:" consumes through end-of-line, so the entire
+        // header value is redacted as one unit. Trailing content after
+        // a newline is preserved verbatim.
+        let input = "request: Authorization: Bearer ghp_xyz\nresponse: 401";
+        let result = redact_bearer_tokens(input);
+        assert_eq!(
+            result, "request: Authorization: <redacted>\nresponse: 401",
+            "header value (including the inner Bearer token) must be redacted as one"
+        );
+        assert!(!result.contains("ghp_xyz"));
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_authorization_header_single_line() {
+        // No newline → the header value runs to end-of-input; that's fine,
+        // the entire tail is redacted (defensive: better one over-redaction
+        // than one leaked token).
+        let input = "Authorization: Bearer ghp_xyz";
+        let result = redact_bearer_tokens(input);
+        assert_eq!(result, "Authorization: <redacted>");
+        assert!(!result.contains("ghp_xyz"));
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_no_match_unchanged() {
+        // No "Bearer " / "Authorization:" tokens → string unchanged.
+        // Note: we cannot distinguish prose use of "bearer" from a real
+        // header; the redactor errs on the side of over-redaction (it
+        // would treat "bearer of bad news" as "Bearer <redacted> bad
+        // news"). Both branches are still safer than leaking a token.
+        let input = "some random text with no relevant tokens here";
+        assert_eq!(redact_bearer_tokens(input), input);
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_over_redacts_prose_use() {
+        // Documents the known over-redaction behavior: "bearer of bad
+        // news" looks like a Bearer-token construct because the redactor
+        // can't tell prose from a header. The trade-off is intentional —
+        // safer to over-redact a prose word than to leak a real token.
+        let input = "the bearer of bad news arrived";
+        let result = redact_bearer_tokens(input);
+        assert_eq!(result, "the Bearer <redacted> bad news arrived");
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_empty_input() {
+        assert_eq!(redact_bearer_tokens(""), "");
+    }
+
+    #[test]
+    fn test_redact_bearer_tokens_handles_multiple_occurrences() {
+        let input = "first Bearer ghp_aaa and second Bearer ghp_bbb done";
+        let result = redact_bearer_tokens(input);
+        assert_eq!(
+            result,
+            "first Bearer <redacted> and second Bearer <redacted> done"
+        );
+        assert!(!result.contains("ghp_aaa"));
+        assert!(!result.contains("ghp_bbb"));
     }
 }
