@@ -8,6 +8,7 @@ pub mod dockerhub;
 pub mod homebrew;
 pub(crate) mod http_upload;
 pub mod krew;
+pub mod mcp;
 pub mod nix;
 pub mod scoop;
 pub mod upload;
@@ -29,6 +30,7 @@ use cloudsmith::publish_to_cloudsmith;
 use dockerhub::publish_to_dockerhub;
 use homebrew::{publish_to_homebrew, publish_top_level_homebrew_casks};
 use krew::publish_to_krew;
+use mcp::publish_to_mcp;
 use nix::publish_to_nix;
 use scoop::publish_to_scoop;
 use upload::publish_to_upload;
@@ -218,6 +220,12 @@ impl Stage for PublishStage {
         } else {
             publish_to_cargo(ctx, &selected, &log)?;
         }
+
+        // 7b. MCP server registry — top-level publisher. Posts an
+        // apiv0.ServerJSON document to the configured MCP registry. Skipped
+        // when `mcp.name` is empty (same gate GoReleaser uses in its `mcp`
+        // pipe).
+        top_level!("mcp", "mcp", publish_to_mcp);
 
         // 8. Homebrew formulae — per-crate.
         per_crate!(

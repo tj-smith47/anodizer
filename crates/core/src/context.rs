@@ -336,6 +336,15 @@ impl Context {
         Verbosity::from_flags(self.options.quiet, self.options.verbose, self.options.debug)
     }
 
+    /// Resolve the user's `retry:` block into a concrete [`RetryPolicy`],
+    /// applying defaults when `retry:` is unset. Equivalent to
+    /// `ctx.config.retry.unwrap_or_default().to_policy()` but centralizes
+    /// the lookup so a future refactor can hang validation / clamping off
+    /// a single seam.
+    pub fn retry_policy(&self) -> crate::retry::RetryPolicy {
+        self.config.retry.unwrap_or_default().to_policy()
+    }
+
     /// Create a [`StageLogger`] for the given stage name, pre-attached to
     /// the context's env-pairs list so that subprocess stderr / stdout
     /// flowing through [`StageLogger::check_output`] is automatically
