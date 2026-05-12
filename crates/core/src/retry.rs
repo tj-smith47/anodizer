@@ -455,29 +455,46 @@ impl StdError for Retriable {
 
 /// Returns `true` if the message looks like a transient network-layer failure.
 ///
-/// Mirrors GoReleaser `retryx.IsNetworkError`. Substring-matches the lowercased
-/// `Display` form of every link in the error chain against the standard set
-/// of transient phrases: `connection reset`, `network is unreachable`,
-/// `connection closed`, `connection refused`, `tls handshake timeout`,
-/// `i/o timeout`, `broken pipe`, `timeout awaiting response headers`,
-/// `context deadline exceeded`. Also recognises [`io::ErrorKind::UnexpectedEof`]
-/// and bare `io::Error` EOF wrappings via `downcast_ref` traversal of the
-/// error chain.
+/// Mirrors GoReleaser `retryx.IsNetworkError` and extends it for Rust /
+/// Windows. Each link in the error chain is checked two ways:
 ///
-/// Walks `.source()` for both the EOF check AND the substring check — Rust's
-/// `Display` impls do NOT inherit the wrapped error's text the way Go's
-/// `err.Error()` does, so a reqwest "Connection refused" message buried under
-/// an anyhow context would otherwise be invisible to the head-only string.
+/// 1a. **Structural [`io::ErrorKind`] check** via `downcast_ref::<io::Error>()`.
+///     Treats `UnexpectedEof`, `TimedOut`, `ConnectionRefused`,
+///     `ConnectionReset`, `ConnectionAborted`, and `BrokenPipe` as transient.
+///     The OS-classified `ErrorKind` is robust where Display text is not:
+///     Linux's connect-refused says `"Connection refused"` but Windows
+///     surfaces a transient connect failure as
+///     `io::Error { kind: TimedOut, message: "operation timed out" }`, and
+///     a Windows-reset reads `"An existing connection was forcibly closed"`.
+///     Matching `kind()` catches all of them regardless of phrasing. Also
+///     recognises any `io::Error` whose Display form is `"EOF"` /
+///     `"unexpected eof"` (rustls / hyper convention; Rust has no
+///     equivalent of Go's `io.EOF` sentinel).
+///
+/// 1b. **Substring match on the lowercased Display form** against
+///     [`NETWORK_ERROR_NEEDLES`]. Covers the GR-parity surface plus the
+///     Windows / Rust-stdlib phrasings that bypass the kind check when an
+///     error has been wrapped (e.g. reqwest coercing the inner kind to
+///     `Other` while preserving the OS message text).
+///
+/// Walks `.source()` for both branches — Rust's `Display` impls do NOT
+/// inherit the wrapped error's text the way Go's `err.Error()` does, so a
+/// reqwest "Connection refused" message buried under an anyhow context would
+/// otherwise be invisible to the head-only string.
 pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
     let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
     while let Some(e) = cur {
-        // 1a. EOF / UnexpectedEof check — Rust has no equivalent of Go's
-        //     `io.EOF` sentinel, so we treat `ErrorKind::UnexpectedEof` and
-        //     any `io::Error` whose Display form is `"EOF"` (rustls / hyper
-        //     convention) as the analog.
+        // 1a. Structural ErrorKind check — robust to platform Display drift
+        //     (Windows's "operation timed out" vs Linux's "Connection refused").
         if let Some(io_err) = e.downcast_ref::<io::Error>() {
-            if io_err.kind() == io::ErrorKind::UnexpectedEof {
-                return true;
+            match io_err.kind() {
+                io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe => return true,
+                _ => {}
             }
             let m = io_err.to_string().to_lowercase();
             if m == "eof" || m == "unexpected eof" {
@@ -498,8 +515,15 @@ pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
     false
 }
 
-/// The set of substrings classified as transient by GoReleaser's
-/// `retryx.IsNetworkError` (matching is case-insensitive).
+/// The set of substrings classified as transient.
+///
+/// The first nine entries mirror GoReleaser's `retryx.IsNetworkError`
+/// (matching is case-insensitive). The remaining entries cover Windows and
+/// Rust-stdlib phrasings of transient transport failures that surface when
+/// an `io::Error` has been wrapped by a higher layer (reqwest, hyper,
+/// anyhow), losing the original `ErrorKind` classification but preserving
+/// the OS message text. Without these, every publisher running on Windows
+/// fast-failed on the first transient connect blip instead of retrying.
 const NETWORK_ERROR_NEEDLES: &[&str] = &[
     "connection reset",
     "network is unreachable",
@@ -510,6 +534,12 @@ const NETWORK_ERROR_NEEDLES: &[&str] = &[
     "broken pipe",
     "timeout awaiting response headers",
     "context deadline exceeded",
+    // Windows + macOS phrasing of ErrorKind::TimedOut after wrapping.
+    "operation timed out",
+    // Windows ErrorKind::ConnectionAborted phrasing.
+    "the network connection was aborted",
+    // Windows ErrorKind::ConnectionReset phrasing.
+    "an existing connection was forcibly closed",
 ];
 
 /// Classify an error as retriable (mirrors GoReleaser `retryx.IsRetriable`).
@@ -696,6 +726,62 @@ mod tests {
         // A custom-kind io::Error whose Display is "EOF" (rustls / hyper convention).
         let e2 = io::Error::other("EOF");
         assert!(is_network_error(&e2));
+    }
+
+    // Windows-CI regression: connect() on Windows surfaces transient failures
+    // as io::Error { kind: TimedOut, message: "operation timed out" }, neither
+    // of which matched the original EOF-only kind check or the GR-parity
+    // needle list. Same shape for the connection-* kinds across platforms —
+    // pin each branch.
+
+    #[test]
+    fn is_network_error_classifies_io_timedout() {
+        let e = io::Error::from(io::ErrorKind::TimedOut);
+        assert!(is_network_error(&e));
+        assert!(is_retriable(&e));
+    }
+
+    #[test]
+    fn is_network_error_classifies_io_connection_refused() {
+        let e = io::Error::from(io::ErrorKind::ConnectionRefused);
+        assert!(is_network_error(&e));
+        assert!(is_retriable(&e));
+    }
+
+    #[test]
+    fn is_network_error_classifies_io_connection_reset() {
+        let e = io::Error::from(io::ErrorKind::ConnectionReset);
+        assert!(is_network_error(&e));
+        assert!(is_retriable(&e));
+    }
+
+    #[test]
+    fn is_network_error_classifies_io_connection_aborted() {
+        let e = io::Error::from(io::ErrorKind::ConnectionAborted);
+        assert!(is_network_error(&e));
+        assert!(is_retriable(&e));
+    }
+
+    #[test]
+    fn is_network_error_classifies_io_broken_pipe() {
+        let e = io::Error::from(io::ErrorKind::BrokenPipe);
+        assert!(is_network_error(&e));
+        assert!(is_retriable(&e));
+    }
+
+    #[test]
+    fn is_network_error_classifies_operation_timed_out_substring() {
+        // Simulate a reqwest- or hyper-wrapped error whose io::ErrorKind has
+        // been coerced to Other but whose Display still carries the Windows /
+        // macOS TimedOut phrasing. Both the substring path and the
+        // ErrorKind path must classify this independently.
+        let other_kind = io::Error::other("operation timed out");
+        assert!(is_network_error(&other_kind));
+        assert!(is_retriable(&other_kind));
+
+        let kind_only = io::Error::from(io::ErrorKind::TimedOut);
+        assert!(is_network_error(&kind_only));
+        assert!(is_retriable(&kind_only));
     }
 
     #[test]
