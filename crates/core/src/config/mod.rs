@@ -342,6 +342,43 @@ impl Config {
     }
 }
 
+/// Run a deserialization closure on a worker thread sized large enough that
+/// the `Config` derive (60+ `Option<NestedStruct>` fields) cannot exhaust
+/// the host's main-thread stack.
+///
+/// Background: debug builds of `serde_yaml_ng::from_value::<Config>` and
+/// `toml::from_str::<Config>` consume several MiB of stack because each
+/// generated visitor branch for the giant struct lives in a single
+/// monomorphised frame and debug builds neither inline nor tail-call. The
+/// Windows main-thread default reservation is 1 MiB, so any debug-built
+/// integration test that triggers full-config deserialization overflows
+/// before reaching the visitor's body.
+///
+/// Routing every full-`Config` deserialization through this helper keeps
+/// every entry-point platform-agnostic without resorting to per-platform
+/// linker flags or `RUST_MIN_STACK`.
+pub fn deserialize_on_worker<F, T>(f: F) -> anyhow::Result<T>
+where
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    use anyhow::Context as _;
+
+    // 8 MiB matches the Linux/macOS process default and comfortably exceeds
+    // the ~2 MiB peak observed for debug `Config` deserialization.
+    const WORKER_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+    let handle = std::thread::Builder::new()
+        .stack_size(WORKER_STACK_SIZE)
+        .name("anodizer-config-deserialize".to_string())
+        .spawn(f)
+        .context("failed to spawn config deserialization worker thread")?;
+    match handle.join() {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
 /// Validate the config schema version. Accepts version 1 (default) and 2.
 /// Returns an error for unknown versions.
 pub fn validate_version(config: &Config) -> Result<(), String> {

@@ -264,8 +264,15 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     // Merge base config on top of the accumulated defaults (base wins).
     merge_yaml(&mut merged, &base);
 
-    serde_yaml_ng::from_value(merged)
-        .with_context(|| format!("failed to deserialize config: {}", path.display()))
+    // Run the full-Config deserialize on a generously-sized worker thread so
+    // hosts with a small main-thread stack reservation (Windows: 1 MiB)
+    // cannot overflow inside serde's monomorphised visitor for the 60+
+    // field Config struct.
+    let path_display = path.display().to_string();
+    anodizer_core::config::deserialize_on_worker(move || {
+        serde_yaml_ng::from_value::<Config>(merged)
+            .with_context(|| format!("failed to deserialize config: {}", path_display))
+    })
 }
 
 /// Load a TOML config, processing `includes` using the same merge strategy
@@ -286,9 +293,15 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
         .unwrap_or_default();
 
     if include_entries.is_empty() {
-        // No includes — fast path: deserialize directly from TOML.
-        return toml::from_str(content)
-            .with_context(|| format!("failed to deserialize TOML config: {}", path.display()));
+        // No includes — fast path: deserialize directly from TOML on a
+        // worker thread so the host's main-thread stack reservation cannot
+        // bound serde's monomorphised visitor for the giant `Config` struct.
+        let path_display = path.display().to_string();
+        let content_owned = content.to_string();
+        return anodizer_core::config::deserialize_on_worker(move || {
+            toml::from_str::<Config>(&content_owned)
+                .with_context(|| format!("failed to deserialize TOML config: {}", path_display))
+        });
     }
 
     // Convert the base TOML to a YAML Value so we can use the existing
@@ -313,8 +326,11 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     // Merge base config on top of the accumulated defaults (base wins).
     merge_yaml(&mut merged, &base_yaml);
 
-    serde_yaml_ng::from_value(merged)
-        .with_context(|| format!("failed to deserialize config: {}", path.display()))
+    let path_display = path.display().to_string();
+    anodizer_core::config::deserialize_on_worker(move || {
+        serde_yaml_ng::from_value::<Config>(merged)
+            .with_context(|| format!("failed to deserialize config: {}", path_display))
+    })
 }
 
 /// Normalize a URL for include fetching.
@@ -1523,6 +1539,61 @@ url = "https://example.com/config.yaml"
             msg.contains("fetch") || msg.contains("include URL"),
             "should fail at fetch, not parse: {}",
             msg
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: full-`Config` deserialization must not depend on the
+    // caller's thread stack size. Debug-built `serde_yaml_ng::from_value::
+    // <Config>` and `toml::from_str::<Config>` consume several MiB of stack
+    // because each generated visitor branch lives in one monomorphised
+    // frame. Routing through `core::config::deserialize_on_worker` keeps
+    // every caller safe regardless of the host's main-thread reservation
+    // (Windows: 1 MiB). The test below pins the contract by invoking
+    // `load_config` from a deliberately small (256 KiB) caller thread.
+    // Pre-fix this overflows on every platform under debug builds; post-fix
+    // it succeeds because the worker thread carries its own 8 MiB stack.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn load_config_succeeds_on_small_caller_stack() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join(".anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            r#"version: 2
+project_name: stack-probe
+crates:
+  - name: demo
+    path: .
+    tag_template: "v{{ Version }}"
+"#,
+        )
+        .unwrap();
+
+        // 512 KiB is half the Windows main-thread reservation and well
+        // below the ~768 KiB pre-fix threshold where debug builds of the
+        // monolithic `Config` visitor overflow on Linux. Post-fix the
+        // deserialize is routed through the helper's 8 MiB worker so the
+        // outer 512 KiB budget only has to cover the YAML-Value parse,
+        // the include-merge walk, and the per-CrateConfig JSON round-trips
+        // inside `defaults_merge`, each comfortably small.
+        let cfg_path_string = cfg_path.to_string_lossy().to_string();
+        let handle = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .name("load_config_small_stack_probe".to_string())
+            .spawn(move || {
+                load_config(std::path::Path::new(&cfg_path_string))
+                    .map(|c| c.project_name)
+                    .map_err(|e| e.to_string())
+            })
+            .expect("spawn small-stack probe thread");
+        let result = handle.join().expect("probe thread did not panic");
+        assert_eq!(
+            result.as_deref(),
+            Ok("stack-probe"),
+            "load_config must succeed from a small caller stack: {:?}",
+            result
         );
     }
 }
