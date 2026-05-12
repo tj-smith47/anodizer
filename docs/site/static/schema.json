@@ -253,6 +253,33 @@
         "$ref": "#/definitions/MakeselfConfig"
       }
     },
+    "mcp": {
+      "description": "MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. Mirrors GoReleaser's `mcp:` block.",
+      "default": {
+        "auth": {
+          "type": "none"
+        },
+        "description": null,
+        "homepage": null,
+        "name": null,
+        "packages": [],
+        "registry": null,
+        "repository": {
+          "id": "",
+          "source": "",
+          "subfolder": "",
+          "url": ""
+        },
+        "skip": null,
+        "title": null,
+        "transports": []
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/McpConfig"
+        }
+      ]
+    },
     "metadata": {
       "description": "Project metadata configuration (applied to metadata.json output files).",
       "default": null,
@@ -7045,6 +7072,293 @@
           ]
         }
       }
+    },
+    "McpAuth": {
+      "description": "Authentication method + token for the MCP registry's `/v0/publish` endpoint. Mirrors GoReleaser `config.MCPAuth`.",
+      "type": "object",
+      "properties": {
+        "token": {
+          "description": "Static token for the `none` and `github` methods. Templated, so `{{ envOrDefault \"MCP_GITHUB_TOKEN\" \"\" }}` works. Unused for `github-oidc` (the OIDC token is fetched from GitHub Actions at publish time).",
+          "type": "string"
+        },
+        "type": {
+          "description": "Auth provider: `none` (anonymous), `github` (PAT exchange via `/v0/auth/github-at`), or `github-oidc` (Actions OIDC token exchange via `/v0/auth/github-oidc`). Templated.",
+          "default": "none",
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpAuthMethod"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpAuthMethod": {
+      "description": "MCP auth method. Default is `None` (anonymous) which matches GoReleaser's `mcp.go::Default` migration code (`cmp.Or(..., proto.MethodNone)`).",
+      "oneOf": [
+        {
+          "description": "Anonymous publish — for testing or registries that allow it. Serializes / deserializes as `none`.",
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        },
+        {
+          "description": "GitHub Personal Access Token exchange via `/v0/auth/github-at`. Serializes / deserializes as `github`.",
+          "type": "string",
+          "enum": [
+            "github"
+          ]
+        },
+        {
+          "description": "GitHub Actions OIDC token exchange via `/v0/auth/github-oidc`. Serializes / deserializes as `github-oidc`.",
+          "type": "string",
+          "enum": [
+            "github-oidc"
+          ]
+        }
+      ]
+    },
+    "McpConfig": {
+      "description": "MCP server registry publisher configuration.\n\nPublishes an `apiv0.ServerJSON` document to the MCP registry (`https://registry.modelcontextprotocol.io/v0/publish` by default). Mirrors GoReleaser `config.MCP` + `config.MCPDetails` flattened.",
+      "type": "object",
+      "properties": {
+        "auth": {
+          "description": "Authentication method for the registry's `/v0/publish` endpoint. Defaults to `none` (anonymous publish, allowed for development / staging registries).",
+          "default": {
+            "type": "none"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpAuth"
+            }
+          ]
+        },
+        "description": {
+          "description": "Clear human-readable description of server functionality (max 100 chars).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "homepage": {
+          "description": "Optional URL to the server's homepage, documentation, or project website. Serialized as `websiteUrl` in the registry payload.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Server name in reverse-DNS format (e.g. `io.github.user/weather`). Must contain exactly one forward slash separating namespace from server name. An empty / unset value skips the publisher entirely.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "packages": {
+          "description": "Distribution packages — one entry per package registry (npm, pypi, nuget, oci, mcpb).",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/McpPackage"
+          }
+        },
+        "registry": {
+          "description": "Override the registry endpoint (for staging or a private mirror). Defaults to `https://registry.modelcontextprotocol.io` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "description": "Optional source repository metadata. Emitted as the `repository` object in the registry payload — omitted entirely when `url` is empty.",
+          "default": {
+            "id": "",
+            "source": "",
+            "subfolder": "",
+            "url": ""
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpRepository"
+            }
+          ]
+        },
+        "skip": {
+          "description": "Skip this publisher when the expression evaluates truthy. Accepts a bool or a Tera template that renders to `\"true\"`/`\"false\"` (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`). Accepts the legacy `disable:` spelling via serde alias for back-compat with imported GoReleaser configs (GR's MCP config field is `pkg/config/config.go` `MCP.Disable string`).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "description": "Optional human-readable title shown in registry UIs (max 100 chars). Templated; supports `{{ .ProjectName | title }}`, `{{ .Version }}`, etc.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "transports": {
+          "description": "Top-level transports list. Parsed for GoReleaser config-portability; the current MCP server schema derives transports per-package via the `packages[].transport` field, so this list is not currently emitted to the registry.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/McpTransport"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpPackage": {
+      "description": "A single package distribution descriptor.",
+      "type": "object",
+      "properties": {
+        "identifier": {
+          "description": "Package identifier. For npm/pypi/nuget: the package name; for OCI: the full image reference (e.g. `ghcr.io/owner/repo:v1.0.0`); for mcpb: the download URL. Templated.",
+          "default": "",
+          "type": "string"
+        },
+        "registry_type": {
+          "description": "Registry type indicating how to download packages (e.g. `oci`, `npm`, `pypi`, `nuget`, `mcpb`).",
+          "default": "npm",
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpRegistryType"
+            }
+          ]
+        },
+        "transport": {
+          "description": "Transport protocol configuration for this package.",
+          "default": {
+            "type": "stdio"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpTransport"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpRegistryType": {
+      "description": "Package registry type — mirrors GoReleaser's `MCPPackage.RegistryType` enum and upstream `model.RegistryType*` constants.",
+      "oneOf": [
+        {
+          "description": "OCI image (registry_type = \"oci\"). The `version` field in the published ServerJSON is intentionally empty for OCI packages — the version is encoded in the image identifier's `:tag` suffix.",
+          "type": "string",
+          "enum": [
+            "oci"
+          ]
+        },
+        {
+          "description": "npm registry (registry_type = \"npm\").",
+          "type": "string",
+          "enum": [
+            "npm"
+          ]
+        },
+        {
+          "description": "PyPI registry (registry_type = \"pypi\").",
+          "type": "string",
+          "enum": [
+            "pypi"
+          ]
+        },
+        {
+          "description": "NuGet registry (registry_type = \"nuget\").",
+          "type": "string",
+          "enum": [
+            "nuget"
+          ]
+        },
+        {
+          "description": "MCPB direct-download (registry_type = \"mcpb\").",
+          "type": "string",
+          "enum": [
+            "mcpb"
+          ]
+        }
+      ]
+    },
+    "McpRepository": {
+      "description": "Repository metadata for the MCP registry payload. Mirrors GoReleaser `config.MCPRepository` + upstream `model.Repository`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Repository identifier from the hosting service (e.g. GitHub repo ID).",
+          "default": "",
+          "type": "string"
+        },
+        "source": {
+          "description": "Repository hosting service identifier. Used by registries to determine validation and API access methods.",
+          "default": "",
+          "type": "string"
+        },
+        "subfolder": {
+          "description": "Optional relative path from repository root to the server location within a monorepo or nested package structure.",
+          "default": "",
+          "type": "string"
+        },
+        "url": {
+          "description": "Repository URL for browsing source code. Must support both web browsing and git-clone operations. An empty value omits the entire `repository` object from the published payload.",
+          "default": "",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpTransport": {
+      "description": "Transport descriptor — mirrors GoReleaser's `MCPTransport` and upstream `model.Transport`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "description": "Transport type: `stdio`, `streamable-http`, or `sse`.",
+          "default": "stdio",
+          "allOf": [
+            {
+              "$ref": "#/definitions/McpTransportType"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "McpTransportType": {
+      "description": "Transport protocol — mirrors upstream `model.TransportType*` constants.",
+      "oneOf": [
+        {
+          "description": "Local stdio transport.",
+          "type": "string",
+          "enum": [
+            "stdio"
+          ]
+        },
+        {
+          "description": "Streamable HTTP remote transport.",
+          "type": "string",
+          "enum": [
+            "streamable-http"
+          ]
+        },
+        {
+          "description": "Server-Sent Events remote transport.",
+          "type": "string",
+          "enum": [
+            "sse"
+          ]
+        }
+      ]
     },
     "MetadataConfig": {
       "type": "object",

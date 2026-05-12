@@ -46,6 +46,7 @@ See [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/)
 - AUR PKGBUILD and .SRCINFO generation
 - Krew plugin manifest generation
 - Nix derivation generation
+- MCP registry server-manifest publishing (Model Context Protocol)
 - npm package publishing
 - Docker multi-arch images via `docker buildx`
 - Blob storage uploads (S3, GCS, Azure)

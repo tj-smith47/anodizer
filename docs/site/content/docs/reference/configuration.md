@@ -38,6 +38,7 @@ List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY
 | `homebrew_casks` | list of HomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
+| `mcp` | McpConfig | `{"auth":{"type":"none"},"description":null,"homepage":null,"name":null,"packages":[],"registry":null,"repository":{"id":"","source":"","subfolder":"","url":""},"skip":null,"title":null,"transports":[]}` | MCP (Model Context Protocol) server registry publishing configuration. When `name` is empty (the default), the publisher is skipped. Mirrors GoReleaser's `mcp:` block. |
 | `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
 | `milestones` | list of MilestoneConfig | — | Milestone closing configurations. |
 | `monorepo` | MonorepoConfig | — | GoReleaser Pro monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir. |
