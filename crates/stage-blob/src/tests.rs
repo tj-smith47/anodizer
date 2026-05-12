@@ -715,7 +715,7 @@ fn test_resolve_extra_files_with_name_template() {
     let extras = vec![ExtraFileSpec::Detailed {
         glob: file_path.to_string_lossy().to_string(),
         name_template: Some("LICENSE-{{ Tag }}".to_string()),
-        allow_empty: None,
+        allow_empty: false,
     }];
 
     let mut ctx = make_ctx();

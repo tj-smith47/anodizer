@@ -507,7 +507,7 @@ fn test_collect_extra_files_detailed_spec() {
         &[ExtraFileSpec::Detailed {
             glob: pattern,
             name_template: Some("{{ .ArtifactName }}.sig".to_string()),
-            allow_empty: None,
+            allow_empty: false,
         }],
         &ctx,
     )

@@ -118,7 +118,7 @@ pub(crate) fn collect_extra_files(
                         results.push((entry, name));
                     }
                 }
-                if results.len() == before && !allow_empty.unwrap_or(false) {
+                if results.len() == before && !*allow_empty {
                     anyhow::bail!("release: extra_files glob '{}' matched no files", pattern);
                 }
             }

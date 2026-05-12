@@ -464,7 +464,7 @@ pub enum ExtraFileSpec {
         /// must not break local snapshot/dry-run flows. Defaults to
         /// false, matching the prior fail-fast behavior.
         #[serde(default)]
-        allow_empty: Option<bool>,
+        allow_empty: bool,
     },
 }
 
@@ -490,7 +490,7 @@ impl ExtraFileSpec {
     pub fn allow_empty(&self) -> bool {
         match self {
             ExtraFileSpec::Glob(_) => false,
-            ExtraFileSpec::Detailed { allow_empty, .. } => allow_empty.unwrap_or(false),
+            ExtraFileSpec::Detailed { allow_empty, .. } => *allow_empty,
         }
     }
 }

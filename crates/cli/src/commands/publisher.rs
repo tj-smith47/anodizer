@@ -98,21 +98,16 @@ pub fn run_publishers(
                     let raw_glob = ef.glob();
                     let glob = template::render(raw_glob, base_vars)
                         .unwrap_or_else(|_| raw_glob.to_string());
-                    // Preserve allow_empty by promoting to Detailed whenever
-                    // either name_template or allow_empty is set.
-                    let preserve_allow_empty = ef.allow_empty();
-                    match (ef.name_template(), preserve_allow_empty) {
-                        (Some(nt), _) => anodizer_core::config::ExtraFileSpec::Detailed {
-                            glob,
-                            name_template: Some(nt.to_string()),
-                            allow_empty: Some(preserve_allow_empty),
-                        },
-                        (None, true) => anodizer_core::config::ExtraFileSpec::Detailed {
-                            glob,
-                            name_template: None,
-                            allow_empty: Some(true),
-                        },
+                    let allow_empty = ef.allow_empty();
+                    match (ef.name_template(), allow_empty) {
                         (None, false) => anodizer_core::config::ExtraFileSpec::Glob(glob),
+                        (name_template, allow_empty) => {
+                            anodizer_core::config::ExtraFileSpec::Detailed {
+                                glob,
+                                name_template: name_template.map(str::to_owned),
+                                allow_empty,
+                            }
+                        }
                     }
                 })
                 .collect();
