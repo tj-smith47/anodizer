@@ -72,12 +72,22 @@ others have full test coverage but no live secrets configured.
 Final GoReleaser parity item. Publishes an MCP server manifest to
 `https://registry.modelcontextprotocol.io`.
 
+The implementation is feature-complete with unit-test coverage of every branch
+(auth providers, retry policy, dry-run, repository inference). Dogfooding is
+**held**: anodizer's own `.anodizer.yaml` declares `packages[0].registry_type: oci`
+with `identifier: ghcr.io/tj-smith47/anodizer`, but the project ships binary
+archives and does not yet have a `dockers:` block. Publishing this manifest
+today would point MCP clients at a 404, so the `mcp:` block is marked
+`skip: true` until either (a) Plan A's MCP server image ships via a `dockers:`
+entry, or (b) the package is pivoted to a registry type the project actually
+distributes.
+
 | Key | Status | Notes |
 |---|---|---|
-| `mcp.name` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mcp.name: io.github.tj-smith47/anodizer`); awaiting first live publish |
-| `mcp.packages[]` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`packages[].registry_type: oci`); awaiting first live publish |
-| `mcp.auth.type: none` | ✅ Verified | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (None branch) |
-| `mcp.auth.type: github` | ✅ Verified | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (PAT exchange branch) |
-| `mcp.auth.type: github-oidc` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (OIDC id-token branch); to be dogfooded via anodizer's release workflow |
-| `mcp.repository` | ✅ Verified | [`crates/stage-publish/src/mcp/manifest.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/manifest.rs) |
-| `mcp.skip` (tera, accepts `disable:` alias) | ✅ Verified | [`crates/stage-publish/src/mcp/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/mod.rs) |
+| `mcp.name` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml); blocked on `dockers:` block / first live publish |
+| `mcp.packages[]` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`packages[].registry_type: oci`); blocked on `dockers:` block / first live publish |
+| `mcp.auth.type: none` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (None branch) — unit-tested; blocked on `dockers:` block before dogfood publish |
+| `mcp.auth.type: github` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (PAT exchange branch) — unit-tested; blocked on `dockers:` block before dogfood publish |
+| `mcp.auth.type: github-oidc` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (OIDC id-token branch); blocked on `dockers:` block before dogfood publish |
+| `mcp.repository` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/manifest.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/manifest.rs) — unit-tested; blocked on `dockers:` block before dogfood publish |
+| `mcp.skip` (tera, accepts `disable:` alias) | 🤝 Help wanted | [`crates/stage-publish/src/mcp/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/mod.rs) — unit-tested; blocked on `dockers:` block before dogfood publish |
