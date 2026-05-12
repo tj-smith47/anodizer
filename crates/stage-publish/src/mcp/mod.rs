@@ -187,13 +187,23 @@ fn infer_repository_from_release(ctx: &Context, mcp: &mut McpConfig) {
 /// this process; subsequent invocations are silent. The atomic flag is
 /// process-wide (matches GR's package-level `sync.Once`-ish behaviour for
 /// log lines emitted via `caarlos0/log`).
-fn warn_experimental_once(log: &StageLogger) {
+///
+/// Returns `true` if THIS call emitted the warning (the swap flipped the
+/// flag from `false` to `true`), `false` otherwise. The return value lets
+/// tests assert one-shot semantics without depending on test-ordering
+/// (a previous in-process test could have already flipped the flag, so
+/// inspecting the static directly is race-prone). Production callers
+/// can ignore the return value.
+fn warn_experimental_once(log: &StageLogger) -> bool {
     if !EXPERIMENTAL_WARNED.swap(true, Ordering::SeqCst) {
         log.warn(
             "mcp is experimental and subject to change. Keep an eye on the \
              release notes if you wish to rely on this for production builds; \
              feedback at https://github.com/tj-smith47/anodizer/issues",
         );
+        true
+    } else {
+        false
     }
 }
 

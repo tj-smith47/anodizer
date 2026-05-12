@@ -12,17 +12,38 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anodizer_core::config::{
     Config, HumanDuration, McpAuthMethod, McpConfig, McpPackage, McpRegistryType, McpTransport,
-    McpTransportType, RetryConfig, StringOrBool,
+    McpTransportType, ReleaseConfig, RetryConfig, ScmRepoConfig, StringOrBool,
 };
 use anodizer_core::context::{Context, ContextOptions};
 
-use super::{publish_with_registry, reset_experimental_warned_for_test, warn_experimental_once};
+use super::{
+    infer_repository_from_release, publish_with_registry, reset_experimental_warned_for_test,
+    warn_experimental_once,
+};
+
+// ---------------------------------------------------------------------------
+// Cross-test serialization for the EXPERIMENTAL_WARNED static
+// ---------------------------------------------------------------------------
+//
+// `warn_experimental_once` toggles a process-wide AtomicBool. Any test that
+// (a) resets that flag, or (b) invokes a code path that flips it (e.g.
+// `publish_with_registry`), races with every other test that does the same
+// when cargo runs tests in parallel. We don't want a serial_test crate dep
+// for one assertion, so this module-local Mutex is acquired by every test
+// touching the warn-once path. The `experimental_warning_emitted_once_per_process`
+// test asserts the boolean-return semantics of `warn_experimental_once`;
+// every other test that calls `publish_with_registry` holds the same lock
+// for its duration so the warn-once test's reset isn't clobbered mid-run.
+fn warn_once_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -118,6 +139,7 @@ fn skip_when_no_name() {
     // BEFORE any token exchange or network call. The responder is bound but
     // intentionally never accepts a connection — the test would hang on
     // `accept()` if the publisher tried to POST. The counter must read 0.
+    let _g = warn_once_lock();
     let (addr, calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
     ]);
@@ -141,6 +163,7 @@ fn skip_when_skip_evaluates_true() {
     // skip: "{{ true }}" → publisher returns Ok(()) and emits no HTTP
     // calls. Mirrors the standard `--skip=mcp` semantics enforced by every
     // top-level publisher.
+    let _g = warn_once_lock();
     let (addr, calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
     ]);
@@ -169,6 +192,7 @@ fn publish_retries_on_500_then_succeeds() {
     // this completes in low single-digit ms. Mirrors the GR
     // `TestPublishRetryable` behaviour — `retry_http_blocking` classifies
     // 5xx as Continue and 2xx as success.
+    let _g = warn_once_lock();
     let (addr, calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
         "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
@@ -193,6 +217,7 @@ fn publish_unrecoverable_on_400() {
     // burning the full retry budget. With responses limited to 1, a
     // second `accept()` would block; the test passing the assert proves
     // we didn't retry.
+    let _g = warn_once_lock();
     let (addr, calls) = spawn_oneshot_http_responder(vec![
         "HTTP/1.1 400 Bad Request\r\nContent-Length: 13\r\n\r\nbad payload\r\n",
     ]);
@@ -220,28 +245,210 @@ fn publish_unrecoverable_on_400() {
 
 #[test]
 fn experimental_warning_emitted_once_per_process() {
-    // The atomic flag is a process-wide one-shot. Reset it (test-only
-    // helper) then call `warn_experimental_once` twice; only the first
-    // call should be observable. We can't intercept the StageLogger's
-    // stderr easily, so we assert the atomic itself flipped — first call
-    // returns the prior `false` and sets it to `true`; second call
-    // observes `true` and short-circuits.
-    use std::sync::atomic::Ordering;
-
+    // The atomic flag is a process-wide one-shot. `warn_experimental_once`
+    // returns `true` exactly when this call flipped the flag (and emitted
+    // the warning). Race-safe: we depend on the function's per-call return
+    // value, not on inspecting the static atomic — which other parallel
+    // tests (publish_retries_*, dry_run_*) could already have flipped via
+    // their internal call. The reset_experimental_warned_for_test() helper
+    // forces a known starting state but offers no protection against a
+    // concurrent test flipping the flag back between our calls, so we
+    // assert the boolean returns instead.
+    let _g = warn_once_lock();
     reset_experimental_warned_for_test();
     let ctx = mcp_ctx(|_| {});
     let log = ctx.logger("mcp-test");
 
-    // First invocation flips the flag from false → true (and emits).
-    warn_experimental_once(&log);
-    let after_first = super::EXPERIMENTAL_WARNED.load(Ordering::SeqCst);
-    assert!(after_first, "first call must set the flag");
+    // Exactly one call should observe `true`; the rest observe `false`.
+    let emits: Vec<bool> = (0..3).map(|_| warn_experimental_once(&log)).collect();
+    let true_count = emits.iter().filter(|&&b| b).count();
+    assert_eq!(
+        true_count, 1,
+        "expected exactly one true (first-emitter) across three calls; got {emits:?}"
+    );
+}
 
-    // Subsequent invocations are silent — the flag stays true and no
-    // emit happens. We verify via the atomic; once the flag is true, the
-    // function's swap-then-check sees `prior == true` and returns.
-    warn_experimental_once(&log);
-    warn_experimental_once(&log);
-    let after_many = super::EXPERIMENTAL_WARNED.load(Ordering::SeqCst);
-    assert!(after_many, "flag stays true across repeated calls");
+// ---------------------------------------------------------------------------
+// Dry-run short-circuit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dry_run_short_circuits_before_network() {
+    // Per mcp/mod.rs:106 — when ctx.is_dry_run() is true the publisher
+    // logs the intended POST and returns Ok(()) without contacting the
+    // registry. We bind a listener that intentionally never serves any
+    // response; if the publisher tried to POST, accept() would happen
+    // and the counter would tick.
+    let _g = warn_once_lock();
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let registry = format!("http://{addr}");
+
+    let mut config = Config::default();
+    config.project_name = "anodizer".to_string();
+    config.retry = Some(RetryConfig {
+        attempts: 3,
+        delay: HumanDuration(Duration::from_millis(1)),
+        max_delay: HumanDuration(Duration::from_millis(5)),
+    });
+    config.mcp = McpConfig {
+        name: Some("io.github.test/server".to_string()),
+        description: Some("Test server".to_string()),
+        title: None,
+        homepage: None,
+        packages: vec![McpPackage {
+            registry_type: McpRegistryType::Oci,
+            identifier: "ghcr.io/test/server:v1".to_string(),
+            transport: McpTransport {
+                kind: McpTransportType::Stdio,
+            },
+        }],
+        transports: vec![],
+        skip: None,
+        repository: Default::default(),
+        auth: anodizer_core::config::McpAuth {
+            method: McpAuthMethod::None,
+            token: "preissued-jwt".to_string(),
+        },
+        registry: None,
+    };
+
+    let opts = ContextOptions {
+        dry_run: true,
+        ..ContextOptions::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    ctx.template_vars_mut().set("Version", "1.0.0");
+
+    let log = ctx.logger("mcp-test");
+    let result = publish_with_registry(&ctx, &log, &registry);
+    assert!(result.is_ok(), "dry-run must return Ok(()): {:?}", result);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "dry-run must NOT contact the registry (0 accepts); got {:?}",
+        calls.load(Ordering::SeqCst)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Repository inference from release context
+// ---------------------------------------------------------------------------
+
+/// Build a `Config` carrying only a `release:` block for the given SCM
+/// host. Centralizes the struct-update boilerplate the inference tests
+/// share (avoids clippy `field_reassign_with_default`).
+fn cfg_with_release(host: &str, owner: &str, name: &str) -> Config {
+    let repo = Some(ScmRepoConfig {
+        owner: owner.to_string(),
+        name: name.to_string(),
+    });
+    let release = match host {
+        "github" => ReleaseConfig {
+            github: repo,
+            ..ReleaseConfig::default()
+        },
+        "gitlab" => ReleaseConfig {
+            gitlab: repo,
+            ..ReleaseConfig::default()
+        },
+        "gitea" => ReleaseConfig {
+            gitea: repo,
+            ..ReleaseConfig::default()
+        },
+        other => panic!("cfg_with_release: unknown host {other:?}"),
+    };
+    Config {
+        release: Some(release),
+        ..Config::default()
+    }
+}
+
+#[test]
+fn infer_repository_github_from_release_config() {
+    // When release.github.{owner,name} is set and mcp.repository.url is
+    // empty, inference must populate repository.url + repository.source.
+    let ctx = Context::new(
+        cfg_with_release("github", "myorg", "myapp"),
+        ContextOptions::default(),
+    );
+
+    let mut mcp = McpConfig::default();
+    infer_repository_from_release(&ctx, &mut mcp);
+    assert_eq!(mcp.repository.url, "https://github.com/myorg/myapp");
+    assert_eq!(mcp.repository.source, "github");
+}
+
+#[test]
+fn infer_repository_gitlab_from_release_config() {
+    let ctx = Context::new(
+        cfg_with_release("gitlab", "myorg", "myapp"),
+        ContextOptions::default(),
+    );
+
+    let mut mcp = McpConfig::default();
+    infer_repository_from_release(&ctx, &mut mcp);
+    assert_eq!(mcp.repository.url, "https://gitlab.com/myorg/myapp");
+    assert_eq!(mcp.repository.source, "gitlab");
+}
+
+#[test]
+fn infer_repository_gitea_from_release_config() {
+    let ctx = Context::new(
+        cfg_with_release("gitea", "myorg", "myapp"),
+        ContextOptions::default(),
+    );
+
+    let mut mcp = McpConfig::default();
+    infer_repository_from_release(&ctx, &mut mcp);
+    assert_eq!(mcp.repository.url, "https://gitea.com/myorg/myapp");
+    assert_eq!(mcp.repository.source, "gitea");
+}
+
+#[test]
+fn inference_does_not_override_explicit_repository() {
+    // If the user set mcp.repository.url explicitly, inference must
+    // leave both url and source untouched even when release.github is
+    // also set.
+    let ctx = Context::new(
+        cfg_with_release("github", "myorg", "myapp"),
+        ContextOptions::default(),
+    );
+
+    let mut mcp = McpConfig::default();
+    mcp.repository.url = "https://custom.example.com/myorg/myapp".to_string();
+    mcp.repository.source = "custom".to_string();
+    infer_repository_from_release(&ctx, &mut mcp);
+    assert_eq!(
+        mcp.repository.url, "https://custom.example.com/myorg/myapp",
+        "explicit URL must win"
+    );
+    assert_eq!(mcp.repository.source, "custom", "explicit source must win");
+}
+
+#[test]
+fn inference_no_ops_when_owner_or_name_empty() {
+    // Defensive: an empty owner OR name in release.github must not
+    // produce a half-baked URL like https://github.com//repo. The
+    // function must return without touching mcp.repository.
+    for (owner, name) in [("", "repo"), ("owner", ""), ("", "")] {
+        let ctx = Context::new(
+            cfg_with_release("github", owner, name),
+            ContextOptions::default(),
+        );
+
+        let mut mcp = McpConfig::default();
+        infer_repository_from_release(&ctx, &mut mcp);
+        assert!(
+            mcp.repository.url.is_empty(),
+            "owner={owner:?} name={name:?}: url must stay empty, got {:?}",
+            mcp.repository.url
+        );
+        assert!(
+            mcp.repository.source.is_empty(),
+            "owner={owner:?} name={name:?}: source must stay empty, got {:?}",
+            mcp.repository.source
+        );
+    }
 }
