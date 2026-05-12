@@ -20,7 +20,7 @@ registry page or release asset.
 | **winget** | ✅ Verified | [microsoft/winget-pkgs · TJSmith/cfgd/0.3.5](https://github.com/microsoft/winget-pkgs/tree/master/manifests/t/TJSmith/cfgd/0.3.5) |
 | **GHCR container images** | ✅ Verified | [github.com/tj-smith47/cfgd/pkgs](https://github.com/tj-smith47?tab=packages&repo_name=cfgd) (`cfgd`, `cfgd-operator`, `cfgd-csi`) |
 | **Nix flake** | ✅ Verified | [tj-smith47/nix-pkgs](https://github.com/tj-smith47/nix-pkgs) |
-| **Scoop bucket** | 🤝 Help wanted | Bucket repo exists but no manifest published yet ([tj-smith47/scoop-bucket](https://github.com/tj-smith47/scoop-bucket)) |
+| **Scoop bucket** | ✅ Verified | [`anodizer.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/anodizer.json), [`cfgd.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/cfgd.json) |
 | **Krew** | 🤝 Help wanted | PR flow runs in CI; cfgd plugin not yet merged into [kubernetes-sigs/krew-index](https://github.com/kubernetes-sigs/krew-index/tree/master/plugins) |
 | **AUR** | 🤝 Help wanted | Needs AUR SSH key; not pushed |
 | **Flathub** | 🤝 Help wanted | Needs flatpak runtime + flathub config |
