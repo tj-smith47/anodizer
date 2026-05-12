@@ -194,6 +194,11 @@ pub struct Config {
     /// `RetryConfig::default()` is used (10 attempts, 10s base, 5m cap —
     /// matching GoReleaser `Project.Retry`).
     pub retry: Option<RetryConfig>,
+    /// MCP (Model Context Protocol) server registry publishing
+    /// configuration. When `name` is empty (the default), the publisher is
+    /// skipped. Mirrors GoReleaser's `mcp:` block.
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -279,6 +284,7 @@ impl Default for Config {
             uploads: None,
             aur_sources: None,
             retry: None,
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -1157,6 +1163,13 @@ pub use upload::*;
 
 mod aur_source;
 pub use aur_source::*;
+
+// ---------------------------------------------------------------------------
+// McpConfig (MCP registry publisher)
+// ---------------------------------------------------------------------------
+
+mod mcp;
+pub use mcp::*;
 
 // ---------------------------------------------------------------------------
 // Tests
