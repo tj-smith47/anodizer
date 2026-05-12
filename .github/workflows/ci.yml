@@ -95,7 +95,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Validate release pipeline
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
           args: release --snapshot --single-target --clean --dry-run
@@ -117,7 +117,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Auto-tag release
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
           args: tag

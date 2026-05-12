@@ -48,7 +48,7 @@ jobs:
       # through the action so the release workflow has a single entry point.
       - name: Install anodizer + build dependencies (Linux)
         if: runner.os == 'Linux'
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
           artifact-run-id: auto
@@ -60,7 +60,7 @@ jobs:
 
       - name: Install anodizer + build dependencies (macOS/Windows)
         if: runner.os != 'Linux'
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-source: true
           install-rust: false  # already installed above via rust-toolchain
@@ -107,7 +107,7 @@ jobs:
           echo "Found $COUNT split context(s)"
 
       - name: Run anodizer release --merge
-        uses: tj-smith47/anodizer-action@master
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
           artifact-run-id: auto
