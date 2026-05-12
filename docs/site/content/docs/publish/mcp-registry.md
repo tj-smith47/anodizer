@@ -198,7 +198,7 @@ mcp:
 
 ## Templating
 
-Tera templates are evaluated on these fields before publish: `name`, `title`, `description`, `homepage`, every `repository.*` field, every `auth.*` field, and each `packages[].identifier`. The standard anodizer template context applies (`Version`, `ProjectName`, `Env.*`, `Prerelease`, etc.). See [Templates](@/docs/customization/templates.md).
+Tera templates are evaluated on these fields before publish: `name`, `title`, `description`, `homepage`, every `repository.*` field, every `auth.*` field, and each `packages[].identifier`. The standard anodizer template context applies (`Version`, `ProjectName`, `Env.*`, `Prerelease`, etc.). See [Templates](@/docs/general/templates.md).
 
 ## Dry-run
 
