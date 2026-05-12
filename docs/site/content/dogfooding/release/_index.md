@@ -16,18 +16,18 @@ changelog generation, announcers, cloud uploads, and custom publishers.
 |---|---|---|
 | `release.github` | ✅ Verified | [anodizer releases](https://github.com/tj-smith47/anodizer/releases). Header/footer/draft/prerelease/make_latest all exercised |
 | `release.metadata` | ✅ Verified | [v0.1.1 metadata.json](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/metadata.json) · [artifacts.json](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/artifacts.json) |
-| `release.name_template` / `tag_template` | ✅ Verified | cfgd uses Tera-templated tags across 4 workspace crates |
-| `release.header` / `footer` | ✅ Verified | Visible at the bottom of every shipped release body |
+| `release.name_template` / `tag_template` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`tag_template: "core-v{{ Version }}"` / `"v{{ Version }}"` / `"operator-v{{ Version }}"` / `"csi-v{{ Version }}"`) |
+| `release.header` / `footer` | ✅ Verified | [cfgd v0.3.5 release body](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5) (`What's new` header + `Released with anodizer` footer) |
 | `changelog.groups` | ✅ Verified | "Features" / "Bug Fixes" / "Others" sections in the [v0.1.1 release body](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) |
-| `changelog.filters.include` / `exclude` | ✅ Verified | Visible in shipped changelogs |
-| `changelog.use: git` | ✅ Verified | In production |
-| `changelog.use: github-native` | ✅ Verified | In production |
-| `changelog.use: github` | ✅ Verified | Tested |
-| `changelog.use: gitlab` / `gitea` | ✅ Verified | Tested |
+| `changelog.filters.include` / `exclude` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`changelog.filters.include` / `exclude` patterns) |
+| `changelog.use: git` | ✅ Verified | [`crates/stage-changelog/src/lib.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-changelog/src/lib.rs) (`use: git` branch) |
+| `changelog.use: github-native` | ✅ Verified | [`crates/stage-changelog/src/lib.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-changelog/src/lib.rs) (`use: github-native` branch) |
+| `changelog.use: github` | ✅ Verified | [`crates/stage-changelog/src/lib.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-changelog/src/lib.rs) (`use: github` branch) |
+| `changelog.use: gitlab` / `gitea` | ✅ Verified | [`crates/stage-changelog/src/lib.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-changelog/src/lib.rs) (`gitlab` / `gitea` branches) |
 | `changelog.use: ai` | 🤝 Help wanted | anthropic / openai / ollama implemented; no live release uses it |
 | `release.gitlab` | 🤝 Help wanted | We dogfood on GitHub only |
 | `release.gitea` | 🤝 Help wanted | We dogfood on GitHub only |
-| `milestones[]` | ✅ Verified | Wired |
+| `milestones[]` | ✅ Verified | [`crates/core/src/config/milestone.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/milestone.rs) |
 
 ## Announcers
 
@@ -36,8 +36,8 @@ others have full test coverage but no live secrets configured.
 
 | Key | Status | Notes |
 |---|---|---|
-| `announce.webhook` | ✅ Verified | cfgd posts to a custom webhook on every release |
-| `announce.smtp` | ✅ Verified | cfgd sends release announcements via SMTP |
+| `announce.webhook` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`announce.webhook.endpoint_url: https://tj.jarvispro.io/webhooks/anodizer`) |
+| `announce.smtp` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`announce.smtp.host: smtp.gmail.com`) |
 | `announce.discord` | 🤝 Help wanted | No live workflow has the secrets |
 | `announce.slack` | 🤝 Help wanted | No live workflow has the secrets |
 | `announce.telegram` | 🤝 Help wanted | No live workflow has the secrets |
@@ -65,4 +65,4 @@ others have full test coverage but no live secrets configured.
 
 | Key | Status | Notes |
 |---|---|---|
-| `publishers[]` | ✅ Verified | Run a custom command per artifact. Wired |
+| `publishers[]` | ✅ Verified | [`crates/cli/src/commands/publisher.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/publisher.rs) (custom command per artifact) |

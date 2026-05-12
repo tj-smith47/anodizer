@@ -14,26 +14,26 @@ template string. Tera syntax is GoReleaser-compatible.
 
 | Key | Status | Notes |
 |---|---|---|
-| `project_name` | ✅ Verified | Used in every config |
-| `dist` | ✅ Verified | Used in every config |
-| `env` | ✅ Verified | Used in every config |
-| `env_files` | ✅ Verified | Used in every config |
-| `variables` | ✅ Verified | cfgd uses `.Var.*` heavily |
-| `template_files[]` | ✅ Verified | cfgd renders an `install.sh` and ships it |
-| `includes[].from_file` | ✅ Verified | Wired |
+| `project_name` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`project_name: anodizer`) |
+| `dist` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`dist: ./dist`) |
+| `env` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`env: - RELEASE_TYPE=stable`) |
+| `env_files` | ✅ Verified | [`crates/core/src/config/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/mod.rs) (`env_files` config field) |
+| `variables` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`variables.repo_url` + `.description`) |
+| `template_files[]` | ✅ Verified | [`install.sh`](https://github.com/tj-smith47/cfgd/releases/download/v0.3.5/install.sh) (rendered + attached on every cfgd release) |
+| `includes[].from_file` | ✅ Verified | [`crates/core/src/config/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/mod.rs) (`IncludeSpec`, parsed from `includes:`) |
 | `includes[].from_url` | 🤝 Help wanted | No live config pulls a remote include |
-| `before` | ✅ Verified | cfgd uses global before-hooks |
-| `after` | ✅ Verified | cfgd uses global after-hooks |
-| `build.hooks.pre` | ✅ Verified | Wired |
-| `build.hooks.post` | ✅ Verified | Wired |
-| `snapshot.name_template` | ✅ Verified | Snapshot job on every master push |
-| `--auto-snapshot` | ✅ Verified | Snapshot job on every master push |
+| `before` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`before.hooks` runs `cargo fmt --check`, `clippy`, `test`) |
+| `after` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`after.post` echo) |
+| `build.hooks.pre` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.before`) |
+| `build.hooks.post` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (archive `hooks.after`) |
+| `snapshot.name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`snapshot.version_template`) |
+| `--auto-snapshot` | ✅ Verified | [anodizer `ci.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/ci.yml) (snapshot build on every master push) |
 | `nightly.*` | 🤝 Help wanted | Wired; no scheduled nightly workflow yet |
-| `metadata.homepage` | ✅ Verified | Collected and emitted |
-| `metadata.license` | ✅ Verified | Collected and emitted |
-| `metadata.description` | ✅ Verified | Collected and emitted |
-| `metadata.maintainers` | ✅ Verified | Collected and emitted |
-| `metadata.mod_timestamp` | ✅ Verified | Applied as the mtime of `dist/metadata.json` and `dist/artifacts.json` via `set_file_mtime`; rendered from `{{ CommitTimestamp }}` in `.anodizer.yaml` |
+| `metadata.homepage` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.homepage: https://github.com/tj-smith47/cfgd`) |
+| `metadata.license` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.license: MIT`) |
+| `metadata.description` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.description`) |
+| `metadata.maintainers` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`metadata.maintainers`) |
+| `metadata.mod_timestamp` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`metadata.mod_timestamp: "{{ CommitTimestamp }}"`; applied as mtime of `dist/metadata.json` and `dist/artifacts.json`) |
 
 ## Templates
 
@@ -42,31 +42,31 @@ config is rendered.
 
 | Helper | Status | Notes |
 |---|---|---|
-| `{{ .Field }}` | ✅ Verified | project, version, tag, os, arch, etc. Every shipped asset filename is template-rendered |
-| `{{ .Var.* }}` | ✅ Verified | cfgd uses `.Var.repo_url` and `.Var.description` across its config |
-| `{{ .PrefixedTag }}` | ✅ Verified | Pro template variable, wired |
-| `{{ .Artifacts }}` | ✅ Verified | cfgd uses `.Artifacts` in `docker_manifests` |
-| `{{ .Metadata }}` | ✅ Verified | Pro template variable, wired |
-| `{{ .IsMerging }}` | ✅ Verified | Pro template variable, wired |
-| `{{ .IsRelease }}` | ✅ Verified | Pro template variable, wired |
-| String / path / version / env / filter helpers | ✅ Verified | Wired |
-| `sha*`, `blake2*`, `blake3`, `crc32`, `md5` | ✅ Verified | Hash helpers wired |
-| `readFile`, `mustReadFile` | ✅ Verified | File I/O wired |
-| `time`, `.Now.Format` | ✅ Verified | Date helpers wired |
-| `mdv2escape` | ✅ Verified | Telegram MarkdownV2 escape, wired |
-| `urlPathEscape` | ✅ Verified | Wired |
-| `in` | ✅ Verified | Pro helper, wired |
-| `reReplaceAll` | ✅ Verified | Pro helper, wired |
+| `{{ .Field }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (every `{{ .Project }}` / `.Version` / `.Tag` / `.Os` / `.Arch` binding) |
+| `{{ .Var.* }}` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`{{ Var.repo_url }}` + `{{ Var.description }}`) |
+| `{{ .PrefixedTag }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (`PrefixedTag` binding) |
+| `{{ .Artifacts }}` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`{{ .Artifacts }}` inside `docker_manifests.image_templates`) |
+| `{{ .Metadata }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (`Metadata` binding) |
+| `{{ .IsMerging }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (`IsMerging` binding) |
+| `{{ .IsRelease }}` | ✅ Verified | [`crates/core/src/template/vars.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/vars.rs) (`IsRelease` binding) |
+| String / path / version / env / filter helpers | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`tolower`, `toupper`, `dir`, `base`, `abs`, etc.) |
+| `sha*`, `blake2*`, `blake3`, `crc32`, `md5` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`register_hash_fn!` macro) |
+| `readFile`, `mustReadFile` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`readFile` / `mustReadFile` registrations) |
+| `time`, `.Now.Format` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`time` function + `Now` binding) |
+| `mdv2escape` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`mdv2escape` filter) |
+| `urlPathEscape` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`urlPathEscape` filter) |
+| `in` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`in` filter) |
+| `reReplaceAll` | ✅ Verified | [`crates/core/src/template/base_tera.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/template/base_tera.rs) (`reReplaceAll` filter) |
 
 ## Monorepo
 
 | Key | Status | Notes |
 |---|---|---|
-| `monorepo.tag_prefix` | ✅ Verified | cfgd uses `core-v*`, `v*`, `operator-v*`, `csi-v*` |
-| `monorepo.dir` | ✅ Verified | Per-crate dir mapping in cfgd's 4-crate workspace |
-| `cargo_workspace` detection | ✅ Verified | cfgd is a 4-crate workspace (CLI + lib + operator + CSI). All four release in parallel |
-| `depends_on` | ✅ Verified | cfgd's `core` releases first, others after |
-| `git.tag_sort` | ✅ Verified | Wired |
-| `git.prerelease_suffix` | ✅ Verified | Wired |
-| `git.ignore_tags` | ✅ Verified | Wired |
-| `partial.by` | ✅ Verified | cfgd uses `partial.by: goos`. Axis: goos / goarch / target |
+| `monorepo.tag_prefix` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`tag_template: core-v{{ Version }}` / `v{{ Version }}` / `operator-v` / `csi-v`) |
+| `monorepo.dir` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`path: crates/cfgd-core`, `crates/cfgd`, `crates/cfgd-operator`, `crates/cfgd-csi`) |
+| `cargo_workspace` detection | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (4 workspaces: cfgd-core, cfgd, cfgd-operator, cfgd-csi) |
+| `depends_on` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`depends_on: [cfgd-core]` on the three downstream crates) |
+| `git.tag_sort` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.tag_sort: "-version:refname"`) |
+| `git.prerelease_suffix` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.prerelease_suffix: "-"`) |
+| `git.ignore_tags` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`git.ignore_tags: ["nightly"]`) |
+| `partial.by` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`partial.by: goos` at file end) |
