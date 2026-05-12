@@ -69,18 +69,16 @@ others have full test coverage but no live secrets configured.
 
 ## MCP registry
 
-Final GoReleaser parity item. Publishes an MCP server manifest to
-`https://registry.modelcontextprotocol.io`.
+Publishes an MCP server manifest to `https://registry.modelcontextprotocol.io`.
 
-The implementation is feature-complete with unit-test coverage of every branch
+Implementation is feature-complete with unit-test coverage of every branch
 (auth providers, retry policy, dry-run, repository inference). Dogfooding is
 **held**: anodizer's own `.anodizer.yaml` declares `packages[0].registry_type: oci`
 with `identifier: ghcr.io/tj-smith47/anodizer`, but the project ships binary
 archives and does not yet have a `dockers:` block. Publishing this manifest
 today would point MCP clients at a 404, so the `mcp:` block is marked
-`skip: true` until either (a) Plan A's MCP server image ships via a `dockers:`
-entry, or (b) the package is pivoted to a registry type the project actually
-distributes.
+`skip: true` until anodizer ships an OCI image (via a `dockers:` block) or
+the package is pivoted to a registry type the project actually distributes.
 
 | Key | Status | Notes |
 |---|---|---|

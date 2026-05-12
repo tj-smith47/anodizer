@@ -40,7 +40,7 @@ pub struct WorkspaceConfig {
     pub after: Option<HooksConfig>,
     /// Environment variables scoped to this workspace.
     ///
-    /// List of `KEY=VALUE` strings (GoReleaser parity). Order is preserved.
+    /// List of `KEY=VALUE` strings. Order is preserved.
     /// Values are template-rendered at pipeline startup.
     #[serde(default)]
     pub env: Option<Vec<String>>,

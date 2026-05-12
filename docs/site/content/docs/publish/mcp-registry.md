@@ -204,21 +204,6 @@ Tera templates are evaluated on these fields before publish: `name`, `title`, `d
 
 `anodizer release --dry-run` renders the full manifest and logs the intended POST without contacting the registry, useful for verifying the package list and transport fields before a real publish.
 
-## GoReleaser parity
+## Migrating from GoReleaser
 
-This publisher mirrors GoReleaser's [`mcp`](https://goreleaser.com/customization/mcp/) pipe (upstream: `internal/pipe/mcp/mcp.go`). The top-level YAML key is identical (`mcp:` in both). The only schema difference is that GoReleaser's deprecated nested `mcp.github:` block (used in older configs) is collapsed to top-level `mcp.*` fields in anodizer, matching upstream's current recommendation:
-
-```yaml
-# GoReleaser (legacy nested)   # anodizer / current GoReleaser
-mcp:                            mcp:
-  github:                         name: io.github.x/y
-    name: io.github.x/y           description: "..."
-    description: "..."            packages:
-    packages:                       - registry_type: oci
-      - registry_type: oci            identifier: ghcr.io/x
-        identifier: ghcr.io/x     auth:
-    auth:                           type: github-oidc
-      type: github-oidc
-```
-
-Anodizer never had the nested form — write top-level fields directly. See the [GoReleaser migration guide](@/migration/goreleaser.md) for the full mapping.
+The top-level YAML key is identical (`mcp:` in both). GoReleaser's deprecated nested `mcp.github:` block (from older configs) collapses to top-level `mcp.*` fields in anodizer — write top-level fields directly. See the [GoReleaser migration guide](@/migration/goreleaser.md) for the full mapping.

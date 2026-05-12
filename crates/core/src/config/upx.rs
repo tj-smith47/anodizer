@@ -15,7 +15,7 @@ pub struct UpxConfig {
     /// Build IDs filter: only compress binaries from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Whether to compress binaries with UPX.
-    /// Accepts bool or template string (GoReleaser parity: `tmpl.Bool(upx.Enabled)`).
+    /// Accepts a bool or a template string that evaluates to a bool.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
     /// UPX executable path or name (default: "upx").

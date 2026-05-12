@@ -128,7 +128,7 @@ impl HomebrewConflict {
 /// Unified Homebrew Cask configuration (WAVE 4).
 ///
 /// Used at both call-sites:
-/// - `homebrew_casks:` — top-level array (GoReleaser parity); carries `repository`,
+/// - `homebrew_casks:` — top-level array; carries `repository`,
 ///   `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc.
 /// - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with
 ///   `url_template` as the simpler URL alternative.

@@ -336,7 +336,7 @@ Custom GitLab API/download URLs for self-hosted GitLab installations. Matches Go
 ## `homebrew_casks`
 Unified Homebrew Cask configuration (WAVE 4).
 
-Used at both call-sites: - `homebrew_casks:` — top-level array (GoReleaser parity); carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.
+Used at both call-sites: - `homebrew_casks:` — top-level array; carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.
 
 Fields from both original types are present; any field may be `None` at either call-site. The union avoids a two-type bifurcation while keeping both axes.
 | Field | Type | Default | Description |
@@ -639,7 +639,7 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `binary` | string | `upx` | UPX executable path or name (default: "upx"). |
 | `brute` | bool | — | Use brute-force compression (--brute flag). Very slow but produces smallest output. |
 | `compress` | string | — | UPX compression level string (e.g., "1"-"9", "best"). Maps to `--compress` flag. |
-| `enabled` | StringOrBool | — | Whether to compress binaries with UPX. Accepts bool or template string (GoReleaser parity: `tmpl.Bool(upx.Enabled)`). |
+| `enabled` | StringOrBool | — | Whether to compress binaries with UPX. Accepts a bool or a template string that evaluates to a bool. |
 | `id` | string | — | Unique identifier for this UPX config. |
 | `ids` | list of string | — | Build IDs filter: only compress binaries from builds whose `id` is in this list. |
 | `lzma` | bool | — | Use LZMA compression (--lzma flag). |
@@ -657,7 +657,7 @@ A workspace represents an independent project root within a monorepo. Each works
 | `crates` | list of CrateConfig | `[]` | Crates belonging to this workspace. |
 | `env` | list of string | — | Environment variables scoped to this workspace.
 
-List of `KEY=VALUE` strings (GoReleaser parity). Order is preserved. Values are template-rendered at pipeline startup. |
+List of `KEY=VALUE` strings. Order is preserved. Values are template-rendered at pipeline startup. |
 | `name` | string | — | Workspace identifier used in logs and template variables. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `skip` | list of string | `[]` | Pipeline stages to skip when releasing this workspace. Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`). |

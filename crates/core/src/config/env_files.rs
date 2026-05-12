@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 ///     - .env
 ///     - .release.env
 ///   ```
-/// - **Struct form** (GoReleaser parity): paths to files containing provider tokens.
+/// - **Struct form**: paths to files containing provider tokens.
 ///   ```yaml
 ///   env_files:
 ///     github_token: ~/.config/goreleaser/github_token
@@ -26,7 +26,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub enum EnvFilesConfig {
     /// List of `.env` file paths to load (KEY=VALUE format).
     List(Vec<String>),
-    /// Structured token file paths (GoReleaser parity).
+    /// Structured token file paths.
     TokenFiles(EnvFilesTokenConfig),
 }
 

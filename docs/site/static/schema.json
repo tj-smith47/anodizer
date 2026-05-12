@@ -4819,7 +4819,7 @@
       ]
     },
     "EnvFilesConfig": {
-      "description": "Environment file configuration.\n\nAccepts two forms: - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE. ```yaml env_files: - .env - .release.env ``` - **Struct form** (GoReleaser parity): paths to files containing provider tokens. ```yaml env_files: github_token: ~/.config/goreleaser/github_token gitlab_token: ~/.config/goreleaser/gitlab_token gitea_token: ~/.config/goreleaser/gitea_token ```",
+      "description": "Environment file configuration.\n\nAccepts two forms: - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE. ```yaml env_files: - .env - .release.env ``` - **Struct form**: paths to files containing provider tokens. ```yaml env_files: github_token: ~/.config/goreleaser/github_token gitlab_token: ~/.config/goreleaser/gitlab_token gitea_token: ~/.config/goreleaser/gitea_token ```",
       "anyOf": [
         {
           "description": "List of `.env` file paths to load (KEY=VALUE format).",
@@ -4829,7 +4829,7 @@
           }
         },
         {
-          "description": "Structured token file paths (GoReleaser parity).",
+          "description": "Structured token file paths.",
           "allOf": [
             {
               "$ref": "#/definitions/EnvFilesTokenConfig"
@@ -5345,7 +5345,7 @@
       }
     },
     "HomebrewCaskConfig": {
-      "description": "Unified Homebrew Cask configuration (WAVE 4).\n\nUsed at both call-sites: - `homebrew_casks:` — top-level array (GoReleaser parity); carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.\n\nFields from both original types are present; any field may be `None` at either call-site. The union avoids a two-type bifurcation while keeping both axes.",
+      "description": "Unified Homebrew Cask configuration (WAVE 4).\n\nUsed at both call-sites: - `homebrew_casks:` — top-level array; carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.\n\nFields from both original types are present; any field may be `None` at either call-site. The union avoids a two-type bifurcation while keeping both axes.",
       "type": "object",
       "properties": {
         "alternative_names": {
@@ -12308,7 +12308,7 @@
           ]
         },
         "enabled": {
-          "description": "Whether to compress binaries with UPX. Accepts bool or template string (GoReleaser parity: `tmpl.Bool(upx.Enabled)`).",
+          "description": "Whether to compress binaries with UPX. Accepts a bool or a template string that evaluates to a bool.",
           "default": null,
           "anyOf": [
             {
@@ -12798,7 +12798,7 @@
           }
         },
         "env": {
-          "description": "Environment variables scoped to this workspace.\n\nList of `KEY=VALUE` strings (GoReleaser parity). Order is preserved. Values are template-rendered at pipeline startup.",
+          "description": "Environment variables scoped to this workspace.\n\nList of `KEY=VALUE` strings. Order is preserved. Values are template-rendered at pipeline startup.",
           "default": null,
           "type": [
             "array",
