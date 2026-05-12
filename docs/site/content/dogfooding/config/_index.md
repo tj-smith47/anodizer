@@ -33,7 +33,7 @@ template string. Tera syntax is GoReleaser-compatible.
 | `metadata.license` | ✅ Verified | Collected and emitted |
 | `metadata.description` | ✅ Verified | Collected and emitted |
 | `metadata.maintainers` | ✅ Verified | Collected and emitted |
-| `metadata.mod_timestamp` | 🤝 Help wanted | Collected; minor field-passthrough gaps |
+| `metadata.mod_timestamp` | ✅ Verified | Applied as the mtime of `dist/metadata.json` and `dist/artifacts.json` via `set_file_mtime`; rendered from `{{ CommitTimestamp }}` in `.anodizer.yaml` |
 
 ## Templates
 
