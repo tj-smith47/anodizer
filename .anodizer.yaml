@@ -322,6 +322,8 @@ crates:
           owner: tj-smith47
           name: homebrew-tap
         directory: Formula
+        ids:
+          - default
         description: "A Rust-native release automation tool"
         homepage: "https://github.com/tj-smith47/anodizer"
         license: MIT
@@ -344,6 +346,8 @@ crates:
         repository:
           owner: tj-smith47
           name: scoop-bucket
+        ids:
+          - default
         description: "A Rust-native release automation tool"
         homepage: "https://github.com/tj-smith47/anodizer"
         license: MIT

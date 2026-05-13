@@ -1410,3 +1410,138 @@ binaries:
         "missing target-renamed line\n{cask}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-archive disambiguation tests (B1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_disambiguate_homebrew_archives_single_per_platform_unchanged() {
+    // One archive per platform — no disambiguation needed.
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.gz".to_string(),
+            "sha_arm64".to_string(),
+            "tar.gz".to_string(),
+        ),
+        (
+            "x86_64-unknown-linux-gnu".to_string(),
+            "https://example.com/tool-linux-amd64.tar.gz".to_string(),
+            "sha_linux".to_string(),
+            "tar.gz".to_string(),
+        ),
+    ];
+    let result = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap();
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_prefers_tar_gz_when_ids_unset() {
+    // darwin_arm64 appears twice: once as tar.gz, once as tar.xz.
+    // With ids_was_set=false, the tar.gz one must be selected.
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.xz".to_string(),
+            "sha_xz".to_string(),
+            "tar.xz".to_string(),
+        ),
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.gz".to_string(),
+            "sha_gz".to_string(),
+            "tar.gz".to_string(),
+        ),
+        (
+            "x86_64-unknown-linux-gnu".to_string(),
+            "https://example.com/tool-linux-amd64.tar.gz".to_string(),
+            "sha_linux".to_string(),
+            "tar.gz".to_string(),
+        ),
+    ];
+    let result = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap();
+    // Should have exactly two entries (one per platform).
+    assert_eq!(result.len(), 2);
+    // The darwin_arm64 entry must be the tar.gz one.
+    let darwin = result
+        .iter()
+        .find(|(t, _, _)| t.contains("apple-darwin"))
+        .expect("darwin entry missing");
+    assert_eq!(darwin.2, "sha_gz", "expected tar.gz sha, got {}", darwin.2);
+    assert!(
+        darwin.1.ends_with(".tar.gz"),
+        "expected tar.gz url, got {}",
+        darwin.1
+    );
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_tgz_alias_accepted() {
+    // Format "tgz" (alternative alias) must also be preferred.
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.zst".to_string(),
+            "sha_zst".to_string(),
+            "tar.zst".to_string(),
+        ),
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tgz".to_string(),
+            "sha_tgz".to_string(),
+            "tgz".to_string(),
+        ),
+    ];
+    let result = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0].2, "sha_tgz");
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_errors_when_ids_set_and_duplicate() {
+    // With ids_was_set=true any remaining duplicate is a config error.
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64-a.tar.gz".to_string(),
+            "sha_a".to_string(),
+            "tar.gz".to_string(),
+        ),
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64-b.tar.gz".to_string(),
+            "sha_b".to_string(),
+            "tar.gz".to_string(),
+        ),
+    ];
+    let err = super::publish_formula::disambiguate_homebrew_archives(entries, true).unwrap_err();
+    assert!(
+        err.to_string().contains("multiple archives found for"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_errors_when_no_tar_gz_and_ambiguous() {
+    // Two non-tar.gz archives for the same platform, ids unset → error.
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.xz".to_string(),
+            "sha_xz".to_string(),
+            "tar.xz".to_string(),
+        ),
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.zst".to_string(),
+            "sha_zst".to_string(),
+            "tar.zst".to_string(),
+        ),
+    ];
+    let err = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap_err();
+    assert!(
+        err.to_string().contains("none is .tar.gz"),
+        "unexpected error: {err}"
+    );
+}
