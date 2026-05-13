@@ -32,6 +32,7 @@ pub struct ManifestOptions<'a> {
 }
 
 /// A single architecture entry for the Scoop manifest.
+#[derive(Debug)]
 pub struct ArchEntry {
     /// Scoop architecture key: "64bit", "32bit", or "arm64".
     pub scoop_arch: String,
@@ -179,6 +180,82 @@ pub fn generate_manifest_with_opts(
 }
 
 // ---------------------------------------------------------------------------
+// Multi-artifact disambiguation
+// ---------------------------------------------------------------------------
+
+/// Disambiguate a list of `(ArchEntry, format)` pairs when the same
+/// `scoop_arch` key appears more than once.
+///
+/// Behavior:
+/// - If `ids_was_set` is `true` any remaining duplicate is a configuration error.
+/// - If `ids_was_set` is `false` and duplicates exist, prefer `zip` first,
+///   then `tar.gz` / `tgz` (most-conventional Scoop formats for Windows).
+///   After applying that preference, if a duplicate still remains it is an error.
+///
+/// Returns the deduplicated `Vec<ArchEntry>`.
+pub(crate) fn disambiguate_arch_entries(
+    entries: Vec<(ArchEntry, String)>,
+    ids_was_set: bool,
+) -> Result<Vec<ArchEntry>> {
+    use std::collections::HashMap;
+
+    // Group by scoop_arch key.
+    let mut by_arch: HashMap<String, Vec<(ArchEntry, String)>> = HashMap::new();
+    for (entry, fmt) in entries {
+        let key = entry.scoop_arch.clone();
+        by_arch.entry(key).or_default().push((entry, fmt));
+    }
+
+    let mut result: Vec<ArchEntry> = Vec::new();
+    for (arch, mut group) in by_arch {
+        if group.len() == 1 {
+            result.push(group.remove(0).0);
+            continue;
+        }
+        // Multiple archives for this scoop_arch.
+        if ids_was_set {
+            anyhow::bail!(
+                "scoop: found multiple artifacts for platform '{arch}'; \
+                 only one archive per platform is supported. Use `ids:` to select one."
+            );
+        }
+        // Prefer zip, then tar.gz/tgz.
+        let is_preferred = |fmt: &str| matches!(fmt, "zip" | "tar.gz" | "tgz");
+        let preferred: Vec<_> = group.iter().filter(|(_, fmt)| is_preferred(fmt)).collect();
+        let chosen = match preferred.len() {
+            1 => {
+                let idx = group.iter().position(|(_, fmt)| is_preferred(fmt)).unwrap();
+                group.remove(idx).0
+            }
+            0 => {
+                anyhow::bail!(
+                    "scoop: found multiple artifacts for platform '{arch}' and none is .zip or \
+                     .tar.gz; only one archive per platform is supported. Add `ids:` to your \
+                     scoop config to select one."
+                );
+            }
+            _ => {
+                // Multiple preferred — narrow to zip over tar.gz.
+                let zip_count = group.iter().filter(|(_, fmt)| fmt == "zip").count();
+                if zip_count == 1 {
+                    let idx = group.iter().position(|(_, fmt)| fmt == "zip").unwrap();
+                    group.remove(idx).0
+                } else {
+                    anyhow::bail!(
+                        "scoop: found multiple .zip artifacts for platform '{arch}'; \
+                         only one archive per platform is supported. Add `ids:` to your \
+                         scoop config to select one."
+                    );
+                }
+            }
+        };
+        result.push(chosen);
+    }
+
+    Ok(result)
+}
+
+// ---------------------------------------------------------------------------
 // publish_to_scoop
 // ---------------------------------------------------------------------------
 
@@ -249,7 +326,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
 
-    let arch_entries: Vec<ArchEntry> = all_artifacts
+    let raw_arch_entries: Vec<(ArchEntry, String)> = all_artifacts
         .into_iter()
         // OnlyReplacingUnibins: exclude universal binaries that didn't replace
         // single-arch variants (GoReleaser parity).
@@ -318,38 +395,30 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
             let hash = a.metadata.get("sha256").cloned().unwrap_or_default();
             let wrap_in_directory = a.metadata.get("wrap_in_directory").cloned();
+            let format = a.metadata.get("format").cloned().unwrap_or_default();
 
-            ArchEntry {
-                scoop_arch: scoop_arch.to_string(),
-                url,
-                hash,
-                wrap_in_directory,
-            }
+            (
+                ArchEntry {
+                    scoop_arch: scoop_arch.to_string(),
+                    url,
+                    hash,
+                    wrap_in_directory,
+                },
+                format,
+            )
         })
         .collect();
 
-    if arch_entries.is_empty() {
+    if raw_arch_entries.is_empty() {
         anyhow::bail!(
             "scoop: no Windows archive artifact found for crate '{}'",
             crate_name
         );
     }
 
-    // validate only one archive exists per platform.
-    // Multiple archives for the same architecture produces a broken manifest.
-    {
-        let mut seen_archs = std::collections::HashSet::new();
-        for entry in &arch_entries {
-            if !seen_archs.insert(&entry.scoop_arch) {
-                anyhow::bail!(
-                    "scoop: found multiple artifacts for platform '{}' in crate '{}'; \
-                     only one archive per platform is supported",
-                    entry.scoop_arch,
-                    crate_name
-                );
-            }
-        }
-    }
+    // Disambiguate: when ids: is unset and multiple archives share a scoop_arch
+    // key, prefer .zip then .tar.gz over other formats.
+    let arch_entries = disambiguate_arch_entries(raw_arch_entries, ids_filter.is_some())?;
 
     // Collect binary names from artifact metadata.  The archive stage stores
     // the binary name in the `"binary"` metadata key.  We deduplicate to get
@@ -1235,5 +1304,109 @@ mod tests {
             "manifest",
         );
         assert_eq!(msg, "scoop: bump mytool to 3.0.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-artifact disambiguation tests (B2)
+    // -----------------------------------------------------------------------
+
+    fn arch_entry(scoop_arch: &str, url: &str, hash: &str) -> ArchEntry {
+        ArchEntry {
+            scoop_arch: scoop_arch.to_string(),
+            url: url.to_string(),
+            hash: hash.to_string(),
+            wrap_in_directory: None,
+        }
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_single_per_arch_unchanged() {
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.zip", "sha64"),
+                "zip".to_string(),
+            ),
+            (
+                arch_entry("arm64", "https://example.com/tool-arm64.zip", "shaarm"),
+                "zip".to_string(),
+            ),
+        ];
+        let result = disambiguate_arch_entries(entries, false).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_prefers_zip_over_tar_gz() {
+        // 64bit appears with both .zip and .tar.gz; zip must win.
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.tar.gz", "sha_tgz"),
+                "tar.gz".to_string(),
+            ),
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.zip", "sha_zip"),
+                "zip".to_string(),
+            ),
+        ];
+        let result = disambiguate_arch_entries(entries, false).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].hash, "sha_zip", "expected zip to be selected");
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_prefers_tar_gz_when_no_zip() {
+        // 64bit with tar.gz and tar.xz; tar.gz must win.
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.tar.xz", "sha_xz"),
+                "tar.xz".to_string(),
+            ),
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.tar.gz", "sha_gz"),
+                "tar.gz".to_string(),
+            ),
+        ];
+        let result = disambiguate_arch_entries(entries, false).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].hash, "sha_gz", "expected tar.gz to be selected");
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_errors_when_ids_set_and_duplicate() {
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool-a.zip", "sha_a"),
+                "zip".to_string(),
+            ),
+            (
+                arch_entry("64bit", "https://example.com/tool-b.zip", "sha_b"),
+                "zip".to_string(),
+            ),
+        ];
+        let err = disambiguate_arch_entries(entries, true).unwrap_err();
+        assert!(
+            err.to_string().contains("multiple artifacts"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_errors_when_no_preferred_format() {
+        // Two non-preferred formats for the same arch, ids unset → error.
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool.tar.xz", "sha_xz"),
+                "tar.xz".to_string(),
+            ),
+            (
+                arch_entry("64bit", "https://example.com/tool.tar.zst", "sha_zst"),
+                "tar.zst".to_string(),
+            ),
+        ];
+        let err = disambiguate_arch_entries(entries, false).unwrap_err();
+        assert!(
+            err.to_string().contains("none is .zip"),
+            "unexpected error: {err}"
+        );
     }
 }
