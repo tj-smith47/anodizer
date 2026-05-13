@@ -10,6 +10,7 @@ pub(crate) mod http_upload;
 pub mod krew;
 pub mod mcp;
 pub mod nix;
+pub mod preflight;
 pub mod scoop;
 pub mod upload;
 pub(crate) mod util;

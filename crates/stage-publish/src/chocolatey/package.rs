@@ -123,7 +123,7 @@ fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
 
 /// Outcome of checking the NuGet V2 feed for an existing package version.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum FeedHashResult {
+pub(crate) enum FeedHashResult {
     /// Feed has this version. `listed` and `status` distinguish a published
     /// (Listed=true) version from one stuck in the community moderation
     /// queue (Listed=false, status=Submitted/Unknown/Rejected/Exempted).
@@ -161,7 +161,7 @@ pub(super) enum FeedHashResult {
 /// non-recoverable failure (4xx, retry-exhaustion) maps to
 /// [`FeedHashResult::Absent`] — same conservative "couldn't reach the
 /// feed, fall through to push" behaviour as before.
-pub(super) fn package_feed_hash(
+pub(crate) fn package_feed_hash(
     push_source: &str,
     name: &str,
     version: &str,

@@ -3,7 +3,7 @@
 
 mod install;
 mod nuspec;
-mod package;
+pub(crate) mod package;
 mod publish;
 
 #[cfg(test)]
