@@ -56,12 +56,49 @@ pub(crate) fn disambiguate_by_format<T>(
     label_fn: impl Fn(&T) -> String,
     cfg: DisambiguateConfig<'_>,
 ) -> Result<Vec<T>> {
-    let DisambiguateConfig {
+    let logger = cfg.logger;
+    disambiguate_by_format_with_sink(
+        entries,
+        key_fn,
+        format_fn,
+        label_fn,
+        InnerConfig {
+            preferred_formats: cfg.preferred_formats,
+            ids_was_set: cfg.ids_was_set,
+            publisher_label: cfg.publisher_label,
+            crate_name: cfg.crate_name,
+        },
+        &mut |msg| logger.warn(msg),
+    )
+}
+
+/// Per-call configuration for the inner sink-injecting variant. Same shape
+/// as [`DisambiguateConfig`] minus the logger (the sink is the only output
+/// path so we don't need both).
+pub(crate) struct InnerConfig<'a> {
+    pub preferred_formats: &'a [&'a str],
+    pub ids_was_set: bool,
+    pub publisher_label: &'a str,
+    pub crate_name: &'a str,
+}
+
+/// Same as [`disambiguate_by_format`] but takes an injectable warn sink
+/// instead of a `StageLogger`. Exposed `pub(crate)` so tests can capture
+/// the warn lines emitted when the fallback drops an entry; production
+/// callers go through [`disambiguate_by_format`].
+pub(crate) fn disambiguate_by_format_with_sink<T>(
+    entries: Vec<T>,
+    key_fn: impl Fn(&T) -> String,
+    format_fn: impl Fn(&T) -> &str,
+    label_fn: impl Fn(&T) -> String,
+    cfg: InnerConfig<'_>,
+    warn: &mut dyn FnMut(&str),
+) -> Result<Vec<T>> {
+    let InnerConfig {
         preferred_formats,
         ids_was_set,
         publisher_label,
         crate_name,
-        logger,
     } = cfg;
 
     // Group by key — BTreeMap so output order is deterministic across runs.
@@ -130,14 +167,15 @@ pub(crate) fn disambiguate_by_format<T>(
             );
         };
         let chosen = group.remove(idx);
+        // Compute kept label/format once; reuse across the per-dropped loop.
+        let kept_label = label_fn(&chosen);
+        let kept_fmt = format_fn(&chosen).to_string();
         // Log the dropped entries so the user knows what we discarded.
         for dropped in &group {
-            logger.warn(&format!(
+            warn(&format!(
                 "{publisher_label}: crate '{crate_name}': platform {key} had multiple \
-                 archives; kept '{kept}' (.{kept_fmt}), dropped '{drop}' (.{drop_fmt}). \
+                 archives; kept '{kept_label}' (.{kept_fmt}), dropped '{drop}' (.{drop_fmt}). \
                  Set `ids:` in the {publisher_label} config to pick explicitly.",
-                kept = label_fn(&chosen),
-                kept_fmt = format_fn(&chosen),
                 drop = label_fn(dropped),
                 drop_fmt = format_fn(dropped),
             ));

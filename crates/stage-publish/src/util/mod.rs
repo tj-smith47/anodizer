@@ -54,6 +54,10 @@ pub(crate) use config::{
     resolve_repo_token, resolve_secret_name, should_skip_publisher, should_skip_upload,
 };
 pub(crate) use disambiguate::{DisambiguateConfig, disambiguate_by_format};
+#[cfg(test)]
+pub(crate) use disambiguate::{
+    InnerConfig as DisambiguateInnerConfig, disambiguate_by_format_with_sink,
+};
 pub(crate) use formats::{default_package_formats, format_matches};
 pub(crate) use pr::{PrOrigin, maybe_submit_pr, submit_pr_via_gh};
 pub(crate) use template::{render_or_warn, render_url_template, render_url_template_with_ctx};

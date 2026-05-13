@@ -1507,4 +1507,55 @@ mod tests {
         let result = disambiguate_arch_entries(vec![], false, "anodizer", &test_log()).unwrap();
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn test_disambiguate_arch_entries_logs_dropped_via_sink() {
+        // Two archives for the same scoop_arch with ids unset: the fallback
+        // keeps the .zip and drops the .tar.gz. Capture the warn sink to
+        // assert both URLs appear in the emitted log line.
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.tar.gz", "sha_tgz"),
+                "tar.gz".to_string(),
+            ),
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.zip", "sha_zip"),
+                "zip".to_string(),
+            ),
+        ];
+        let mut captured: Vec<String> = Vec::new();
+        let result = crate::util::disambiguate_by_format_with_sink(
+            entries,
+            |(entry, _)| entry.scoop_arch.clone(),
+            |(_, fmt)| fmt.as_str(),
+            |(entry, _)| entry.url.clone(),
+            crate::util::DisambiguateInnerConfig {
+                preferred_formats: super::SCOOP_PREFERRED_FORMATS,
+                ids_was_set: false,
+                publisher_label: "scoop",
+                crate_name: "anodizer",
+            },
+            &mut |msg| captured.push(msg.to_string()),
+        )
+        .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(captured.len(), 1, "expected exactly one warn line");
+        let line = &captured[0];
+        assert!(
+            line.starts_with("scoop:"),
+            "warn line should carry publisher prefix: {line}"
+        );
+        assert!(
+            line.contains("crate 'anodizer'"),
+            "warn line should name the crate: {line}"
+        );
+        assert!(
+            line.contains("tool-amd64.zip") && line.contains("(.zip)"),
+            "warn line should name the kept archive: {line}"
+        );
+        assert!(
+            line.contains("tool-amd64.tar.gz") && line.contains("(.tar.gz)"),
+            "warn line should name the dropped archive: {line}"
+        );
+    }
 }

@@ -1735,3 +1735,62 @@ fn test_disambiguate_homebrew_archives_empty_input() {
     .unwrap();
     assert!(result.is_empty());
 }
+
+#[test]
+fn test_disambiguate_homebrew_archives_logs_dropped_via_sink() {
+    // Two archives for the same (os, arch) with ids unset: the fallback
+    // keeps the .tar.gz and drops the .tar.xz. Capture the warn sink to
+    // assert both URLs appear in the emitted log line (proves the user
+    // sees what was discarded — not silent disambiguation).
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.xz".to_string(),
+            "sha_xz".to_string(),
+            "tar.xz".to_string(),
+        ),
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.gz".to_string(),
+            "sha_gz".to_string(),
+            "tar.gz".to_string(),
+        ),
+    ];
+    let mut captured: Vec<String> = Vec::new();
+    let result = crate::util::disambiguate_by_format_with_sink(
+        entries,
+        |(target, _, _, _)| {
+            let (os, arch) = anodizer_core::target::map_target(target);
+            format!("{os}_{arch}")
+        },
+        |(_, _, _, fmt)| fmt.as_str(),
+        |(_, url, _, _)| url.clone(),
+        crate::util::DisambiguateInnerConfig {
+            preferred_formats: super::publish_formula::HOMEBREW_PREFERRED_FORMATS,
+            ids_was_set: false,
+            publisher_label: "homebrew",
+            crate_name: "anodizer",
+        },
+        &mut |msg| captured.push(msg.to_string()),
+    )
+    .unwrap();
+    assert_eq!(result.len(), 1);
+    assert_eq!(captured.len(), 1, "expected exactly one warn line");
+    let line = &captured[0];
+    assert!(
+        line.starts_with("homebrew:"),
+        "warn line should carry publisher prefix: {line}"
+    );
+    assert!(
+        line.contains("crate 'anodizer'"),
+        "warn line should name the crate: {line}"
+    );
+    assert!(
+        line.contains("tool-darwin-arm64.tar.gz") && line.contains("(.tar.gz)"),
+        "warn line should name the kept archive: {line}"
+    );
+    assert!(
+        line.contains("tool-darwin-arm64.tar.xz") && line.contains("(.tar.xz)"),
+        "warn line should name the dropped archive: {line}"
+    );
+}
