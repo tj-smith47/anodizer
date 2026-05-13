@@ -97,11 +97,7 @@ tasks:
       - task: clippy
       - task: test
       - task: docs:check
-      # `task: package` is temporarily disabled — anodizer depends on
-      # `brontes` via a git source while brontes v0.1.0 is unpublished, and
-      # `cargo package` rejects deps without a registry version. Re-enable
-      # once `brontes = "0.1.0"` is published to crates.io.
-      # - task: package
+      - task: package
 
   commit:
     desc: "Lint (regenerates docs), restage only the user's intended files, then commit. Usage: task commit -- -m 'my message'"
