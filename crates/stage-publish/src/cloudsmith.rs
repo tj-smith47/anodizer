@@ -78,6 +78,15 @@ pub(crate) enum CloudsmithPackageState {
 /// Cloudsmith returns a JSON array of package objects; each entry has at
 /// least `filename` and `checksum_md5`. We look for the first entry whose
 /// `filename` matches `art_name` exactly.
+///
+/// Field names verified against the live Cloudsmith OpenAPI spec at
+/// `https://api.cloudsmith.io/openapi/` — `Package` definition:
+///
+/// - `filename`: string, "Full path to the file, including filename"
+/// - `checksum_md5`: string, readOnly
+///
+/// The packages_list endpoint (`GET /packages/{owner}/{repo}/`) returns
+/// `type: array, items: $ref '#/definitions/Package'` — no envelope.
 pub(crate) fn classify_cloudsmith_package_response(
     body: &str,
     art_name: &str,
