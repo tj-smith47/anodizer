@@ -8,86 +8,42 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 
-// ---------------------------------------------------------------------------
-// Multi-archive disambiguation
-// ---------------------------------------------------------------------------
+/// Format preference for homebrew taps: `.tar.gz` (canonical) then `tgz`
+/// (alias for the same wire format).
+pub(crate) const HOMEBREW_PREFERRED_FORMATS: &[&str] = &["tar.gz", "tgz"];
 
 /// Disambiguate a list of `(target, url, sha256, format)` tuples when the
-/// same `(os, arch)` key appears more than once.
-///
-/// Behavior:
-/// - If `ids_was_set` is `true` the caller already narrowed via an explicit ID
-///   filter; any remaining duplicate is a configuration error.
-/// - If `ids_was_set` is `false` and duplicates exist, prefer `.tar.gz` /
-///   `tgz` over other formats (most-conventional Homebrew archive).  After
-///   applying that preference, if a duplicate still remains it is an error.
-///
-/// Returns the deduplicated list as `(target, url, sha256)`.
+/// same `(os, arch)` key appears more than once. Delegates to
+/// [`crate::util::disambiguate_by_format`]; this wrapper exists to share the
+/// caller-side tuple shape with the unit tests.
 pub(crate) fn disambiguate_homebrew_archives(
     entries: Vec<(String, String, String, String)>,
     ids_was_set: bool,
+    crate_name: &str,
+    log: &StageLogger,
 ) -> Result<Vec<(String, String, String)>> {
-    use std::collections::HashMap;
-
-    // Group by (os, arch) key.
-    let mut by_key: HashMap<String, Vec<(String, String, String, String)>> = HashMap::new();
-    for entry in entries {
-        let (ref target, _, _, _) = entry;
-        let (os, arch) = anodizer_core::target::map_target(target);
-        let key = format!("{os}_{arch}");
-        by_key.entry(key).or_default().push(entry);
-    }
-
-    let mut result: Vec<(String, String, String)> = Vec::new();
-    for (key, mut group) in by_key {
-        if group.len() == 1 {
-            let (target, url, sha256, _fmt) = group.remove(0);
-            result.push((target, url, sha256));
-            continue;
-        }
-        // Multiple archives for this (os, arch).
-        if ids_was_set {
-            anyhow::bail!(
-                "multiple archives found for {key}: only one archive per OS/arch combination \
-                 is allowed in Homebrew formulas. Use `ids:` to select one."
-            );
-        }
-        // Prefer tar.gz / tgz over other formats.
-        let preferred: Vec<_> = group
-            .iter()
-            .filter(|(_, _, _, fmt)| fmt == "tar.gz" || fmt == "tgz")
-            .collect();
-        let chosen = match preferred.len() {
-            1 => {
-                let idx = group
-                    .iter()
-                    .position(|(_, _, _, fmt)| fmt == "tar.gz" || fmt == "tgz")
-                    .unwrap();
-                group.remove(idx)
-            }
-            0 => {
-                // No tar.gz; still ambiguous.
-                anyhow::bail!(
-                    "multiple archives found for {key} and none is .tar.gz: only one archive \
-                     per OS/arch combination is allowed in Homebrew formulas. Add `ids:` to \
-                     your homebrew config to select one."
-                );
-            }
-            _ => {
-                // More than one tar.gz — still ambiguous even after preference.
-                anyhow::bail!(
-                    "multiple .tar.gz archives found for {key}: only one archive per OS/arch \
-                     combination is allowed in Homebrew formulas. Add `ids:` to your homebrew \
-                     config to select one."
-                );
-            }
-        };
-        let (target, url, sha256, _fmt) = chosen;
-        result.push((target, url, sha256));
-    }
-
-    Ok(result)
+    let deduped = crate::util::disambiguate_by_format(
+        entries,
+        |(target, _, _, _)| {
+            let (os, arch) = anodizer_core::target::map_target(target);
+            format!("{os}_{arch}")
+        },
+        |(_, _, _, fmt)| fmt.as_str(),
+        |(_, url, _, _)| url.clone(),
+        crate::util::DisambiguateConfig {
+            preferred_formats: HOMEBREW_PREFERRED_FORMATS,
+            ids_was_set,
+            publisher_label: "homebrew",
+            crate_name,
+            logger: log,
+        },
+    )?;
+    Ok(deduped
+        .into_iter()
+        .map(|(t, u, s, _fmt)| (t, u, s))
+        .collect())
 }
+
 pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
@@ -300,7 +256,8 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
 
     // Disambiguate: when ids: is unset and multiple archives share an OS/arch
     // key, prefer .tar.gz over other formats (most-conventional Homebrew archive).
-    let archive_data = disambiguate_homebrew_archives(raw_archive_data, ids_filter.is_some())?;
+    let archive_data =
+        disambiguate_homebrew_archives(raw_archive_data, ids_filter.is_some(), crate_name, log)?;
 
     //
     // — empty archive set after filtering produces a broken formula with

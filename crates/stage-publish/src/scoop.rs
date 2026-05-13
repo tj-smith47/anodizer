@@ -32,7 +32,6 @@ pub struct ManifestOptions<'a> {
 }
 
 /// A single architecture entry for the Scoop manifest.
-#[derive(Debug)]
 pub struct ArchEntry {
     /// Scoop architecture key: "64bit", "32bit", or "arm64".
     pub scoop_arch: String,
@@ -183,76 +182,33 @@ pub fn generate_manifest_with_opts(
 // Multi-artifact disambiguation
 // ---------------------------------------------------------------------------
 
+/// Format preference for scoop buckets: `.zip` (canonical on Windows) first,
+/// then `.tar.gz` / `tgz` as a fallback.
+pub(crate) const SCOOP_PREFERRED_FORMATS: &[&str] = &["zip", "tar.gz", "tgz"];
+
 /// Disambiguate a list of `(ArchEntry, format)` pairs when the same
-/// `scoop_arch` key appears more than once.
-///
-/// Behavior:
-/// - If `ids_was_set` is `true` any remaining duplicate is a configuration error.
-/// - If `ids_was_set` is `false` and duplicates exist, prefer `zip` first,
-///   then `tar.gz` / `tgz` (most-conventional Scoop formats for Windows).
-///   After applying that preference, if a duplicate still remains it is an error.
-///
-/// Returns the deduplicated `Vec<ArchEntry>`.
+/// `scoop_arch` key appears more than once. Delegates to
+/// [`crate::util::disambiguate_by_format`].
 pub(crate) fn disambiguate_arch_entries(
     entries: Vec<(ArchEntry, String)>,
     ids_was_set: bool,
+    crate_name: &str,
+    log: &StageLogger,
 ) -> Result<Vec<ArchEntry>> {
-    use std::collections::HashMap;
-
-    // Group by scoop_arch key.
-    let mut by_arch: HashMap<String, Vec<(ArchEntry, String)>> = HashMap::new();
-    for (entry, fmt) in entries {
-        let key = entry.scoop_arch.clone();
-        by_arch.entry(key).or_default().push((entry, fmt));
-    }
-
-    let mut result: Vec<ArchEntry> = Vec::new();
-    for (arch, mut group) in by_arch {
-        if group.len() == 1 {
-            result.push(group.remove(0).0);
-            continue;
-        }
-        // Multiple archives for this scoop_arch.
-        if ids_was_set {
-            anyhow::bail!(
-                "scoop: found multiple artifacts for platform '{arch}'; \
-                 only one archive per platform is supported. Use `ids:` to select one."
-            );
-        }
-        // Prefer zip, then tar.gz/tgz.
-        let is_preferred = |fmt: &str| matches!(fmt, "zip" | "tar.gz" | "tgz");
-        let preferred: Vec<_> = group.iter().filter(|(_, fmt)| is_preferred(fmt)).collect();
-        let chosen = match preferred.len() {
-            1 => {
-                let idx = group.iter().position(|(_, fmt)| is_preferred(fmt)).unwrap();
-                group.remove(idx).0
-            }
-            0 => {
-                anyhow::bail!(
-                    "scoop: found multiple artifacts for platform '{arch}' and none is .zip or \
-                     .tar.gz; only one archive per platform is supported. Add `ids:` to your \
-                     scoop config to select one."
-                );
-            }
-            _ => {
-                // Multiple preferred — narrow to zip over tar.gz.
-                let zip_count = group.iter().filter(|(_, fmt)| fmt == "zip").count();
-                if zip_count == 1 {
-                    let idx = group.iter().position(|(_, fmt)| fmt == "zip").unwrap();
-                    group.remove(idx).0
-                } else {
-                    anyhow::bail!(
-                        "scoop: found multiple .zip artifacts for platform '{arch}'; \
-                         only one archive per platform is supported. Add `ids:` to your \
-                         scoop config to select one."
-                    );
-                }
-            }
-        };
-        result.push(chosen);
-    }
-
-    Ok(result)
+    let deduped = crate::util::disambiguate_by_format(
+        entries,
+        |(entry, _)| entry.scoop_arch.clone(),
+        |(_, fmt)| fmt.as_str(),
+        |(entry, _)| entry.url.clone(),
+        crate::util::DisambiguateConfig {
+            preferred_formats: SCOOP_PREFERRED_FORMATS,
+            ids_was_set,
+            publisher_label: "scoop",
+            crate_name,
+            logger: log,
+        },
+    )?;
+    Ok(deduped.into_iter().map(|(entry, _fmt)| entry).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +374,8 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
     // Disambiguate: when ids: is unset and multiple archives share a scoop_arch
     // key, prefer .zip then .tar.gz over other formats.
-    let arch_entries = disambiguate_arch_entries(raw_arch_entries, ids_filter.is_some())?;
+    let arch_entries =
+        disambiguate_arch_entries(raw_arch_entries, ids_filter.is_some(), crate_name, log)?;
 
     // Collect binary names from artifact metadata.  The archive stage stores
     // the binary name in the `"binary"` metadata key.  We deduplicate to get
@@ -1307,8 +1264,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Multi-artifact disambiguation tests (B2)
+    // Multi-artifact disambiguation tests
     // -----------------------------------------------------------------------
+
+    use anodizer_core::log::{StageLogger, Verbosity};
 
     fn arch_entry(scoop_arch: &str, url: &str, hash: &str) -> ArchEntry {
         ArchEntry {
@@ -1316,6 +1275,20 @@ mod tests {
             url: url.to_string(),
             hash: hash.to_string(),
             wrap_in_directory: None,
+        }
+    }
+
+    fn test_log() -> StageLogger {
+        StageLogger::new("publish", Verbosity::Normal)
+    }
+
+    /// Extract the error message from a `Result<Vec<ArchEntry>>`. We can't
+    /// use `.unwrap_err()` because `ArchEntry` deliberately doesn't derive
+    /// `Debug`.
+    fn expect_err(result: anyhow::Result<Vec<ArchEntry>>) -> String {
+        match result {
+            Ok(_) => panic!("expected error, got Ok"),
+            Err(e) => e.to_string(),
         }
     }
 
@@ -1331,8 +1304,46 @@ mod tests {
                 "zip".to_string(),
             ),
         ];
-        let result = disambiguate_arch_entries(entries, false).unwrap();
+        let result = disambiguate_arch_entries(entries, false, "anodizer", &test_log()).unwrap();
         assert_eq!(result.len(), 2);
+        let amd = result
+            .iter()
+            .find(|e| e.scoop_arch == "64bit")
+            .expect("64bit missing");
+        assert_eq!(amd.url, "https://example.com/tool-amd64.zip");
+        assert_eq!(amd.hash, "sha64");
+        let arm = result
+            .iter()
+            .find(|e| e.scoop_arch == "arm64")
+            .expect("arm64 missing");
+        assert_eq!(arm.url, "https://example.com/tool-arm64.zip");
+        assert_eq!(arm.hash, "shaarm");
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_deterministic_order() {
+        // Same input must produce the same output order across runs.
+        let entries = || {
+            vec![
+                (
+                    arch_entry("arm64", "https://example.com/tool-arm64.zip", "shaarm"),
+                    "zip".to_string(),
+                ),
+                (
+                    arch_entry("64bit", "https://example.com/tool-amd64.zip", "sha64"),
+                    "zip".to_string(),
+                ),
+                (
+                    arch_entry("32bit", "https://example.com/tool-i386.zip", "sha32"),
+                    "zip".to_string(),
+                ),
+            ]
+        };
+        let r1 = disambiguate_arch_entries(entries(), false, "anodizer", &test_log()).unwrap();
+        let r2 = disambiguate_arch_entries(entries(), false, "anodizer", &test_log()).unwrap();
+        let keys1: Vec<&str> = r1.iter().map(|e| e.scoop_arch.as_str()).collect();
+        let keys2: Vec<&str> = r2.iter().map(|e| e.scoop_arch.as_str()).collect();
+        assert_eq!(keys1, keys2, "disambiguation order must be deterministic");
     }
 
     #[test]
@@ -1348,7 +1359,7 @@ mod tests {
                 "zip".to_string(),
             ),
         ];
-        let result = disambiguate_arch_entries(entries, false).unwrap();
+        let result = disambiguate_arch_entries(entries, false, "anodizer", &test_log()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].hash, "sha_zip", "expected zip to be selected");
     }
@@ -1366,7 +1377,7 @@ mod tests {
                 "tar.gz".to_string(),
             ),
         ];
-        let result = disambiguate_arch_entries(entries, false).unwrap();
+        let result = disambiguate_arch_entries(entries, false, "anodizer", &test_log()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].hash, "sha_gz", "expected tar.gz to be selected");
     }
@@ -1383,10 +1394,24 @@ mod tests {
                 "zip".to_string(),
             ),
         ];
-        let err = disambiguate_arch_entries(entries, true).unwrap_err();
+        let msg = expect_err(disambiguate_arch_entries(
+            entries,
+            true,
+            "anodizer",
+            &test_log(),
+        ));
+        assert!(msg.starts_with("scoop:"), "missing prefix: {msg}");
         assert!(
-            err.to_string().contains("multiple artifacts"),
-            "unexpected error: {err}"
+            msg.contains("crate 'anodizer'"),
+            "missing crate name: {msg}"
+        );
+        assert!(
+            msg.contains("multiple archives found for"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("tool-a.zip") && msg.contains("tool-b.zip"),
+            "error must name conflicting artifacts: {msg}"
         );
     }
 
@@ -1403,10 +1428,83 @@ mod tests {
                 "tar.zst".to_string(),
             ),
         ];
-        let err = disambiguate_arch_entries(entries, false).unwrap_err();
+        let msg = expect_err(disambiguate_arch_entries(
+            entries,
+            false,
+            "anodizer",
+            &test_log(),
+        ));
+        assert!(msg.starts_with("scoop:"), "missing prefix: {msg}");
         assert!(
-            err.to_string().contains("none is .zip"),
-            "unexpected error: {err}"
+            msg.contains("crate 'anodizer'"),
+            "missing crate name: {msg}"
         );
+        assert!(
+            msg.contains("none matches a preferred format"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("tool.tar.xz") && msg.contains("tool.tar.zst"),
+            "error must name conflicting artifacts: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_errors_when_multiple_tar_gz_no_zip() {
+        // Two tar.gz archives for the same arch with no zip and ids unset.
+        // Previous code path misreported this as "multiple .zip artifacts";
+        // the correct error names tar.gz as the conflicting bucket.
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool-A.tar.gz", "sha_a"),
+                "tar.gz".to_string(),
+            ),
+            (
+                arch_entry("64bit", "https://example.com/tool-B.tar.gz", "sha_b"),
+                "tar.gz".to_string(),
+            ),
+        ];
+        let msg = expect_err(disambiguate_arch_entries(
+            entries,
+            false,
+            "anodizer",
+            &test_log(),
+        ));
+        assert!(msg.starts_with("scoop:"), "missing prefix: {msg}");
+        assert!(
+            msg.contains("multiple .tar.gz archives"),
+            "expected tar.gz to be named in error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("multiple .zip"),
+            "must not blame zip when there is none: {msg}"
+        );
+        assert!(
+            msg.contains("tool-A.tar.gz") && msg.contains("tool-B.tar.gz"),
+            "error must name conflicting artifacts: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_ids_set_no_duplicates_passes() {
+        // ids_was_set=true with one entry per arch — pass-through OK.
+        let entries = vec![
+            (
+                arch_entry("64bit", "https://example.com/tool-amd64.zip", "sha64"),
+                "zip".to_string(),
+            ),
+            (
+                arch_entry("arm64", "https://example.com/tool-arm64.zip", "shaarm"),
+                "zip".to_string(),
+            ),
+        ];
+        let result = disambiguate_arch_entries(entries, true, "anodizer", &test_log()).unwrap();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_disambiguate_arch_entries_empty_input() {
+        let result = disambiguate_arch_entries(vec![], false, "anodizer", &test_log()).unwrap();
+        assert!(result.is_empty());
     }
 }

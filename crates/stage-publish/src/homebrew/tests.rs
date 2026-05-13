@@ -1412,12 +1412,19 @@ binaries:
 }
 
 // ---------------------------------------------------------------------------
-// Multi-archive disambiguation tests (B1)
+// Multi-archive disambiguation tests
 // ---------------------------------------------------------------------------
+
+use anodizer_core::log::{StageLogger, Verbosity};
+
+fn test_log() -> StageLogger {
+    StageLogger::new("publish", Verbosity::Normal)
+}
 
 #[test]
 fn test_disambiguate_homebrew_archives_single_per_platform_unchanged() {
-    // One archive per platform — no disambiguation needed.
+    // One archive per platform — output preserves the input tuples byte-for-byte
+    // (modulo grouping order which is BTreeMap-sorted by key).
     let entries = vec![
         (
             "aarch64-apple-darwin".to_string(),
@@ -1432,8 +1439,70 @@ fn test_disambiguate_homebrew_archives_single_per_platform_unchanged() {
             "tar.gz".to_string(),
         ),
     ];
-    let result = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap();
+    let result = super::publish_formula::disambiguate_homebrew_archives(
+        entries,
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap();
     assert_eq!(result.len(), 2);
+    // Verify each input tuple is preserved verbatim in the output.
+    let darwin = result
+        .iter()
+        .find(|(t, _, _)| t == "aarch64-apple-darwin")
+        .expect("darwin missing");
+    assert_eq!(darwin.1, "https://example.com/tool-darwin-arm64.tar.gz");
+    assert_eq!(darwin.2, "sha_arm64");
+    let linux = result
+        .iter()
+        .find(|(t, _, _)| t == "x86_64-unknown-linux-gnu")
+        .expect("linux missing");
+    assert_eq!(linux.1, "https://example.com/tool-linux-amd64.tar.gz");
+    assert_eq!(linux.2, "sha_linux");
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_deterministic_order() {
+    // Same input run twice must produce byte-identical output (no HashMap
+    // randomization). Three platforms, scrambled input order.
+    let entries = || {
+        vec![
+            (
+                "x86_64-unknown-linux-gnu".to_string(),
+                "https://example.com/linux-amd64.tar.gz".to_string(),
+                "sha_linux".to_string(),
+                "tar.gz".to_string(),
+            ),
+            (
+                "aarch64-apple-darwin".to_string(),
+                "https://example.com/darwin-arm64.tar.gz".to_string(),
+                "sha_darwin".to_string(),
+                "tar.gz".to_string(),
+            ),
+            (
+                "x86_64-apple-darwin".to_string(),
+                "https://example.com/darwin-amd64.tar.gz".to_string(),
+                "sha_darwin_intel".to_string(),
+                "tar.gz".to_string(),
+            ),
+        ]
+    };
+    let r1 = super::publish_formula::disambiguate_homebrew_archives(
+        entries(),
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap();
+    let r2 = super::publish_formula::disambiguate_homebrew_archives(
+        entries(),
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap();
+    assert_eq!(r1, r2, "disambiguation output must be deterministic");
 }
 
 #[test]
@@ -1460,7 +1529,13 @@ fn test_disambiguate_homebrew_archives_prefers_tar_gz_when_ids_unset() {
             "tar.gz".to_string(),
         ),
     ];
-    let result = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap();
+    let result = super::publish_formula::disambiguate_homebrew_archives(
+        entries,
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap();
     // Should have exactly two entries (one per platform).
     assert_eq!(result.len(), 2);
     // The darwin_arm64 entry must be the tar.gz one.
@@ -1493,7 +1568,13 @@ fn test_disambiguate_homebrew_archives_tgz_alias_accepted() {
             "tgz".to_string(),
         ),
     ];
-    let result = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap();
+    let result = super::publish_formula::disambiguate_homebrew_archives(
+        entries,
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap();
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].2, "sha_tgz");
 }
@@ -1515,10 +1596,26 @@ fn test_disambiguate_homebrew_archives_errors_when_ids_set_and_duplicate() {
             "tar.gz".to_string(),
         ),
     ];
-    let err = super::publish_formula::disambiguate_homebrew_archives(entries, true).unwrap_err();
+    let err = super::publish_formula::disambiguate_homebrew_archives(
+        entries,
+        true,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.starts_with("homebrew:"), "missing prefix: {msg}");
     assert!(
-        err.to_string().contains("multiple archives found for"),
-        "unexpected error: {err}"
+        msg.contains("crate 'anodizer'"),
+        "missing crate name: {msg}"
+    );
+    assert!(
+        msg.contains("multiple archives found for"),
+        "unexpected error: {msg}"
+    );
+    assert!(
+        msg.contains("tool-darwin-arm64-a.tar.gz") && msg.contains("tool-darwin-arm64-b.tar.gz"),
+        "error must name conflicting artifacts: {msg}"
     );
 }
 
@@ -1539,9 +1636,102 @@ fn test_disambiguate_homebrew_archives_errors_when_no_tar_gz_and_ambiguous() {
             "tar.zst".to_string(),
         ),
     ];
-    let err = super::publish_formula::disambiguate_homebrew_archives(entries, false).unwrap_err();
+    let err = super::publish_formula::disambiguate_homebrew_archives(
+        entries,
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.starts_with("homebrew:"), "missing prefix: {msg}");
     assert!(
-        err.to_string().contains("none is .tar.gz"),
-        "unexpected error: {err}"
+        msg.contains("crate 'anodizer'"),
+        "missing crate name: {msg}"
     );
+    assert!(
+        msg.contains("none matches a preferred format"),
+        "unexpected error: {msg}"
+    );
+    assert!(
+        msg.contains("tool-darwin-arm64.tar.xz") && msg.contains("tool-darwin-arm64.tar.zst"),
+        "error must name conflicting artifacts: {msg}"
+    );
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_errors_when_multiple_tar_gz_unset_ids() {
+    // Two tar.gz archives for the same platform with ids unset — the
+    // preferred-format bucket itself is ambiguous, so we must still error.
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-A-darwin-arm64.tar.gz".to_string(),
+            "sha_a".to_string(),
+            "tar.gz".to_string(),
+        ),
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-B-darwin-arm64.tar.gz".to_string(),
+            "sha_b".to_string(),
+            "tar.gz".to_string(),
+        ),
+    ];
+    let err = super::publish_formula::disambiguate_homebrew_archives(
+        entries,
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.starts_with("homebrew:"), "missing prefix: {msg}");
+    assert!(
+        msg.contains("multiple .tar.gz archives"),
+        "unexpected error: {msg}"
+    );
+    assert!(
+        msg.contains("tool-A-darwin-arm64.tar.gz") && msg.contains("tool-B-darwin-arm64.tar.gz"),
+        "error must name conflicting artifacts: {msg}"
+    );
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_ids_set_no_duplicates_passes() {
+    // ids_was_set=true with one archive per platform — pass-through OK.
+    let entries = vec![
+        (
+            "aarch64-apple-darwin".to_string(),
+            "https://example.com/tool-darwin-arm64.tar.gz".to_string(),
+            "sha_arm64".to_string(),
+            "tar.gz".to_string(),
+        ),
+        (
+            "x86_64-unknown-linux-gnu".to_string(),
+            "https://example.com/tool-linux-amd64.tar.gz".to_string(),
+            "sha_linux".to_string(),
+            "tar.gz".to_string(),
+        ),
+    ];
+    let result = super::publish_formula::disambiguate_homebrew_archives(
+        entries,
+        true,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap();
+    assert_eq!(result.len(), 2);
+}
+
+#[test]
+fn test_disambiguate_homebrew_archives_empty_input() {
+    // Empty input yields empty output, never an error.
+    let result = super::publish_formula::disambiguate_homebrew_archives(
+        vec![],
+        false,
+        "anodizer",
+        &test_log(),
+    )
+    .unwrap();
+    assert!(result.is_empty());
 }
