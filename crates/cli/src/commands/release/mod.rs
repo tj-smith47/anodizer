@@ -53,6 +53,15 @@ pub struct ReleaseOpts {
     /// `--replace-existing`: CLI override for `release.replace_existing_artifacts: true`.
     /// Plumbed into `ContextOptions::replace_existing_artifacts`.
     pub replace_existing: bool,
+    /// `--preflight`: run the pre-flight publisher-state check and exit
+    /// (don't continue into the rest of the release pipeline).
+    pub preflight: bool,
+    /// `--no-preflight`: skip the automatic pre-flight check that normally
+    /// runs as the first step of `release`.
+    pub no_preflight: bool,
+    /// `--strict-preflight`: treat `PublisherState::Unknown` results as
+    /// blockers too. Useful in CI where any uncertainty should fail-fast.
+    pub strict_preflight: bool,
 }
 
 /// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
@@ -486,6 +495,48 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         && let Some(ref milestones) = config.milestones
     {
         milestones::preflight_milestones(milestones, &mut ctx, &log)?;
+    }
+
+    // Pre-flight publisher-state check. Walk each enabled one-way-door
+    // publisher (cargo, choco, winget, aur) and bail early if the target
+    // version is already submitted / approved / pending — saves an entire
+    // wasted release cycle. Skip in snapshot / dry-run / split modes (no
+    // upstream side-effects) and when `publish` is already in skip_stages.
+    let should_run_preflight = !opts.no_preflight
+        && !opts.snapshot
+        && !opts.dry_run
+        && !opts.split
+        && !ctx.should_skip("publish");
+    if opts.preflight || should_run_preflight {
+        let report = anodizer_stage_publish::preflight::run_preflight(&ctx, &log)?;
+        if report.entries.is_empty() {
+            log.verbose("preflight: no one-way-door publishers configured; skipping check");
+        } else {
+            print!("{}", report);
+        }
+        if report.has_blockers(opts.strict_preflight) {
+            let blockers = report.blockers(opts.strict_preflight);
+            let labels: Vec<String> = blockers
+                .iter()
+                .map(|b| format!("{} ({})", b.publisher, b.state.label()))
+                .collect();
+            anyhow::bail!(
+                "preflight: {} publisher(s) blocked the release: {}. \
+                 Resolve upstream (await moderation / merge or close the PR / bump version) \
+                 or re-run with --no-preflight to override.",
+                blockers.len(),
+                labels.join(", ")
+            );
+        }
+        log.status(&format!(
+            "preflight: {} publisher(s) clean",
+            report.clean_count()
+        ));
+        // `--preflight` is a check-only mode: exit successfully without
+        // running the rest of the release pipeline.
+        if opts.preflight {
+            return Ok(());
+        }
     }
 
     // --split: run only the build stage, serialize artifacts to dist/, then exit

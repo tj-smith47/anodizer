@@ -45,6 +45,9 @@ Run the full release pipeline
 | `--single-target` | — | — | Build only for the host target triple |
 | `--release-notes` | — | — | Path to a custom release notes file (overrides changelog) |
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
+| `--preflight` | — | — | Run pre-flight publisher-state check and exit (don't start the pipeline) |
+| `--no-preflight` | — | — | Skip the automatic pre-flight publisher-state check |
+| `--strict-preflight` | — | — | Treat Unknown publisher state as a blocker during pre-flight |
 | `--draft` | — | — | Set the release as a draft |
 | `--release-header` | — | — | Path to a file containing custom release header text |
 | `--release-header-tmpl` | — | — | Path to a template file for release header (rendered with template variables) |

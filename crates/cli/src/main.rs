@@ -161,6 +161,9 @@ fn main() {
             single_target,
             release_notes,
             workspace,
+            preflight,
+            no_preflight,
+            strict_preflight,
             draft,
             release_header,
             release_header_tmpl,
@@ -228,6 +231,9 @@ fn main() {
                     prepare,
                     resume_release,
                     replace_existing,
+                    preflight,
+                    no_preflight,
+                    strict_preflight,
                 })
             })
         }

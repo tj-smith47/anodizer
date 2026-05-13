@@ -89,6 +89,23 @@ pub enum Commands {
             help = "Release a specific workspace in a monorepo config"
         )]
         workspace: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "no_preflight",
+            help = "Run pre-flight publisher-state check and exit (don't start the pipeline)"
+        )]
+        preflight: bool,
+        #[arg(
+            long,
+            conflicts_with = "preflight",
+            help = "Skip the automatic pre-flight publisher-state check"
+        )]
+        no_preflight: bool,
+        #[arg(
+            long,
+            help = "Treat Unknown publisher state as a blocker during pre-flight"
+        )]
+        strict_preflight: bool,
         #[arg(long, help = "Set the release as a draft")]
         draft: bool,
         #[arg(long, help = "Path to a file containing custom release header text")]
