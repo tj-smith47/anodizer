@@ -184,38 +184,56 @@ fn scrape_once(url: &str) -> PageVerdict {
 /// HTML classifier — pure, parameterizable, no IO. Tests pin the exact
 /// substring rules used against live pages.
 ///
-/// Search order matters: a community page can carry both the "Package
-/// Approved" callout (left over from a prior approved version of the
-/// same package) AND a "WARNING / awaiting moderation" callout on the
-/// version page. The `callout-danger` "IMPORTANT" block is the strongest
-/// in-moderation signal so we check it first; "Package Approved" wins
-/// only when no in-moderation callout is present.
+/// Search order matters because the page can carry mixed signals:
+///
+/// 1. **`callout-danger` "This version is in <a>moderation</a>"** —
+///    version-scoped and definitive. When present, the version we're
+///    looking at is in the queue regardless of any other markers.
+///
+/// 2. **`Package Approved`** (callout-header inside callout-success) —
+///    also version-scoped: it lives on the version page only when
+///    *this* version was approved. Wins over any package-wide warning
+///    because it's the specific, terminal answer for the current URL.
+///
+/// 3. **`awaiting moderation`** (callout-warning) — package-wide:
+///    chocolatey emits this string on EVERY version page whenever ANY
+///    version of the package is pending (verified live against
+///    `anodizer/0.2.0`: the warning sits on already-approved version
+///    pages too while a newer version is in the queue). Only matches
+///    when neither version-scoped marker fired — at that point we're a
+///    freshly-submitted version with no version-scoped callout yet.
+///
+/// 4. **No marker** → default-safe to `Pending`. The next poll round
+///    catches the eventual `Package Approved` callout.
 fn classify_html(body: &str) -> PageVerdict {
-    // In-moderation, callout-danger (the version page's primary
-    // signal). Match on the literal English text so a future class-name
+    // (1) version-scoped pending — `callout-danger` "This version is in
+    // moderation". Match the literal English text so a class-name
     // refactor on the chocolatey site doesn't silently misclassify.
     if body.contains("This version is in <a") && body.contains(">moderation</a>") {
         return PageVerdict::Pending(
             "in moderation queue (this version not yet approved)".to_string(),
         );
     }
-    // Secondary signal: callout-warning "awaiting moderation". Used on
-    // pages where the version isn't the only-or-latest awaiting review.
-    if body.contains("awaiting moderation") {
-        return PageVerdict::Pending("awaiting moderation".to_string());
-    }
 
-    // Terminal-success signal: only fire when no in-moderation callout
-    // already matched. The exact literal here matches the verified live
+    // (2) version-scoped approval — beats the package-wide warning that
+    // may coexist on the page. Exact literal matches the verified live
     // page for `git/2.50.1`.
     if body.contains(r#"<div class="callout-header">Package Approved</div>"#) {
         return PageVerdict::Approved("Package Approved".to_string());
     }
 
-    // No recognizable status block — treat as pending with a diagnostic
-    // detail rather than guessing. The poller will keep sampling; if
-    // the page eventually adds an Approved callout, the next round
-    // catches it.
+    // (3) package-wide pending — `awaiting moderation` callout-warning.
+    // Reached only when no version-scoped marker matched above; means
+    // we're a freshly-submitted version whose own callout hasn't
+    // rendered yet.
+    if body.contains("awaiting moderation") {
+        return PageVerdict::Pending("awaiting moderation".to_string());
+    }
+
+    // (4) No recognizable status block — treat as pending with a
+    // diagnostic detail rather than guessing. The poller will keep
+    // sampling; if the page eventually adds an Approved callout, the
+    // next round catches it.
     PageVerdict::Pending("status callout not yet present on page".to_string())
 }
 
@@ -289,6 +307,31 @@ mod tests {
             PageVerdict::Pending(_) => {}
             other => panic!("expected Pending (in-moderation must win), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn chocolatey_approved_page_with_package_wide_pending_warning_is_approved() {
+        // Chocolatey emits the `awaiting moderation` warning on EVERY
+        // version page of the package whenever ANY version is in the
+        // queue — including pages of already-approved versions. The
+        // version-scoped `Package Approved` callout must win over the
+        // package-wide warning so a re-poll of a previously-approved
+        // version doesn't false-negative to Pending.
+        let html = r#"<html><body>
+            <div class="callout callout-success">
+              <div class="callout-header">Package Approved</div>
+              <p>This package was approved as a trusted package on 09 Jul 2025.</p>
+            </div>
+            <div class="callout callout-warning">
+              <div class="callout-header">WARNING</div>
+              <p>There are versions of this package awaiting moderation.</p>
+            </div>
+        </body></html>"#;
+        assert_eq!(
+            classify_html(html),
+            PageVerdict::Approved("Package Approved".to_string()),
+            "version-scoped Package Approved must beat package-wide awaiting-moderation warning"
+        );
     }
 
     #[test]

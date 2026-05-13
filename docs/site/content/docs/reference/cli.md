@@ -60,7 +60,7 @@ Run the full release pipeline
 | `--prepare` | — | — | Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. |
 | `--resume-release` | — | — | Resume into an existing release left over from a prior failed attempt; bypasses the safety check that bails on partial assets. |
 | `--replace-existing` | — | — | Force release.replace_existing_artifacts: true regardless of config (overwrite conflicting assets on retry). |
-| `--no-post-publish-poll` | — | — | Skip post-publish polling for chocolatey moderation / winget PR validation; report Pending immediately. |
+| `--no-post-publish-poll` | — | — | Skip post-publish polling for chocolatey moderation / winget PR validation; report NotPolled for affected publishers. |
 
 
 ### `anodizer build`

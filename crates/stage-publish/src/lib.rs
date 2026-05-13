@@ -73,18 +73,25 @@ where
 ///   `chocolatey:` block with `post_publish_poll.enabled != false`.
 /// - WinGet jobs require `--skip=winget` to be absent AND a per-crate
 ///   `winget:` block with `post_publish_poll.enabled != false`.
-/// - `--no-post-publish-poll` short-circuits everything to "no polling".
+/// - `--no-post-publish-poll` short-circuits to a `NotPolled` result per
+///   eligible publisher (so the release summary can render "skipped"
+///   distinctly from "no publishers configured").
 ///
 /// All polling is non-fatal; any worker error becomes a
 /// `PostPublishStatus::Error` in the results vec rather than failing the
 /// publish stage.
 fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageLogger) {
-    if ctx.options.skip_post_publish_poll {
-        log.verbose("post-publish polling: skipped via --no-post-publish-poll");
-        return;
-    }
     let version = ctx.version();
     let mut jobs: Vec<post_publish::PollJob> = Vec::new();
+    // Mirrors `jobs` for the skip-path: when the CLI flag is set we
+    // never construct a `PollJob` (no cfg / no URL / no token needed),
+    // but we DO want to emit a `NotPolled` result per configured
+    // publisher so summaries can render "skipped via flag" vs. "no
+    // publishers configured" distinctly. `(publisher, package, version)`
+    // triples are collected in dispatch order to match the result vec
+    // ordering invariant.
+    let mut skipped: Vec<(&'static str, String, String)> = Vec::new();
+    let skip_via_cli = ctx.options.skip_post_publish_poll;
 
     // Chocolatey eligibility — collect a job per per-crate `chocolatey:`
     // block when the `choco` skip isn't engaged.
@@ -100,11 +107,29 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
             let Some(choco) = cfg_opt else {
                 continue;
             };
+            // Per-publisher `enabled: false` opts a publisher out
+            // *entirely* (not the same surface as `--no-post-publish-poll`,
+            // which is a global skip). Detect that here so the skip-path
+            // doesn't emit `NotPolled` for a publisher the operator
+            // explicitly turned off in config (which the renderer would
+            // otherwise misreport as "skipped via flag").
+            let per_pub_cfg = choco.post_publish_poll.unwrap_or_default();
+            if !per_pub_cfg.enabled {
+                continue;
+            }
+            let pkg_name = choco.name.unwrap_or_else(|| crate_name.clone());
+            if skip_via_cli {
+                skipped.push(("chocolatey", pkg_name, version.clone()));
+                continue;
+            }
+            // `resolve_poll_config` collapses both gates (CLI + per-pub)
+            // into one `Option`. We've already filtered the per-pub
+            // `enabled` case, so a `None` here can only mean the CLI
+            // flag — caught by the `skip_via_cli` branch above.
             let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, choco.post_publish_poll)
             else {
                 continue;
             };
-            let pkg_name = choco.name.unwrap_or_else(|| crate_name.clone());
             jobs.push(post_publish::PollJob::Chocolatey {
                 package: pkg_name,
                 version: version.clone(),
@@ -129,10 +154,12 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
             let Some(winget) = cfg_opt else {
                 continue;
             };
-            let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, winget.post_publish_poll)
-            else {
+            // Per-publisher disable check — same rationale as the
+            // chocolatey arm above.
+            let per_pub_cfg = winget.post_publish_poll.unwrap_or_default();
+            if !per_pub_cfg.enabled {
                 continue;
-            };
+            }
             // PackageIdentifier resolution: prefer explicit
             // `package_identifier`, fall back to `<publisher>.<name>`
             // (the upstream convention enforced by winget validation),
@@ -150,6 +177,14 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
                     format!("{}.{}", publisher, name)
                 }
             });
+            if skip_via_cli {
+                skipped.push(("winget", pkg_id, version.clone()));
+                continue;
+            }
+            let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, winget.post_publish_poll)
+            else {
+                continue;
+            };
             let token = winget
                 .repository
                 .as_ref()
@@ -164,6 +199,43 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
                 cfg: poll_cfg,
             });
         }
+    }
+
+    // Skip-path: emit one `NotPolled` per eligible publisher so the
+    // release summary distinguishes "skipped via --no-post-publish-poll"
+    // from "no eligible publishers". Short-circuits without running any
+    // pollers.
+    if skip_via_cli {
+        if skipped.is_empty() {
+            log.verbose(
+                "post-publish polling: skipped via --no-post-publish-poll (no eligible publishers)",
+            );
+            return;
+        }
+        log.verbose(&format!(
+            "post-publish polling: skipped via --no-post-publish-poll ({} publisher(s) recorded as NotPolled)",
+            skipped.len()
+        ));
+        let not_polled: Vec<post_publish::PostPublishResult> = skipped
+            .into_iter()
+            .map(
+                |(publisher, package, version)| post_publish::PostPublishResult {
+                    publisher: publisher.to_string(),
+                    package,
+                    version,
+                    status: post_publish::PostPublishStatus::NotPolled,
+                },
+            )
+            .collect();
+        ctx.stage_outputs.post_publish_results = not_polled
+            .iter()
+            .map(|r| {
+                serde_json::to_value(r).expect(
+                    "PostPublishResult is always serializable — schema is derived from a string + enum struct",
+                )
+            })
+            .collect();
+        return;
     }
 
     if jobs.is_empty() {
@@ -203,7 +275,11 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     }
     ctx.stage_outputs.post_publish_results = results
         .into_iter()
-        .map(|r| serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
+        .map(|r| {
+            serde_json::to_value(&r).expect(
+                "PostPublishResult is always serializable — schema is derived from a string + enum struct",
+            )
+        })
         .collect();
 }
 
@@ -582,6 +658,69 @@ mod tests {
             vec!["shared".to_string()],
             "top-level entry must win on name collision and not be doubled"
         );
+    }
+
+    /// `--no-post-publish-poll` must emit one `PostPublishResult { status:
+    /// NotPolled }` per eligible per-crate publisher block instead of silently
+    /// short-circuiting. The release-summary renderer relies on the explicit
+    /// `NotPolled` rows to distinguish "skipped via flag" from "no eligible
+    /// publishers" — see `post_publish::status::PostPublishStatus::NotPolled`
+    /// docs.
+    #[test]
+    fn skip_path_emits_not_polled_for_each_configured_publisher() {
+        use anodizer_core::config::{ChocolateyConfig, WingetConfig};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                chocolatey: Some(ChocolateyConfig {
+                    name: Some("mylib-choco".to_string()),
+                    ..Default::default()
+                }),
+                winget: Some(WingetConfig {
+                    publisher: Some("TJSmith".to_string()),
+                    name: Some("MyLib".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                // NOT dry_run — we want the skip-path inside
+                // `run_post_publish_pollers` to engage and emit
+                // `NotPolled`. dry-run gates the entire pipeline before
+                // ever reaching the post-publish call site.
+                skip_post_publish_poll: true,
+                ..Default::default()
+            },
+        );
+
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        run_post_publish_pollers(&mut ctx, &[], &log);
+
+        let results = &ctx.stage_outputs.post_publish_results;
+        assert_eq!(
+            results.len(),
+            2,
+            "skip path must emit one NotPolled per configured publisher (got {results:?})"
+        );
+
+        // Dispatch order in `run_post_publish_pollers`: chocolatey arm
+        // runs before winget arm.
+        assert_eq!(results[0]["publisher"], "chocolatey");
+        assert_eq!(results[0]["package"], "mylib-choco");
+        assert_eq!(results[0]["status"]["kind"], "not_polled");
+
+        assert_eq!(results[1]["publisher"], "winget");
+        assert_eq!(results[1]["package"], "TJSmith.MyLib");
+        assert_eq!(results[1]["status"]["kind"], "not_polled");
     }
 
     #[test]

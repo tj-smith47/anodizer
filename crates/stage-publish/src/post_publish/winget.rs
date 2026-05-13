@@ -24,9 +24,9 @@
 //!     `Validation-*-Mismatch`, `Internal-Error*`, `Manifest-*-Error`,
 //!     `PullRequest-Error`, `Changes-Requested`, `Needs-CLA`,
 //!     `Author-Not-Authorized`, `Author-Not-Verified`,
-//!     `Binary-Validation-Error`, `Blocking-Issue`. The specific label
-//!     that fired is preserved in `Rejected::detail` so the operator
-//!     can act on it.
+//!     `Binary-Validation-Error`, `Blocking-Issue`, `Hardware`. The
+//!     specific label that fired is preserved in `Rejected::detail` so
+//!     the operator can act on it.
 //!
 //! - **Pending**: anything else (open PR with no terminal labels,
 //!   intermediate labels like `New-Manifest`, `In-PR`, `Needs-Attention`,
@@ -501,6 +501,7 @@ mod tests {
             "Author-Not-Authorized",
             "Binary-Validation-Error",
             "Blocking-Issue",
+            "Hardware",
         ] {
             assert!(
                 is_rejection_label(label),

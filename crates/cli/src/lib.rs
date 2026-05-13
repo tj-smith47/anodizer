@@ -158,7 +158,7 @@ pub enum Commands {
         replace_existing: bool,
         #[arg(
             long = "no-post-publish-poll",
-            help = "Skip post-publish polling for chocolatey moderation / winget PR validation; report Pending immediately."
+            help = "Skip post-publish polling for chocolatey moderation / winget PR validation; report NotPolled for affected publishers."
         )]
         no_post_publish_poll: bool,
     },
