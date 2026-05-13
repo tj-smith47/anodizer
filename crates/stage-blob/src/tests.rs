@@ -854,6 +854,78 @@ fn test_collect_artifacts_includes_metadata_kind() {
     assert_eq!(arts.len(), 1);
 }
 
+#[test]
+fn test_collect_artifacts_excludes_binary_sign_outputs() {
+    // Binary-sign Signature/Certificate intermediates must never be uploaded
+    // to blob storage; only legitimate archive-sign signatures should pass.
+    let mut ctx = make_ctx();
+
+    let mut binary_sign_meta = std::collections::HashMap::new();
+    binary_sign_meta.insert("type".to_string(), "Signature".to_string());
+    binary_sign_meta.insert("binary_sign".to_string(), "true".to_string());
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: ArtifactKind::Signature,
+        name: String::new(),
+        path: PathBuf::from("dist/anodizer_linux_amd64"),
+        target: None,
+        crate_name: "mycrate".to_string(),
+        metadata: binary_sign_meta,
+        size: None,
+    });
+
+    let mut binary_sign_cert_meta = std::collections::HashMap::new();
+    binary_sign_cert_meta.insert("type".to_string(), "Certificate".to_string());
+    binary_sign_cert_meta.insert("binary_sign".to_string(), "true".to_string());
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: ArtifactKind::Certificate,
+        name: String::new(),
+        path: PathBuf::from("dist/anodizer_linux_amd64.pem"),
+        target: None,
+        crate_name: "mycrate".to_string(),
+        metadata: binary_sign_cert_meta,
+        size: None,
+    });
+
+    let mut archive_sign_meta = std::collections::HashMap::new();
+    archive_sign_meta.insert("type".to_string(), "Signature".to_string());
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: ArtifactKind::Signature,
+        name: String::new(),
+        path: PathBuf::from("dist/mycrate_1.0.0_linux_amd64.tar.gz.sig"),
+        target: None,
+        crate_name: "mycrate".to_string(),
+        metadata: archive_sign_meta,
+        size: None,
+    });
+
+    let config = BlobConfig::default();
+    let arts = collect_artifacts(&ctx, &config, "mycrate");
+    let names: Vec<String> = arts
+        .iter()
+        .map(|a| a.path.to_string_lossy().into_owned())
+        .collect();
+
+    assert!(
+        !names.iter().any(|p| p.ends_with("anodizer_linux_amd64")),
+        "binary-sign Signature must not appear in blob upload set; got {:?}",
+        names
+    );
+    assert!(
+        !names
+            .iter()
+            .any(|p| p.ends_with("anodizer_linux_amd64.pem")),
+        "binary-sign Certificate must not appear in blob upload set; got {:?}",
+        names
+    );
+    assert!(
+        names
+            .iter()
+            .any(|p| p.ends_with("mycrate_1.0.0_linux_amd64.tar.gz.sig")),
+        "archive-sign Signature must appear in blob upload set; got {:?}",
+        names
+    );
+}
+
 // -----------------------------------------------------------------------
 // Stage behavior tests
 // -----------------------------------------------------------------------

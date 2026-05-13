@@ -1,8 +1,6 @@
 #![allow(clippy::field_reassign_with_default)]
 
-use anodizer_core::artifact::{
-    Artifact, ArtifactKind, is_binary_sign_output, release_uploadable_kinds,
-};
+use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{
     ContentSource, CrateConfig, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig,
     PrereleaseConfig, ReleaseConfig, StringOrBool,
@@ -3623,29 +3621,32 @@ fn test_release_upload_candidates_exclude_binary_sign_outputs() {
         size: None,
     });
 
-    // Replicate the candidate enumeration from stage-release/src/run.rs.
-    let upload_candidates: Vec<_> = release_uploadable_kinds()
+    // Call the production helper directly. If a future refactor drops the
+    // binary-sign filter from `collect_release_upload_candidates`, this test
+    // will fail.
+    let candidates = super::run::collect_release_upload_candidates(&ctx, "myapp", None, false);
+    let paths: Vec<String> = candidates
         .iter()
-        .flat_map(|&kind| {
-            ctx.artifacts
-                .by_kind_and_crate(kind, "myapp")
-                .into_iter()
-                .filter(|a| !is_binary_sign_output(a))
-                .map(|a| a.name.clone())
-                .collect::<Vec<_>>()
-        })
+        .map(|(p, _)| p.to_string_lossy().into_owned())
         .collect();
 
     assert!(
-        !upload_candidates.contains(&"anodizer_linux_amd64".to_string()),
-        "binary-sign Signature must not appear in release upload candidates"
+        !paths.iter().any(|p| p.ends_with("anodizer_linux_amd64")),
+        "binary-sign Signature must not appear in release upload candidates; got {:?}",
+        paths
     );
     assert!(
-        !upload_candidates.contains(&"anodizer_linux_amd64.pem".to_string()),
-        "binary-sign Certificate must not appear in release upload candidates"
+        !paths
+            .iter()
+            .any(|p| p.ends_with("anodizer_linux_amd64.pem")),
+        "binary-sign Certificate must not appear in release upload candidates; got {:?}",
+        paths
     );
     assert!(
-        upload_candidates.contains(&"myapp_1.0.0_linux_amd64.tar.gz.sig".to_string()),
-        "archive-sign Signature must appear in release upload candidates"
+        paths
+            .iter()
+            .any(|p| p.ends_with("myapp_1.0.0_linux_amd64.tar.gz.sig")),
+        "archive-sign Signature must appear in release upload candidates; got {:?}",
+        paths
     );
 }

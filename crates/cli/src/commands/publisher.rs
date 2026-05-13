@@ -343,6 +343,9 @@ pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig
         artifact.kind,
         ArtifactKind::Signature | ArtifactKind::Certificate
     ) {
+        if anodizer_core::artifact::is_binary_sign_output(artifact) {
+            return false;
+        }
         return publisher.signature.unwrap_or(false);
     }
 
@@ -551,6 +554,45 @@ mod tests {
         let mut pub_with_sig = make_publisher("echo", None, None);
         pub_with_sig.signature = Some(true);
         assert!(matches_publisher_filter(&signature, &pub_with_sig));
+    }
+
+    #[test]
+    fn test_filter_excludes_binary_sign_outputs_even_with_signature_opt_in() {
+        // Binary-sign Signature/Certificate intermediates must never be picked
+        // up by a generic publisher, even when the publisher has opted in to
+        // signatures via `signature: true`.
+        let mut binary_sign_sig =
+            make_artifact(ArtifactKind::Signature, "dist/myapp_linux_amd64", None);
+        binary_sign_sig
+            .metadata
+            .insert("binary_sign".to_string(), "true".to_string());
+
+        let mut binary_sign_cert = make_artifact(
+            ArtifactKind::Certificate,
+            "dist/myapp_linux_amd64.pem",
+            None,
+        );
+        binary_sign_cert
+            .metadata
+            .insert("binary_sign".to_string(), "true".to_string());
+
+        let archive_sig = make_artifact(ArtifactKind::Signature, "dist/myapp.tar.gz.sig", None);
+
+        let mut pub_with_sig = make_publisher("echo", None, None);
+        pub_with_sig.signature = Some(true);
+
+        assert!(
+            !matches_publisher_filter(&binary_sign_sig, &pub_with_sig),
+            "binary-sign Signature must be excluded even with signature opt-in"
+        );
+        assert!(
+            !matches_publisher_filter(&binary_sign_cert, &pub_with_sig),
+            "binary-sign Certificate must be excluded even with signature opt-in"
+        );
+        assert!(
+            matches_publisher_filter(&archive_sig, &pub_with_sig),
+            "archive-sign Signature must still pass when signature opt-in is set"
+        );
     }
 
     #[test]

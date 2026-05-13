@@ -259,31 +259,13 @@ impl Stage for super::ReleaseStage {
             //
             // When `IncludeMeta` is true the Metadata kind is appended, per
             // `release.go:160-167`.
-            let mut upload_kinds: Vec<ArtifactKind> =
-                anodizer_core::artifact::release_uploadable_kinds().to_vec();
-            if include_meta {
-                upload_kinds.push(ArtifactKind::Metadata);
-            }
-            let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> = upload_kinds
-                .iter()
-                .flat_map(|&kind| {
-                    let artifacts = ctx
-                        .artifacts
-                        .by_kind_and_crate(kind, &crate_cfg.name)
-                        .into_iter()
-                        .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a));
-                    if ids_filter.is_some() {
-                        artifacts
-                            .filter(|a| matches_id_filter(a, ids_filter.map(Vec::as_slice)))
-                            .map(|a| (a.path.clone(), None))
-                            .collect::<Vec<_>>()
-                    } else {
-                        artifacts
-                            .map(|a| (a.path.clone(), None))
-                            .collect::<Vec<_>>()
-                    }
-                })
-                .collect();
+            let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> =
+                collect_release_upload_candidates(
+                    ctx,
+                    &crate_cfg.name,
+                    ids_filter.map(Vec::as_slice),
+                    include_meta,
+                );
 
             if let Some(ids) = ids_filter {
                 if artifact_entries.is_empty() {
@@ -1020,4 +1002,44 @@ impl Stage for super::ReleaseStage {
 
         Ok(())
     }
+}
+
+/// Enumerate the release-upload candidate set for a single crate.
+///
+/// Source of truth for which artifacts get uploaded to a GitHub/GitLab/Gitea
+/// release. Mirrors GoReleaser's `release.go` upload set:
+/// `release_uploadable_kinds()` plus `Metadata` when `include_meta` is true.
+///
+/// Filters applied (in order):
+/// 1. Kind must be in the release-uploadable set.
+/// 2. Crate must match `crate_name`.
+/// 3. Binary-sign intermediates are excluded (see `is_binary_sign_output`).
+/// 4. When `ids` is supplied, `matches_id_filter` is applied.
+///
+/// Returned entries pair each artifact's path with an optional custom
+/// destination name (always `None` here; extra-files appending happens
+/// at the call site).
+pub(crate) fn collect_release_upload_candidates(
+    ctx: &Context,
+    crate_name: &str,
+    ids: Option<&[String]>,
+    include_meta: bool,
+) -> Vec<(std::path::PathBuf, Option<String>)> {
+    let mut upload_kinds: Vec<ArtifactKind> =
+        anodizer_core::artifact::release_uploadable_kinds().to_vec();
+    if include_meta {
+        upload_kinds.push(ArtifactKind::Metadata);
+    }
+    upload_kinds
+        .iter()
+        .flat_map(|&kind| {
+            ctx.artifacts
+                .by_kind_and_crate(kind, crate_name)
+                .into_iter()
+                .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a))
+                .filter(|a| matches_id_filter(a, ids))
+                .map(|a| (a.path.clone(), None))
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
