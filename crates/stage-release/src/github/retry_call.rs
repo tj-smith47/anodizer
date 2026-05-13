@@ -50,10 +50,10 @@
 //! this module.
 
 use std::future::Future;
-use std::ops::ControlFlow;
 
-use anodizer_core::retry::{RetryPolicy, is_retriable, retry_async};
+use anodizer_core::retry::{RetryPolicy, is_retriable, jitter_duration};
 
+use super::secondary_rate_limit::{is_secondary_rate_limit, secondary_rl_delay};
 use crate::release_log;
 
 /// Per-attempt warning line shared by every retry-wrapped octocrab call site
@@ -77,6 +77,15 @@ pub(crate) fn format_retry_warn(label: &str, attempt: u32, max: u32, status: u16
 /// caller can match on `Error::GitHub { source }` for status-code routing
 /// (e.g. mapping a 404 to "no existing release" while propagating every
 /// other status).
+///
+/// ## Secondary rate-limit handling
+///
+/// When a secondary rate-limit response (403/429 with GitHub's secondary-RL
+/// body text) is detected, the helper logs a dedicated warning and sleeps for
+/// `secondary_rl_delay()` (default 60 s, override via
+/// `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS`) with ±20 % jitter before
+/// retrying. The policy's normal exp-backoff delay is skipped for secondary-RL
+/// attempts to avoid doubling the sleep.
 pub(crate) async fn retry_octocrab_call<T, F, Fut>(
     policy: &RetryPolicy,
     label: &'static str,
@@ -86,31 +95,49 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, octocrab::Error>>,
 {
-    let max = policy.max_attempts;
-    retry_async(policy, |attempt| {
-        let fut = make_call();
-        async move {
-            match fut.await {
-                Ok(v) => Ok(v),
-                Err(err) => {
-                    // Classify retriability without consuming the original
-                    // error: build a temporary wrapper from a clone-shaped
-                    // probe (status code) so the unmodified `err` can be
-                    // returned to the caller. `octocrab::Error` is not
-                    // `Clone`, so we extract just the bits the classifier
-                    // needs from a borrow.
-                    let (status, retriable) = classify_retriability(&err);
-                    if retriable {
-                        release_log().warn(&format_retry_warn(label, attempt, max, status));
-                        Err(ControlFlow::Continue(err))
-                    } else {
-                        Err(ControlFlow::Break(err))
-                    }
+    let max = policy.max_attempts.max(1);
+    let mut attempt: u32 = 1;
+    let mut last_err: Option<octocrab::Error> = None;
+    loop {
+        // Normal exp-backoff sleep (skipped on first attempt, and skipped
+        // when the previous attempt was a secondary-RL response — in that
+        // case we already slept the secondary-RL duration below).
+        let skip_policy_sleep = last_err.as_ref().is_some_and(is_secondary_rate_limit);
+        if attempt > 1 && !skip_policy_sleep {
+            tokio::time::sleep(policy.delay_for(attempt)).await;
+        }
+
+        match make_call().await {
+            Ok(v) => return Ok(v),
+            Err(err) => {
+                let secondary_rl = is_secondary_rate_limit(&err);
+                let (status, retriable) = classify_retriability(&err);
+                // A secondary rate-limit 403 is not retriable by the default
+                // classifier (which only retries 5xx/429), but it IS a
+                // transient condition that must be retried after a delay.
+                if !retriable && !secondary_rl {
+                    return Err(err);
                 }
+                release_log().warn(&format_retry_warn(label, attempt, max, status));
+                if attempt >= max {
+                    return Err(err);
+                }
+                // Secondary rate-limit: sleep the dedicated RL delay (with
+                // jitter) instead of the policy's exp-backoff delay.
+                if secondary_rl {
+                    let delay = jitter_duration(secondary_rl_delay());
+                    release_log().warn(&format!(
+                        "release: {label} hit GitHub secondary rate limit; \
+                         sleeping {:.1}s before retry (attempt {attempt}/{max})",
+                        delay.as_secs_f64(),
+                    ));
+                    tokio::time::sleep(delay).await;
+                }
+                last_err = Some(err);
             }
         }
-    })
-    .await
+        attempt += 1;
+    }
 }
 
 /// Borrow-based retriability probe for [`octocrab::Error`].
@@ -313,6 +340,92 @@ mod tests {
         assert_eq!(
             s,
             "release: delete release failed (retriable, attempt 3/10, status=503)"
+        );
+    }
+
+    /// Drive the secondary-rate-limit backoff path end-to-end.
+    ///
+    /// Uses a 403 (not 429) secondary-RL response. Rationale: octocrab's
+    /// default `RetryConfig::Simple(3)` tower middleware intercepts 429s at
+    /// the transport layer and retries them internally before `map_github_error`
+    /// ever runs. A 403 secondary-RL response is not intercepted by that
+    /// middleware and reaches `map_github_error` unchanged, giving us a typed
+    /// `octocrab::Error::GitHub { status_code: 403 }` that `is_secondary_rate_limit`
+    /// can inspect. GitHub sends both 403 and 429 for secondary limits; 403 is
+    /// the more common form for content-creation bursts.
+    ///
+    /// Assertions:
+    /// 1. Exactly 2 requests were made (first retried, second succeeded).
+    /// 2. Total elapsed time ≥ 2 seconds (secondary-RL delay honored).
+    /// 3. No error returned to caller.
+    #[tokio::test]
+    async fn secondary_rate_limit_403_retries_with_delay() {
+        use std::time::Instant;
+
+        // Secondary-RL body: 403 with the secondary-rate-limit message.
+        let body_403 = r#"{"message":"You have exceeded a secondary rate limit and have been temporarily blocked from content creation. Please retry your request again later.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
+        let body_len = body_403.len();
+        let resp_403 = Box::leak(
+            format!(
+                "HTTP/1.1 403 Forbidden\r\n\
+                 Content-Type: application/json\r\n\
+                 Retry-After: 2\r\n\
+                 Content-Length: {body_len}\r\n\
+                 \r\n\
+                 {body_403}"
+            )
+            .into_boxed_str(),
+        );
+        let resp_200 =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]";
+
+        let (addr, calls) = spawn_oneshot_http_responder(vec![resp_403, resp_200]);
+        let octo = build_test_octocrab(addr);
+
+        // Tiny exp-backoff in policy; secondary-RL sleep is controlled by
+        // ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS set to 2 below.
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+
+        // Set secondary-RL delay to 3 s. With ±20 % jitter the actual sleep
+        // is in [2.4 s, 3.6 s), which is always ≥ 2 s — so the assertion
+        // below holds even at worst-case jitter. Using 2 s would let the
+        // 20 % downward jitter push the sleep to ~1.6 s and fail the test.
+        // SAFETY: test-only env mutation; unique key, brief window.
+        unsafe {
+            std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "3");
+        }
+
+        let t0 = Instant::now();
+        let result: Result<Vec<serde_json::Value>, octocrab::Error> =
+            retry_octocrab_call(&policy, "test upload", || async {
+                octo.get("/test", None::<&()>).await
+            })
+            .await;
+        let elapsed = t0.elapsed();
+
+        unsafe {
+            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
+        }
+
+        assert!(
+            result.is_ok(),
+            "403 secondary-RL must retry to success: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "expected exactly 2 calls: 1 secondary-RL 403 + 1 success 200"
+        );
+        // With 3 s base and ±20 % jitter, worst-case is 3 s * 0.8 = 2.4 s.
+        assert!(
+            elapsed >= Duration::from_secs(2),
+            "secondary-RL delay must hold for at least 2 s (jitter floor is 80 % of 3 s; \
+             elapsed: {elapsed:?})"
         );
     }
 }

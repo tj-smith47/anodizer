@@ -590,6 +590,35 @@ pub fn is_retriable_opt(err: Option<&(dyn StdError + 'static)>) -> bool {
     err.is_some_and(is_retriable)
 }
 
+/// Apply ±20 % pseudo-jitter to `base` using a cheap subsecond-nanos modulo.
+///
+/// Returns a value in `[base * 0.8, base * 1.2)`. No `rand` crate dependency:
+/// `SystemTime::now().subsec_nanos()` provides ~nanosecond entropy that is
+/// sufficient for retry jitter (the goal is spreading out concurrent retriers,
+/// not cryptographic unpredictability).
+///
+/// The ±20 % window is a widely-adopted convention (AWS SDK, GCP client libs).
+/// Jitter only ever widens the sleep by up to 20 %; it never shortens it below
+/// 80 % of the nominal delay, so `Retry-After` honoring is conservative.
+pub fn jitter_duration(base: Duration) -> Duration {
+    let nanos = base.as_nanos() as u64;
+    // 20 % of the nominal duration.
+    let window = nanos / 5;
+    if window == 0 {
+        return base;
+    }
+    // Cheap pseudo-random offset in [0, window * 2) centred on window,
+    // giving a net range of [base - window, base + window).
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    let offset = seed % (window * 2);
+    // Saturating arithmetic so we never panic on extreme values.
+    let jittered = nanos.saturating_sub(window).saturating_add(offset);
+    Duration::from_nanos(jittered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

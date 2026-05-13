@@ -76,6 +76,13 @@ pub struct ReleaseConfig {
     /// (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`).
     /// This is a GoReleaser Pro feature provided for free by anodizer.
     pub tag: Option<String>,
+    /// Maximum number of asset-upload requests in flight simultaneously.
+    ///
+    /// GitHub's secondary rate-limit is triggered by burst traffic. Keeping
+    /// this value low avoids tripping the limit even for releases with many
+    /// artifacts. Default: 4. Override at runtime with
+    /// `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`.
+    pub upload_concurrency: Option<u32>,
 }
 
 impl ReleaseConfig {

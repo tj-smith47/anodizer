@@ -9955,6 +9955,16 @@
             "$ref": "#/definitions/TemplatedExtraFile"
           }
         },
+        "upload_concurrency": {
+          "description": "Maximum number of asset-upload requests in flight simultaneously.\n\nGitHub's secondary rate-limit is triggered by burst traffic. Keeping this value low avoids tripping the limit even for releases with many artifacts. Default: 4. Override at runtime with `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`.",
+          "default": null,
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        },
         "use_existing_draft": {
           "description": "Reuse an existing draft release instead of creating a new one.",
           "default": null,

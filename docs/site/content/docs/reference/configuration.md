@@ -488,6 +488,9 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
 | `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature. |
+| `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously.
+
+GitHub's secondary rate-limit is triggered by burst traffic. Keeping this value low avoids tripping the limit even for releases with many artifacts. Default: 4. Override at runtime with `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`. |
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
 
 ## `retry`

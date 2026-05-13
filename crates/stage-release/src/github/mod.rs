@@ -10,6 +10,7 @@ use std::sync::Arc;
 use anodizer_core::config::{CrateConfig, ReleaseConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::jitter_duration;
 use anyhow::{Context as _, Result};
 use octocrab::repos::releases::MakeLatest;
 
@@ -24,11 +25,13 @@ mod client;
 mod rate_limit;
 mod retry_call;
 mod retry_classify;
+mod secondary_rate_limit;
 
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit;
 pub(crate) use retry_call::{format_retry_warn, is_octocrab_404, retry_octocrab_call};
+use secondary_rate_limit::{is_secondary_rate_limit, secondary_rl_delay};
 
 /// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
 ///
@@ -552,8 +555,21 @@ pub(crate) fn run_github_backend(
         if skip_upload {
             log.status("skip_upload is set, skipping artifact uploads");
         } else {
-            let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(upload_parallelism));
+            // Upload concurrency cap: env > config > default (4).
+            // Separate from ctx.options.parallelism (which governs build
+            // concurrency) so large artifact lists don't trigger GitHub's
+            // secondary rate limit by blasting 100+ uploads simultaneously.
+            let upload_concurrency: usize = std::env::var("ANODIZER_GITHUB_UPLOAD_CONCURRENCY")
+                .ok()
+                .and_then(|v| v.trim().parse::<u32>().ok())
+                .filter(|&n| n > 0)
+                .or_else(|| {
+                    release_cfg
+                        .upload_concurrency
+                        .filter(|&n| n > 0)
+                })
+                .unwrap_or(4) as usize;
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(upload_concurrency));
             let gh_owner = github.owner.clone();
             let gh_name = github.name.clone();
             let tag_for_upload = tag.to_string();
@@ -781,11 +797,11 @@ pub(crate) fn run_github_backend(
                                             overwrite_attempted = true;
                                             last_err = Some(anyhow::anyhow!(err));
                                             if attempt < max_upload_attempts {
-                                                let delay = std::cmp::min(
+                                                let base = std::cmp::min(
                                                     initial_retry_delay * 2u32.pow(attempt - 1),
                                                     max_retry_delay,
                                                 );
-                                                tokio::time::sleep(delay).await;
+                                                tokio::time::sleep(jitter_duration(base)).await;
                                             }
                                             continue;
                                         }
@@ -800,8 +816,32 @@ pub(crate) fn run_github_backend(
                                     }
                                 }
 
-                                // handle rate limiting
-                                // (403/429) by sleeping and retrying.
+                                // Secondary rate-limit (403/429 with
+                                // GitHub's secondary-RL body): sleep the
+                                // dedicated RL delay (with ±20 % jitter)
+                                // before retrying. Do NOT fall through to
+                                // the primary `check_github_rate_limit`
+                                // path — secondary limits are transient
+                                // burst guards, not quota exhaustion.
+                                if is_secondary_rate_limit(&err) {
+                                    let delay = jitter_duration(secondary_rl_delay());
+                                    release_log().warn(&format!(
+                                        "release: upload of '{file_name}' hit GitHub secondary \
+                                         rate limit; sleeping {:.1}s before retry \
+                                         (attempt {attempt}/{})",
+                                        delay.as_secs_f64(),
+                                        max_upload_attempts,
+                                    ));
+                                    if attempt < max_upload_attempts {
+                                        tokio::time::sleep(delay).await;
+                                    }
+                                    last_err = Some(anyhow::anyhow!(err));
+                                    continue;
+                                }
+
+                                // Primary rate-limit (403/429 without the
+                                // secondary-RL body): probe `/rate_limit`
+                                // and sleep until quota resets.
                                 let is_rate_limited = matches!(
                                     &err,
                                     octocrab::Error::GitHub { source, .. }
@@ -852,11 +892,11 @@ pub(crate) fn run_github_backend(
                                     ));
                                     last_err = Some(anyhow::anyhow!(err));
                                     if attempt < max_upload_attempts {
-                                        let delay = std::cmp::min(
+                                        let base = std::cmp::min(
                                             initial_retry_delay * 2u32.pow(attempt - 1),
                                             max_retry_delay,
                                         );
-                                        tokio::time::sleep(delay).await;
+                                        tokio::time::sleep(jitter_duration(base)).await;
                                     }
                                     continue;
                                 } else {
