@@ -992,7 +992,7 @@ mod tests {
         );
     }
 
-    /// B9: version-exists on crates.io must skip without comparing bytes.
+    /// Version-exists on crates.io must skip without comparing bytes.
     /// Pre-seed a sparse-index response that returns a valid version entry;
     /// the publisher loop must emit "skipping" and NOT attempt to POST.
     #[test]

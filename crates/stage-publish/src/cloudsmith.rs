@@ -82,7 +82,7 @@ pub(crate) enum CloudsmithPackageState {
 /// Field names verified against the live Cloudsmith OpenAPI spec at
 /// `https://api.cloudsmith.io/openapi/` — `Package` definition:
 ///
-/// - `filename`: string, "Full path to the file, including filename"
+/// - `filename`: string (title "Filename")
 /// - `checksum_md5`: string, readOnly
 ///
 /// The packages_list endpoint (`GET /packages/{owner}/{repo}/`) returns
@@ -408,7 +408,7 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                 hex_lower(&hasher.finalize())
             };
 
-            // B11 pre-check: query Cloudsmith for an existing package with
+            // Pre-check: query Cloudsmith for an existing package with
             // this filename. If found and md5 matches, skip (idempotent).
             // If found but md5 differs, bail — we can't fix the mismatch
             // (the package is immutable on Cloudsmith's side) and silently
@@ -1068,7 +1068,7 @@ mod tests {
         );
     }
 
-    // ---- B11: classify_cloudsmith_package_response ------------------------
+    // ---- classify_cloudsmith_package_response ----------------------------
     //
     // Pure-function tests for the packages-list response classifier. The
     // network-bound `check_cloudsmith_package_exists` is exercised
@@ -1121,9 +1121,9 @@ mod tests {
 
     #[test]
     fn cloudsmith_classify_bails_when_md5_differs() {
-        // The B11 scenario: a previous run uploaded with one md5, the retry's
-        // re-packaged artifact has a different md5. Bail loudly instead of
-        // creating a conflicting duplicate.
+        // The scenario the pre-check guards: a previous run uploaded with
+        // one md5, the retry's re-packaged artifact has a different md5.
+        // Bail loudly instead of creating a conflicting duplicate.
         let body = r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":"aaaa1111"}]"#;
         let result =
             classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();

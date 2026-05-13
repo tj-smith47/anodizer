@@ -99,8 +99,9 @@ pub(crate) struct UploadOpts {
     pub replace_existing_draft: bool,
     pub replace_existing_artifacts: bool,
     pub use_existing_draft: bool,
-    /// `--resume-release`: bypass the B7 pre-check so the upload loop runs
-    /// against an existing release left by a prior failed attempt.
+    /// `--resume-release`: bypass the leftover-assets pre-check so the
+    /// upload loop runs against an existing release left by a prior failed
+    /// attempt.
     pub resume_release: bool,
 }
 
@@ -136,7 +137,7 @@ pub(crate) enum AlreadyExistsAction {
 /// `replace_existing_artifacts` is false. Returns the list of asset names
 /// that would conflict, or `None` when uploads may proceed.
 ///
-/// Pure function so B7's pre-check logic can be unit-tested without I/O.
+/// Pure function so the pre-check logic can be unit-tested without I/O.
 /// Returns `None` (uploads proceed) when ANY of:
 ///   - `skip_upload` is true (nothing will be uploaded),
 ///   - `resume_release` is true (the user explicitly opted into continuing
@@ -445,9 +446,9 @@ pub(crate) fn run_github_backend(
             }
         };
 
-        // B7 pre-check: if a prior failed attempt already created the release
-        // and uploaded some assets, and the user hasn't opted into overwriting
-        // (replace_existing_artifacts: false) nor into resuming
+        // Leftover-assets pre-check: if a prior failed attempt already created
+        // the release and uploaded some assets, and the user hasn't opted into
+        // overwriting (replace_existing_artifacts: false) nor into resuming
         // (--resume-release), bail early with a clear message instead of
         // letting the upload loop hit 422 already_exists per-asset.
         if let Some(ref existing) = existing_by_tag {
@@ -1409,7 +1410,7 @@ mod existing_assets_precheck_tests {
 
     #[test]
     fn conflicts_when_assets_present_and_replace_forbidden() {
-        // B7: this is the scenario that was unrecoverable — partial assets
+        // The scenario that was previously unrecoverable: partial assets
         // from a prior failed attempt exist, and replace_existing_artifacts
         // is false. The helper must surface them so the caller can bail.
         let assets = &["app_linux_amd64.tar.gz", "checksums.txt"];

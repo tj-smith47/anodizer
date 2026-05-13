@@ -108,8 +108,8 @@ pub struct ContextOptions {
     /// Strict mode: configured features that would silently skip become errors.
     pub strict: bool,
     /// `--resume-release`: opt-in to continue into a release left over from
-    /// a prior failed attempt. Bypasses the B7 pre-check that bails when
-    /// an existing release already has assets and
+    /// a prior failed attempt. Bypasses the leftover-assets pre-check that
+    /// bails when an existing release already has assets and
     /// `replace_existing_artifacts` is false.
     pub resume_release: bool,
     /// `--replace-existing`: CLI override that forces

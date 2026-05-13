@@ -47,7 +47,8 @@ pub struct ReleaseOpts {
     /// those three stages at the top of `run()`; artifacts still land under `dist/`.
     pub prepare: bool,
     /// `--resume-release`: continue into an existing release rather than
-    /// bailing on the B7 pre-check. Plumbed into `ContextOptions::resume_release`.
+    /// bailing on the leftover-assets pre-check. Plumbed into
+    /// `ContextOptions::resume_release`.
     pub resume_release: bool,
     /// `--replace-existing`: CLI override for `release.replace_existing_artifacts: true`.
     /// Plumbed into `ContextOptions::replace_existing_artifacts`.
