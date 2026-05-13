@@ -1,7 +1,7 @@
 use anodizer_cli::{Cli, Commands, detect_host_target, num_cpus};
 use anodizer_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 
 mod commands;
@@ -103,7 +103,33 @@ fn init_tracing() {
 fn main() {
     enable_ci_colors();
     init_tracing();
-    let cli = Cli::parse();
+
+    let brontes_cfg = brontes::Config::default().tool_name_prefix("anodizer");
+    let augmented = Cli::command().subcommand(brontes::command(Some(&brontes_cfg)));
+    let matches = augmented.clone().get_matches();
+
+    if let Some(("mcp", sub)) = matches.subcommand() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "{} failed to start tokio runtime: {e}",
+                    "Error:".red().bold()
+                );
+                std::process::exit(1);
+            });
+        let result = rt.block_on(brontes::handle(sub, &augmented, Some(&brontes_cfg)));
+        match result {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("{} {e}", "Error:".red().bold());
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     // No subcommand given: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
@@ -112,7 +138,6 @@ fn main() {
     let command = match cli.command {
         Some(c) => c,
         None => {
-            use clap::CommandFactory;
             let _ = Cli::command().print_help();
             println!();
             return;
@@ -396,7 +421,7 @@ fn main() {
 mod tests {
     use super::*;
     use anodizer_cli::num_cpus;
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn test_cli_parses_release_with_new_flags() {

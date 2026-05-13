@@ -602,6 +602,7 @@ dependencies = [
 [[package]]
 name = "brontes"
 version = "0.1.0"
+source = "git+https://github.com/tj-smith47/brontes?branch=master#43a55c291888e88c46c123da08faa3a7b848fe9f"
 dependencies = [
  "async-trait",
  "clap",
