@@ -354,15 +354,30 @@ mod tests {
     /// can inspect. GitHub sends both 403 and 429 for secondary limits; 403 is
     /// the more common form for content-creation bursts.
     ///
-    /// Assertions:
-    /// 1. Exactly 2 requests were made (first retried, second succeeded).
-    /// 2. Total elapsed time ≥ 2 seconds (secondary-RL delay honored).
-    /// 3. No error returned to caller.
+    /// The architectural-reality assertion is: the helper detects a
+    /// secondary-RL response, sleeps the configured delay (with jitter), and
+    /// retries to success. Multi-second wall-clock is incidental, so the test
+    /// configures `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS=1` and asserts
+    /// elapsed >= 800 ms (1 s * 0.8 jitter floor).
+    ///
+    /// `tokio::time::pause()` is NOT used here: the oneshot HTTP responder
+    /// runs on a real socket served by a `std::thread`, which won't observe
+    /// virtual time. The 1 s real delay is the minimum that still
+    /// distinguishes "delay applied" from "no delay" given normal scheduler
+    /// jitter.
     #[tokio::test]
     async fn secondary_rate_limit_403_retries_with_delay() {
         use std::time::Instant;
 
         // Secondary-RL body: 403 with the secondary-rate-limit message.
+        // NOTE: the `Retry-After: 2` header is present in the wire format
+        // for realism (this is what GitHub sends), but it is NOT parsed by
+        // our code. octocrab's typed error layer strips response headers
+        // when it converts a non-2xx response into `GitHubError`, so the
+        // header is architecturally inaccessible — see the module header
+        // in `secondary_rate_limit.rs` for the full explanation. The retry
+        // delay is driven by `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS`
+        // instead, set below.
         let body_403 = r#"{"message":"You have exceeded a secondary rate limit and have been temporarily blocked from content creation. Please retry your request again later.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
         let body_len = body_403.len();
         let resp_403 = Box::leak(
@@ -383,20 +398,19 @@ mod tests {
         let octo = build_test_octocrab(addr);
 
         // Tiny exp-backoff in policy; secondary-RL sleep is controlled by
-        // ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS set to 2 below.
+        // the env var set below.
         let policy = RetryPolicy {
             max_attempts: 5,
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(2),
         };
 
-        // Set secondary-RL delay to 3 s. With ±20 % jitter the actual sleep
-        // is in [2.4 s, 3.6 s), which is always ≥ 2 s — so the assertion
-        // below holds even at worst-case jitter. Using 2 s would let the
-        // 20 % downward jitter push the sleep to ~1.6 s and fail the test.
+        // Set secondary-RL delay to 1 s. With ±20 % jitter the actual sleep
+        // is in [800 ms, 1.2 s); we assert >= 800 ms to prove the delay was
+        // honored without paying a multi-second wall-clock cost per run.
         // SAFETY: test-only env mutation; unique key, brief window.
         unsafe {
-            std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "3");
+            std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "1");
         }
 
         let t0 = Instant::now();
@@ -421,10 +435,10 @@ mod tests {
             2,
             "expected exactly 2 calls: 1 secondary-RL 403 + 1 success 200"
         );
-        // With 3 s base and ±20 % jitter, worst-case is 3 s * 0.8 = 2.4 s.
+        // With 1 s base and ±20 % jitter, worst-case is 1 s * 0.8 = 800 ms.
         assert!(
-            elapsed >= Duration::from_secs(2),
-            "secondary-RL delay must hold for at least 2 s (jitter floor is 80 % of 3 s; \
+            elapsed >= Duration::from_millis(800),
+            "secondary-RL delay must hold for at least 800 ms (jitter floor is 80 % of 1 s; \
              elapsed: {elapsed:?})"
         );
     }

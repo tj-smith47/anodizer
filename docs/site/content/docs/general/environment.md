@@ -45,6 +45,13 @@ Anodizer respects these environment variables:
 | `CARGO_REGISTRY_TOKEN` | Token for crates.io publishing |
 | `DOCKER_USERNAME` / `DOCKER_PASSWORD` | Docker registry credentials |
 
+## GitHub release upload tuning
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ANODIZER_GITHUB_UPLOAD_CONCURRENCY` | u32 | `4` | Cap on parallel asset uploads to a GitHub release. Override of `release.upload_concurrency:`. Keep low (≤8) to avoid GitHub's secondary rate limit when releases include many artifacts. |
+| `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` | integer seconds | `60` | Sleep duration after a GitHub secondary rate-limit response (403/429 carrying the `"secondary rate limit"` marker in the body or `secondary-rate-limits` in the `documentation_url`). Applied with ±20% jitter before the next upload retry. |
+
 ## Template access
 
 All environment variables (both config-defined and inherited from the shell) are accessible in templates:
