@@ -149,16 +149,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         apply_prepare_mode_to_skip(&mut opts.skip);
     }
 
-    // `--rollback-only` is plumbed end-to-end (clap surface, ReleaseOpts,
-    // ContextOptions) but the replay-from-prior-run logic lands in a
-    // follow-up task. Bail with a clear pending-implementation error
-    // so operators see the flag in `--help` and discover its status.
-    if opts.rollback_only {
-        anyhow::bail!(
-            "--rollback-only is plumbed but not yet implemented (planned for the rollback-only follow-up task)"
-        );
-    }
-
     // `--strict` and `--allow-nondeterministic` are mutually exclusive:
     // strict mode forbids the determinism stage from suppressing
     // findings, the allowlist's whole purpose is to suppress one. clap
@@ -288,7 +278,9 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // Error if dist directory is non-empty and --clean was not passed
     // (like GoReleaser's ErrDirtyDist).
     // Skip in --merge mode: dist must contain split artifacts.
-    if !opts.clean && !opts.merge {
+    // Skip in --rollback-only mode: the whole point of the flag is to
+    // read `<dist>/run-<id>/report.json` from a prior populated run.
+    if !opts.clean && !opts.merge && !opts.rollback_only {
         let dist = &config.dist;
         if dist.exists()
             && let Ok(mut entries) = dist.read_dir()
@@ -473,6 +465,23 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
     ctx.populate_metadata_var()?;
+
+    // `--rollback-only` short-circuits the pipeline: load the prior run's
+    // `report.json`, re-attempt rollback for every Succeeded /
+    // RollbackFailed entry, persist the result to `rollback.json`, and
+    // return. No build / publish / announce stages run in this mode.
+    if ctx.options.rollback_only {
+        // Clone the run id so the borrow on `ctx.options` ends before
+        // `rollback_only::run` takes `&mut ctx`.
+        let run_id = ctx
+            .options
+            .from_run
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--rollback-only requires --from-run=<id>"))?;
+        let updated_report = anodizer_stage_publish::rollback_only::run(&mut ctx, &run_id)?;
+        ctx.set_publish_report(updated_report);
+        return Ok(());
+    }
 
     // Populate the GR-Pro `IsPrepare` template var so user templates can
     // branch on prepare-mode (e.g. emit a different artifact_name for

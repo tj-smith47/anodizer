@@ -4395,13 +4395,14 @@ crates:
     );
 }
 
-// ---- Release-resilience CLI flag runtime behaviour (Task 17) ----
+// ---- Release-resilience CLI flag runtime behaviour (Task 17 / Task 20) ----
 
-/// `--rollback-only --from-run X` should bail with a pending-implementation
-/// error so the flag is discoverable via `--help` today while the replay
-/// task remains outstanding.
+/// `--rollback-only --from-run X` short-circuits the pipeline and replays
+/// rollback against the prior run's `report.json`. When no such report
+/// exists on disk the command surfaces a clear error referencing the
+/// missing path (no other stages run).
 #[test]
-fn release_rollback_only_bails_with_plumbed_message() {
+fn release_rollback_only_bails_when_prior_report_missing() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
@@ -4423,13 +4424,95 @@ crates:
 
     assert!(
         !output.status.success(),
-        "release --rollback-only must exit non-zero (pending impl)"
+        "release --rollback-only with no prior report must exit non-zero"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--rollback-only") && stderr.contains("not yet implemented"),
-        "stderr should explain --rollback-only is plumbed but not yet implemented, got: {}",
+        stderr.contains("failed to read prior report") && stderr.contains("run-abc123"),
+        "stderr should reference the missing prior report path, got: {}",
         stderr
+    );
+}
+
+/// `--rollback-only --from-run X` reads `<dist>/run-<id>/report.json`,
+/// invokes Publisher rollback for every Succeeded / RollbackFailed entry,
+/// and writes the updated state to `<dist>/run-<id>/rollback.json`.
+/// Submitter entries are not in the registry under this minimal config,
+/// so the test fixture uses a publisher name that maps to nothing; the
+/// outcome flips to `RollbackFailed("publisher not found...")` which is
+/// the documented diagnostic when the registry no longer carries the
+/// publisher recorded in the prior report.
+#[test]
+fn release_rollback_only_invokes_replay_from_disk() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    // Seed dist/run-fixt/report.json with a Succeeded Manager entry
+    // whose name does not match any publisher in this minimal config.
+    // We don't need real publisher dispatch — only that the replay
+    // path runs end-to-end and writes rollback.json.
+    let run_dir = tmp.path().join("dist").join("run-fixt");
+    fs::create_dir_all(&run_dir).unwrap();
+    let report_json = r#"{
+  "results": [
+    {
+      "name": "orphan-mgr",
+      "group": "Manager",
+      "required": true,
+      "outcome": "Succeeded",
+      "evidence": {
+        "schema_version": 1,
+        "publisher": "orphan-mgr",
+        "primary_ref": null,
+        "artifact_paths": [],
+        "nondeterministic": null,
+        "extra": {}
+      }
+    }
+  ],
+  "submitter_gated": false,
+  "announce_gated": false
+}"#;
+    fs::write(run_dir.join("report.json"), report_json).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--rollback-only", "--from-run", "fixt"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "release --rollback-only must succeed even when a recorded publisher is missing from the current registry (it surfaces as RollbackFailed in rollback.json). stdout:\n{}\nstderr:\n{}",
+        stdout,
+        stderr,
+    );
+
+    let rollback_path = run_dir.join("rollback.json");
+    assert!(
+        rollback_path.exists(),
+        "rollback.json must be written to {}",
+        rollback_path.display(),
+    );
+    let rollback_text = fs::read_to_string(&rollback_path).unwrap();
+    assert!(
+        rollback_text.contains("RollbackFailed")
+            && rollback_text.contains("not found in current registry"),
+        "rollback.json must carry diagnostic for missing publisher, got:\n{}",
+        rollback_text,
     );
 }
 

@@ -21,6 +21,7 @@ pub mod post_publish;
 pub mod preflight;
 pub mod registry;
 pub mod rollback;
+pub mod rollback_only;
 pub mod scoop;
 pub mod upload;
 pub(crate) mod util;
