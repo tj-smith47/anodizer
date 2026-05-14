@@ -30,6 +30,27 @@
 //! string is inside `stage-publish` (rollback dispatch, preflight, the
 //! `rollback_only` replay path).
 
+/// Format a uniform "scope unavailable" warn line for the three
+/// call sites that consume `Publisher::rollback_scope_needed`
+/// (`rollback::run`, `rollback_only::run_with_publishers`,
+/// `preflight::run_publisher_preflight_extension`). Audit ref:
+/// B6 review M-7 + M-8 — three character-drifted messages
+/// collapsed into one source of truth.
+///
+/// `prefix` identifies the calling subsystem (`"rollback"`,
+/// `"rollback-only"`, `"preflight"`); `publisher` and `label` are
+/// the publisher name and the raw scope label string.
+///
+/// The output explicitly names "env scope" so the operator sees
+/// the remedy is `export <VAR>=...`, not some other class of
+/// credential.
+pub(crate) fn warn_scope_unavailable_msg(prefix: &str, publisher: &str, label: &str) -> String {
+    format!(
+        "{prefix}: '{publisher}' skipped — env scope '{label}' unavailable \
+         (set the env var to enable rollback)"
+    )
+}
+
 /// Returns `true` when the env var named by the first whitespace-
 /// separated token of `label` is set to a non-empty value, OR when
 /// the var is `GITHUB_TOKEN` and `ANODIZER_GITHUB_TOKEN` is set.
@@ -127,5 +148,33 @@ mod tests {
                 assert!(!scope_available("OTHER_TOKEN write"));
             });
         });
+    }
+
+    // ---- warn_scope_unavailable_msg --------------------------------------
+
+    #[test]
+    fn warn_msg_includes_prefix_publisher_label_and_remedy() {
+        let msg = warn_scope_unavailable_msg("rollback", "homebrew", "GITHUB_TOKEN contents:write");
+        assert!(msg.contains("rollback:"), "missing prefix: {msg}");
+        assert!(msg.contains("'homebrew'"), "missing publisher: {msg}");
+        assert!(
+            msg.contains("'GITHUB_TOKEN contents:write'"),
+            "missing label: {msg}"
+        );
+        assert!(
+            msg.contains("set the env var"),
+            "missing remedy hint: {msg}",
+        );
+    }
+
+    #[test]
+    fn warn_msg_uses_supplied_prefix_verbatim() {
+        // Regression guard: every call site sets its own prefix. The
+        // helper must NOT lowercase / dash-normalize / otherwise
+        // mangle it.
+        let r = warn_scope_unavailable_msg("rollback-only", "p", "X");
+        assert!(r.starts_with("rollback-only:"), "got {r}");
+        let p = warn_scope_unavailable_msg("preflight", "p", "X");
+        assert!(p.starts_with("preflight:"), "got {p}");
     }
 }

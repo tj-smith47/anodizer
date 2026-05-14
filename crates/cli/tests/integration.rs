@@ -4761,3 +4761,97 @@ crates:
         stderr
     );
 }
+
+/// E2E: `anodizer release --skip=announce --summary-json=<path>` writes
+/// the per-publisher summary even when the announce stage is operator-
+/// skipped. Binary-surface coverage for B6 finding I1; the unit-level
+/// equivalent lives at `pipeline.rs::tests::pipeline_emits_summary_when_announce_is_skipped_via_skip_flag`.
+///
+/// Snapshot + dry-run mode keep the test self-contained (no network,
+/// no git tag required). We skip the heavy stages so the test runs
+/// quickly; the only thing that matters for the assertion is that
+/// the pipeline reaches `emit_summary` regardless of `--skip=announce`.
+#[test]
+fn test_release_skip_announce_still_writes_summary_json() {
+    let host = detect_host_target();
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    let config = create_single_crate_snapshot_config(&host);
+    create_config(tmp.path(), &config);
+
+    let summary_path = tmp.path().join("summary.json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--snapshot",
+            "--dry-run",
+            "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom,release,publish,announce",
+            "--summary-json",
+            summary_path.to_str().unwrap(),
+            "--timeout",
+            "2m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "release with --skip=announce + --summary-json must succeed.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The audit-trail contract: summary.json lands on disk even though
+    // announce was operator-skipped. Pre-I1 this assertion would fail
+    // because emit_summary lived inside AnnounceStage::run.
+    assert!(
+        summary_path.exists(),
+        "summary.json must be written even when announce is operator-skipped.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let summary_text = std::fs::read_to_string(&summary_path)
+        .expect("read summary.json that the binary just wrote");
+    // Parse via the canonical struct to confirm the file is valid JSON
+    // with the expected schema, not garbage / a previous file we forgot
+    // to delete.
+    let parsed: anodizer_stage_publish::run_summary::RunSummary =
+        serde_json::from_str(&summary_text).expect("summary.json must parse as RunSummary");
+    assert_eq!(
+        parsed.schema_version,
+        anodizer_stage_publish::run_summary::RunSummary::CURRENT_SCHEMA_VERSION,
+        "schema_version field must round-trip",
+    );
+}
+
+/// E2E: `--allow-rerun` and `--rollback-only` are mutually exclusive
+/// at the clap layer (B6 review I-2). The combination must be
+/// rejected at parse time with a clear conflicts error, NOT silently
+/// no-op'd. We don't need a real release pipeline for this test —
+/// clap rejects the args before any pipeline code runs.
+#[test]
+fn test_release_allow_rerun_conflicts_with_rollback_only() {
+    let tmp = TempDir::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--rollback-only",
+            "--from-run=v0.0.0-test",
+            "--allow-rerun",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --rollback-only --allow-rerun must be rejected by clap",
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--allow-rerun") && stderr.contains("--rollback-only"),
+        "stderr must name both conflicting flags, got: {}",
+        stderr,
+    );
+}

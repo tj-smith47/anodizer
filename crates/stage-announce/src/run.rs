@@ -35,16 +35,27 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
             // failures — defeating the stage on any release that
             // included a moderated publisher.
             //
-            // Listed as a positive match so adding a new failure-like
-            // variant is a fail-loud regression (review-blocker) rather
-            // than a silent "still gates" inclusion.
-            r.results.iter().any(|res| {
-                matches!(
-                    res.outcome,
-                    PublisherOutcome::Failed(_)
-                        | PublisherOutcome::RollbackFailed(_)
-                        | PublisherOutcome::Skipped(SkipReason::SubmitterGated)
-                )
+            // # Exhaustiveness
+            //
+            // Each variant is named explicitly (no `_` wildcard) so
+            // adding a new `PublisherOutcome` variant is a compile
+            // error here — the reviewer of the new variant has to
+            // decide whether it gates announce. `matches!` itself
+            // does NOT enforce exhaustiveness; an explicit `match`
+            // does, which is the shape used below.
+            r.results.iter().any(|res| match &res.outcome {
+                PublisherOutcome::Failed(_)
+                | PublisherOutcome::RollbackFailed(_)
+                | PublisherOutcome::Skipped(SkipReason::SubmitterGated) => true,
+                PublisherOutcome::Succeeded
+                | PublisherOutcome::Skipped(SkipReason::NotConfigured)
+                | PublisherOutcome::Skipped(SkipReason::Snapshot)
+                | PublisherOutcome::Skipped(SkipReason::DryRun)
+                | PublisherOutcome::RolledBack
+                | PublisherOutcome::RollbackSkippedNoScope
+                | PublisherOutcome::PendingModeration
+                | PublisherOutcome::PendingValidation
+                | PublisherOutcome::PublishedNoRollback => false,
             })
         }),
     }

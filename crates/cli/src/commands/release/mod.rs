@@ -477,17 +477,30 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // `report.json`, re-attempt rollback for every Succeeded /
     // RollbackFailed entry, persist the result to `rollback.json`, and
     // return. No build / publish / announce stages run in this mode.
+    //
+    // Audit ref: B6 review I-1 — the rollback-only branch bypasses
+    // `Pipeline::run` entirely, so it must invoke `emit_summary`
+    // itself for `--summary-json=<path>` to land on disk. Without
+    // this call, the rollback-only path silently drops the summary
+    // file even though every other code path produces one. The call
+    // wraps both the rollback dispatch result and the early-error
+    // return so the summary fires regardless of how rollback_only
+    // resolved (Ok, Err, missing --from-run, ...).
     if ctx.options.rollback_only {
-        // Clone the run id so the borrow on `ctx.options` ends before
-        // `rollback_only::run` takes `&mut ctx`.
-        let run_id = ctx
-            .options
-            .from_run
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("--rollback-only requires --from-run=<id>"))?;
-        let updated_report = anodizer_stage_publish::rollback_only::run(&mut ctx, &run_id)?;
-        ctx.set_publish_report(updated_report);
-        return Ok(());
+        let outcome = (|| -> Result<()> {
+            // Clone the run id so the borrow on `ctx.options` ends before
+            // `rollback_only::run` takes `&mut ctx`.
+            let run_id = ctx
+                .options
+                .from_run
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("--rollback-only requires --from-run=<id>"))?;
+            let updated_report = anodizer_stage_publish::rollback_only::run(&mut ctx, &run_id)?;
+            ctx.set_publish_report(updated_report);
+            Ok(())
+        })();
+        anodizer_stage_announce::emit_summary(&mut ctx);
+        return outcome;
     }
 
     // Populate the GR-Pro `IsPrepare` template var so user templates can

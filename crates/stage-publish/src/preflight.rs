@@ -720,11 +720,7 @@ fn run_publisher_preflight_extension(
         if let Some(label) = p.rollback_scope_needed()
             && !crate::scope::scope_available(label)
         {
-            let msg = format!(
-                "rollback scope '{}' is not available for publisher '{}'; rollback will be skipped or limited",
-                label,
-                p.name(),
-            );
+            let msg = crate::scope::warn_scope_unavailable_msg("preflight", p.name(), label);
             if ctx.options.strict {
                 report.blockers.push(msg);
             } else {

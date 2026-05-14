@@ -277,9 +277,10 @@ pub(crate) fn run_with_publishers(
         {
             skipped_no_scope += 1;
             report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;
-            log.warn(&format!(
-                "rollback-only: '{}' skipped - scope '{}' unavailable",
-                name, label,
+            log.warn(&crate::scope::warn_scope_unavailable_msg(
+                "rollback-only",
+                &name,
+                label,
             ));
             continue;
         }

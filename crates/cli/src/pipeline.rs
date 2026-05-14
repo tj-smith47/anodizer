@@ -573,16 +573,37 @@ impl Pipeline {
         self.stages.iter().map(|s| s.name()).collect()
     }
 
+    /// Run every registered stage in order; `emit_summary` always
+    /// fires after the inner body returns, regardless of `Ok`/`Err`.
+    ///
+    /// Audit ref: 2026-05-15 release-resilience-review finding I1.
+    /// `emit_summary` runs at the pipeline level (not inside
+    /// `AnnounceStage::run`) so the end-of-pipeline status table
+    /// and `--summary-json=<path>` write always fire — including
+    /// when announce itself is operator-skipped via `--skip=announce`.
+    /// The scope-guard shape (inner-fn returns the outcome, outer
+    /// wrapper calls `emit_summary` then propagates) means the
+    /// summary fires on Ok, Err, AND when the pipeline body
+    /// short-circuits early via `?`.
+    ///
+    /// # Panics
+    ///
+    /// If a stage panics, the unwind happens BEFORE the
+    /// `emit_summary` post-call runs, so a panicking pipeline body
+    /// will skip the summary write. This is an accepted limitation
+    /// — a stage that panics is a bug in the stage (or a panic from
+    /// `unwrap`/`expect` we missed in review), not an operator
+    /// error we can recover from. The release pipeline is built
+    /// around `Result`-propagation; a panic means something the
+    /// review failed to catch is wrong, and dropping `summary.json`
+    /// in that scenario is bug-on-bug (the missing summary is a
+    /// downstream symptom of the underlying panic, not a release
+    /// gate). A `scopeguard::defer!` wrapper would close this
+    /// window but adds a panic-safety abstraction layer the rest
+    /// of the codebase doesn't use; the inner-fn shape mirrors the
+    /// convention already established by
+    /// `AnnounceStage::run` → `announce_body`.
     pub fn run(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
-        // Audit ref: 2026-05-15 release-resilience-review finding I1.
-        // `emit_summary` runs at the pipeline level (not inside
-        // `AnnounceStage::run`) so the end-of-pipeline status table
-        // and `--summary-json=<path>` write always fire — including
-        // when announce itself is operator-skipped via
-        // `--skip=announce`. The scope-guard shape (inner-closure
-        // returns the outcome, outer wrapper calls `emit_summary`
-        // then propagates) means the summary fires on Ok, Err, AND
-        // even when the pipeline body short-circuits early via `?`.
         let outcome = self.run_inner(ctx, log);
         anodizer_stage_announce::emit_summary(ctx);
         outcome
@@ -1692,6 +1713,59 @@ crates:
     // doesn't drop `--summary-json`. Audit ref: 2026-05-15
     // release-resilience-review finding I1.
     // -----------------------------------------------------------------------
+
+    /// A `Stage` that always returns `Err`. Used by I-3's regression
+    /// test to pin the "emit_summary fires even on inner-fn Err" half
+    /// of `Pipeline::run`'s contract. Kept private to the test module.
+    struct AlwaysFailStage;
+    impl anodizer_core::stage::Stage for AlwaysFailStage {
+        fn name(&self) -> &str {
+            "always-fail"
+        }
+        fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+            anyhow::bail!("synthetic stage failure for the I-3 test")
+        }
+    }
+
+    #[test]
+    fn pipeline_emits_summary_even_when_inner_stage_returns_err() {
+        // Audit ref: B6 review I-3 — the inner-fn scope-guard shape in
+        // `Pipeline::run` must invoke `emit_summary` on Err too, not
+        // just on Ok. Without this test, only the doc line pinned the
+        // contract; this puts a bisectable green/red signal on the
+        // Err path.
+        use anodizer_core::context::ContextOptions;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let summary_path = tmp.path().join("summary.json");
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(AlwaysFailStage));
+
+        let opts = ContextOptions {
+            summary_json_path: Some(summary_path.clone()),
+            ..ContextOptions::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = anodizer_core::context::Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        ctx.publish_report = Some(anodizer_core::publish_report::PublishReport::default());
+
+        let log = ctx.logger("pipeline-test");
+        let result = p.run(&mut ctx, &log);
+
+        assert!(
+            result.is_err(),
+            "pipeline must propagate the stage's Err verbatim",
+        );
+        assert!(
+            summary_path.exists(),
+            "summary.json must be written even when the inner pipeline body returns Err",
+        );
+    }
 
     #[test]
     fn pipeline_emits_summary_when_announce_is_skipped_via_skip_flag() {

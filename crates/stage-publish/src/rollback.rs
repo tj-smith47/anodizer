@@ -103,9 +103,10 @@ pub fn run(
         {
             skipped_no_scope += 1;
             report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;
-            log.warn(&format!(
-                "rollback: '{}' skipped - scope '{}' unavailable",
-                name_owned, label,
+            log.warn(&crate::scope::warn_scope_unavailable_msg(
+                "rollback",
+                &name_owned,
+                label,
             ));
             continue;
         }

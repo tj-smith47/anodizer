@@ -300,6 +300,63 @@ would have closed before cargo dispatched. `cargo` would appear as
 running `--rollback-only --from-run=<id>` would unwind the github-release
 upload (delete release + tag + assets) and the cloudsmith upload.
 
+### Recovery flow
+
+When a release fails partway, anodizer persists the end-of-pipeline
+state to `dist/run-<id>/report.json`. The next `release` invocation
+against the same tag will refuse to re-publish, citing that file:
+
+```bash
+# Failed release leaves report.json on disk:
+$ ls dist/run-v0.2.1/
+report.json
+
+# Retrying with the same tag is refused — duplicate-PR risk:
+$ anodize release
+Error: publish refusing to run: a prior report.json exists at
+  dist/run-v0.2.1/report.json (run_id=v0.2.1). To recover from a partial
+  failure, run `anodizer release --rollback-only --from-run=v0.2.1` first
+  (this reverts reversible publishers and is idempotent). Pass --allow-rerun
+  to force re-publish anyway — WARNING: PR-based publishers (homebrew,
+  scoop, nix, krew, MCP) will open DUPLICATE pull requests against the
+  same tag.
+```
+
+The recommended recovery is to unwind reversible publishers (Assets +
+Manager groups) first, then fix whatever broke and re-cut the release
+on a new tag:
+
+```bash
+# Step 1: replay rollback against the prior run. Idempotent: re-running
+#         only re-attempts entries that haven't already RolledBack.
+anodize release --rollback-only --from-run=v0.2.1
+
+# Step 2: read dist/run-v0.2.1/rollback.json to confirm every Assets /
+#         Manager publisher flipped to RolledBack (or RollbackFailed
+#         for the ones that need manual cleanup — those entries name
+#         the publisher and the error).
+
+# Step 3: cut a new tag and re-release.
+git tag v0.2.2 && git push --tags
+anodize release
+```
+
+Only use `--allow-rerun` when:
+
+1. The recovery flow above has completed (or you've confirmed by hand
+   that nothing got published on the failed run).
+2. No PR-based publisher (homebrew, scoop, nix, krew, MCP) is
+   configured — re-running them DUPLICATES the PR with no safeguard.
+3. You've explicitly accepted the risk that any publisher that DID
+   succeed on the failed run may be re-published (cargo crates are
+   immutable; chocolatey, winget, and most container registries
+   reject duplicate versions, but the rejection is per-publisher).
+
+```bash
+# Escape hatch — duplicate-publish risk, see warnings above:
+anodize release --allow-rerun
+```
+
 ## CLI surface summary
 
 ```
@@ -311,7 +368,7 @@ anodize release \
   --simulate-failure=<publisher> \
   --rollback-only \
   --from-run=<id> \
-  --allow-rerun \
+  --allow-rerun                  # DANGEROUS — see "Recovery flow" above
   --summary-json=<path>
 ```
 
