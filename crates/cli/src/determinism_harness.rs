@@ -16,12 +16,12 @@
 //!
 //! 1. For each of `runs` runs, opens a fresh
 //!    [`anodizer_core::git::worktree::Worktree`] rooted at `commit`.
-//! 2. Builds an isolated env (per-run `CARGO_HOME`, `CARGO_TARGET_DIR`,
+//! 2. Builds an isolated env: per-run `CARGO_HOME`, `CARGO_TARGET_DIR`,
 //!    `TMPDIR`, `HOME`; `SOURCE_DATE_EPOCH=self.sde`; `PATH` trimmed to
 //!    `allow_listed_path()`; everything else stripped except an explicit
 //!    identity-only allow-list — see [`HARNESS_ENV_ALLOWLIST`]. Notably
-//!    excluded: `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, every other
-//!    credential-bearing var).
+//!    excluded: `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, and every other
+//!    credential-bearing var.
 //! 3. Invokes the build-side pipeline (`anodize release --snapshot
 //!    --skip=<SIDE_EFFECT_STAGES>`, see
 //!    [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`]) inside
@@ -981,6 +981,35 @@ mod tests {
                     Some("deadbeefcafe"),
                     "GITHUB_SHA is identity and must propagate"
                 );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_includes_runner_identity_vars_when_set() {
+            // Symmetry guard for the GITHUB_REPOSITORY / GITHUB_SHA
+            // positive-inheritance tests above. The allow-list line is
+            // the contract, but iterating each RUNNER_* identity var
+            // catches drift if a future edit drops one entry.
+            let tmp = tempfile::tempdir().unwrap();
+            let cases = [
+                ("RUNNER_OS", "Linux"),
+                ("RUNNER_ARCH", "X64"),
+                ("RUNNER_NAME", "self-hosted-1"),
+            ];
+            with_cleared(&cases.map(|(k, _)| k), || {
+                for (k, v) in cases {
+                    // SAFETY: serial(harness_env) holds the lock.
+                    unsafe { std::env::set_var(k, v) };
+                }
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                for (k, v) in cases {
+                    assert_eq!(
+                        env.get(k).map(String::as_str),
+                        Some(v),
+                        "{k} is identity and must propagate (value `{v}`)"
+                    );
+                }
             });
         }
 
