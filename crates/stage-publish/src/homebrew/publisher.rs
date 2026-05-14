@@ -325,6 +325,27 @@ mod publisher_tests {
     }
 
     #[test]
+    fn homebrew_target_extra_carries_no_secret_material() {
+        // Defense-in-depth: serialize a target and assert no field
+        // names that could leak a token / pat / password are present.
+        // Mirrors the Bundle B credential-handling contract documented
+        // on `PublishEvidence::extra`.
+        let t = HomebrewTarget {
+            target: "demo".into(),
+            repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+            branch: Some("main".into()),
+            token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+        };
+        let s = serde_json::to_string(&t).expect("serialize");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"pat\":"), "{s}");
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        // The env-var NAME is fine; values must never appear.
+        assert!(s.contains("HOMEBREW_TAP_TOKEN"), "{s}");
+    }
+
+    #[test]
     fn homebrew_target_extra_roundtrips() {
         // Build an evidence blob shaped like what `run` would emit
         // and check the decode path returns the same Vec.

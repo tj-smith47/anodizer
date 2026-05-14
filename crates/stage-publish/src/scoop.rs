@@ -778,6 +778,27 @@ mod publisher_tests {
     }
 
     #[test]
+    fn scoop_target_extra_carries_no_secret_material() {
+        // Defense-in-depth: serialize a target and assert no field
+        // names that could leak a token / pat / password are present.
+        // Mirrors the Bundle B credential-handling contract documented
+        // on `PublishEvidence::extra`.
+        let t = ScoopTarget {
+            target: "demo".into(),
+            repo_url: "https://github.com/acme/scoop-bucket.git".into(),
+            branch: Some("main".into()),
+            token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+        };
+        let s = serde_json::to_string(&t).expect("serialize");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"pat\":"), "{s}");
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        // The env-var NAME is fine; values must never appear.
+        assert!(s.contains("SCOOP_BUCKET_TOKEN"), "{s}");
+    }
+
+    #[test]
     fn scoop_target_extra_roundtrips() {
         let original = vec![ScoopTarget {
             target: "demo".into(),
