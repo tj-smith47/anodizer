@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Documentation
-    url: https://github.com/tj-smith47/anodizer/tree/main/docs
-    about: Check the documentation before opening an issue
+    url: https://github.com/tj-smith47/anodizer#readme
+    about: Check the README for usage documentation

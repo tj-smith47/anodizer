@@ -1,0 +1,45 @@
+name: Feature Request
+description: Suggest a new feature or enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Anodizer's scope tracks GoReleaser's,
+        so links to the GoReleaser equivalent (if any) help triage.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this solve? What's the release-pipeline use case? (e.g., new publisher target, new template variable, new archive format.)
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How do you think this should work? Show the proposed config block and/or CLI usage.
+      placeholder: |
+        ```yaml
+        # .anodizer.yaml excerpt
+        ```
+
+        ```bash
+        # example CLI invocation
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative approaches you've considered (workarounds, existing options, etc.).
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Any other context - link to GoReleaser equivalent, screenshots, config examples, related issues.

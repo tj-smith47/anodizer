@@ -1,0 +1,65 @@
+name: Bug Report
+description: Report a bug in anodizer
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please fill out the sections below.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior. Include the command you ran and the relevant parts of your `.anodizer.yaml` (redact secrets).
+      placeholder: |
+        1. Config (relevant excerpt):
+           ```yaml
+           # paste from .anodizer.yaml
+           ```
+        2. Run `anodizer release --snapshot` (or `anodizer check`, etc.)
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened. Include the full error output if applicable.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include output of `anodizer --version` and the cross-compilation tool you use (cargo-zigbuild / cross / native cargo).
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: e.g., Ubuntu 22.04, macOS 14, Windows 11
+    validations:
+      required: true
