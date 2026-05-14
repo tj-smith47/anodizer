@@ -44,7 +44,7 @@ impl Stage for SnapcraftPublishStage {
         if ctx.skip_in_snapshot(&log, "snapcraft-publish") {
             // Mirror BlobStage's discipline: snapshot-skip leaves
             // `publish_report` untouched. Recording a `Skipped(Snapshot)`
-            // entry here would assymmetrically gate
+            // entry here would asymmetrically gate
             // `AnnounceGate::AllPublishers` against snapcraft alone if the
             // announce snapshot-skip-first guard is ever relaxed.
             return Ok(());
@@ -497,7 +497,7 @@ mod publish_stage_tests {
     fn snapshot_mode_records_nothing() {
         // BlobStage parity: snapshot-skip leaves publish_report
         // untouched. Recording a `Skipped(Snapshot)` entry would
-        // assymmetrically gate `AnnounceGate::AllPublishers` against
+        // asymmetrically gate `AnnounceGate::AllPublishers` against
         // snapcraft alone if the announce snapshot-skip-first guard
         // is ever relaxed.
         let mut ctx = TestContextBuilder::new()
