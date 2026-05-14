@@ -62,6 +62,13 @@ use std::path::PathBuf;
 /// step instead of producing an invalid path. The `"local"` literal is
 /// fixed and always valid.
 ///
+/// Operators replaying a `--from-run=local` invocation are addressing
+/// the no-git fallback path; for production releases (which always
+/// have a tag or short_commit), this branch should never fire. Seeing
+/// `dist/run-local/` in a real release is a signal that
+/// `ctx.git_info` was not populated upstream and is worth
+/// investigating before invoking `--rollback-only`.
+///
 /// Used by [`PublishStage::run`] before writing
 /// `<dist>/run-<id>/report.json`. The write is skipped entirely in
 /// snapshot / dry-run mode, so callers that derive the id outside of
@@ -100,6 +107,48 @@ pub(crate) fn derive_run_id(ctx: &Context) -> String {
 /// Mirrors the path-derivation in
 /// [`rollback_only::report_path`] — the two helpers form the
 /// writer/reader contract for the `--rollback-only` flow.
+///
+/// Pretty-prints so operators reading the file directly do not have
+/// to pipe through `jq`. A future contributor tempted to switch to
+/// compact JSON for byte-size should know the format is part of the
+/// operator-facing contract — `--rollback-only` consumers may read it
+/// by hand to triage which step failed before invoking the replay.
+///
+/// # Atomicity
+///
+/// Serializes to a `String` first via [`serde_json::to_string_pretty`]
+/// and then commits with [`std::fs::write`]. A serialize-failure
+/// (closed sums, malformed Unicode in a publisher name, ...) happens
+/// BEFORE the target file is touched, so a partially-written /
+/// truncated `report.json` cannot leak onto disk and trip a later
+/// `--rollback-only --from-run=<id>` parse error. Matches the sibling
+/// pattern in `crates/stage-publish/src/run_summary.rs::write_summary_json`.
+///
+/// No explicit `fsync`: `fs::write` does not expose a sync hook, and
+/// the in-repo convention (run_summary, every other JSON-emit site
+/// across the stages) does not fsync either. The atomic-rename-style
+/// safety we get from `fs::write` covers the truncation hazard that
+/// motivated the change; a crash mid-`fs::write` is rare enough on
+/// modern filesystems that the divergence from in-repo convention
+/// isn't worth carrying.
+///
+/// # Single-`()`-return shape
+///
+/// Combines serialize + observe into a single `()`-returning helper;
+/// the sibling `stage-announce::emit_summary` (writer of
+/// `summary.json`) splits these for testability. The shape is
+/// preserved single-call-site here intentionally — the only consumer
+/// is `PublishStage::run`, and the warn-don't-fail policy means there
+/// is no error to thread up.
+///
+/// # Retention
+///
+/// This writer creates one `dist/run-<id>/` directory per release
+/// run; the pipeline does NOT auto-prune. Operators own retention and
+/// should periodically clean stale run directories — they hold the
+/// only on-disk state needed for `--rollback-only --from-run=<id>`
+/// replay, so a deletion is recoverable only by re-running the
+/// release.
 ///
 /// # Stability
 ///
@@ -146,11 +195,14 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
         return;
     }
 
-    let file = match std::fs::File::create(&path) {
-        Ok(f) => f,
+    // Serialize first, then write — so a serialize-failure cannot
+    // leave a truncated/corrupt file on disk for the rollback_only
+    // reader to choke on. Matches `run_summary::write_summary_json`.
+    let text = match serde_json::to_string_pretty(report) {
+        Ok(t) => t,
         Err(e) => {
             log.warn(&format!(
-                "publish: failed to open run-report {} for write: {}",
+                "publish: failed to serialize run-report for {}: {}",
                 path.display(),
                 e,
             ));
@@ -158,9 +210,9 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
         }
     };
 
-    if let Err(e) = serde_json::to_writer_pretty(&file, report) {
+    if let Err(e) = std::fs::write(&path, &text) {
         log.warn(&format!(
-            "publish: failed to serialize run-report to {}: {}",
+            "publish: failed to write run-report to {}: {}",
             path.display(),
             e,
         ));
