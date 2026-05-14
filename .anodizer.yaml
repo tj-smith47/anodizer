@@ -784,6 +784,10 @@ makeselfs:
     filename: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
 announce:
+  # required_publishers (default): announce only when every required Assets/Manager/Submitter
+  # publisher succeeded. all_publishers tightens to every configured publisher.
+  # none disables the gate. Default is required_publishers.
+  gate_on: required_publishers
   discord:
     enabled: false
     webhook_url: "{{ Env.DISCORD_WEBHOOK_URL }}"

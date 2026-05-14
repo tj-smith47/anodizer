@@ -17,8 +17,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  determinism-check:
+    name: Determinism Harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-determinism
+      - name: Build anodize CLI
+        run: cargo build --release -p anodizer
+      - name: Run determinism harness
+        run: ./target/release/anodizer check determinism --stages=build,archive,sbom,sign,checksum --runs=2
+
   build:
     name: Build (${{ matrix.os }})
+    needs: [determinism-check]
     strategy:
       fail-fast: false
       matrix:
@@ -126,3 +143,13 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
+
+      - name: Upload run summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-summary-${{ github.sha }}
+          path: |
+            dist/run-*/summary.json
+            dist/run-*/determinism.json
+          if-no-files-found: warn

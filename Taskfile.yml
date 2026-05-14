@@ -22,6 +22,26 @@ tasks:
     cmds:
       - cargo check --all-targets
 
+  check:determinism:
+    desc: "Run the determinism harness with default args (--runs=2)."
+    cmds:
+      - cargo run -p anodizer --release -- check determinism --runs=2
+
+  check:config:
+    desc: "Validate the workspace's anodize config (post-restructure form)."
+    cmds:
+      - cargo run -p anodizer --release -- check config --workspace=.
+
+  release:snapshot:
+    desc: "Dry-run a release in snapshot mode; exercises new flags end-to-end."
+    cmds:
+      - cargo run -p anodizer --release -- release --snapshot --dry-run --summary-json=dist/snapshot-summary.json
+
+  summary:show:
+    desc: "Pretty-print the most recent run summary."
+    cmds:
+      - jq . dist/run-*/summary.json | less
+
   fmt:
     desc: Format all code
     cmds:

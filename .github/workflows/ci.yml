@@ -100,6 +100,33 @@ jobs:
           from-artifact: anodizer-linux
           args: release --snapshot --single-target --clean --dry-run
 
+  determinism-fast:
+    name: Determinism (fast, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # advisory while per-stage determinism fixes shake out
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build anodize CLI
+        run: cargo build --release -p anodizer
+      - name: Run fast determinism check
+        run: ./target/release/anodizer check determinism --stages=archive,sbom,sign,checksum --runs=2
+
+  check-config:
+    name: Check Config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build anodize CLI
+        run: cargo build --release -p anodizer
+      - name: Validate .anodizer.yaml
+        run: ./target/release/anodizer check config --workspace=.
+
   tag:
     name: Auto-tag
     if: github.ref == 'refs/heads/master'
