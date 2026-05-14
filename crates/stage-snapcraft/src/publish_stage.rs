@@ -3,9 +3,11 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
-use anodizer_core::retry::retry_sync;
+use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{RetryPolicy, retry_sync};
 use anodizer_core::stage::Stage;
 use anodizer_core::{
     PublishEvidence, PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
@@ -14,6 +16,7 @@ use anodizer_core::{
 use crate::command::{
     is_retriable_snap_push, resolve_effective_channels, snapcraft_upload_command,
 };
+use crate::targets::{SnapcraftTarget, collect_snapcraft_targets};
 
 // ---------------------------------------------------------------------------
 // SnapcraftPublishStage — uploads previously built .snap artifacts
@@ -39,7 +42,11 @@ impl Stage for SnapcraftPublishStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("snapcraft-publish");
         if ctx.skip_in_snapshot(&log, "snapcraft-publish") {
-            record_snapcraft_result(ctx, None, PublisherOutcome::Skipped(SkipReason::Snapshot));
+            // Mirror BlobStage's discipline: snapshot-skip leaves
+            // `publish_report` untouched. Recording a `Skipped(Snapshot)`
+            // entry here would assymmetrically gate
+            // `AnnounceGate::AllPublishers` against snapcraft alone if the
+            // announce snapshot-skip-first guard is ever relaxed.
             return Ok(());
         }
 
@@ -72,7 +79,7 @@ impl Stage for SnapcraftPublishStage {
         let retry_policy = ctx.retry_policy();
 
         // Collect crates that have snapcraft config with publish: true
-        let crates: Vec<_> = ctx
+        let crates: Vec<CrateConfig> = ctx
             .config
             .crates
             .iter()
@@ -82,12 +89,13 @@ impl Stage for SnapcraftPublishStage {
             .collect();
 
         if crates.is_empty() {
-            // Mirrors BlobStage: nothing attempted, nothing to record.
+            // No work attempted (empty crates) — leave publish_report
+            // untouched, matching BlobStage's discipline.
             return Ok(());
         }
 
         // Collect all snap artifacts that were built
-        let snap_artifacts: Vec<_> = ctx
+        let snap_artifacts: Vec<Artifact> = ctx
             .artifacts
             .by_kind(ArtifactKind::Snap)
             .into_iter()
@@ -95,173 +103,48 @@ impl Stage for SnapcraftPublishStage {
             .collect();
 
         if snap_artifacts.is_empty() {
-            // Mirrors BlobStage: nothing attempted, nothing to record.
+            // No work attempted (empty snap_artifacts) — leave
+            // publish_report untouched, matching BlobStage's discipline.
             return Ok(());
         }
 
-        // Capture the resolved per-target snapshot BEFORE we start uploading
-        // so a mid-stream failure still leaves the operator a manual
-        // channel-management pointer for each snap we attempted to push.
-        // The snapshot also feeds `PublishEvidence::extra.snapcraft_targets`
-        // on success so `--rollback-only --from-run` consumers can decode
-        // the recorded shape.
+        // Pre-pass: render every config's `publish.skip` template uniformly
+        // BEFORE any upload begins. A template-render failure in this pass
+        // is a config error, not an upload outcome — it must fast-fail as a
+        // stage error consistently, regardless of which crate iterates
+        // first. Folding it into a `Failed(_)` PublisherResult would make
+        // `publish_report.json` misrepresent the same bug as an upload
+        // failure for some crate orderings and a stage abort for others.
+        let skip_decisions = render_skip_decisions(ctx, &crates)?;
+
+        // Capture the resolved per-target snapshot BEFORE we start
+        // uploading so a mid-stream failure still leaves the operator a
+        // manual channel-management pointer for each snap we attempted to
+        // push. The snapshot also feeds
+        // `PublishEvidence::extra.snapcraft_targets` on success so
+        // `--rollback-only --from-run` consumers can decode the recorded
+        // shape.
         let targets = collect_snapcraft_targets(ctx);
 
-        // Track whether any real upload (non-dry-run) was attempted so we
-        // can mirror BlobStage's "no work, no record" contract.
-        let mut attempted_upload = false;
-        let exec_result: Result<()> = (|| -> Result<()> {
-            for krate in &crates {
-                let Some(snap_configs) = krate.snapcrafts.as_ref() else {
-                    continue;
-                };
+        let (attempted, exec_result) = run_uploads(
+            ctx,
+            &crates,
+            &snap_artifacts,
+            &skip_decisions,
+            &retry_policy,
+            dry_run,
+            &log,
+        );
 
-                for snap_cfg in snap_configs {
-                    // Only publish configs that opt in
-                    if !snap_cfg.publish.unwrap_or(false) {
-                        continue;
-                    }
-                    // Skip configs marked skip:
-                    if let Some(ref d) = snap_cfg.skip {
-                        let off = d
-                            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                            .with_context(|| {
-                                format!(
-                                    "snapcraft: render publish.skip template for crate {}",
-                                    krate.name
-                                )
-                            })?;
-                        if off {
-                            continue;
-                        }
-                    }
-
-                    // Find snap artifacts for this crate (optionally filtered by id)
-                    let matching: Vec<_> = snap_artifacts
-                        .iter()
-                        .filter(|a| a.crate_name == krate.name)
-                        .filter(|a| {
-                            if let Some(ref filter_id) = snap_cfg.id {
-                                a.metadata
-                                    .get("id")
-                                    .map(|id| id == filter_id)
-                                    .unwrap_or(false)
-                            } else {
-                                true
-                            }
-                        })
-                        .collect();
-
-                    for artifact in &matching {
-                        let snap_path = artifact.path.to_string_lossy();
-
-                        // GoReleaser renders each channel template through the
-                        // template engine, filtering out empty results.
-                        let rendered_channels: Option<Vec<String>> =
-                            snap_cfg.channel_templates.as_ref().map(|templates| {
-                                templates
-                                    .iter()
-                                    .filter_map(|tmpl| {
-                                        ctx.render_template(tmpl).ok().filter(|s| !s.is_empty())
-                                    })
-                                    .collect()
-                            });
-                        // GoReleaser also renders grade through the template engine
-                        let rendered_grade: Option<String> = snap_cfg
-                            .grade
-                            .as_deref()
-                            .map(|g| ctx.render_template(g).unwrap_or_else(|_| g.to_string()));
-                        let effective_channels = resolve_effective_channels(
-                            rendered_channels.as_deref(),
-                            rendered_grade.as_deref(),
-                        );
-                        let upload_args =
-                            snapcraft_upload_command(&snap_path, effective_channels.as_deref());
-
-                        if dry_run {
-                            log.status(&format!("(dry-run) would run: {}", upload_args.join(" "),));
-                            continue;
-                        }
-
-                        attempted_upload = true;
-                        let max_attempts = retry_policy.max_attempts.max(1);
-                        retry_sync(&retry_policy, |attempt| {
-                            if attempt > 1 {
-                                log.warn(&format!(
-                                    "snapcraft upload attempt {}/{} failed (5xx), retrying…",
-                                    attempt - 1,
-                                    max_attempts,
-                                ));
-                            }
-                            log.status(&format!("running: {}", upload_args.join(" ")));
-                            let upload_output = match Command::new(&upload_args[0])
-                                .args(&upload_args[1..])
-                                .output()
-                            {
-                                Ok(o) => o,
-                                Err(e) => {
-                                    // Spawning snapcraft itself failed (binary missing,
-                                    // permission denied) — not a transient Store error.
-                                    return Err(ControlFlow::Break(
-                                        anyhow::Error::from(e).context(format!(
-                                            "execute snapcraft upload for crate {} snap {}",
-                                            krate.name, snap_path
-                                        )),
-                                    ));
-                                }
-                            };
-
-                            if upload_output.status.success() {
-                                return Ok(());
-                            }
-
-                            // Review-pending responses from the Snap Store should be
-                            // warnings, not fatal errors — the snap was uploaded
-                            // successfully but needs human review.
-                            const REVIEW_PENDING_STRINGS: &[&str] = &[
-                                "Waiting for previous upload",
-                                "A human will soon review your snap",
-                                "(NEEDS REVIEW)",
-                            ];
-                            let stderr = String::from_utf8_lossy(&upload_output.stderr);
-                            let stdout = String::from_utf8_lossy(&upload_output.stdout);
-                            let combined = format!("{}{}", stdout, stderr);
-                            if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
-                                log.warn(&format!(
-                                    "snap upload pending review: {}",
-                                    combined.trim()
-                                ));
-                                return Ok(());
-                            }
-
-                            // Materialize the failure as an anyhow::Error via
-                            // `log.check_output`, which preserves stderr/stdout for
-                            // operators reading the log.
-                            let err = match log.check_output(upload_output, "snapcraft upload") {
-                                Ok(_) => return Ok(()),
-                                Err(e) => e,
-                            };
-                            if is_retriable_snap_push(&combined) {
-                                Err(ControlFlow::Continue(err))
-                            } else {
-                                // Auth failures, malformed snap, quota errors, etc.
-                                // fast-fail without burning retry budget.
-                                Err(ControlFlow::Break(err))
-                            }
-                        })?;
-                    }
-                }
-            }
-            Ok(())
-        })();
-
-        if !attempted_upload {
+        if !attempted {
             // Either every config was `publish: false`, or every snap
             // entry was disabled via `skip:`, or every run was dry-run.
-            // Mirror BlobStage: nothing attempted, nothing to record.
-            // Surface any catastrophic error (e.g. failed skip-template
-            // render) from the closure as a stage error — these aren't
-            // upload outcomes and don't go through PublisherResult.
+            // Mirror BlobStage's "no work, no record" contract. The
+            // closure cannot have failed (skip-templates pre-rendered;
+            // upload errors flip `attempted=true` first), so
+            // `exec_result` is `Ok(())` on this branch — but pass it
+            // through for forward-compat in case a future error site is
+            // introduced upstream of the first attempted upload.
             return exec_result;
         }
 
@@ -280,7 +163,213 @@ impl Stage for SnapcraftPublishStage {
 }
 
 // ---------------------------------------------------------------------------
-// PublisherResult recording — mirrors `stage-blob::run::record_blob_result`
+// Pre-pass: render every config's `publish.skip` template upfront so a
+// template error fast-fails as a stage error before any upload begins.
+// ---------------------------------------------------------------------------
+
+/// Per-config skip flag, indexed parallel to the
+/// `(crate_index, snap_cfg_index)` ordering of
+/// `crates[].snapcrafts[]`. `run_uploads` indexes into this Vec rather
+/// than re-rendering the template inside the upload loop.
+fn render_skip_decisions(ctx: &Context, crates: &[CrateConfig]) -> Result<Vec<bool>> {
+    let mut decisions = Vec::new();
+    for krate in crates {
+        let Some(snap_configs) = krate.snapcrafts.as_ref() else {
+            continue;
+        };
+        for snap_cfg in snap_configs {
+            let skip = if let Some(ref d) = snap_cfg.skip {
+                d.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                    .with_context(|| {
+                        format!(
+                            "snapcraft: render publish.skip template for crate {}",
+                            krate.name
+                        )
+                    })?
+            } else {
+                false
+            };
+            decisions.push(skip);
+        }
+    }
+    Ok(decisions)
+}
+
+// ---------------------------------------------------------------------------
+// Upload loop, extracted from `Stage::run` so the
+// (attempted, exec_result) seam is testable in isolation.
+// ---------------------------------------------------------------------------
+
+/// Run the snapcraft upload loop and report
+/// `(attempted_any_upload, Result<()>)`.
+///
+/// `attempted_any_upload` becomes `true` the first time we materialize a
+/// non-dry-run upload (i.e. shell out to `snapcraft upload`). Callers
+/// use it to decide whether to record a `PublisherResult`:
+/// - `attempted = false` → nothing to report (BlobStage parity); the
+///   `Result<()>` is bubbled as a stage error.
+/// - `attempted = true`  → fold the `Result<()>` into a
+///   `Succeeded`/`Failed(_)` outcome.
+///
+/// `skip_decisions` is the pre-pass `publish.skip` flag per
+/// `(crate, snap_cfg)` tuple in iteration order — keeps this loop free
+/// of template-render side effects.
+fn run_uploads(
+    ctx: &Context,
+    crates: &[CrateConfig],
+    snap_artifacts: &[Artifact],
+    skip_decisions: &[bool],
+    retry_policy: &RetryPolicy,
+    dry_run: bool,
+    log: &StageLogger,
+) -> (bool, Result<()>) {
+    let mut attempted_upload = false;
+    // IIFE captures `attempted_upload` by mutable reference so the
+    // `?`-early-exit on per-target failure preserves the "anything
+    // attempted before this point?" answer for the caller.
+    let result: Result<()> = (|| -> Result<()> {
+        let mut decision_idx = 0usize;
+        for krate in crates {
+            let Some(snap_configs) = krate.snapcrafts.as_ref() else {
+                continue;
+            };
+
+            for snap_cfg in snap_configs {
+                // Pull the pre-rendered skip flag in parallel with the
+                // iteration — every `(crate, snap_cfg)` tuple contributes
+                // exactly one entry to `skip_decisions`.
+                let cfg_skip = skip_decisions.get(decision_idx).copied().unwrap_or(false);
+                decision_idx += 1;
+
+                // Only publish configs that opt in
+                if !snap_cfg.publish.unwrap_or(false) {
+                    continue;
+                }
+                if cfg_skip {
+                    continue;
+                }
+
+                // Find snap artifacts for this crate (optionally filtered by id)
+                let matching: Vec<&Artifact> = snap_artifacts
+                    .iter()
+                    .filter(|a| a.crate_name == krate.name)
+                    .filter(|a| {
+                        if let Some(ref filter_id) = snap_cfg.id {
+                            a.metadata
+                                .get("id")
+                                .map(|id| id == filter_id)
+                                .unwrap_or(false)
+                        } else {
+                            true
+                        }
+                    })
+                    .collect();
+
+                for artifact in &matching {
+                    let snap_path = artifact.path.to_string_lossy();
+
+                    // GoReleaser renders each channel template through the
+                    // template engine, filtering out empty results.
+                    let rendered_channels: Option<Vec<String>> =
+                        snap_cfg.channel_templates.as_ref().map(|templates| {
+                            templates
+                                .iter()
+                                .filter_map(|tmpl| {
+                                    ctx.render_template(tmpl).ok().filter(|s| !s.is_empty())
+                                })
+                                .collect()
+                        });
+                    // GoReleaser also renders grade through the template engine
+                    let rendered_grade: Option<String> = snap_cfg
+                        .grade
+                        .as_deref()
+                        .map(|g| ctx.render_template(g).unwrap_or_else(|_| g.to_string()));
+                    let effective_channels = resolve_effective_channels(
+                        rendered_channels.as_deref(),
+                        rendered_grade.as_deref(),
+                    );
+                    let upload_args =
+                        snapcraft_upload_command(&snap_path, effective_channels.as_deref());
+
+                    if dry_run {
+                        log.status(&format!("(dry-run) would run: {}", upload_args.join(" "),));
+                        continue;
+                    }
+
+                    attempted_upload = true;
+                    let max_attempts = retry_policy.max_attempts.max(1);
+                    retry_sync(retry_policy, |attempt| {
+                        if attempt > 1 {
+                            log.warn(&format!(
+                                "snapcraft upload attempt {}/{} failed (5xx), retrying…",
+                                attempt - 1,
+                                max_attempts,
+                            ));
+                        }
+                        log.status(&format!("running: {}", upload_args.join(" ")));
+                        let upload_output = match Command::new(&upload_args[0])
+                            .args(&upload_args[1..])
+                            .output()
+                        {
+                            Ok(o) => o,
+                            Err(e) => {
+                                // Spawning snapcraft itself failed (binary missing,
+                                // permission denied) — not a transient Store error.
+                                return Err(ControlFlow::Break(anyhow::Error::from(e).context(
+                                    format!(
+                                        "execute snapcraft upload for crate {} snap {}",
+                                        krate.name, snap_path
+                                    ),
+                                )));
+                            }
+                        };
+
+                        if upload_output.status.success() {
+                            return Ok(());
+                        }
+
+                        // Review-pending responses from the Snap Store should be
+                        // warnings, not fatal errors — the snap was uploaded
+                        // successfully but needs human review.
+                        const REVIEW_PENDING_STRINGS: &[&str] = &[
+                            "Waiting for previous upload",
+                            "A human will soon review your snap",
+                            "(NEEDS REVIEW)",
+                        ];
+                        let stderr = String::from_utf8_lossy(&upload_output.stderr);
+                        let stdout = String::from_utf8_lossy(&upload_output.stdout);
+                        let combined = format!("{}{}", stdout, stderr);
+                        if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
+                            log.warn(&format!("snap upload pending review: {}", combined.trim()));
+                            return Ok(());
+                        }
+
+                        // Materialize the failure as an anyhow::Error via
+                        // `log.check_output`, which preserves stderr/stdout for
+                        // operators reading the log.
+                        let err = match log.check_output(upload_output, "snapcraft upload") {
+                            Ok(_) => return Ok(()),
+                            Err(e) => e,
+                        };
+                        if is_retriable_snap_push(&combined) {
+                            Err(ControlFlow::Continue(err))
+                        } else {
+                            // Auth failures, malformed snap, quota errors, etc.
+                            // fast-fail without burning retry budget.
+                            Err(ControlFlow::Break(err))
+                        }
+                    })?;
+                }
+            }
+        }
+        Ok(())
+    })();
+
+    (attempted_upload, result)
+}
+
+// ---------------------------------------------------------------------------
+// PublisherResult recording
 // ---------------------------------------------------------------------------
 
 /// Build the `PublishEvidence` recorded on a successful snapcraft run.
@@ -303,6 +392,14 @@ fn build_snapcraft_evidence(targets: &[SnapcraftTarget]) -> PublishEvidence {
 /// `--publish` runs where the regular `PublishStage` was skipped).
 /// Snapcraft is a Submitter-group publisher with `required = false`,
 /// matching the trait-based classification before Bundle B2.
+///
+/// Similar role to `stage-blob::run::record_blob_result`; signature is
+/// slightly different — this recorder takes a pre-computed
+/// `(evidence, outcome)` pair, while the blob recorder derives both
+/// from `(uploaded, &exec_result)`. Different shape is fine; the
+/// contract (init `publish_report` if `None`; push one
+/// `PublisherResult` with `name="snapcraft"`,
+/// `group=PublisherGroup::Submitter`, `required=false`) is identical.
 pub(crate) fn record_snapcraft_result(
     ctx: &mut Context,
     evidence: Option<PublishEvidence>,
@@ -324,104 +421,10 @@ pub(crate) fn record_snapcraft_result(
     });
 }
 
-// ---------------------------------------------------------------------------
-// SnapcraftTarget — per-target snapshot recorded in PublishEvidence::extra
-// ---------------------------------------------------------------------------
-
-/// Serialized shape of a recorded snapcraft publish. One entry per
-/// `(crate, snapcraft config)` tuple whose `publish: true` opt-in
-/// matched the [`SnapcraftPublishStage`] iteration order.
-///
-/// `package_name` is the resolved Snap Store package name (defaults to
-/// the crate name when `snapcrafts[].name` is not overridden);
-/// `channel` is the rendered channel template (or `None` when the
-/// publish path falls back to the `grade`-derived default).
-///
-/// The serde shape is wire-stable: it is the value carried in
-/// `PublishEvidence::extra.snapcraft_targets` and consumed by
-/// `--rollback-only --from-run` to surface per-target channel-management
-/// pointers. Byte-shape changes here are breaking for replay consumers.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SnapcraftTarget {
-    /// The crate this publish covered.
-    pub(crate) crate_name: String,
-    /// Snap Store package name — defaults to the crate name when
-    /// `snapcrafts[].name` is not set.
-    pub(crate) package_name: String,
-    /// First rendered channel template, or `None` when the publish
-    /// path falls back to the `grade`-derived default.
-    pub(crate) channel: Option<String>,
-    /// Reserved for future use — snapcraft prints the revision number
-    /// on upload but the existing publish stage does not capture
-    /// stdout, so this stays `None` until we wire that capture.
-    pub(crate) revision: Option<String>,
-}
-
-/// Walk `ctx.config.crates[].snapcrafts[]` and build one
-/// [`SnapcraftTarget`] per opted-in snap config. Mirrors the publish
-/// stage's filters: `selected_crates` gate, `publish: true` opt-in.
-/// Skipped configs (`skip: true`) are excluded here too so the recorded
-/// evidence matches what actually shipped.
-pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
-    let selected = &ctx.options.selected_crates;
-    let mut out: Vec<SnapcraftTarget> = Vec::new();
-    for krate in &ctx.config.crates {
-        if !selected.is_empty() && !selected.contains(&krate.name) {
-            continue;
-        }
-        let Some(snap_configs) = krate.snapcrafts.as_ref() else {
-            continue;
-        };
-        for snap_cfg in snap_configs {
-            if !snap_cfg.publish.unwrap_or(false) {
-                continue;
-            }
-            if let Some(ref d) = snap_cfg.skip {
-                let off = d
-                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                    .unwrap_or(false);
-                if off {
-                    continue;
-                }
-            }
-            let package_name = snap_cfg.name.clone().unwrap_or_else(|| krate.name.clone());
-            // GoReleaser parity: `channel_templates` is a Vec rendered
-            // through the template engine. Capture the first non-empty
-            // rendering — operators reading the warn line only need one
-            // channel pointer to find the listing page.
-            let channel = snap_cfg.channel_templates.as_ref().and_then(|tmpls| {
-                tmpls
-                    .iter()
-                    .filter_map(|t| ctx.render_template(t).ok().filter(|s| !s.is_empty()))
-                    .next()
-            });
-            out.push(SnapcraftTarget {
-                crate_name: krate.name.clone(),
-                package_name,
-                channel,
-                revision: None,
-            });
-        }
-    }
-    out
-}
-
-/// Decode the `snapcraft_targets` array from [`PublishEvidence::extra`].
-///
-/// Returns an empty Vec on any of: missing key, wrong shape, empty
-/// array. Used by `--rollback-only --from-run` consumers and the
-/// wire-stability tests below.
-#[cfg(test)]
-pub(crate) fn decode_snapcraft_targets(extra: &serde_json::Value) -> Vec<SnapcraftTarget> {
-    extra
-        .get("snapcraft_targets")
-        .and_then(|v| serde_json::from_value::<Vec<SnapcraftTarget>>(v.clone()).ok())
-        .unwrap_or_default()
-}
-
 #[cfg(test)]
 mod publish_stage_tests {
     use super::*;
+    use crate::targets::decode_snapcraft_targets;
     use anodizer_core::config::{CrateConfig, SnapcraftConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
 
@@ -441,29 +444,8 @@ mod publish_stage_tests {
     }
 
     // ---------------------------------------------------------------
-    // SnapcraftTarget wire-shape coverage (preserves replay contract)
+    // build_snapcraft_evidence — pin the success-path wire shape
     // ---------------------------------------------------------------
-
-    #[test]
-    fn snapcraft_target_extra_roundtrips() {
-        let original = vec![
-            SnapcraftTarget {
-                crate_name: "demo".into(),
-                package_name: "demo".into(),
-                channel: Some("stable".into()),
-                revision: None,
-            },
-            SnapcraftTarget {
-                crate_name: "widget".into(),
-                package_name: "widget-snap".into(),
-                channel: None,
-                revision: None,
-            },
-        ];
-        let extra = serde_json::json!({ "snapcraft_targets": original.clone() });
-        let decoded = decode_snapcraft_targets(&extra);
-        assert_eq!(decoded, original);
-    }
 
     #[test]
     fn build_snapcraft_evidence_pins_success_wire_shape() {
@@ -507,111 +489,40 @@ mod publish_stage_tests {
         assert_eq!(decode_snapcraft_targets(&evidence.extra), Vec::new());
     }
 
-    #[test]
-    fn snapcraft_target_extra_carries_no_secret_material() {
-        // Defense-in-depth: serialize a target and assert no field
-        // names that could leak SNAPCRAFT_LOGIN / token / auth material
-        // are present.
-        let t = SnapcraftTarget {
-            crate_name: "demo".into(),
-            package_name: "demo".into(),
-            channel: Some("stable".into()),
-            revision: None,
-        };
-        let s = serde_json::to_string(&t).expect("serialize");
-        assert!(!s.contains("\"token\":"), "{s}");
-        assert!(!s.contains("\"login\":"), "{s}");
-        assert!(!s.contains("\"password\":"), "{s}");
-        assert!(!s.contains("\"auth\":"), "{s}");
-        assert!(!s.contains("\"api_key\":"), "{s}");
-        assert!(!s.contains("\"snapcraft_login\":"), "{s}");
-    }
-
-    #[test]
-    fn snapcraft_collect_targets_resolves_package_name_override() {
-        let ctx = TestContextBuilder::new()
-            .crates(vec![snap_crate("demo", Some("demo-snap"), Some("stable"))])
-            .build();
-        let targets = collect_snapcraft_targets(&ctx);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].crate_name, "demo");
-        assert_eq!(targets[0].package_name, "demo-snap");
-        assert_eq!(targets[0].channel.as_deref(), Some("stable"));
-    }
-
-    #[test]
-    fn snapcraft_collect_targets_defaults_to_crate_name() {
-        let ctx = TestContextBuilder::new()
-            .crates(vec![snap_crate("demo", None, None)])
-            .build();
-        let targets = collect_snapcraft_targets(&ctx);
-        assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].package_name, "demo");
-        assert_eq!(targets[0].channel, None);
-    }
-
-    #[test]
-    fn snapcraft_collect_targets_skips_non_publish_configs() {
-        // A snapcrafts entry with `publish: false` (or unset) must NOT
-        // surface as an evidence target — the publish path also skips
-        // it, and recording a target we never pushed would mislead
-        // operators reading any replay consumer.
-        let krate = CrateConfig {
-            name: "demo".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            snapcrafts: Some(vec![SnapcraftConfig {
-                name: Some("demo".to_string()),
-                publish: Some(false),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let ctx = TestContextBuilder::new().crates(vec![krate]).build();
-        let targets = collect_snapcraft_targets(&ctx);
-        assert!(targets.is_empty(), "publish:false should be filtered out");
-    }
-
     // ---------------------------------------------------------------
     // PublisherResult recording behavior
     // ---------------------------------------------------------------
 
     #[test]
-    fn snapshot_mode_records_skipped_snapshot() {
-        // Snapshot skip-gate fires BEFORE any other check — assert the
-        // stage records `Skipped(Snapshot)` so the Submitter gate /
-        // announce-gating / replay consumers all see a uniform entry.
-        let ctx_builder = TestContextBuilder::new()
+    fn snapshot_mode_records_nothing() {
+        // BlobStage parity: snapshot-skip leaves publish_report
+        // untouched. Recording a `Skipped(Snapshot)` entry would
+        // assymmetrically gate `AnnounceGate::AllPublishers` against
+        // snapcraft alone if the announce snapshot-skip-first guard
+        // is ever relaxed.
+        let mut ctx = TestContextBuilder::new()
             .crates(vec![snap_crate("demo", None, Some("stable"))])
-            .snapshot(true);
-        let mut ctx = ctx_builder.build();
+            .snapshot(true)
+            .build();
         let stage = SnapcraftPublishStage;
         stage.run(&mut ctx).expect("snapshot path returns Ok");
 
-        let report = ctx.publish_report().expect("report initialized");
-        let snap_results: Vec<&PublisherResult> = report
-            .results
-            .iter()
-            .filter(|r| r.name == "snapcraft")
-            .collect();
-        assert_eq!(
-            snap_results.len(),
-            1,
-            "exactly one snapcraft entry recorded"
+        let recorded_snap = ctx
+            .publish_report()
+            .map(|r| r.results.iter().any(|r| r.name == "snapcraft"))
+            .unwrap_or(false);
+        assert!(
+            !recorded_snap,
+            "snapshot mode must NOT record a snapcraft PublisherResult"
         );
-        let r = snap_results[0];
-        assert_eq!(r.group, PublisherGroup::Submitter);
-        assert!(!r.required);
-        assert_eq!(r.outcome, PublisherOutcome::Skipped(SkipReason::Snapshot));
-        assert!(r.evidence.is_none(), "snapshot skip records no evidence");
     }
 
     #[test]
     fn submitter_gate_records_skipped_gated() {
         // Pre-seed the publish report with a required Assets failure so
         // the Submitter-gate path fires. Assert the stage records
-        // `Skipped(SubmitterGated)` (mirrors blob's contract — the gate
-        // is observable in the report, not just silent).
+        // `Skipped(SubmitterGated)` (the gate is observable in the
+        // report, not just silent).
         let mut ctx = TestContextBuilder::new()
             .crates(vec![snap_crate("demo", None, Some("stable"))])
             .build();
@@ -710,5 +621,212 @@ mod publish_stage_tests {
             !recorded_snap,
             "dry-run path must NOT record a snapcraft PublisherResult"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // record_snapcraft_result direct seam — Failed(_) entry coverage
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn record_snapcraft_result_initializes_report_if_missing() {
+        // `--publish` subset runs may invoke `SnapcraftPublishStage`
+        // before `PublishStage` has populated `ctx.publish_report`.
+        // The recorder must initialize the report on first push.
+        let mut ctx = TestContextBuilder::new().build();
+        assert!(ctx.publish_report.is_none());
+        record_snapcraft_result(
+            &mut ctx,
+            None,
+            PublisherOutcome::Failed("simulated upload failure".into()),
+        );
+        let report = ctx.publish_report.as_ref().expect("report initialized");
+        assert_eq!(report.results.len(), 1);
+        let r = &report.results[0];
+        assert_eq!(r.name, "snapcraft");
+        assert_eq!(r.group, PublisherGroup::Submitter);
+        assert!(!r.required);
+        assert_eq!(
+            r.outcome,
+            PublisherOutcome::Failed("simulated upload failure".into())
+        );
+        assert!(r.evidence.is_none());
+    }
+
+    #[test]
+    fn record_snapcraft_result_failed_entry_announce_gate_visibility() {
+        // Load-bearing invariant: a failed snap upload lands as a
+        // `Failed(_)` entry, NOT a stage-error bail. This is the
+        // property the announce gate (`AnnounceGate::AllPublishers`)
+        // and `--rollback-only --from-run` consumers depend on —
+        // without this entry, neither downstream surface knows the
+        // snap upload tried and failed.
+        let mut ctx = TestContextBuilder::new().build();
+        // Pre-seed something innocuous so we also verify we APPEND
+        // (don't clobber) any existing results.
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "github-release".to_string(),
+            group: PublisherGroup::Assets,
+            required: false,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: None,
+        });
+        ctx.publish_report = Some(report);
+
+        record_snapcraft_result(
+            &mut ctx,
+            None,
+            PublisherOutcome::Failed("snapcraft: 401 unauthorized".into()),
+        );
+
+        let report = ctx.publish_report.as_ref().expect("report present");
+        assert_eq!(report.results.len(), 2, "appended, did not clobber");
+        let snap = report
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry present");
+        assert_eq!(snap.group, PublisherGroup::Submitter);
+        assert!(!snap.required);
+        match &snap.outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(msg.contains("401"), "preserves the underlying error: {msg}")
+            }
+            other => panic!("expected Failed(_), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn record_snapcraft_result_succeeded_carries_evidence() {
+        // Symmetric coverage: Succeeded path attaches evidence.
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = build_snapcraft_evidence(&[SnapcraftTarget {
+            crate_name: "demo".into(),
+            package_name: "demo".into(),
+            channel: Some("stable".into()),
+            revision: None,
+        }]);
+        record_snapcraft_result(
+            &mut ctx,
+            Some(evidence.clone()),
+            PublisherOutcome::Succeeded,
+        );
+        let report = ctx.publish_report.as_ref().expect("report initialized");
+        let snap = report
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry present");
+        assert_eq!(snap.outcome, PublisherOutcome::Succeeded);
+        assert_eq!(snap.evidence.as_ref(), Some(&evidence));
+    }
+
+    // ---------------------------------------------------------------
+    // Pre-pass: skip-template render uniformity
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn skip_template_error_fast_fails_stage_without_recording() {
+        // Important #3 invariant: a malformed `publish.skip` template
+        // surfaces as a STAGE ERROR (Err(_) from Stage::run), NOT as
+        // a `Failed(_)` PublisherResult — and `publish_report` stays
+        // untouched. Two operationally-identical config bugs must not
+        // produce different pipeline behaviors depending on which
+        // crate iterates first.
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::StringOrBool;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        // `{{ undefined_var }}` references a template variable that
+        // is never set, so Tera errors at render time.
+        let snap_cfg = SnapcraftConfig {
+            name: Some("demo".to_string()),
+            publish: Some(true),
+            skip: Some(StringOrBool::String(
+                "{{ undefined_var_that_will_not_render }}".to_string(),
+            )),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![snap_cfg]),
+            ..Default::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![crate_cfg],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, anodizer_core::context::ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        // Need a snap artifact so the stage reaches the pre-pass
+        // (early-return on empty snap_artifacts would mask the
+        // template error otherwise).
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let stage = SnapcraftPublishStage;
+        let err = stage
+            .run(&mut ctx)
+            .expect_err("template-error must surface as stage error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("render publish.skip template"),
+            "error preserves the rendering context: {msg}"
+        );
+        let recorded_snap = ctx
+            .publish_report()
+            .map(|r| r.results.iter().any(|r| r.name == "snapcraft"))
+            .unwrap_or(false);
+        assert!(
+            !recorded_snap,
+            "publish_report must be untouched on stage-error fast-fail"
+        );
+    }
+
+    #[test]
+    fn run_uploads_no_configured_publishers_returns_not_attempted() {
+        // White-box test of the (attempted, exec_result) seam:
+        // every snap_cfg is `publish: false`, so the loop runs but
+        // never flips `attempted_upload`. exec_result is Ok(()).
+        let krate = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                name: Some("demo".to_string()),
+                publish: Some(false),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .crates(vec![krate.clone()])
+            .build();
+        let log = ctx.logger("snapcraft-publish");
+        let crates = vec![krate];
+        let skip_decisions = vec![false];
+        let retry_policy = ctx.retry_policy();
+        let (attempted, result) = run_uploads(
+            &ctx,
+            &crates,
+            &[],
+            &skip_decisions,
+            &retry_policy,
+            false,
+            &log,
+        );
+        assert!(!attempted, "publish:false → no attempted upload");
+        assert!(result.is_ok(), "no work done → Ok(())");
     }
 }

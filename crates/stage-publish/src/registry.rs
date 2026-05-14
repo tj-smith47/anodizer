@@ -21,26 +21,20 @@ use anodizer_core::{Publisher, PublisherGroup};
 /// is the single source of truth that [`crate::dispatch::dispatch`]
 /// iterates.
 ///
-/// `BlobPublisher` is intentionally NOT registered here — `BlobStage` is
-/// the load-bearing runner for blob uploads and runs as its own pipeline
-/// stage (positioned BEFORE `SnapcraftPublishStage` so the snapcraft
-/// submitter gate sees blob's outcome via `ctx.publish_report`).
-/// `BlobStage::run` appends its `PublisherResult` directly to
-/// `ctx.publish_report`. The `BlobPublisher` trait impl in `stage-blob`
-/// stays for forward-compat (and as a vocabulary entry the dispatch
-/// path can consult once the publisher dispatch path can replace the
-/// dedicated stage entirely).
+/// These publishers run via the trait registry. Blob and Snapcraft do NOT
+/// — they own their own pipeline stages (`BlobStage`,
+/// `SnapcraftPublishStage`) and record their outcomes directly into
+/// `ctx.publish_report`. Registering trait-based wrappers here would fire
+/// the underlying upload (`object_store::put` for blob, `snapcraft upload`
+/// for snapcraft) a second time per release. See
+/// `crates/stage-blob/src/run.rs::record_blob_result` and
+/// `crates/stage-snapcraft/src/publish_stage.rs::record_snapcraft_result`
+/// for the precedent. Audit reference:
+/// `.claude/audits/2026-05-15-release-resilience-review.md` finding C3.
 ///
-/// Snapcraft follows the same pattern as blob and is intentionally NOT
-/// registered here — `SnapcraftPublishStage` is the load-bearing runner
-/// for `snapcraft upload` and runs as its own pipeline stage AFTER
-/// `BlobStage`. `SnapcraftPublishStage::run` appends its own
-/// `PublisherResult` directly to `ctx.publish_report` so the Submitter
-/// gate observes outcomes uniformly. Registering a trait-based
-/// `SnapcraftPublisher` here would fire `snapcraft upload` a second
-/// time per release (the audit-flagged double-publish; see
-/// `.claude/audits/2026-05-15-release-resilience-review.md` finding C3
-/// and the parallel BlobPublisher fix in commit 026c854).
+/// The `BlobPublisher` trait impl in `stage-blob` stays for forward-compat
+/// (and as a vocabulary entry the dispatch path can consult once the
+/// publisher dispatch path can replace the dedicated stage entirely).
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
@@ -657,65 +651,37 @@ mod tests {
     }
 
     #[test]
-    fn snapcraft_publisher_not_registered() {
-        use anodizer_core::config::SnapcraftConfig;
+    fn snapcraft_unconditionally_unregistered_regardless_of_publish_flag() {
         // Pin: SnapcraftPublisher must NOT register from the
-        // stage-publish registry. `SnapcraftPublishStage` is the
-        // load-bearing runner and writes its own entry into
-        // `ctx.publish_report`; registering a trait-based publisher
-        // here would double-publish every snap target (parallel to the
-        // BlobPublisher fix in Task 15 / commit 026c854). See the
-        // doc comment on `configured_publishers` for rationale.
-        let demo = CrateConfig {
-            name: "demo".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            snapcrafts: Some(vec![SnapcraftConfig {
-                name: Some("demo".to_string()),
-                publish: Some(true),
-                channel_templates: Some(vec!["stable".to_string()]),
-                ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
-        let publishers = configured_publishers(&ctx);
-        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
-        assert!(
-            !names.contains(&"snapcraft"),
-            "snapcraft must run via SnapcraftPublishStage, not via the trait-based registry — see registry.rs doc comment (got {:?})",
-            names
-        );
-    }
-
-    #[test]
-    fn snapcraft_publisher_not_registered_when_publish_false() {
+        // stage-publish registry under any `publish:` flag value.
+        // `SnapcraftPublishStage` is the load-bearing runner and writes
+        // its own entry into `ctx.publish_report`; a trait-based
+        // wrapper here would double-publish every snap target (parallel
+        // to the BlobPublisher fix in Task 15 / commit 026c854). The
+        // table form pins ALL three input shapes (unset, false, true)
+        // so a future regression that re-introduces a `publish:
+        // true`-gated registration is caught.
         use anodizer_core::config::SnapcraftConfig;
-        // `publish: false` (the default) is the explicit opt-OUT — the
-        // publisher must NOT register. Now redundant with
-        // `snapcraft_publisher_not_registered` (snapcraft is never
-        // trait-registered post-Bundle-B2), but retained as a
-        // belt-and-suspenders pin against a future regression that
-        // re-introduces trait-based registration without restoring the
-        // `publish: true` gate.
-        let demo = CrateConfig {
-            name: "demo".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            snapcrafts: Some(vec![SnapcraftConfig {
-                name: Some("demo".to_string()),
-                publish: Some(false),
+        for publish_flag in [None, Some(false), Some(true)] {
+            let demo = CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                snapcrafts: Some(vec![SnapcraftConfig {
+                    name: Some("demo".to_string()),
+                    publish: publish_flag,
+                    channel_templates: Some(vec!["stable".to_string()]),
+                    ..Default::default()
+                }]),
                 ..Default::default()
-            }]),
-            ..Default::default()
-        };
-        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
-        let publishers = configured_publishers(&ctx);
-        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
-        assert!(
-            !names.contains(&"snapcraft"),
-            "snapcraft should NOT register when no entry opts in (got {:?})",
-            names
-        );
+            };
+            let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+            let publishers = configured_publishers(&ctx);
+            let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+            assert!(
+                !names.contains(&"snapcraft"),
+                "snapcraft must NOT register for publish={publish_flag:?}; got {names:?}"
+            );
+        }
     }
 }

@@ -14,6 +14,7 @@ mod build_stage;
 mod command;
 mod generate;
 mod publish_stage;
+mod targets;
 mod yaml;
 
 #[cfg(test)]
