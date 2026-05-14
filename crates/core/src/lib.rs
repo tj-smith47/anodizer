@@ -5,6 +5,8 @@ pub mod content_source;
 pub mod context;
 pub mod defaults_merge;
 pub mod determinism;
+pub mod determinism_report;
+pub mod determinism_runner;
 pub mod docker_detect;
 pub mod env;
 pub mod env_expand;
@@ -38,6 +40,9 @@ pub mod user_command;
 pub mod util;
 
 pub use determinism::DeterminismState;
+pub use determinism_report::{
+    AllowList, AllowListEntry, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow,
+};
 pub use publish_evidence::PublishEvidence;
 pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,

@@ -5,6 +5,7 @@ use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
 
 mod commands;
+mod determinism_harness;
 mod pipeline;
 pub mod timeout;
 

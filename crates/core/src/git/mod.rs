@@ -19,7 +19,8 @@ pub use commits::{
     get_commit_messages_between, get_commit_messages_between_path, get_commits_between,
     get_commits_between_paths, get_current_branch, get_head_commit, get_last_commit_messages,
     get_last_commit_messages_path, get_short_commit, has_changes_since, has_commits_since_tag,
-    log_subjects_for_range, paths_changed_since_tag, stage_and_commit,
+    head_commit_hash_in, head_commit_timestamp_in, log_subjects_for_range, paths_changed_since_tag,
+    stage_and_commit,
 };
 pub use detect::{GitInfo, detect_git_info};
 pub use github_api::{create_tag_via_github_api, gh_api_get, gh_api_get_paginated};
