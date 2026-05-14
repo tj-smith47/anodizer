@@ -702,6 +702,200 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// collect_artifactory_targets — evidence helper
+// ---------------------------------------------------------------------------
+
+/// Re-walk the configured artifactory entries to produce the list of fully
+/// rendered upload URLs that [`publish_to_artifactory`] would PUT to. Used by
+/// the [`Publisher`] wrapper to populate
+/// [`anodizer_core::PublishEvidence::artifact_paths`] so a subsequent
+/// rollback can DELETE each URL.
+///
+/// Returns URLs only — the rollback DELETE re-resolves credentials from env
+/// at rollback time (same env-var contract `publish_to_artifactory` uses).
+/// Best-effort: entries that hit a render or filter error are silently
+/// skipped, since failures here only narrow the rollback checklist (the
+/// publish path's own error handling has already surfaced any blocker).
+fn collect_artifactory_targets(ctx: &Context) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let entries = match ctx.config.artifactories.as_ref() {
+        Some(v) if !v.is_empty() => v,
+        _ => return out,
+    };
+    for entry in entries {
+        // Skip evaluation must match publish_to_artifactory's behaviour so
+        // a skipped entry doesn't leak phantom rollback targets.
+        if let Some(ref s) = entry.skip
+            && s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        let target_template = match entry.target.as_deref() {
+            Some(t) if !t.is_empty() => t,
+            _ => continue,
+        };
+        let mode = entry.mode.as_deref().unwrap_or("archive");
+        let include_checksum = entry.checksum.unwrap_or(false);
+        let include_signature = entry.signature.unwrap_or(false);
+        let include_meta = entry.meta.unwrap_or(false);
+        let custom_artifact_name = entry.custom_artifact_name.unwrap_or(false);
+        let extra_files_only = entry.extra_files_only.unwrap_or(false);
+        let artifacts = collect_upload_artifacts(
+            ctx,
+            mode,
+            entry.ids.as_deref(),
+            entry.exts.as_deref(),
+            CollectFlags {
+                checksum: include_checksum,
+                signature: include_signature,
+                meta: include_meta,
+                extra_files_only,
+            },
+        );
+        for a in &artifacts {
+            if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name) {
+                out.push(url);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// ArtifactoryPublisher (Publisher trait wrapper)
+// ---------------------------------------------------------------------------
+
+/// Wraps [`publish_to_artifactory`] in the [`anodizer_core::Publisher`] trait
+/// so the new dispatch path (see [`crate::registry::configured_publishers`])
+/// can drive Artifactory uploads alongside every other publisher.
+///
+/// Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable bytes,
+/// server-side deletable). `required = false`.
+///
+/// Rollback shape: per uploaded URL, issue an HTTP DELETE with the same
+/// credential cascade `publish_to_artifactory` uses
+/// (`ARTIFACTORY_TOKEN` / per-entry env). Each DELETE is independent; a
+/// failure logs a warn line and the loop continues. The rollback function
+/// returns Ok regardless of per-target failures — the operator's review
+/// log carries the diagnosis.
+pub struct ArtifactoryPublisher;
+
+impl ArtifactoryPublisher {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ArtifactoryPublisher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl anodizer_core::Publisher for ArtifactoryPublisher {
+    fn name(&self) -> &str {
+        "artifactory"
+    }
+
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        anodizer_core::PublisherGroup::Assets
+    }
+
+    fn required(&self) -> bool {
+        false
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        publish_to_artifactory(ctx, &log)?;
+        let mut evidence = anodizer_core::PublishEvidence::new("artifactory");
+        let targets = collect_artifactory_targets(ctx);
+        if let Some(first) = targets.first() {
+            evidence.primary_ref = Some(first.clone());
+        }
+        evidence.artifact_paths = targets.into_iter().map(std::path::PathBuf::from).collect();
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
+            log.warn(
+                "artifactory: no upload URLs recorded in evidence; verify Artifactory manually",
+            );
+            return Ok(());
+        }
+        // ARTIFACTORY_TOKEN is the default bearer; per-entry overrides via
+        // `ARTIFACTORY_<NAME>_SECRET` are honoured by the publish path but
+        // not threaded into evidence — at rollback time the operator may
+        // need to set the matching env. We fall back through the env-var
+        // ladder and warn if none match.
+        let token_env = std::env::var("ARTIFACTORY_TOKEN")
+            .or_else(|_| std::env::var("ARTIFACTORY_SECRET"))
+            .ok();
+        let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))
+        {
+            Ok(c) => c,
+            Err(e) => {
+                log.warn(&format!(
+                    "artifactory: failed to build HTTP client for rollback: {}; manual cleanup required",
+                    e
+                ));
+                return Ok(());
+            }
+        };
+        let mut deleted = 0usize;
+        let mut failed = 0usize;
+        for path in &evidence.artifact_paths {
+            let url = path.display().to_string();
+            log.status(&format!("artifactory: DELETE {}", url));
+            let mut req = client.delete(&url);
+            if let Some(ref tok) = token_env {
+                req = req.bearer_auth(tok);
+            }
+            match req.send() {
+                Ok(resp) if resp.status().is_success() => {
+                    deleted += 1;
+                }
+                Ok(resp) => {
+                    failed += 1;
+                    log.warn(&format!(
+                        "artifactory: DELETE {} returned HTTP {} (manual cleanup may be required)",
+                        url,
+                        resp.status()
+                    ));
+                }
+                Err(e) => {
+                    failed += 1;
+                    log.warn(&format!(
+                        "artifactory: DELETE {} transport error: {} (manual cleanup may be required)",
+                        url, e
+                    ));
+                }
+            }
+        }
+        log.status(&format!(
+            "artifactory: deleted {} artifact(s), {} failure(s)",
+            deleted, failed
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Some("ARTIFACTORY_TOKEN delete")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1288,5 +1482,40 @@ mod tests {
             out.contains("status=401"),
             "status should survive redaction: {out}"
         );
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    #[test]
+    fn artifactory_publisher_classification() {
+        let p = ArtifactoryPublisher::new();
+        assert_eq!(p.name(), "artifactory");
+        assert_eq!(p.group(), PublisherGroup::Assets);
+        assert!(!p.required());
+        assert_eq!(p.rollback_scope_needed(), Some("ARTIFACTORY_TOKEN delete"));
+    }
+
+    #[test]
+    fn artifactory_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = ArtifactoryPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn artifactory_rollback_warns_when_no_targets_recorded() {
+        // Empty evidence — rollback emits a single warn and returns Ok.
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("artifactory");
+        let p = ArtifactoryPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
     }
 }

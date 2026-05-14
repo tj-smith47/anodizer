@@ -307,6 +307,123 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// DockerhubPublisher (Publisher trait wrapper)
+// ---------------------------------------------------------------------------
+
+/// Wraps [`publish_to_dockerhub`] in the [`anodizer_core::Publisher`] trait so
+/// the new dispatch path (see [`crate::registry::configured_publishers`]) can
+/// drive Docker Hub description sync alongside every other publisher.
+///
+/// Group: [`anodizer_core::PublisherGroup::Assets`] (description sync is a
+/// non-load-bearing publisher; not required for the release to succeed).
+///
+/// Rollback shape: DockerHub publishes a PATCH against the repo's
+/// description and `full_description` fields. The PATCH overwrites the
+/// previous value; we do not snapshot the prior state, so the rollback is
+/// **deferred-with-warn**: each affected image is logged so an operator
+/// running `--rollback-only` has a checklist of repos to inspect and revert
+/// manually.
+pub struct DockerhubPublisher;
+
+impl DockerhubPublisher {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DockerhubPublisher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl anodizer_core::Publisher for DockerhubPublisher {
+    fn name(&self) -> &str {
+        "dockerhub"
+    }
+
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        anodizer_core::PublisherGroup::Assets
+    }
+
+    fn required(&self) -> bool {
+        false
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        publish_to_dockerhub(ctx, &log)?;
+        let mut evidence = anodizer_core::PublishEvidence::new("dockerhub");
+        // Record every configured image namespace/repo so rollback has a
+        // manual-cleanup checklist. The PATCH endpoint URL is the canonical
+        // reference; we synthesise one per image rather than relying on a
+        // single primary_ref because dockerhub entries fan out across
+        // multiple repos in one run.
+        let mut targets: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(entries) = ctx.config.dockerhub.as_ref() {
+            for entry in entries {
+                if let Some(images) = entry.images.as_deref() {
+                    for image in images {
+                        let parts: Vec<&str> = image.splitn(2, '/').collect();
+                        let (namespace, name) = if parts.len() == 2 {
+                            (parts[0], parts[1])
+                        } else {
+                            ("library", parts[0])
+                        };
+                        targets.push(std::path::PathBuf::from(format!(
+                            "https://hub.docker.com/v2/repositories/{}/{}/",
+                            namespace, name
+                        )));
+                    }
+                }
+            }
+        }
+        if let Some(first) = targets.first() {
+            evidence.primary_ref = Some(first.display().to_string());
+        }
+        evidence.artifact_paths = targets;
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
+            log.warn("dockerhub: no description-sync targets recorded; verify Docker Hub manually");
+            return Ok(());
+        }
+        // Deferred: Docker Hub PATCH overwrites the prior description and we
+        // never snapshot it, so the descriptions cannot be auto-restored.
+        // Emit one warn per image so an operator has a checklist. The
+        // rollback function itself stays Ok(()) — best-effort by design.
+        for url in &evidence.artifact_paths {
+            log.warn(&format!(
+                "dockerhub: cannot auto-revert description for {} — prior content was not snapshotted; review/restore manually in the Docker Hub UI",
+                url.display()
+            ));
+        }
+        log.status(&format!(
+            "dockerhub: rollback emitted manual-cleanup checklist for {} repo(s)",
+            evidence.artifact_paths.len()
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        // Snapshot-then-restore is what an actual rollback would need; the
+        // current implementation only emits a manual-cleanup checklist.
+        Some("DOCKER_TOKEN description snapshot+restore")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -659,5 +776,45 @@ mod tests {
             chain.contains("<redacted>"),
             "expected `<redacted>` marker in error chain: {chain}"
         );
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    #[test]
+    fn dockerhub_publisher_classification() {
+        let p = DockerhubPublisher::new();
+        assert_eq!(p.name(), "dockerhub");
+        assert_eq!(p.group(), PublisherGroup::Assets);
+        assert!(!p.required());
+        assert_eq!(
+            p.rollback_scope_needed(),
+            Some("DOCKER_TOKEN description snapshot+restore")
+        );
+    }
+
+    #[test]
+    fn dockerhub_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = DockerhubPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn dockerhub_rollback_warns_when_no_targets_recorded() {
+        // Empty evidence — rollback emits a single warn and returns Ok.
+        // Capturing the warn requires a logger sink we don't have here;
+        // the contract under test is: Ok(()) with no side-effect crash.
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("dockerhub");
+        let p = DockerhubPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
     }
 }

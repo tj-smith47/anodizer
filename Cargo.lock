@@ -323,6 +323,7 @@ name = "anodizer-stage-publish"
 version = "0.1.0"
 dependencies = [
  "anodizer-core",
+ "anodizer-stage-blob",
  "anyhow",
  "base64",
  "glob",

@@ -6,6 +6,7 @@
 
 mod kms;
 mod provider;
+pub mod publisher;
 mod run;
 mod store;
 mod upload;
@@ -14,4 +15,5 @@ mod upload;
 mod tests;
 
 pub use provider::Provider;
+pub use publisher::BlobPublisher;
 pub use run::BlobStage;

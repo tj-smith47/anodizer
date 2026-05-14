@@ -622,6 +622,162 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// CloudsmithPublisher (Publisher trait wrapper)
+// ---------------------------------------------------------------------------
+
+/// Wraps [`publish_to_cloudsmith`] in the [`anodizer_core::Publisher`] trait
+/// so the new dispatch path (see [`crate::registry::configured_publishers`])
+/// can drive Cloudsmith uploads alongside every other publisher.
+///
+/// Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable packages,
+/// server-side deletable). `required = false`.
+///
+/// Rollback shape (**deferred-with-warn**): a clean delete would target
+/// `DELETE /v1/packages/<owner>/<repo>/<slug>/` keyed on the per-package
+/// slug returned by the step-3 `packages/upload/<format>/` response. The
+/// current [`publish_to_cloudsmith`] implementation logs the slug but does
+/// not surface it in a structured form for `evidence.artifact_paths`. Until
+/// a follow-up threads the slug list through, rollback emits one warn line
+/// per recorded artifact reference so an operator running `--rollback-only`
+/// sees a complete cleanup checklist. Migrating to actual DELETE only
+/// requires capturing the slug in [`PublishEvidence::artifact_paths`]; the
+/// rollback request itself is a single-line `client.delete(...)` against
+/// `CLOUDSMITH_API_BASE`.
+pub struct CloudsmithPublisher;
+
+impl CloudsmithPublisher {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CloudsmithPublisher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl anodizer_core::Publisher for CloudsmithPublisher {
+    fn name(&self) -> &str {
+        "cloudsmith"
+    }
+
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        anodizer_core::PublisherGroup::Assets
+    }
+
+    fn required(&self) -> bool {
+        false
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        publish_to_cloudsmith(ctx, &log)?;
+        let mut evidence = anodizer_core::PublishEvidence::new("cloudsmith");
+        // Best-effort: record one "<org>/<repo>/<filename>" line per artifact
+        // that publish_to_cloudsmith would have considered. The format is
+        // operator-readable; rollback can't issue a DELETE from this alone
+        // because Cloudsmith's DELETE endpoint requires the per-package
+        // slug, which isn't currently surfaced. The list still serves as
+        // a manual-cleanup checklist for `--rollback-only`.
+        let mut targets: Vec<std::path::PathBuf> = Vec::new();
+        if let Some(entries) = ctx.config.cloudsmiths.as_ref() {
+            for entry in entries {
+                if let Some(ref s) = entry.skip
+                    && s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                        .unwrap_or(false)
+                {
+                    continue;
+                }
+                let org = match entry.organization.as_deref() {
+                    Some(o) if !o.is_empty() => o,
+                    _ => continue,
+                };
+                let repo = match entry.repository.as_deref() {
+                    Some(r) if !r.is_empty() => r,
+                    _ => continue,
+                };
+                let org_rendered = ctx.render_template(org).unwrap_or_else(|_| org.to_string());
+                let repo_rendered = ctx
+                    .render_template(repo)
+                    .unwrap_or_else(|_| repo.to_string());
+                let formats: Vec<String> = match entry.formats {
+                    Some(ref f) if !f.is_empty() => f.clone(),
+                    _ => cloudsmith_default_formats()
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                };
+                for a in ctx.artifacts.all() {
+                    let valid =
+                        matches!(a.kind, ArtifactKind::LinuxPackage | ArtifactKind::Archive);
+                    if !valid {
+                        continue;
+                    }
+                    if !cloudsmith_format_matches(a.name(), &formats) {
+                        continue;
+                    }
+                    if !crate::util::matches_id_filter(a, entry.ids.as_deref()) {
+                        continue;
+                    }
+                    targets.push(std::path::PathBuf::from(format!(
+                        "{}/packages/{}/{}/?filename={}",
+                        CLOUDSMITH_API_BASE,
+                        org_rendered,
+                        repo_rendered,
+                        a.name()
+                    )));
+                }
+            }
+        }
+        if let Some(first) = targets.first() {
+            evidence.primary_ref = Some(first.display().to_string());
+        }
+        evidence.artifact_paths = targets;
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
+            log.warn(
+                "cloudsmith: no upload targets recorded in evidence; verify Cloudsmith manually",
+            );
+            return Ok(());
+        }
+        // Deferred: the actual DELETE endpoint needs the per-package slug
+        // returned by step 3 of publish_to_cloudsmith, which isn't yet
+        // surfaced in PublishEvidence. Emit a manual-cleanup checklist so
+        // an operator running `--rollback-only` has the list of (org,
+        // repo, filename) tuples that need attention in the Cloudsmith
+        // dashboard.
+        for path in &evidence.artifact_paths {
+            log.warn(&format!(
+                "cloudsmith: cannot auto-delete {} — per-package slug not yet captured in evidence; delete manually via the Cloudsmith dashboard",
+                path.display()
+            ));
+        }
+        log.status(&format!(
+            "cloudsmith: rollback emitted manual-cleanup checklist for {} package(s)",
+            evidence.artifact_paths.len()
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Some("CLOUDSMITH_API_KEY package_delete")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1160,5 +1316,43 @@ mod tests {
         let result =
             classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
         assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    #[test]
+    fn cloudsmith_publisher_classification() {
+        let p = CloudsmithPublisher::new();
+        assert_eq!(p.name(), "cloudsmith");
+        assert_eq!(p.group(), PublisherGroup::Assets);
+        assert!(!p.required());
+        assert_eq!(
+            p.rollback_scope_needed(),
+            Some("CLOUDSMITH_API_KEY package_delete")
+        );
+    }
+
+    #[test]
+    fn cloudsmith_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = CloudsmithPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn cloudsmith_rollback_warns_when_no_targets_recorded() {
+        // Empty evidence — rollback emits a single warn and returns Ok.
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("cloudsmith");
+        let p = CloudsmithPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
     }
 }

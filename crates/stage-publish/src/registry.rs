@@ -15,14 +15,32 @@ use anodizer_core::{Publisher, PublisherGroup};
 
 /// Returns the publishers configured for this release run.
 ///
-/// Walks `ctx.config.crates[*].publish` and instantiates a
-/// `Box<dyn Publisher>` for each configured publisher. The returned slice
-/// is the single source of truth that [`crate::dispatch::dispatch`]
-/// iterates.
+/// Walks `ctx.config.crates[*].publish` and the top-level publisher blocks
+/// (`dockerhub`, `artifactories`, `cloudsmiths`, `crates[*].blobs`) and
+/// instantiates a `Box<dyn Publisher>` for each configured publisher. The
+/// returned slice is the single source of truth that
+/// [`crate::dispatch::dispatch`] iterates.
+///
+/// `BlobPublisher` is sourced from the `stage-blob` crate (added as a
+/// direct dep — `stage-blob` does not depend on `stage-publish`, so no
+/// circular dep is introduced).
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
         v.push(Box::new(crate::cargo::CargoPublisher::new()));
+    }
+    // Bundle A (Assets group): dockerhub, artifactory, cloudsmith, blob.
+    if is_dockerhub_configured(ctx) {
+        v.push(Box::new(crate::dockerhub::DockerhubPublisher::new()));
+    }
+    if is_artifactory_configured(ctx) {
+        v.push(Box::new(crate::artifactory::ArtifactoryPublisher::new()));
+    }
+    if is_cloudsmith_configured(ctx) {
+        v.push(Box::new(crate::cloudsmith::CloudsmithPublisher::new()));
+    }
+    if anodizer_stage_blob::publisher::is_configured(ctx) {
+        v.push(Box::new(anodizer_stage_blob::BlobPublisher::new()));
     }
     v
 }
@@ -36,6 +54,29 @@ fn is_cargo_configured(ctx: &Context) -> bool {
         .crates
         .iter()
         .any(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some())
+}
+
+/// True when the top-level `dockerhub:` block has at least one entry.
+/// `publish_to_dockerhub` short-circuits on an empty vec, so an empty-list
+/// keep also returns false here.
+fn is_dockerhub_configured(ctx: &Context) -> bool {
+    ctx.config.dockerhub.as_ref().is_some_and(|v| !v.is_empty())
+}
+
+/// True when the top-level `artifactories:` block has at least one entry.
+fn is_artifactory_configured(ctx: &Context) -> bool {
+    ctx.config
+        .artifactories
+        .as_ref()
+        .is_some_and(|v| !v.is_empty())
+}
+
+/// True when the top-level `cloudsmiths:` block has at least one entry.
+fn is_cloudsmith_configured(ctx: &Context) -> bool {
+    ctx.config
+        .cloudsmiths
+        .as_ref()
+        .is_some_and(|v| !v.is_empty())
 }
 
 /// Group dispatch order: Assets first (uploadable bytes, server-side
@@ -99,5 +140,59 @@ mod tests {
                 PublisherGroup::Submitter,
             ]
         );
+    }
+
+    #[test]
+    fn bundle_a_publishers_registered_when_configured() {
+        use anodizer_core::config::{
+            ArtifactoryConfig, BlobConfig, CloudSmithConfig, DockerHubConfig,
+        };
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            blobs: Some(vec![BlobConfig {
+                provider: "s3".to_string(),
+                bucket: "my-bucket".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        // Top-level publisher blocks live on Config directly.
+        ctx.config.dockerhub = Some(vec![DockerHubConfig {
+            username: Some("u".to_string()),
+            images: Some(vec!["acme/widget".to_string()]),
+            ..Default::default()
+        }]);
+        ctx.config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some("https://art.example.com/repo/".to_string()),
+            ..Default::default()
+        }]);
+        ctx.config.cloudsmiths = Some(vec![CloudSmithConfig {
+            organization: Some("acme".to_string()),
+            repository: Some("widget".to_string()),
+            ..Default::default()
+        }]);
+
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        // Every Bundle A publisher must appear; order is whatever
+        // configured_publishers emits (Assets-group registration order).
+        for expected in ["dockerhub", "artifactory", "cloudsmith", "blob"] {
+            assert!(
+                names.contains(&expected),
+                "{} missing from registered publishers (got {:?})",
+                expected,
+                names
+            );
+            let p = publishers
+                .iter()
+                .find(|p| p.name() == expected)
+                .expect("publisher present");
+            assert_eq!(p.group(), PublisherGroup::Assets, "{}", expected);
+            assert!(!p.required(), "{} should not be required", expected);
+        }
     }
 }
