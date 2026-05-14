@@ -22,6 +22,44 @@ use crate::config::{StringOrBool, deserialize_string_or_bool_opt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+// ---------------------------------------------------------------------------
+// gpg --faked-system-time capability probe (release-resilience Task 25)
+// ---------------------------------------------------------------------------
+
+/// Probe whether the local `gpg` binary supports `--faked-system-time`.
+///
+/// `--faked-system-time <epoch>!` is the documented way to make gpg emit
+/// a signature with a deterministic timestamp. Older gpg builds (and
+/// some macOS packagers) do not support it. We probe by invoking
+/// `gpg --faked-system-time 0! --version`; exit 0 means supported,
+/// anything else (including gpg-not-on-PATH) means unsupported.
+///
+/// The preflight stage calls this once at pipeline start. When it
+/// returns `false` AND the config has gpg signing configured, the
+/// preflight stage adds a compile-time allow-list entry for
+/// `gpg-signature.asc` so the determinism harness excludes gpg
+/// signatures from drift detection, and emits a warning.
+pub fn gpg_supports_faked_system_time() -> bool {
+    gpg_supports_faked_system_time_with(|args| {
+        std::process::Command::new("gpg").args(args).output()
+    })
+}
+
+/// Probe with an injected command runner. Production code calls the
+/// public `gpg_supports_faked_system_time()` wrapper; tests pass a
+/// closure that returns a canned `std::process::Output` (or an io
+/// error). Exposed (not `cfg(test)`) so dependent crates' tests can
+/// reuse the seam without compiling stage-sign in test config.
+pub fn gpg_supports_faked_system_time_with<F>(probe: F) -> bool
+where
+    F: FnOnce(&[&str]) -> std::io::Result<std::process::Output>,
+{
+    match probe(&["--faked-system-time", "0!", "--version"]) {
+        Ok(out) => out.status.success(),
+        Err(_) => false, // gpg not on PATH or transient io error
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SignConfig {
@@ -138,6 +176,35 @@ impl SignConfig {
                 .map(|s| (*s).to_string())
                 .collect()
         })
+    }
+
+    /// `true` when this sign config will invoke gpg.
+    ///
+    /// The top-level `signs:` driver defaults to gpg when `cmd:` is unset
+    /// (see `stage-sign::helpers::default_sign_cmd` which falls back to
+    /// `git config gpg.program` then to literal `"gpg"`). We treat any
+    /// cmd whose basename starts with `gpg` (e.g., `gpg`, `gpg2`,
+    /// `/usr/local/bin/gpg`) as a gpg invocation. A cmd of `"cosign"`,
+    /// `"notation"`, etc. returns false.
+    ///
+    /// Entries with `artifacts: "none"` (the default for top-level
+    /// `signs:`) are treated as not-configured — the loop never fires.
+    pub fn is_gpg(&self) -> bool {
+        // Effectively-disabled entries don't count as configured.
+        let artifacts = self.resolved_artifacts(Self::DEFAULT_ARTIFACTS);
+        if artifacts == "none" {
+            return false;
+        }
+        match self.cmd.as_deref() {
+            None => true, // default cmd is gpg
+            Some(cmd) => {
+                let basename = std::path::Path::new(cmd)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(cmd);
+                basename.starts_with("gpg")
+            }
+        }
     }
 }
 
@@ -394,5 +461,101 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.resolved_args(), custom);
+    }
+
+    // ---- gpg --faked-system-time capability probe (Task 25) ----------
+
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    fn mk_output(success: bool) -> Output {
+        let status = if success {
+            ExitStatus::from_raw(0)
+        } else {
+            // non-zero exit
+            ExitStatus::from_raw(1 << 8)
+        };
+        Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn gpg_faked_time_supported_returns_true_when_probe_succeeds() {
+        let supported = gpg_supports_faked_system_time_with(|args| {
+            assert_eq!(args, &["--faked-system-time", "0!", "--version"]);
+            Ok(mk_output(true))
+        });
+        assert!(supported);
+    }
+
+    #[test]
+    fn gpg_faked_time_unsupported_returns_false_when_probe_fails() {
+        let supported = gpg_supports_faked_system_time_with(|_| Ok(mk_output(false)));
+        assert!(!supported);
+    }
+
+    #[test]
+    fn gpg_faked_time_returns_false_when_probe_errors() {
+        let supported = gpg_supports_faked_system_time_with(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "gpg not on PATH",
+            ))
+        });
+        assert!(!supported);
+    }
+
+    // ---- SignConfig::is_gpg() ---------------------------------------
+
+    #[test]
+    fn is_gpg_default_cmd_with_signing_artifacts_is_true() {
+        // No cmd set + artifacts set to something other than "none" =
+        // default gpg invocation, treated as gpg-configured.
+        let cfg = SignConfig {
+            artifacts: Some("all".to_string()),
+            ..Default::default()
+        };
+        assert!(cfg.is_gpg());
+    }
+
+    #[test]
+    fn is_gpg_default_artifacts_none_is_false() {
+        // Default artifacts filter is "none" — entry is effectively
+        // disabled, so it does not count as gpg-configured.
+        let cfg = SignConfig::default();
+        assert!(!cfg.is_gpg());
+    }
+
+    #[test]
+    fn is_gpg_cosign_cmd_is_false() {
+        let cfg = SignConfig {
+            artifacts: Some("all".to_string()),
+            cmd: Some("cosign".to_string()),
+            ..Default::default()
+        };
+        assert!(!cfg.is_gpg());
+    }
+
+    #[test]
+    fn is_gpg_gpg2_cmd_is_true() {
+        let cfg = SignConfig {
+            artifacts: Some("checksum".to_string()),
+            cmd: Some("gpg2".to_string()),
+            ..Default::default()
+        };
+        assert!(cfg.is_gpg());
+    }
+
+    #[test]
+    fn is_gpg_absolute_gpg_path_is_true() {
+        let cfg = SignConfig {
+            artifacts: Some("binary".to_string()),
+            cmd: Some("/usr/local/bin/gpg".to_string()),
+            ..Default::default()
+        };
+        assert!(cfg.is_gpg());
     }
 }

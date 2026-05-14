@@ -663,7 +663,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         ctx.should_skip("publish"),
     );
     if opts.preflight || should_run_preflight {
-        let report = anodizer_stage_publish::preflight::run_preflight(&ctx, &log)?;
+        let report = anodizer_stage_publish::preflight::run_preflight(&mut ctx, &log)?;
         if report.entries.is_empty() {
             log.verbose("preflight: no one-way-door publishers configured; skipping check");
         } else {

@@ -346,6 +346,30 @@ impl Config {
     pub fn meta_first_maintainer(&self) -> Option<&str> {
         self.meta_maintainers().first().map(|s| s.as_str())
     }
+
+    /// `true` when any top-level / workspace `signs:` or `binary_signs:`
+    /// entry will invoke gpg (via `SignConfig::is_gpg()`).
+    ///
+    /// Used by preflight (release-resilience Task 25) to decide whether
+    /// to probe `gpg --faked-system-time` support. `docker_signs:` is
+    /// excluded because that driver only ever invokes cosign.
+    pub fn has_gpg_sign_configured(&self) -> bool {
+        let top_level = self
+            .signs
+            .iter()
+            .chain(self.binary_signs.iter())
+            .any(|s| s.is_gpg());
+        if top_level {
+            return true;
+        }
+        // Workspaces inherit their own signs:/binary_signs: lists.
+        self.workspaces.iter().flatten().any(|w| {
+            w.signs
+                .iter()
+                .chain(w.binary_signs.iter())
+                .any(|s| s.is_gpg())
+        })
+    }
 }
 
 /// Run a deserialization closure on a worker thread sized large enough that
