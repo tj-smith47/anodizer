@@ -27,6 +27,7 @@ mod commit;
 mod config;
 mod disambiguate;
 mod formats;
+mod git_revert;
 mod pr;
 mod template;
 
@@ -59,5 +60,6 @@ pub(crate) use disambiguate::{
     InnerConfig as DisambiguateInnerConfig, disambiguate_by_format_with_sink,
 };
 pub(crate) use formats::{default_package_formats, format_matches};
+pub(crate) use git_revert::{RevertTarget, run_git_revert_and_push};
 pub(crate) use pr::{PrOrigin, maybe_submit_pr, submit_pr_via_gh};
 pub(crate) use template::{render_or_warn, render_url_template, render_url_template_with_ctx};

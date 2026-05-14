@@ -672,6 +672,275 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 }
 
 // ---------------------------------------------------------------------------
+// AurOurPublisher — Publisher trait wrapper (Bundle B)
+// ---------------------------------------------------------------------------
+
+/// Bundle B `Publisher` for the AUR repo we own (the per-crate
+/// `publish.aur:` entry that pushes a binary PKGBUILD to a dedicated
+/// AUR package we control via SSH).
+///
+/// Named `AurOurPublisher` to disambiguate from the upstream-AUR
+/// force-push publisher coming in a follow-up task — that one is
+/// Submitter group, has no rollback path (irreversible force-push),
+/// and writes to packages we do NOT own.
+///
+/// Rollback shape mirrors the other Bundle B publishers: re-clone via
+/// the configured SSH key + command, run `git revert HEAD --no-edit`,
+/// push to `master` (AUR's only branch).
+use crate::util::{RevertTarget, run_git_revert_and_push};
+use serde::{Deserialize, Serialize};
+
+simple_publisher!(
+    AurOurPublisher,
+    "aur",
+    anodizer_core::PublisherGroup::Manager,
+    false,
+    Some("AUR_SSH_KEY write"),
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AurOurTarget {
+    target: String,
+    /// AUR SSH URL — typically
+    /// `ssh://aur@aur.archlinux.org/<package>.git`.
+    git_url: String,
+    /// Inline SSH private-key contents. Captured at run-time from the
+    /// active `aur.private_key:` config; never re-resolved at
+    /// rollback time because the original config may have rotated.
+    /// We accept the trade-off (key in evidence-extra blob) because
+    /// rollback re-clone needs the SAME credential the publish path
+    /// used, and AUR doesn't have an env-var fallback to query.
+    ///
+    /// SECURITY NOTE: evidence blobs are written to
+    /// `target/anodize/post-publish/...` which inherits the process'
+    /// umask. Treat the evidence file as secret-sensitive when AUR
+    /// is configured with an inline private key.
+    private_key: Option<String>,
+    /// Custom `GIT_SSH_COMMAND` override (alternative to
+    /// `private_key` — same precedence the publish path uses).
+    git_ssh_command: Option<String>,
+}
+
+fn decode_aur_our_targets(extra: &serde_json::Value) -> Vec<AurOurTarget> {
+    extra
+        .get("aur_our_targets")
+        .and_then(|v| serde_json::from_value::<Vec<AurOurTarget>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn collect_aur_our_run_targets(ctx: &Context) -> Vec<AurOurTarget> {
+    let mut out: Vec<AurOurTarget> = Vec::new();
+    let selected = &ctx.options.selected_crates;
+    for c in &ctx.config.crates {
+        if !selected.is_empty() && !selected.contains(&c.name) {
+            continue;
+        }
+        let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
+            continue;
+        };
+        let Some(git_url) = ac.git_url.as_ref() else {
+            continue;
+        };
+        // Use the package name (or the AUR-default of `<crate>-bin`)
+        // as the human label so log lines say what was rolled back.
+        let raw_pkg = aur_default_package_name(ac, &c.name);
+        let label = ctx.render_template(&raw_pkg).unwrap_or(raw_pkg);
+        out.push(AurOurTarget {
+            target: label,
+            git_url: git_url.clone(),
+            private_key: ac.private_key.clone(),
+            git_ssh_command: ac.git_ssh_command.clone(),
+        });
+    }
+    out
+}
+
+fn is_aur_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.aur.is_some()))
+}
+
+impl anodizer_core::Publisher for AurOurPublisher {
+    fn name(&self) -> &str {
+        Self::PUBLISHER_NAME
+    }
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        Self::PUBLISHER_GROUP
+    }
+    fn required(&self) -> bool {
+        Self::PUBLISHER_REQUIRED
+    }
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Self::ROLLBACK_SCOPE
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        let targets = collect_aur_our_run_targets(ctx);
+        let selected = ctx.options.selected_crates.clone();
+        for crate_name in &selected {
+            if !is_aur_per_crate_configured(ctx, crate_name) {
+                continue;
+            }
+            publish_to_aur(ctx, crate_name, &log)?;
+        }
+        let mut evidence = anodizer_core::PublishEvidence::new("aur");
+        evidence.extra = serde_json::json!({ "aur_our_targets": targets });
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        let targets = decode_aur_our_targets(&evidence.extra);
+        if targets.is_empty() {
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "aur",
+                "AUR repo clone targets",
+            ));
+            return Ok(());
+        }
+        let mut reverted = 0usize;
+        let mut failed = 0usize;
+        for t in &targets {
+            let rt = RevertTarget {
+                target: t.target.clone(),
+                repo_url: t.git_url.clone(),
+                // AUR has only the `master` branch; pin it explicitly
+                // so rollback never accidentally pushes to a default
+                // branch that doesn't exist for AUR.
+                branch: Some("master".to_string()),
+                token: None,
+                private_key: t.private_key.clone(),
+                ssh_command: t.git_ssh_command.clone(),
+            };
+            log.status(&format!("aur: revert + push {} ({})", t.target, t.git_url));
+            match run_git_revert_and_push(&rt, &log) {
+                Ok(()) => reverted += 1,
+                Err(err) => {
+                    failed += 1;
+                    log.warn(&format!(
+                        "aur: revert+push failed for {}: {}; manual cleanup required at {}",
+                        t.target, err, t.git_url,
+                    ));
+                }
+            }
+        }
+        log.status(&format!(
+            "aur: reverted {} repo(s), {} failure(s)",
+            reverted, failed
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::config::{AurConfig, CrateConfig, PublishConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    fn aur_crate(name: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some(format!("ssh://aur@aur.archlinux.org/{name}-bin.git")),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn aur_publisher_classification() {
+        let p = AurOurPublisher::new();
+        assert_eq!(p.name(), "aur");
+        assert_eq!(p.group(), PublisherGroup::Manager);
+        assert!(!p.required());
+        assert_eq!(p.rollback_scope_needed(), Some("AUR_SSH_KEY write"));
+    }
+
+    #[test]
+    fn aur_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = AurOurPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn aur_rollback_warns_when_no_targets_recorded() {
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("aur");
+        let p = AurOurPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let msg =
+            crate::publisher_helpers::rollback_empty_warning_msg("aur", "AUR repo clone targets");
+        assert!(msg.starts_with("aur:"), "{msg}");
+        assert!(msg.contains("AUR repo clone targets"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+        assert!(msg.contains("manually"), "{msg}");
+    }
+
+    #[test]
+    fn aur_target_extra_roundtrips() {
+        let original = vec![AurOurTarget {
+            target: "demo-bin".into(),
+            git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
+            private_key: None,
+            git_ssh_command: None,
+        }];
+        let extra = serde_json::json!({ "aur_our_targets": original.clone() });
+        let decoded = decode_aur_our_targets(&extra);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn aur_collect_run_targets_uses_default_bin_suffix() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![aur_crate("demo")])
+            .build();
+        let targets = collect_aur_our_run_targets(&ctx);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].target, "demo-bin");
+        assert!(targets[0].git_url.ends_with("demo-bin.git"));
+    }
+
+    #[test]
+    fn aur_collect_run_targets_skips_when_git_url_absent() {
+        // No git_url: the publish path itself bails, so we should
+        // also skip recording.
+        let mut crate_cfg = aur_crate("demo");
+        if let Some(p) = crate_cfg.publish.as_mut()
+            && let Some(a) = p.aur.as_mut()
+        {
+            a.git_url = None;
+        }
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let targets = collect_aur_our_run_targets(&ctx);
+        assert!(targets.is_empty(), "expected no targets, got {targets:?}");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

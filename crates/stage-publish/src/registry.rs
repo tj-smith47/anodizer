@@ -42,7 +42,67 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if anodizer_stage_blob::publisher::is_configured(ctx) {
         v.push(Box::new(anodizer_stage_blob::BlobPublisher::new()));
     }
+    // Bundle B (Manager — git-revert rollback against publisher-owned repo).
+    if is_homebrew_configured(ctx) {
+        v.push(Box::new(
+            crate::homebrew::publisher::HomebrewPublisher::new(),
+        ));
+    }
+    if is_scoop_configured(ctx) {
+        v.push(Box::new(crate::scoop::ScoopPublisher::new()));
+    }
+    if is_nix_configured(ctx) {
+        v.push(Box::new(crate::nix::publisher::NixPublisher::new()));
+    }
+    if is_aur_configured(ctx) {
+        v.push(Box::new(crate::aur::AurOurPublisher::new()));
+    }
     v
+}
+
+/// True when ANY crate has `publish.homebrew` OR the top-level
+/// `homebrew_casks:` block is non-empty. Mirrors the dispatch in
+/// `lib.rs` so the publisher runs whenever the existing per_crate +
+/// top_level macros would have.
+fn is_homebrew_configured(ctx: &Context) -> bool {
+    let per_crate = ctx
+        .config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.homebrew.is_some()));
+    let top_level = ctx
+        .config
+        .homebrew_casks
+        .as_ref()
+        .is_some_and(|v| !v.is_empty());
+    per_crate || top_level
+}
+
+/// True when at least one crate has a `publish.scoop` block.
+fn is_scoop_configured(ctx: &Context) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.scoop.is_some()))
+}
+
+/// True when at least one crate has a `publish.nix` block.
+fn is_nix_configured(ctx: &Context) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.nix.is_some()))
+}
+
+/// True when at least one crate has a `publish.aur` block. The
+/// `publish.aur_source` upstream-AUR publisher is intentionally NOT
+/// gated by this predicate — it gets its own Submitter-group
+/// publisher in a follow-up task.
+fn is_aur_configured(ctx: &Context) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.aur.is_some()))
 }
 
 /// True when at least one crate in the active config has a
@@ -193,6 +253,75 @@ mod tests {
                 .find(|p| p.name() == expected)
                 .expect("publisher present");
             assert_eq!(p.group(), PublisherGroup::Assets, "{}", expected);
+            assert!(!p.required(), "{} should not be required", expected);
+        }
+    }
+
+    #[test]
+    fn bundle_b_publishers_registered_when_configured() {
+        use anodizer_core::config::{
+            AurConfig, HomebrewConfig, NixConfig, RepositoryConfig, ScoopConfig,
+        };
+        // Build a single crate with all four Bundle B per-crate
+        // publishers configured so one fixture exercises every
+        // gate in `configured_publishers`.
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(HomebrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("homebrew-tap".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                scoop: Some(ScoopConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("scoop-bucket".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                nix: Some(NixConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("nixpkgs-overlay".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                aur: Some(AurConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/demo-bin.git".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        for expected in ["homebrew", "scoop", "nix", "aur"] {
+            assert!(
+                names.contains(&expected),
+                "{} missing from registered publishers (got {:?})",
+                expected,
+                names
+            );
+            let p = publishers
+                .iter()
+                .find(|p| p.name() == expected)
+                .expect("publisher present");
+            assert_eq!(
+                p.group(),
+                PublisherGroup::Manager,
+                "{} should be Manager group",
+                expected
+            );
             assert!(!p.required(), "{} should not be required", expected);
         }
     }

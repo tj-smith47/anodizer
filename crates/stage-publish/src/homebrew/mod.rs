@@ -17,6 +17,7 @@ mod formula;
 mod publish_cask;
 mod publish_formula;
 mod publish_top;
+pub mod publisher;
 
 #[cfg(test)]
 mod tests;

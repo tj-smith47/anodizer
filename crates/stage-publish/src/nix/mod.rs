@@ -5,6 +5,7 @@ mod binary;
 mod generate;
 mod hashing;
 mod publish;
+pub mod publisher;
 
 #[cfg(test)]
 mod tests;

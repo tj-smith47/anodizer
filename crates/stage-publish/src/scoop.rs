@@ -545,6 +545,248 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 }
 
 // ---------------------------------------------------------------------------
+// ScoopPublisher — Publisher trait wrapper (Bundle B)
+// ---------------------------------------------------------------------------
+
+/// Scoop bucket publisher. Mirrors the `homebrew` shape: each pushed
+/// manifest is recorded so a `--rollback-only` re-clones the bucket,
+/// runs `git revert HEAD --no-edit`, and pushes the revert.
+///
+/// Scoop is always per-crate (no top-level Scoop config block), so
+/// the run loop only walks `ctx.config.crates`.
+use crate::util::{RevertTarget, run_git_revert_and_push};
+use serde::{Deserialize, Serialize};
+
+simple_publisher!(
+    ScoopPublisher,
+    "scoop",
+    anodizer_core::PublisherGroup::Manager,
+    false,
+    Some("GITHUB_TOKEN contents:write"),
+);
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ScoopTarget {
+    target: String,
+    repo_url: String,
+    branch: Option<String>,
+    token_env_var: Option<String>,
+}
+
+fn decode_scoop_targets(extra: &serde_json::Value) -> Vec<ScoopTarget> {
+    extra
+        .get("scoop_targets")
+        .and_then(|v| serde_json::from_value::<Vec<ScoopTarget>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
+    let mut out: Vec<ScoopTarget> = Vec::new();
+    let selected = &ctx.options.selected_crates;
+    for c in &ctx.config.crates {
+        if !selected.is_empty() && !selected.contains(&c.name) {
+            continue;
+        }
+        let Some(sc) = c.publish.as_ref().and_then(|p| p.scoop.as_ref()) else {
+            continue;
+        };
+        if let Some((owner, name)) = util::resolve_repo_owner_name(sc.repository.as_ref()) {
+            out.push(ScoopTarget {
+                target: c.name.clone(),
+                repo_url: format!("https://github.com/{}/{}.git", owner, name),
+                branch: util::resolve_branch(sc.repository.as_ref()).map(str::to_string),
+                token_env_var: Some("SCOOP_BUCKET_TOKEN".to_string()),
+            });
+        }
+    }
+    out
+}
+
+fn is_scoop_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.scoop.is_some()))
+}
+
+impl anodizer_core::Publisher for ScoopPublisher {
+    fn name(&self) -> &str {
+        Self::PUBLISHER_NAME
+    }
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        Self::PUBLISHER_GROUP
+    }
+    fn required(&self) -> bool {
+        Self::PUBLISHER_REQUIRED
+    }
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Self::ROLLBACK_SCOPE
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        let targets = collect_scoop_run_targets(ctx);
+        let selected = ctx.options.selected_crates.clone();
+        for crate_name in &selected {
+            if !is_scoop_per_crate_configured(ctx, crate_name) {
+                continue;
+            }
+            publish_to_scoop(ctx, crate_name, &log)?;
+        }
+        let mut evidence = anodizer_core::PublishEvidence::new("scoop");
+        evidence.extra = serde_json::json!({ "scoop_targets": targets });
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        let targets = decode_scoop_targets(&evidence.extra);
+        if targets.is_empty() {
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "scoop",
+                "bucket clone targets",
+            ));
+            return Ok(());
+        }
+        let mut reverted = 0usize;
+        let mut failed = 0usize;
+        for t in &targets {
+            let token = t
+                .token_env_var
+                .as_deref()
+                .and_then(|n| std::env::var(n).ok())
+                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
+                .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+            let rt = RevertTarget {
+                target: t.target.clone(),
+                repo_url: t.repo_url.clone(),
+                branch: t.branch.clone(),
+                token,
+                private_key: None,
+                ssh_command: None,
+            };
+            log.status(&format!(
+                "scoop: revert + push {} ({})",
+                t.target, t.repo_url
+            ));
+            match run_git_revert_and_push(&rt, &log) {
+                Ok(()) => reverted += 1,
+                Err(err) => {
+                    failed += 1;
+                    log.warn(&format!(
+                        "scoop: revert+push failed for {}: {}; manual cleanup required at {}",
+                        t.target, err, t.repo_url,
+                    ));
+                }
+            }
+        }
+        log.status(&format!(
+            "scoop: reverted {} bucket(s), {} failure(s)",
+            reverted, failed
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::config::{CrateConfig, PublishConfig, RepositoryConfig, ScoopConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    fn scoop_crate(name: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                scoop: Some(ScoopConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("scoop-bucket".to_string()),
+                        branch: Some("main".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn scoop_publisher_classification() {
+        let p = ScoopPublisher::new();
+        assert_eq!(p.name(), "scoop");
+        assert_eq!(p.group(), PublisherGroup::Manager);
+        assert!(!p.required());
+        assert_eq!(
+            p.rollback_scope_needed(),
+            Some("GITHUB_TOKEN contents:write")
+        );
+    }
+
+    #[test]
+    fn scoop_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = ScoopPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn scoop_rollback_warns_when_no_targets_recorded() {
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("scoop");
+        let p = ScoopPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let msg =
+            crate::publisher_helpers::rollback_empty_warning_msg("scoop", "bucket clone targets");
+        assert!(msg.starts_with("scoop:"), "{msg}");
+        assert!(msg.contains("bucket clone targets"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+        assert!(msg.contains("manually"), "{msg}");
+    }
+
+    #[test]
+    fn scoop_target_extra_roundtrips() {
+        let original = vec![ScoopTarget {
+            target: "demo".into(),
+            repo_url: "https://github.com/acme/scoop-bucket.git".into(),
+            branch: Some("main".into()),
+            token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+        }];
+        let extra = serde_json::json!({ "scoop_targets": original.clone() });
+        let decoded = decode_scoop_targets(&extra);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn scoop_collect_run_targets_walks_per_crate_config() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![scoop_crate("demo")])
+            .build();
+        let targets = collect_scoop_run_targets(&ctx);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].target, "demo");
+        assert_eq!(targets[0].branch.as_deref(), Some("main"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
