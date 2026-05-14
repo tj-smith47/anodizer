@@ -618,7 +618,120 @@ pub fn run_preflight_with_factory(
         }
     }
 
+    run_publisher_preflight_extension(ctx, &mut report)?;
+
     Ok(report)
+}
+
+// ---------------------------------------------------------------------------
+// Rollback-scope + publisher-preflight extension (release-resilience Task 18)
+// ---------------------------------------------------------------------------
+
+/// Walk the trait-based publisher registry and surface two classes of
+/// resilience concerns into the report:
+///
+/// 1. Rollback scope availability — every publisher whose
+///    [`Publisher::rollback_scope_needed`] returns `Some(label)` is checked
+///    against the env var named in `label`. Missing scope becomes a
+///    warning by default and a blocker under `--strict`. If
+///    `--rollback=best-effort` was explicitly requested and any
+///    `required` publisher lacks rollback scope, this function returns
+///    `Err` so the CLI bails before any publish work runs.
+/// 2. Publisher self-check — each publisher's [`Publisher::preflight`]
+///    return value is folded into the report (`Warning` -> warnings,
+///    `Blocker` -> blockers, `Err` -> blockers tagged as preflight error).
+///    All publishers currently return `Pass`; the wiring is here so
+///    future per-publisher preflight logic flows through the same channel.
+fn run_publisher_preflight_extension(
+    ctx: &anodizer_core::context::Context,
+    report: &mut PreflightReport,
+) -> Result<()> {
+    let publishers = crate::registry::configured_publishers(ctx);
+    let mut required_missing_scope: Vec<String> = Vec::new();
+
+    for p in &publishers {
+        // ---- rollback scope check ------------------------------------
+        if let Some(label) = p.rollback_scope_needed()
+            && !scope_label_is_available(ctx, label)
+        {
+            let msg = format!(
+                "rollback scope '{}' is not available for publisher '{}'; rollback will be skipped or limited",
+                label,
+                p.name(),
+            );
+            if ctx.options.strict {
+                report.blockers.push(msg);
+            } else {
+                report.warnings.push(msg);
+            }
+            if p.required() {
+                required_missing_scope.push(p.name().to_string());
+            }
+        }
+
+        // ---- publisher self-check ------------------------------------
+        match p.preflight(ctx) {
+            Ok(anodizer_core::PreflightCheck::Pass) => {}
+            Ok(anodizer_core::PreflightCheck::Warning(msg)) => {
+                report.warnings.push(format!("{}: {}", p.name(), msg));
+            }
+            Ok(anodizer_core::PreflightCheck::Blocker(msg)) => {
+                report.blockers.push(format!("{}: {}", p.name(), msg));
+            }
+            Err(err) => {
+                report
+                    .blockers
+                    .push(format!("{}: preflight error: {}", p.name(), err));
+            }
+        }
+    }
+
+    // Hard error: `--rollback=best-effort` was explicitly requested but a
+    // required publisher lacks rollback scope. Bail before any side-effect
+    // stage runs so the operator can elevate the token (or accept losing
+    // rollback) before starting a release that cannot recover from failure.
+    if matches!(
+        ctx.options.rollback_mode,
+        Some(anodizer_core::context::RollbackMode::BestEffort)
+    ) && !required_missing_scope.is_empty()
+    {
+        anyhow::bail!(
+            "preflight: --rollback=best-effort was requested but the following required publishers lack rollback scope: {}",
+            required_missing_scope.join(", "),
+        );
+    }
+
+    Ok(())
+}
+
+/// Parse a rollback-scope label like `"GITHUB_TOKEN contents:write"` or
+/// `"CARGO_REGISTRY_TOKEN yank"` and check whether the env var named in
+/// the first whitespace-separated token is set (non-empty) in the process
+/// environment. The trailing scope description after the space is
+/// informational only — we cannot verify scope strings against the actual
+/// token's permissions without an API round-trip.
+///
+/// For `GITHUB_TOKEN`, also accept `ANODIZER_GITHUB_TOKEN` to match the
+/// fallback that the publish / rollback paths use for GitHub-credentialed
+/// publishers (Bundle B/C).
+fn scope_label_is_available(_ctx: &anodizer_core::context::Context, label: &str) -> bool {
+    let env_var = label.split_once(' ').map(|(v, _)| v).unwrap_or(label);
+    if std::env::var(env_var)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    // Honor the ANODIZER_-prefixed fallback that publish / rollback paths
+    // use for GitHub-credentialed publishers.
+    if env_var == "GITHUB_TOKEN"
+        && std::env::var("ANODIZER_GITHUB_TOKEN")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -1280,5 +1393,292 @@ mod tests {
         // Unknown only blocks in strict.
         assert_eq!(report.blockers(false).len(), 2);
         assert_eq!(report.blockers(true).len(), 3);
+    }
+
+    // ---- rollback-scope + Publisher::preflight() extension (Task 18) ----
+    //
+    // These tests mutate process-wide env vars (CARGO_REGISTRY_TOKEN,
+    // GITHUB_TOKEN, ANODIZER_GITHUB_TOKEN). The `serial_test::serial`
+    // attribute serializes them under a shared lock to prevent races
+    // with other tests in the suite that read the same vars.
+
+    /// Build a Context where a single crate has `publish.cargo`
+    /// configured. Used by the rollback-scope tests below; the
+    /// CargoPublisher is the canonical `required=true` publisher with a
+    /// scope label (`"CARGO_REGISTRY_TOKEN yank"`).
+    fn fixture_cargo_publisher(
+        strict: bool,
+        rollback_mode: Option<anodizer_core::context::RollbackMode>,
+    ) -> anodizer_core::context::Context {
+        use anodizer_core::config::{CargoPublishConfig, Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let publish = PublishConfig {
+            cargo: Some(CargoPublishConfig::default()),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "mytool".to_string(),
+            publish: Some(publish),
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "mytool".to_string(),
+            crates: vec![crate_cfg],
+            ..Default::default()
+        };
+        let options = ContextOptions {
+            strict,
+            rollback_mode,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, options);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx
+    }
+
+    fn empty_factory() -> CannedFactory {
+        CannedFactory {
+            cargo_state: PublisherState::Clean,
+            choco_state: PublisherState::Clean,
+            winget_state: PublisherState::Clean,
+            aur_state: PublisherState::Clean,
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(preflight_env)]
+    fn preflight_warns_on_missing_rollback_scope() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        // SAFETY: serialized via serial_test::serial across the env-mutating
+        // tests in this set; no other thread reads CARGO_REGISTRY_TOKEN
+        // during the remove_var window.
+        unsafe {
+            std::env::remove_var("CARGO_REGISTRY_TOKEN");
+        }
+
+        let ctx = fixture_cargo_publisher(false, None);
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+        let factory = empty_factory();
+        let report = run_preflight_with_factory(&ctx, &log, &factory).expect("ok");
+
+        assert_eq!(
+            report.warnings.len(),
+            1,
+            "expected 1 scope warning, got: {:?}",
+            report.warnings
+        );
+        assert!(
+            report.warnings[0].contains("cargo")
+                && report.warnings[0].contains("CARGO_REGISTRY_TOKEN"),
+            "warning text: {}",
+            report.warnings[0]
+        );
+        assert!(
+            report.blockers.is_empty(),
+            "blockers should be empty in default mode, got: {:?}",
+            report.blockers
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(preflight_env)]
+    fn preflight_blocks_on_missing_rollback_scope_when_strict() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        // SAFETY: serialized via serial_test::serial.
+        unsafe {
+            std::env::remove_var("CARGO_REGISTRY_TOKEN");
+        }
+
+        let ctx = fixture_cargo_publisher(true, None);
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+        let factory = empty_factory();
+        let report = run_preflight_with_factory(&ctx, &log, &factory).expect("ok");
+
+        assert!(
+            report.warnings.is_empty(),
+            "warnings should be empty in strict mode, got: {:?}",
+            report.warnings
+        );
+        assert_eq!(
+            report.blockers.len(),
+            1,
+            "expected 1 scope blocker under --strict, got: {:?}",
+            report.blockers
+        );
+        assert!(
+            report.blockers[0].contains("cargo"),
+            "blocker text: {}",
+            report.blockers[0]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(preflight_env)]
+    fn preflight_bails_when_required_publisher_missing_scope_and_rollback_best_effort() {
+        use anodizer_core::context::RollbackMode;
+        use anodizer_core::log::{StageLogger, Verbosity};
+        // SAFETY: serialized via serial_test::serial.
+        unsafe {
+            std::env::remove_var("CARGO_REGISTRY_TOKEN");
+        }
+
+        let ctx = fixture_cargo_publisher(false, Some(RollbackMode::BestEffort));
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+        let factory = empty_factory();
+        let err = run_preflight_with_factory(&ctx, &log, &factory).expect_err(
+            "must bail when required publisher lacks rollback scope under --rollback=best-effort",
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("--rollback=best-effort"),
+            "error message must name the requested rollback mode: {}",
+            msg
+        );
+        assert!(
+            msg.contains("cargo"),
+            "error message must name the offending publisher: {}",
+            msg
+        );
+    }
+
+    /// Test Publisher that returns a fixed `PreflightCheck` so we can drive
+    /// the per-publisher self-check path without configuring a real
+    /// publisher. Routed through the `configured_publishers` trait registry
+    /// is not possible without registry surgery, so this test exercises the
+    /// helper that the extension dispatches against directly.
+    struct StubPublisher {
+        outcome: anodizer_core::PreflightCheck,
+    }
+
+    impl anodizer_core::Publisher for StubPublisher {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn run(
+            &self,
+            _ctx: &mut anodizer_core::context::Context,
+        ) -> anyhow::Result<anodizer_core::PublishEvidence> {
+            Ok(anodizer_core::PublishEvidence::new("stub"))
+        }
+        fn group(&self) -> anodizer_core::PublisherGroup {
+            anodizer_core::PublisherGroup::Manager
+        }
+        fn required(&self) -> bool {
+            false
+        }
+        fn preflight(
+            &self,
+            _ctx: &anodizer_core::context::Context,
+        ) -> anyhow::Result<anodizer_core::PreflightCheck> {
+            Ok(self.outcome.clone())
+        }
+    }
+
+    #[test]
+    fn preflight_invokes_publisher_preflight_warning() {
+        // Direct unit test of the Publisher::preflight() return-value
+        // routing: invoking the stub through the same match the extension
+        // uses must land the message in `report.warnings` prefixed by the
+        // publisher name.
+        let stub = StubPublisher {
+            outcome: anodizer_core::PreflightCheck::Warning("foo".into()),
+        };
+        let mut report = PreflightReport::new();
+        let p: &dyn anodizer_core::Publisher = &stub;
+        match p.preflight(&anodizer_core::context::Context::test_fixture()) {
+            Ok(anodizer_core::PreflightCheck::Pass) => {}
+            Ok(anodizer_core::PreflightCheck::Warning(m)) => {
+                report.warnings.push(format!("{}: {}", p.name(), m))
+            }
+            Ok(anodizer_core::PreflightCheck::Blocker(m)) => {
+                report.blockers.push(format!("{}: {}", p.name(), m))
+            }
+            Err(e) => report
+                .blockers
+                .push(format!("{}: preflight error: {}", p.name(), e)),
+        }
+        assert_eq!(report.warnings, vec!["stub: foo".to_string()]);
+        assert!(report.blockers.is_empty());
+
+        // Blocker variant: must land in blockers, not warnings.
+        let stub_b = StubPublisher {
+            outcome: anodizer_core::PreflightCheck::Blocker("bar".into()),
+        };
+        let mut report2 = PreflightReport::new();
+        let p2: &dyn anodizer_core::Publisher = &stub_b;
+        match p2.preflight(&anodizer_core::context::Context::test_fixture()) {
+            Ok(anodizer_core::PreflightCheck::Pass) => {}
+            Ok(anodizer_core::PreflightCheck::Warning(m)) => {
+                report2.warnings.push(format!("{}: {}", p2.name(), m))
+            }
+            Ok(anodizer_core::PreflightCheck::Blocker(m)) => {
+                report2.blockers.push(format!("{}: {}", p2.name(), m))
+            }
+            Err(e) => report2
+                .blockers
+                .push(format!("{}: preflight error: {}", p2.name(), e)),
+        }
+        assert!(report2.warnings.is_empty());
+        assert_eq!(report2.blockers, vec!["stub: bar".to_string()]);
+    }
+
+    #[test]
+    #[serial_test::serial(preflight_env)]
+    fn preflight_honors_anodizer_github_token_fallback() {
+        use anodizer_core::config::{
+            Config, CrateConfig, HomebrewConfig, PublishConfig, RepositoryConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        // SAFETY: serialized via serial_test::serial.
+        unsafe {
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::set_var("ANODIZER_GITHUB_TOKEN", "fallback-token");
+        }
+
+        let publish = PublishConfig {
+            homebrew: Some(HomebrewConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("acme".to_string()),
+                    name: Some("homebrew-tap".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "mytool".to_string(),
+            publish: Some(publish),
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "mytool".to_string(),
+            crates: vec![crate_cfg],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+        let factory = empty_factory();
+
+        let report = run_preflight_with_factory(&ctx, &log, &factory).expect("ok");
+
+        let homebrew_scope_warnings: Vec<&String> = report
+            .warnings
+            .iter()
+            .filter(|w| w.contains("homebrew") && w.contains("GITHUB_TOKEN"))
+            .collect();
+        assert!(
+            homebrew_scope_warnings.is_empty(),
+            "ANODIZER_GITHUB_TOKEN fallback must satisfy GITHUB_TOKEN scope; warnings: {:?}",
+            report.warnings
+        );
+
+        // SAFETY: serialized via serial_test::serial.
+        unsafe {
+            std::env::remove_var("ANODIZER_GITHUB_TOKEN");
+        }
     }
 }

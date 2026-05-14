@@ -99,9 +99,25 @@ pub struct PreflightEntry {
 // ---------------------------------------------------------------------------
 
 /// Aggregated results for all one-way-door publishers.
+///
+/// `entries` carries one row per checked publisher (cargo / chocolatey /
+/// winget / aur). `warnings` and `blockers` are free-form, publisher-agnostic
+/// messages produced by the release-resilience preflight extension: rollback
+/// token scope checks (Task 18) and per-publisher `Publisher::preflight()`
+/// hook results. The two channels are kept separate from `entries` so that
+/// the existing one-way-door consumers (state-machine queries like
+/// `has_blockers` / `clean_count`) stay focused on publisher state, while the
+/// CLI's operator-facing output can still surface every warning and blocker
+/// the preflight pipeline produced.
 #[derive(Debug, Default)]
 pub struct PreflightReport {
     pub entries: Vec<PreflightEntry>,
+    /// Non-blocking concerns surfaced during preflight (missing rollback
+    /// scope in default mode, `Publisher::preflight()` returning Warning).
+    pub warnings: Vec<String>,
+    /// Hard blockers surfaced during preflight (missing rollback scope in
+    /// `--strict` mode, `Publisher::preflight()` returning Blocker).
+    pub blockers: Vec<String>,
 }
 
 impl PreflightReport {
@@ -157,6 +173,17 @@ impl fmt::Display for PreflightReport {
                 }
                 _ => {}
             }
+        }
+        // Surface free-form warnings/blockers from the resilience extension
+        // (rollback-scope checks + `Publisher::preflight()` results) so they
+        // flow through the same Display channel the CLI prints. Suppressed
+        // when both are empty to preserve the existing one-line-per-entry
+        // cadence for clean reports.
+        for w in &self.warnings {
+            writeln!(f, "  [       warning]  {}", w)?;
+        }
+        for b in &self.blockers {
+            writeln!(f, "  [       blocker]  {}", b)?;
         }
         Ok(())
     }

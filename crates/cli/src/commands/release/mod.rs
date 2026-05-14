@@ -687,6 +687,17 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
                 labels.join(", ")
             );
         }
+        // Resilience-extension blockers (rollback-scope checks +
+        // Publisher::preflight() returns) live in their own channel; bail
+        // when any is present so the operator sees the problem before the
+        // pipeline starts.
+        if !report.blockers.is_empty() {
+            anyhow::bail!(
+                "preflight: {} resilience blocker(s): {}",
+                report.blockers.len(),
+                report.blockers.join("; "),
+            );
+        }
         log.status(&format!(
             "preflight: {} publisher(s) clean",
             report.clean_count()
