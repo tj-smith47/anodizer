@@ -10,6 +10,7 @@ mod build_stage;
 mod command;
 mod generate;
 mod publish_stage;
+pub mod publisher;
 mod yaml;
 
 #[cfg(test)]
@@ -21,3 +22,4 @@ pub use command::{
 };
 pub use generate::generate_snap_yaml;
 pub use publish_stage::SnapcraftPublishStage;
+pub use publisher::SnapcraftPublisher;

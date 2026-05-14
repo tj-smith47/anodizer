@@ -79,7 +79,22 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if crate::aur_source::is_aur_source_configured(ctx) {
         v.push(Box::new(crate::aur_source::AurSourcePublisher::new()));
     }
+    if is_snapcraft_configured(ctx) {
+        v.push(Box::new(anodizer_stage_snapcraft::SnapcraftPublisher::new()));
+    }
     v
+}
+
+/// True when at least one crate has a non-empty `snapcrafts:` array
+/// with at least one entry whose `publish: true` opt-in is set. Mirrors
+/// the `SnapcraftPublishStage` skip-gate so the publisher only
+/// registers when there is real work to do.
+fn is_snapcraft_configured(ctx: &Context) -> bool {
+    ctx.config.crates.iter().any(|c| {
+        c.snapcrafts
+            .as_ref()
+            .is_some_and(|configs| configs.iter().any(|s| s.publish.unwrap_or(false)))
+    })
 }
 
 /// True when at least one crate has a `publish.chocolatey` block.
@@ -624,5 +639,68 @@ mod tests {
                 publisher_name
             );
         }
+    }
+
+    #[test]
+    fn snapcraft_publisher_registered_when_configured() {
+        use anodizer_core::config::SnapcraftConfig;
+        // Snapcraft is per-crate (`crates[].snapcrafts: [...]`) with an
+        // inner `publish: true` opt-in. The publisher must register
+        // exactly when at least one snap entry opts in — empty arrays
+        // and `publish: false` rows do not count.
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                name: Some("demo".to_string()),
+                publish: Some(true),
+                channel_templates: Some(vec!["stable".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        assert!(
+            names.contains(&"snapcraft"),
+            "snapcraft missing from registered publishers (got {:?})",
+            names
+        );
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "snapcraft")
+            .expect("snapcraft present");
+        assert_eq!(p.group(), PublisherGroup::Submitter);
+        assert!(!p.required(), "snapcraft should not be required");
+        assert_eq!(p.rollback_scope_needed(), Some("SNAPCRAFT_LOGIN"));
+    }
+
+    #[test]
+    fn snapcraft_publisher_not_registered_when_publish_false() {
+        use anodizer_core::config::SnapcraftConfig;
+        // `publish: false` (the default) is the explicit opt-OUT — the
+        // publisher must NOT register, mirroring the
+        // `SnapcraftPublishStage::run` skip-gate.
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                name: Some("demo".to_string()),
+                publish: Some(false),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        assert!(
+            !names.contains(&"snapcraft"),
+            "snapcraft should NOT register when no entry opts in (got {:?})",
+            names
+        );
     }
 }
