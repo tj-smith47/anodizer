@@ -22,7 +22,7 @@ impl PublishEvidence {
             primary_ref: None,
             artifact_paths: Vec::new(),
             nondeterministic: None,
-            extra: serde_json::Value::Null,
+            extra: serde_json::Value::Object(serde_json::Map::new()),
         }
     }
 }

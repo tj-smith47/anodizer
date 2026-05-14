@@ -2,7 +2,6 @@ use crate::publish_evidence::PublishEvidence;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum PublisherGroup {
     Assets,
     Manager,
@@ -10,7 +9,6 @@ pub enum PublisherGroup {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "detail")]
 pub enum PublisherOutcome {
     Succeeded,
     Skipped(SkipReason),
@@ -61,6 +59,11 @@ impl PublishReport {
             .count()
     }
 
+    /// Returns true if any publisher in `group` failed.
+    ///
+    /// When `required_only` is true, only publishers with `required: true` count.
+    /// The Submitter gate consults this with `required_only = true` against the
+    /// Assets and Manager groups to decide whether to skip Submitter dispatch.
     pub fn any_failed(&self, group: PublisherGroup, required_only: bool) -> bool {
         self.results.iter().any(|r| {
             r.group == group
@@ -106,5 +109,54 @@ mod tests {
     fn skip_reason_serializes_as_kebab_case() {
         let s = serde_json::to_string(&SkipReason::SubmitterGated).expect("serialize");
         assert_eq!(s, "\"submitter-gated\"");
+    }
+
+    #[test]
+    fn publisher_group_serializes_pascal_case() {
+        let s = serde_json::to_string(&PublisherGroup::Submitter).expect("serialize");
+        assert_eq!(s, "\"Submitter\"");
+    }
+
+    #[test]
+    fn publisher_outcome_succeeded_serializes_as_bare_string() {
+        let s = serde_json::to_string(&PublisherOutcome::Succeeded).expect("serialize");
+        assert_eq!(s, "\"Succeeded\"");
+    }
+
+    #[test]
+    fn publisher_outcome_failed_serializes_as_externally_tagged() {
+        let s = serde_json::to_string(&PublisherOutcome::Failed("boom".into())).expect("serialize");
+        assert_eq!(s, r#"{"Failed":"boom"}"#);
+    }
+
+    #[test]
+    fn any_failed_returns_true_only_for_required_when_required_only_is_true() {
+        let mut r = PublishReport::default();
+        r.results.push(PublisherResult {
+            name: "required-mgr".to_string(),
+            group: PublisherGroup::Manager,
+            required: true,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        });
+        r.results.push(PublisherResult {
+            name: "optional-mgr".to_string(),
+            group: PublisherGroup::Manager,
+            required: false,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        });
+        assert!(r.any_failed(PublisherGroup::Manager, true));
+
+        let mut r = PublishReport::default();
+        r.results.push(PublisherResult {
+            name: "optional-mgr".to_string(),
+            group: PublisherGroup::Manager,
+            required: false,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        });
+        assert!(!r.any_failed(PublisherGroup::Manager, true));
+        assert!(r.any_failed(PublisherGroup::Manager, false));
     }
 }
