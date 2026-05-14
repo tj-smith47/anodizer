@@ -59,7 +59,7 @@ Run the full release pipeline
 | `--rollback` | — | — | Rollback policy after publish stage. Defaults to best-effort when preflight is clean, none otherwise. |
 | `--simulate-failure` | — | — | (TEST HARNESS) Force a named publisher to fail. Gated by ANODIZE_TEST_HARNESS=1. |
 | `--rollback-only` | — | — | Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>. |
-| `--from-run` | — | — | Prior run id whose report.json to load when running --rollback-only. |
+| `--from-run` | — | — | Prior run id whose report.json to load when running --rollback-only. Must match the run_id format written by the release pipeline (alphanumeric, dot, dash, underscore; no path separators). |
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
 | `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |

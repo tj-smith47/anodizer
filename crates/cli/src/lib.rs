@@ -163,7 +163,10 @@ pub enum Commands {
             long = "from-run",
             value_name = "id",
             requires = "rollback_only",
-            help = "Prior run id whose report.json to load when running --rollback-only."
+            value_parser = parse_run_id,
+            help = "Prior run id whose report.json to load when running --rollback-only. \
+                    Must match the run_id format written by the release pipeline \
+                    (alphanumeric, dot, dash, underscore; no path separators)."
         )]
         from_run: Option<String>,
         #[arg(
@@ -465,6 +468,24 @@ pub struct CheckDeterminismArgs {
         help = "(TEST HARNESS) Append 1 random byte to the first artifact emitted by <stage>. Gated by ANODIZE_TEST_HARNESS=1."
     )]
     pub inject_drift: Option<String>,
+}
+
+/// Clap `value_parser` for `--from-run=<id>`.
+///
+/// `run_id` is operator-controlled and is joined directly into a
+/// filesystem path (`<dist>/run-<id>/{report,rollback}.json`) by the
+/// `--rollback-only` replay code. Without this validator,
+/// `--from-run=../../etc/passwd` would resolve to a traversed path on
+/// both read (`report.json`) and write (`rollback.json`) — operator
+/// data-loss potential.
+///
+/// Delegates to [`anodizer_stage_publish::rollback_only::validate_run_id`]
+/// so the rule has a single source of truth (the same validator runs at
+/// the `run_with_publishers` entry point as a defense-in-depth guard).
+fn parse_run_id(s: &str) -> Result<String, String> {
+    anodizer_stage_publish::rollback_only::validate_run_id(s)
+        .map(|()| s.to_string())
+        .map_err(|err| format!("{:#}", err))
 }
 
 /// Detect the host target triple by parsing `rustc -vV` output.

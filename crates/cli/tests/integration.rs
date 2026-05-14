@@ -4516,6 +4516,68 @@ crates:
     );
 }
 
+/// `--from-run=<id>` joins into a filesystem path; clap's value_parser
+/// must reject path-traversal at the binary surface (not just in
+/// in-process try_parse_from tests). Validates the whole-binary
+/// happy/sad path so a regression in the value_parser wiring (e.g. a
+/// future refactor that drops it) shows up here.
+#[test]
+fn release_from_run_rejects_path_traversal_at_binary_surface() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--rollback-only",
+            "--from-run",
+            "../../etc/passwd",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --from-run=../../etc/passwd must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--from-run") || stderr.contains("invalid"),
+        "stderr should explain the rejection, got: {}",
+        stderr
+    );
+    // Critically: the traversed path must NOT have been touched. The
+    // poisoned destination `<dist>/run-../../etc/passwd/` resolves
+    // (via Path::join) up out of the tempdir, so we cannot positively
+    // assert "no file written" without scanning the real FS — but we
+    // CAN assert the local <dist>/ stays empty of any run-<id> dir
+    // because the parser bailed before any stage ran.
+    let dist = tmp.path().join("dist");
+    if dist.exists() {
+        let entries: Vec<_> = std::fs::read_dir(&dist)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "no run-* dirs should be created when parsing fails, found: {:?}",
+            entries.iter().map(|e| e.path()).collect::<Vec<_>>()
+        );
+    }
+}
+
 /// Invalid `--rollback` values are caught at the translation site before any
 /// pipeline work runs.
 #[test]

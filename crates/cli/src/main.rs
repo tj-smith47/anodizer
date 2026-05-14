@@ -1391,6 +1391,58 @@ mod tests {
     }
 
     #[test]
+    fn release_from_run_rejects_path_traversal() {
+        // `--from-run` is joined into a filesystem path by the
+        // rollback-only replay code; clap's value_parser must reject any
+        // operator-typed value that could traverse out of <dist>/run-*/.
+        // The error must surface at parse time so no pipeline work runs
+        // with a poisoned id.
+        for bad in [
+            "../etc/passwd",
+            "foo/bar",
+            "foo\\bar",
+            "..",
+            ".",
+            "/abs",
+            "", // clap may or may not reach the parser for empty; both outcomes are errors
+            "foo bar",
+            "foo;rm",
+        ] {
+            let result =
+                Cli::try_parse_from(["anodizer", "release", "--rollback-only", "--from-run", bad]);
+            assert!(
+                result.is_err(),
+                "--from-run={:?} must be rejected at parse time",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn release_from_run_accepts_normal_ids() {
+        // The happy-path shapes a real run_id might take. These should
+        // PARSE successfully (the command may still fail later because
+        // the report.json doesn't exist on disk; that's a runtime
+        // concern, not a parse-time one).
+        for good in [
+            "abc123",
+            "v1.2.3",
+            "run-2026-05-14",
+            "_local-test",
+            "DEADBEEF",
+        ] {
+            let result =
+                Cli::try_parse_from(["anodizer", "release", "--rollback-only", "--from-run", good]);
+            assert!(
+                result.is_ok(),
+                "--from-run={:?} should parse, got {:?}",
+                good,
+                result.err()
+            );
+        }
+    }
+
+    #[test]
     fn release_parses_allow_nondeterministic_repeatable() {
         let cli = Cli::try_parse_from([
             "anodizer",
