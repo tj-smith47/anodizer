@@ -18,6 +18,14 @@
 //! [`std::process::Command`]. The tests use a tempdir-backed real repo
 //! with a bare remote so the helper exercises the same code path it
 //! will hit in production.
+//!
+//! Future-refactor seam: Bundle B publishers each construct
+//! [`RevertTarget`] lists and run the same dedup + parallel fan-out
+//! loop in their `rollback`. Consider promoting that shape to a shared
+//! `GitRevertPublisher` trait when Bundle C's close-PR publishers land
+//! — a sibling trait there can collapse this and the close-PR rollback
+//! shape behind one default impl. Not done in this commit to keep the
+//! Bundle B diff focused on the credential / dedup / parallelism fixes.
 
 use anyhow::{Context as _, Result};
 use std::path::Path;

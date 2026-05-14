@@ -650,15 +650,15 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         "package",
     );
     let commit_opts = util::resolve_commit_opts(ctx, aur_cfg.commit_author.as_ref());
-    // AUR repositories are always on `master`. Pin the push branch explicitly
-    // rather than relying on `git clone`'s default, which varies by git
-    // version / config and once surfaced pushes that silently went to `main`
-    // on fresh-cloned workspaces. Matches GoReleaser `internal/pipe/aur/aur.go`.
+    // AUR repositories are always on `master`. Pin the push branch via the
+    // shared [`AUR_REPO_BRANCH`] constant so the publish and rollback
+    // paths can never drift (e.g. one renamed to `main`). Matches
+    // GoReleaser `internal/pipe/aur/aur.go`.
     util::commit_and_push_with_opts(
         repo_path,
         &["."],
         &commit_msg,
-        Some("master"),
+        Some(AUR_REPO_BRANCH),
         "aur",
         &commit_opts,
     )?;
@@ -687,8 +687,24 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 /// Rollback shape mirrors the other Bundle B publishers: re-clone via
 /// the configured SSH key + command, run `git revert HEAD --no-edit`,
 /// push to `master` (AUR's only branch).
-use crate::util::{RevertTarget, run_git_revert_and_push};
+///
+/// SECURITY NOTE: [`AurOurTarget`]'s SSH credentials (`private_key`,
+/// `git_ssh_command`) carry `#[serde(skip)]` so they never land in
+/// persisted evidence (`dist/run-<id>/report.json`, the run-summary
+/// JSON, or the announce-time release-body summary). Rollback
+/// re-reads them from the live `ctx.config` at yank time so a
+/// rotated SSH key is correctly picked up; if the user rotated and
+/// the new key lacks AUR push access, the failure surfaces clearly
+/// in the per-target warn line.
+use crate::util::{RevertTarget, run_revert_targets_parallel};
 use serde::{Deserialize, Serialize};
+
+/// AUR has a single branch convention: every package repo lives on
+/// `master`. Pinning this in one constant means both the publish path
+/// and the rollback path push to the same name and a future drift
+/// (e.g. a stray rename to `main`) is impossible without editing this
+/// line.
+pub(crate) const AUR_REPO_BRANCH: &str = "master";
 
 simple_publisher!(
     AurOurPublisher,
@@ -705,20 +721,71 @@ struct AurOurTarget {
     /// `ssh://aur@aur.archlinux.org/<package>.git`.
     git_url: String,
     /// Inline SSH private-key contents. Captured at run-time from the
-    /// active `aur.private_key:` config; never re-resolved at
-    /// rollback time because the original config may have rotated.
-    /// We accept the trade-off (key in evidence-extra blob) because
-    /// rollback re-clone needs the SAME credential the publish path
-    /// used, and AUR doesn't have an env-var fallback to query.
+    /// active `aur.private_key:` config so a same-process rollback
+    /// doesn't have to re-read config; but `#[serde(skip)]` keeps it
+    /// out of any persisted shape of [`anodizer_core::PublishEvidence`].
+    /// When `decode_aur_our_targets` re-hydrates from a previously
+    /// serialized evidence blob this field comes back as `None` and
+    /// [`AurOurPublisher::rollback`] re-resolves it from
+    /// `ctx.config.crates[*].publish.aur.private_key` by matching
+    /// `git_url`.
     ///
-    /// SECURITY NOTE: evidence blobs are written to
-    /// `target/anodize/post-publish/...` which inherits the process'
-    /// umask. Treat the evidence file as secret-sensitive when AUR
-    /// is configured with an inline private key.
+    /// SECURITY: persistence tasks (`--rollback-only --from-run`,
+    /// `--summary-json`, the announce-time release-body summary) all
+    /// round-trip evidence through serde JSON; `#[serde(skip)]` is
+    /// the single point of control that keeps the SSH key from
+    /// leaking through any of them.
+    #[serde(skip)]
     private_key: Option<String>,
     /// Custom `GIT_SSH_COMMAND` override (alternative to
     /// `private_key` — same precedence the publish path uses).
+    /// Same `#[serde(skip)]` rationale as `private_key`: the command
+    /// can reference an on-disk key path that we treat as
+    /// secret-sensitive.
+    #[serde(skip)]
     git_ssh_command: Option<String>,
+}
+
+/// Walk `ctx.config.crates` for a `publish.aur` block whose `git_url`
+/// matches `git_url` and return the resolved
+/// `(private_key, git_ssh_command)` pair. Used at rollback time so
+/// the SSH credentials never need to round-trip through serialized
+/// evidence.
+///
+/// Returns `(None, None)` when no crate is configured for the given
+/// URL — the rollback `git push` will fail loudly via the warning
+/// helper that points the operator at `publish.aur.private_key`.
+fn resolve_aur_credentials_from_config(
+    ctx: &Context,
+    git_url: &str,
+) -> (Option<String>, Option<String>) {
+    for c in &ctx.config.crates {
+        let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
+            continue;
+        };
+        if ac.git_url.as_deref() == Some(git_url) {
+            return (ac.private_key.clone(), ac.git_ssh_command.clone());
+        }
+    }
+    (None, None)
+}
+
+/// Collapse the recorded rollback targets to a unique set keyed by
+/// `git_url` (AUR always pushes to `master`, so branch is implicit).
+///
+/// The first entry seen for a given `git_url` wins; later entries that
+/// share the same URL are dropped because the second `git revert HEAD`
+/// against the same repo would revert the first revert and restore
+/// the bad release.
+fn dedup_aur_targets(targets: &[AurOurTarget]) -> Vec<AurOurTarget> {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut out: Vec<AurOurTarget> = Vec::with_capacity(targets.len());
+    for t in targets {
+        if seen.insert(t.git_url.clone()) {
+            out.push(t.clone());
+        }
+    }
+    out
 }
 
 fn decode_aur_our_targets(extra: &serde_json::Value) -> Vec<AurOurTarget> {
@@ -805,32 +872,33 @@ impl anodizer_core::Publisher for AurOurPublisher {
             ));
             return Ok(());
         }
-        let mut reverted = 0usize;
-        let mut failed = 0usize;
-        for t in &targets {
-            let rt = RevertTarget {
-                target: t.target.clone(),
-                repo_url: t.git_url.clone(),
-                // AUR has only the `master` branch; pin it explicitly
-                // so rollback never accidentally pushes to a default
-                // branch that doesn't exist for AUR.
-                branch: Some("master".to_string()),
-                token: None,
-                private_key: t.private_key.clone(),
-                ssh_command: t.git_ssh_command.clone(),
-            };
-            log.status(&format!("aur: revert + push {} ({})", t.target, t.git_url));
-            match run_git_revert_and_push(&rt, &log) {
-                Ok(()) => reverted += 1,
-                Err(err) => {
-                    failed += 1;
-                    log.warn(&format!(
-                        "aur: revert+push failed for {}: {}; manual cleanup required at {}",
-                        t.target, err, t.git_url,
-                    ));
+        // Dedup recorded targets by `(git_url, AUR_REPO_BRANCH)` before
+        // fanning out. When two crates share the same AUR repo
+        // (unusual for binary PKGBUILDs but possible if a workspace
+        // packages multiple binaries into one repo), running `git
+        // revert HEAD` twice would revert the first revert — restoring
+        // the bad release. Keep the first-seen entry's label so the
+        // warn lines still name a meaningful target.
+        let unique = dedup_aur_targets(&targets);
+        // SSH credentials are not in the serialized evidence
+        // (`#[serde(skip)]`). Resolve them from the live config now
+        // so the parallel workers each have their own clone of the
+        // credential bundle.
+        let prepared: Vec<RevertTarget> = unique
+            .iter()
+            .map(|t| {
+                let (pk, ssh_cmd) = resolve_aur_credentials_from_config(ctx, &t.git_url);
+                RevertTarget {
+                    target: t.target.clone(),
+                    repo_url: t.git_url.clone(),
+                    branch: Some(AUR_REPO_BRANCH.to_string()),
+                    token: None,
+                    private_key: pk,
+                    ssh_command: ssh_cmd,
                 }
-            }
-        }
+            })
+            .collect();
+        let (reverted, failed) = run_revert_targets_parallel(&prepared, "aur", None, &log);
         log.status(&format!(
             "aur: reverted {} repo(s), {} failure(s)",
             reverted, failed
@@ -922,6 +990,101 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo-bin");
         assert!(targets[0].git_url.ends_with("demo-bin.git"));
+    }
+
+    #[test]
+    fn aur_our_target_extra_omits_private_key_after_serde_roundtrip() {
+        // SECURITY: persisting `private_key` / `git_ssh_command` into
+        // `dist/run-<id>/report.json` (return-type-swap), the run
+        // summary (--summary-json), or the announce-time release-body
+        // text would leak the SSH key publicly. `#[serde(skip)]`
+        // enforces the redaction; this test pins the contract.
+        let with_secrets = vec![AurOurTarget {
+            target: "demo-bin".into(),
+            git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
+            private_key: Some("PRIVATE-KEY-CONTENTS".into()),
+            git_ssh_command: Some("ssh -i /tmp/key".into()),
+        }];
+        let extra = serde_json::json!({ "aur_our_targets": with_secrets });
+        let serialized = serde_json::to_string(&extra).expect("serialize");
+        assert!(
+            !serialized.contains("PRIVATE-KEY-CONTENTS"),
+            "private_key leaked into serialized evidence: {serialized}"
+        );
+        assert!(
+            !serialized.contains("/tmp/key"),
+            "git_ssh_command leaked into serialized evidence: {serialized}"
+        );
+        // Parse back and assert the JSON shape lacks the keys.
+        let parsed: serde_json::Value = serde_json::from_str(&serialized).expect("parse");
+        let first = &parsed["aur_our_targets"][0];
+        assert!(
+            first.get("private_key").is_none(),
+            "private_key field present in evidence: {first}"
+        );
+        assert!(
+            first.get("git_ssh_command").is_none(),
+            "git_ssh_command field present in evidence: {first}"
+        );
+    }
+
+    #[test]
+    fn aur_our_rollback_re_reads_private_key_from_config() {
+        // `#[serde(skip)]` means decoded evidence has no credentials.
+        // Rollback must re-resolve them from `ctx.config.crates[*].
+        // publish.aur.private_key` keyed by `git_url`. Verify the
+        // resolver returns the live config's key + ssh command.
+        let mut c = aur_crate("demo");
+        if let Some(p) = c.publish.as_mut()
+            && let Some(a) = p.aur.as_mut()
+        {
+            a.private_key = Some("ROTATED-KEY".into());
+            a.git_ssh_command = Some("ssh -i /tmp/rotated".into());
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let (pk, ssh) =
+            resolve_aur_credentials_from_config(&ctx, "ssh://aur@aur.archlinux.org/demo-bin.git");
+        assert_eq!(pk.as_deref(), Some("ROTATED-KEY"));
+        assert_eq!(ssh.as_deref(), Some("ssh -i /tmp/rotated"));
+
+        // Unknown URL: returns (None, None) so the warn helper fires
+        // and points the operator at publish.aur.private_key.
+        let (pk, ssh) = resolve_aur_credentials_from_config(&ctx, "ssh://aur@x/y.git");
+        assert!(pk.is_none());
+        assert!(ssh.is_none());
+    }
+
+    #[test]
+    fn aur_branch_constant_matches_publish_path() {
+        // Pin the constant so both publish and rollback are guaranteed
+        // to push to the same branch name; a stray rename (e.g. to
+        // `main`) would have to edit this line.
+        assert_eq!(AUR_REPO_BRANCH, "master");
+    }
+
+    #[test]
+    fn aur_dedup_targets_collapses_shared_git_url() {
+        // Two recorded targets that happen to share a git_url collapse
+        // to one entry. A second `git revert HEAD` against the same
+        // AUR repo would revert the first revert and restore the bad
+        // release — the dedup guards that.
+        let targets = vec![
+            AurOurTarget {
+                target: "demo-bin".into(),
+                git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
+                private_key: None,
+                git_ssh_command: None,
+            },
+            AurOurTarget {
+                target: "demo-alias".into(),
+                git_url: "ssh://aur@aur.archlinux.org/demo-bin.git".into(),
+                private_key: None,
+                git_ssh_command: None,
+            },
+        ];
+        let unique = dedup_aur_targets(&targets);
+        assert_eq!(unique.len(), 1);
+        assert_eq!(unique[0].target, "demo-bin");
     }
 
     #[test]

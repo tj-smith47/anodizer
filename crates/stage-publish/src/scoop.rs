@@ -554,7 +554,13 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 ///
 /// Scoop is always per-crate (no top-level Scoop config block), so
 /// the run loop only walks `ctx.config.crates`.
-use crate::util::{RevertTarget, run_git_revert_and_push};
+///
+/// CREDENTIAL HANDLING: [`ScoopTarget`] stores `token_env_var` — the
+/// NAME of the env var — not the resolved token VALUE. The token is
+/// read from the live env at rollback time so persisted evidence
+/// carries no secret material. Same rule applies to the homebrew /
+/// nix Bundle B publishers.
+use crate::util::{RevertTarget, run_revert_targets_parallel};
 use serde::{Deserialize, Serialize};
 
 simple_publisher!(
@@ -578,6 +584,22 @@ fn decode_scoop_targets(extra: &serde_json::Value) -> Vec<ScoopTarget> {
         .get("scoop_targets")
         .and_then(|v| serde_json::from_value::<Vec<ScoopTarget>>(v.clone()).ok())
         .unwrap_or_default()
+}
+
+/// Collapse recorded bucket-push targets to a unique set keyed by
+/// `(repo_url, branch)`. First entry seen wins. See homebrew's
+/// `dedup_homebrew_targets` for the same-revert-twice hazard.
+fn dedup_scoop_targets(targets: &[ScoopTarget]) -> Vec<ScoopTarget> {
+    let mut seen: std::collections::BTreeSet<(String, Option<String>)> =
+        std::collections::BTreeSet::new();
+    let mut out: Vec<ScoopTarget> = Vec::with_capacity(targets.len());
+    for t in targets {
+        let key = (t.repo_url.clone(), t.branch.clone());
+        if seen.insert(key) {
+            out.push(t.clone());
+        }
+    }
+    out
 }
 
 fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
@@ -652,38 +674,32 @@ impl anodizer_core::Publisher for ScoopPublisher {
             ));
             return Ok(());
         }
-        let mut reverted = 0usize;
-        let mut failed = 0usize;
-        for t in &targets {
-            let token = t
-                .token_env_var
-                .as_deref()
-                .and_then(|n| std::env::var(n).ok())
-                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-                .or_else(|| std::env::var("GITHUB_TOKEN").ok());
-            let rt = RevertTarget {
-                target: t.target.clone(),
-                repo_url: t.repo_url.clone(),
-                branch: t.branch.clone(),
-                token,
-                private_key: None,
-                ssh_command: None,
-            };
-            log.status(&format!(
-                "scoop: revert + push {} ({})",
-                t.target, t.repo_url
-            ));
-            match run_git_revert_and_push(&rt, &log) {
-                Ok(()) => reverted += 1,
-                Err(err) => {
-                    failed += 1;
-                    log.warn(&format!(
-                        "scoop: revert+push failed for {}: {}; manual cleanup required at {}",
-                        t.target, err, t.repo_url,
-                    ));
+        let unique = dedup_scoop_targets(&targets);
+        let prepared: Vec<RevertTarget> = unique
+            .iter()
+            .map(|t| {
+                let token = t
+                    .token_env_var
+                    .as_deref()
+                    .and_then(|n| std::env::var(n).ok())
+                    .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
+                    .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+                RevertTarget {
+                    target: t.target.clone(),
+                    repo_url: t.repo_url.clone(),
+                    branch: t.branch.clone(),
+                    token,
+                    private_key: None,
+                    ssh_command: None,
                 }
-            }
-        }
+            })
+            .collect();
+        let env_hint = unique
+            .first()
+            .and_then(|t| t.token_env_var.as_deref())
+            .unwrap_or("SCOOP_BUCKET_TOKEN");
+        let (reverted, failed) =
+            run_revert_targets_parallel(&prepared, "scoop", Some(env_hint), &log);
         log.status(&format!(
             "scoop: reverted {} bucket(s), {} failure(s)",
             reverted, failed
@@ -783,6 +799,30 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo");
         assert_eq!(targets[0].branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn scoop_rollback_dedups_shared_bucket() {
+        // A single bucket can be configured for multiple crates;
+        // dedup so the second `git revert HEAD` doesn't undo the
+        // first. Mirror of homebrew_rollback_dedups_shared_tap.
+        let targets = vec![
+            ScoopTarget {
+                target: "alpha".into(),
+                repo_url: "https://github.com/acme/scoop-bucket.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+            },
+            ScoopTarget {
+                target: "beta".into(),
+                repo_url: "https://github.com/acme/scoop-bucket.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("SCOOP_BUCKET_TOKEN".into()),
+            },
+        ];
+        let unique = dedup_scoop_targets(&targets);
+        assert_eq!(unique.len(), 1);
+        assert_eq!(unique[0].target, "alpha");
     }
 }
 

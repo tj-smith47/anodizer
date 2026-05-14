@@ -14,6 +14,8 @@
 //! - [`pr`] — PR submission flows (gh CLI + REST API).
 //! - [`artifacts`] — OS/arch inference + `OsArtifact` + filtering helpers.
 //! - [`template`] — `render_url_template` and `render_or_warn`.
+//! - [`parallelism`] — shared `ROLLBACK_PARALLELISM` cap for publishers
+//!   that fan out per-target rollback work.
 //!
 //! External callers (homebrew/, scoop, krew, aur, aur_source, nix, cargo,
 //! chocolatey, cloudsmith, artifactory) reach these helpers through the
@@ -28,6 +30,7 @@ mod config;
 mod disambiguate;
 mod formats;
 mod git_revert;
+mod parallelism;
 mod pr;
 mod template;
 
@@ -60,6 +63,7 @@ pub(crate) use disambiguate::{
     InnerConfig as DisambiguateInnerConfig, disambiguate_by_format_with_sink,
 };
 pub(crate) use formats::{default_package_formats, format_matches};
-pub(crate) use git_revert::{RevertTarget, run_git_revert_and_push};
+pub(crate) use git_revert::RevertTarget;
+pub(crate) use parallelism::{ROLLBACK_PARALLELISM, run_revert_targets_parallel};
 pub(crate) use pr::{PrOrigin, maybe_submit_pr, submit_pr_via_gh};
 pub(crate) use template::{render_or_warn, render_url_template, render_url_template_with_ctx};

@@ -16,11 +16,19 @@
 //! the live config *before* `publish_to_homebrew` runs, then records
 //! them after a successful push so a later `--rollback-only` has
 //! everything it needs without depending on the ephemeral tempdir.
+//!
+//! CREDENTIAL HANDLING: [`HomebrewTarget`] stores `token_env_var` —
+//! the NAME of the env var to consult at rollback time — not the
+//! resolved token VALUE. The actual token is read from the live env
+//! at yank time so persisted evidence (`dist/run-<id>/report.json`,
+//! the announce-time release-body summary) carries no secret
+//! material. Same rule applies to the scoop / nix Bundle B
+//! publishers and is documented at their module level.
 
 use anodizer_core::context::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::util::{RevertTarget, run_git_revert_and_push};
+use crate::util::{RevertTarget, run_revert_targets_parallel};
 
 simple_publisher!(
     HomebrewPublisher,
@@ -61,6 +69,28 @@ fn decode_homebrew_targets(extra: &serde_json::Value) -> Vec<HomebrewTarget> {
         .get("homebrew_targets")
         .and_then(|v| serde_json::from_value::<Vec<HomebrewTarget>>(v.clone()).ok())
         .unwrap_or_default()
+}
+
+/// Collapse the recorded tap-push targets to a unique set keyed by
+/// `(repo_url, branch)`. The first entry seen wins (so its `target`
+/// label surfaces in warn lines).
+///
+/// One tap can hold many formulae/casks across different crates: if
+/// the rollback issued `git revert HEAD --no-edit` twice against the
+/// same tap, the second revert would undo the first, silently
+/// restoring the bad release. Dedup before fan-out so each tap is
+/// reverted exactly once. See module rustdoc.
+fn dedup_homebrew_targets(targets: &[HomebrewTarget]) -> Vec<HomebrewTarget> {
+    let mut seen: std::collections::BTreeSet<(String, Option<String>)> =
+        std::collections::BTreeSet::new();
+    let mut out: Vec<HomebrewTarget> = Vec::with_capacity(targets.len());
+    for t in targets {
+        let key = (t.repo_url.clone(), t.branch.clone());
+        if seen.insert(key) {
+            out.push(t.clone());
+        }
+    }
+    out
 }
 
 /// Build the list of (target, RepositoryConfig, token) triples for
@@ -170,42 +200,41 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             return Ok(());
         }
 
-        let mut reverted = 0usize;
-        let mut failed = 0usize;
-        for t in &targets {
-            // Resolve the auth token at rollback time from the env
-            // var the publish path used. We deliberately do NOT
-            // serialize the token into evidence (would leak across
-            // process boundaries / log captures).
-            let token = t
-                .token_env_var
-                .as_deref()
-                .and_then(|n| std::env::var(n).ok())
-                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-                .or_else(|| std::env::var("GITHUB_TOKEN").ok());
-            let rt = RevertTarget {
-                target: t.target.clone(),
-                repo_url: t.repo_url.clone(),
-                branch: t.branch.clone(),
-                token,
-                private_key: None,
-                ssh_command: None,
-            };
-            log.status(&format!(
-                "homebrew: revert + push {} ({})",
-                t.target, t.repo_url
-            ));
-            match run_git_revert_and_push(&rt, &log) {
-                Ok(()) => reverted += 1,
-                Err(err) => {
-                    failed += 1;
-                    log.warn(&format!(
-                        "homebrew: revert+push failed for {}: {}; manual cleanup required at {}",
-                        t.target, err, t.repo_url,
-                    ));
+        // Dedup by `(repo_url, branch)` so a tap that holds multiple
+        // formulae/casks isn't reverted twice (second revert undoes
+        // the first).
+        let unique = dedup_homebrew_targets(&targets);
+        // Resolve auth tokens at rollback time — never persisted in
+        // evidence. `token_env_var` is just the *name* of the env
+        // var; the value lives only in the live process env.
+        let prepared: Vec<RevertTarget> = unique
+            .iter()
+            .map(|t| {
+                let token = t
+                    .token_env_var
+                    .as_deref()
+                    .and_then(|n| std::env::var(n).ok())
+                    .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
+                    .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+                RevertTarget {
+                    target: t.target.clone(),
+                    repo_url: t.repo_url.clone(),
+                    branch: t.branch.clone(),
+                    token,
+                    private_key: None,
+                    ssh_command: None,
                 }
-            }
-        }
+            })
+            .collect();
+        // Use the first target's env-var hint for the warn lines;
+        // every homebrew target carries the same `HOMEBREW_TAP_TOKEN`
+        // hint by construction, so picking the first is fine.
+        let env_hint = unique
+            .first()
+            .and_then(|t| t.token_env_var.as_deref())
+            .unwrap_or("HOMEBREW_TAP_TOKEN");
+        let (reverted, failed) =
+            run_revert_targets_parallel(&prepared, "homebrew", Some(env_hint), &log);
         log.status(&format!(
             "homebrew: reverted {} tap(s), {} failure(s)",
             reverted, failed
@@ -338,5 +367,60 @@ mod publisher_tests {
         let names: Vec<&str> = targets.iter().map(|t| t.target.as_str()).collect();
         assert!(names.contains(&"demo"), "{names:?}");
         assert!(names.contains(&"demo-cask"), "{names:?}");
+    }
+
+    #[test]
+    fn homebrew_rollback_dedups_shared_tap() {
+        // 3 targets pointing at the same tap collapse to 1. The
+        // shape mirrors how a workspace with 3 crates plus a
+        // same-tap cask would be recorded. Test the dedup helper
+        // directly — invoking rollback would require a real git
+        // remote (covered by `git_revert_and_push_*` tests).
+        let targets = vec![
+            HomebrewTarget {
+                target: "alpha".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+            },
+            HomebrewTarget {
+                target: "beta".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+            },
+            HomebrewTarget {
+                target: "gamma".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+            },
+        ];
+        let unique = dedup_homebrew_targets(&targets);
+        assert_eq!(
+            unique.len(),
+            1,
+            "expected one revert per tap, got {unique:?}"
+        );
+        assert_eq!(unique[0].target, "alpha");
+
+        // Different branches on the same repo stay distinct — they're
+        // separate revert targets.
+        let cross_branch = vec![
+            HomebrewTarget {
+                target: "alpha".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("main".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+            },
+            HomebrewTarget {
+                target: "beta".into(),
+                repo_url: "https://github.com/acme/homebrew-tap.git".into(),
+                branch: Some("legacy".into()),
+                token_env_var: Some("HOMEBREW_TAP_TOKEN".into()),
+            },
+        ];
+        let unique = dedup_homebrew_targets(&cross_branch);
+        assert_eq!(unique.len(), 2);
     }
 }

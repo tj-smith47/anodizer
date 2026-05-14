@@ -6,11 +6,17 @@
 //! to the configured nix overlay repo is recorded so a `--rollback-
 //! only` re-clones, runs `git revert HEAD --no-edit`, and pushes the
 //! revert back to the same branch.
+//!
+//! CREDENTIAL HANDLING: [`NixTarget`] stores `token_env_var` — the
+//! NAME of the env var — not the resolved token VALUE. The token is
+//! read from the live env at rollback time so persisted evidence
+//! carries no secret material. Same rule applies to the homebrew /
+//! scoop Bundle B publishers.
 
 use anodizer_core::context::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::util::{RevertTarget, run_git_revert_and_push};
+use crate::util::{RevertTarget, run_revert_targets_parallel};
 
 simple_publisher!(
     NixPublisher,
@@ -33,6 +39,22 @@ fn decode_nix_targets(extra: &serde_json::Value) -> Vec<NixTarget> {
         .get("nix_targets")
         .and_then(|v| serde_json::from_value::<Vec<NixTarget>>(v.clone()).ok())
         .unwrap_or_default()
+}
+
+/// Collapse recorded overlay-push targets to a unique set keyed by
+/// `(repo_url, branch)`. First entry seen wins. See homebrew's
+/// `dedup_homebrew_targets` for the same-revert-twice hazard.
+fn dedup_nix_targets(targets: &[NixTarget]) -> Vec<NixTarget> {
+    let mut seen: std::collections::BTreeSet<(String, Option<String>)> =
+        std::collections::BTreeSet::new();
+    let mut out: Vec<NixTarget> = Vec::with_capacity(targets.len());
+    for t in targets {
+        let key = (t.repo_url.clone(), t.branch.clone());
+        if seen.insert(key) {
+            out.push(t.clone());
+        }
+    }
+    out
 }
 
 fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
@@ -107,35 +129,32 @@ impl anodizer_core::Publisher for NixPublisher {
             ));
             return Ok(());
         }
-        let mut reverted = 0usize;
-        let mut failed = 0usize;
-        for t in &targets {
-            let token = t
-                .token_env_var
-                .as_deref()
-                .and_then(|n| std::env::var(n).ok())
-                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-                .or_else(|| std::env::var("GITHUB_TOKEN").ok());
-            let rt = RevertTarget {
-                target: t.target.clone(),
-                repo_url: t.repo_url.clone(),
-                branch: t.branch.clone(),
-                token,
-                private_key: None,
-                ssh_command: None,
-            };
-            log.status(&format!("nix: revert + push {} ({})", t.target, t.repo_url));
-            match run_git_revert_and_push(&rt, &log) {
-                Ok(()) => reverted += 1,
-                Err(err) => {
-                    failed += 1;
-                    log.warn(&format!(
-                        "nix: revert+push failed for {}: {}; manual cleanup required at {}",
-                        t.target, err, t.repo_url,
-                    ));
+        let unique = dedup_nix_targets(&targets);
+        let prepared: Vec<RevertTarget> = unique
+            .iter()
+            .map(|t| {
+                let token = t
+                    .token_env_var
+                    .as_deref()
+                    .and_then(|n| std::env::var(n).ok())
+                    .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
+                    .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+                RevertTarget {
+                    target: t.target.clone(),
+                    repo_url: t.repo_url.clone(),
+                    branch: t.branch.clone(),
+                    token,
+                    private_key: None,
+                    ssh_command: None,
                 }
-            }
-        }
+            })
+            .collect();
+        let env_hint = unique
+            .first()
+            .and_then(|t| t.token_env_var.as_deref())
+            .unwrap_or("NIX_PKGS_TOKEN");
+        let (reverted, failed) =
+            run_revert_targets_parallel(&prepared, "nix", Some(env_hint), &log);
         log.status(&format!(
             "nix: reverted {} overlay(s), {} failure(s)",
             reverted, failed
@@ -235,5 +254,28 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo");
         assert_eq!(targets[0].branch.as_deref(), Some("master"));
+    }
+
+    #[test]
+    fn nix_rollback_dedups_shared_overlay_repo() {
+        // A single overlay repo can hold multiple flakes; dedup so
+        // the second `git revert HEAD` doesn't undo the first.
+        let targets = vec![
+            NixTarget {
+                target: "alpha".into(),
+                repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
+                branch: Some("master".into()),
+                token_env_var: Some("NIX_PKGS_TOKEN".into()),
+            },
+            NixTarget {
+                target: "beta".into(),
+                repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),
+                branch: Some("master".into()),
+                token_env_var: Some("NIX_PKGS_TOKEN".into()),
+            },
+        ];
+        let unique = dedup_nix_targets(&targets);
+        assert_eq!(unique.len(), 1);
+        assert_eq!(unique[0].target, "alpha");
     }
 }

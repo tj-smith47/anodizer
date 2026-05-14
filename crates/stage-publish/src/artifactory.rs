@@ -895,11 +895,11 @@ simple_publisher!(
     Some("ARTIFACTORY_TOKEN delete"),
 );
 
-/// Bound for parallel DELETE fan-out during rollback. Chosen to match the
-/// scale at which v0.2.0's 143-artifact cascade case becomes operator-usable
-/// (~36 batches of 4 at 30s/req ≈ 18 min worst-case vs. 71 min serial)
-/// without exhausting any reasonable Artifactory rate limit.
-const ROLLBACK_PARALLELISM: usize = 4;
+// Bound for parallel DELETE fan-out during rollback is shared with the
+// Bundle B git-revert publishers via [`crate::util::ROLLBACK_PARALLELISM`].
+// Re-imported below so the local references in `parallel_delete` stay
+// terse.
+use crate::util::ROLLBACK_PARALLELISM;
 
 impl anodizer_core::Publisher for ArtifactoryPublisher {
     fn name(&self) -> &str {
