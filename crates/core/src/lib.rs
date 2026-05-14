@@ -19,6 +19,8 @@ pub mod parallel;
 pub mod partial;
 pub mod pipe_skip;
 pub mod preflight;
+pub mod publish_evidence;
+pub mod publish_report;
 pub mod redact;
 pub mod retry;
 pub mod scm;
@@ -32,6 +34,11 @@ pub mod tool_detect;
 pub mod url;
 pub mod user_command;
 pub mod util;
+
+pub use publish_evidence::PublishEvidence;
+pub use publish_report::{
+    PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
+};
 
 #[cfg(feature = "test-helpers")]
 pub mod test_helpers;
