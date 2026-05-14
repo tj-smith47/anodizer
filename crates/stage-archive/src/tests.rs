@@ -4466,3 +4466,91 @@ fn test_multi_crate_archive_projectname_resolves_to_crate() {
         Some("workspace"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// SOURCE_DATE_EPOCH byte-stability regression (release-resilience task 24)
+// ---------------------------------------------------------------------------
+//
+// stage-archive's tar writer reads `mtime` from the SDE-derived value
+// resolved in `run.rs` (CommitTimestamp template var or SOURCE_DATE_EPOCH
+// env override). The audit found no `Utc::now()` / `SystemTime::now()`
+// callsites in stage-archive, so this test only pins the contract that
+// `create_tar` with the same `mtime` produces byte-identical output
+// across calls. A future refactor that introduces a clock read inside
+// `write_tar_entries` (e.g. defaulting an mtime when None) regresses
+// this test.
+
+#[test]
+fn archive_byte_stable_for_same_sde() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("hello.txt");
+    fs::write(&src, b"hello world").unwrap();
+
+    let out_a = tmp.path().join("a.tar");
+    let out_b = tmp.path().join("b.tar");
+
+    // Same SDE-derived mtime for both runs. Pinned value: SDE 1_715_000_000.
+    let mtime = Some(1_715_000_000u64);
+
+    formats::create_tar(
+        &[src.as_path()],
+        &out_a,
+        Some(tmp.path()),
+        None,
+        mtime,
+        None,
+    )
+    .expect("create_tar a");
+    formats::create_tar(
+        &[src.as_path()],
+        &out_b,
+        Some(tmp.path()),
+        None,
+        mtime,
+        None,
+    )
+    .expect("create_tar b");
+
+    let bytes_a = fs::read(&out_a).unwrap();
+    let bytes_b = fs::read(&out_b).unwrap();
+    assert_eq!(
+        bytes_a, bytes_b,
+        "tar archives built with the same SDE-derived mtime must be byte-identical"
+    );
+}
+
+#[test]
+fn archive_byte_differs_for_different_sde() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("hello.txt");
+    fs::write(&src, b"hello world").unwrap();
+
+    let out_a = tmp.path().join("a.tar");
+    let out_b = tmp.path().join("b.tar");
+
+    formats::create_tar(
+        &[src.as_path()],
+        &out_a,
+        Some(tmp.path()),
+        None,
+        Some(1_715_000_000u64),
+        None,
+    )
+    .expect("create_tar a");
+    formats::create_tar(
+        &[src.as_path()],
+        &out_b,
+        Some(tmp.path()),
+        None,
+        Some(1_716_000_000u64),
+        None,
+    )
+    .expect("create_tar b");
+
+    let bytes_a = fs::read(&out_a).unwrap();
+    let bytes_b = fs::read(&out_b).unwrap();
+    assert_ne!(
+        bytes_a, bytes_b,
+        "different mtimes must produce different tar bytes (sanity check on SDE wiring)"
+    );
+}

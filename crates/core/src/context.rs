@@ -278,6 +278,13 @@ pub struct Context {
     /// stages) consult this to apply the submitter-gate / announce-gate
     /// rules — see `PublishReport::any_failed`.
     pub publish_report: Option<PublishReport>,
+    /// SOURCE_DATE_EPOCH seed + non-determinism allow-list state for the
+    /// run. `None` until a stage (typically `BuildStage`) seeds it from
+    /// `resolve_reproducible_epoch(commit_timestamp)`; downstream stages
+    /// (`stage-sbom`, `stage-archive`, `stage-sign`) read `sde` to derive
+    /// deterministic timestamps. Lazy-init by design: tests and snapshot
+    /// runs without a clean commit can still proceed.
+    pub determinism: Option<crate::DeterminismState>,
 }
 
 impl Context {
@@ -294,6 +301,7 @@ impl Context {
             token_type: ScmTokenType::GitHub,
             skip_memento: crate::pipe_skip::SkipMemento::new(),
             publish_report: None,
+            determinism: None,
         }
     }
 

@@ -2384,3 +2384,36 @@ fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// SOURCE_DATE_EPOCH byte-stability regression (release-resilience task 24)
+// ---------------------------------------------------------------------------
+//
+// stage-checksum is trivially deterministic: SHA256 (and friends) over the
+// same byte stream produces an identical digest, and the formatted
+// `{hash}  {filename}` line is a pure function of those two inputs. The
+// audit found no `Utc::now()` / `SystemTime::now()` callsites in
+// stage-checksum. This test pins the trivial fact so a future refactor
+// that introduces a timestamp into the checksum file format (e.g. a
+// generated-on header) regresses the test.
+
+#[test]
+fn checksum_byte_stable_for_same_inputs() {
+    let tmp = TempDir::new().unwrap();
+    let f = tmp.path().join("payload.bin");
+    fs::write(&f, b"the quick brown fox jumps over the lazy dog").unwrap();
+
+    let hash_a = sha256_file(&f).expect("sha256 a");
+    let hash_b = sha256_file(&f).expect("sha256 b");
+    assert_eq!(
+        hash_a, hash_b,
+        "SHA256 of the same file must be byte-identical across runs"
+    );
+
+    let line_a = format_checksum_line(&hash_a, "payload.bin");
+    let line_b = format_checksum_line(&hash_b, "payload.bin");
+    assert_eq!(
+        line_a, line_b,
+        "formatted checksum line must be byte-identical for same hash + filename"
+    );
+}

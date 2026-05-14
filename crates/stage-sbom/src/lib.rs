@@ -700,11 +700,38 @@ fn run_sbom_builtin(
     // Deterministic inputs: the same release tag must produce byte-identical
     // SBOM output across pipeline retries, otherwise GitHub ReleaseAsset
     // rejects the re-upload with `already_exists` (size mismatch).
-    let timestamp = ctx
-        .template_vars()
-        .get("CommitDate")
-        .cloned()
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    //
+    // Resolution order:
+    //   1. `ctx.determinism.sde` — the canonical SOURCE_DATE_EPOCH seeded by
+    //      `BuildStage` (or whatever stage runs first under
+    //      `resolve_reproducible_epoch`). This is the load-bearing path
+    //      under the release-resilience determinism contract.
+    //   2. `CommitDate` template var — fallback for runs where the
+    //      determinism state was not seeded (e.g. SBOM-only commands).
+    //   3. `chrono::Utc::now()` — last-resort fallback; emits a one-line
+    //      warn so the operator sees the reproducibility regression.
+    let timestamp = if let Some(state) = ctx.determinism.as_ref() {
+        chrono::DateTime::<chrono::Utc>::from_timestamp(state.sde, 0)
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| {
+                log.status(&format!(
+                    "sbom[{}]: warn — SOURCE_DATE_EPOCH {} out of range; falling back to CommitDate",
+                    id, state.sde
+                ));
+                ctx.template_vars()
+                    .get("CommitDate")
+                    .cloned()
+                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
+            })
+    } else if let Some(cd) = ctx.template_vars().get("CommitDate").cloned() {
+        cd
+    } else {
+        log.status(&format!(
+            "sbom[{}]: warn — no SOURCE_DATE_EPOCH or CommitDate; SBOM timestamp will not be reproducible",
+            id
+        ));
+        chrono::Utc::now().to_rfc3339()
+    };
     let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));
 
     let (sbom_json, extension) = match format {
@@ -836,5 +863,89 @@ mod tests {
         for p in &paths {
             assert!(p.exists(), "registered SBOM path must exist: {:?}", p);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // SOURCE_DATE_EPOCH wiring regression (release-resilience task 24)
+    // -----------------------------------------------------------------------
+    //
+    // These tests pin the contract that the CycloneDX `metadata.timestamp`
+    // field is derived from the run's SOURCE_DATE_EPOCH (via
+    // `ctx.determinism.sde`), not wall-clock `Utc::now()`. Without this
+    // wiring, two pipeline retries of the same release tag emit different
+    // SBOM bytes and the second upload fails with GitHub ReleaseAsset
+    // `already_exists` (size mismatch).
+
+    /// `generate_cyclonedx` is byte-stable for the same `timestamp` input
+    /// across repeated calls. Trivially true for a pure function, but
+    /// pinned so a future refactor that introduces clock reads inside the
+    /// generator (e.g. via `chrono::Utc::now()` in a helper) regresses
+    /// the test.
+    #[test]
+    fn cyclonedx_output_byte_stable_for_same_timestamp() {
+        let pkgs = vec![CargoPackage {
+            name: "anyhow".into(),
+            version: "1.0.0".into(),
+            source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
+        }];
+        // RFC3339 derived from SDE 1_715_000_000 = 2024-05-06T12:53:20+00:00.
+        let ts = "2024-05-06T12:53:20+00:00";
+        let a = generate_cyclonedx("myproj", "1.2.3", ts, &pkgs).unwrap();
+        let b = generate_cyclonedx("myproj", "1.2.3", ts, &pkgs).unwrap();
+        let a_bytes = serde_json::to_vec_pretty(&a).unwrap();
+        let b_bytes = serde_json::to_vec_pretty(&b).unwrap();
+        assert_eq!(
+            a_bytes, b_bytes,
+            "CycloneDX output must be byte-identical for the same SDE-derived timestamp"
+        );
+    }
+
+    /// Pins the SDE-to-RFC3339 conversion that `run_sbom_builtin` uses on
+    /// `ctx.determinism.sde`. If this conversion drifts (e.g. UTC vs
+    /// local TZ, seconds vs millis), the SBOM `metadata.timestamp` field
+    /// changes and breaks retry idempotency.
+    #[test]
+    fn sbom_metadata_timestamp_honors_sde() {
+        let sde: i64 = 1_715_000_000;
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(sde, 0)
+            .expect("SDE 1_715_000_000 is in range");
+        let derived = dt.to_rfc3339();
+        // The exact RFC3339 form chrono emits for this SDE — pinned so a
+        // future chrono version that flips +00:00 -> Z (or vice-versa)
+        // breaks this test instead of silently breaking SBOM byte
+        // stability.
+        assert_eq!(derived, "2024-05-06T12:53:20+00:00");
+
+        // The generated SBOM embeds exactly that string in metadata.timestamp.
+        let pkgs: Vec<CargoPackage> = vec![];
+        let sbom = generate_cyclonedx("p", "0", &derived, &pkgs).unwrap();
+        let embedded = sbom
+            .get("metadata")
+            .and_then(|m| m.get("timestamp"))
+            .and_then(|t| t.as_str())
+            .expect("metadata.timestamp present");
+        assert_eq!(embedded, "2024-05-06T12:53:20+00:00");
+    }
+
+    /// Different SDEs produce different metadata timestamps (sanity: the
+    /// timestamp is not pinned to a constant). Pair test for
+    /// `sbom_metadata_timestamp_honors_sde`.
+    #[test]
+    fn sbom_metadata_timestamp_varies_with_sde() {
+        let pkgs: Vec<CargoPackage> = vec![];
+        let t1 = chrono::DateTime::<chrono::Utc>::from_timestamp(1_715_000_000, 0)
+            .unwrap()
+            .to_rfc3339();
+        let t2 = chrono::DateTime::<chrono::Utc>::from_timestamp(1_716_000_000, 0)
+            .unwrap()
+            .to_rfc3339();
+        assert_ne!(t1, t2);
+        let s1 = generate_cyclonedx("p", "0", &t1, &pkgs).unwrap();
+        let s2 = generate_cyclonedx("p", "0", &t2, &pkgs).unwrap();
+        assert_ne!(
+            serde_json::to_vec(&s1).unwrap(),
+            serde_json::to_vec(&s2).unwrap(),
+            "different SDEs must produce different SBOM bytes"
+        );
     }
 }

@@ -203,6 +203,18 @@ impl Stage for super::BuildStage {
             .cloned()
             .unwrap_or_else(|| "0".to_string());
 
+        // Seed the run-wide determinism state from SOURCE_DATE_EPOCH (or the
+        // commit timestamp fallback). Downstream stages — stage-sbom in
+        // particular — read `ctx.determinism.sde` to derive byte-stable
+        // timestamps. Initialized lazily so test contexts without a clean
+        // commit can still proceed; missing SDE simply leaves the field as
+        // `None` and downstream stages fall back to template vars.
+        if ctx.determinism.is_none()
+            && let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp)
+        {
+            ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+        }
+
         for crate_cfg in &crates {
             // Determine builds for this crate
             let builds: Vec<BuildConfig> = match &crate_cfg.builds {

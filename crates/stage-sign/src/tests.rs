@@ -2569,3 +2569,50 @@ fn test_docker_sign_digest_go_compat_syntax() {
         output.trim()
     );
 }
+
+// ---------------------------------------------------------------------------
+// SOURCE_DATE_EPOCH byte-stability regression (release-resilience task 24)
+// ---------------------------------------------------------------------------
+//
+// stage-sign delegates to an external signer (`cosign`, `gpg`) via
+// `Command::new`. The audit found no `Utc::now()` / `SystemTime::now()`
+// callsites in stage-sign — the SDE goes in as an env var on the
+// `Command`. Byte-stable signature output requires the signer itself to
+// honor SDE (and, for GPG, `--faked-system-time`). These two
+// signer-dependent tests are gated as `#[ignore]` because:
+//
+//   1. cosign's signature output is intentionally non-deterministic by
+//      default (random nonce); deterministic-signing mode requires
+//      `--key-ref` with a specific KMS configuration the test harness
+//      cannot provision.
+//   2. gpg's `--faked-system-time` flag preflight check lands in
+//      release-resilience task 25 (preflight); without it, a test that
+//      pins gpg byte-stability is flaky on hosts where the flag isn't
+//      supported.
+//
+// Both tests remain in the suite as documentation of the contract; they
+// will be un-ignored once tasks 25 and the cosign-KMS fixture land.
+
+#[test]
+#[ignore = "cosign deterministic-signing requires KMS key fixture; see task 25"]
+fn cosign_signature_byte_stable_for_same_sde() {
+    // Sketch:
+    //   - Skip if `cosign` not on PATH.
+    //   - Set SOURCE_DATE_EPOCH=1715000000 on two separate sign invocations.
+    //   - Assert the two `.sig` outputs are byte-identical.
+    //
+    // Blocked on: deterministic-signing KMS fixture (task 25 preflight will
+    // surface whether the host's cosign supports `--key-ref kms://`).
+}
+
+#[test]
+#[ignore = "gpg --faked-system-time preflight check lands in task 25"]
+fn gpg_signature_byte_stable_for_same_sde() {
+    // Sketch:
+    //   - Skip if `gpg --version` doesn't print 2.x+.
+    //   - Sign the same payload twice with the same `--faked-system-time`.
+    //   - Assert byte-equal `.sig` outputs.
+    //
+    // Blocked on: task 25's preflight that fails fast on gpg < 2.0.10
+    // (no `--faked-system-time` support).
+}

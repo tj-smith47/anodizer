@@ -142,7 +142,7 @@ pub(crate) fn cargo_target_dir(build_env: Option<&HashMap<String, String>>) -> P
 // resolve_reproducible_epoch — parse SOURCE_DATE_EPOCH with commit_timestamp fallback
 // ---------------------------------------------------------------------------
 
-pub(crate) fn resolve_reproducible_epoch(commit_timestamp: &str) -> Option<i64> {
+pub fn resolve_reproducible_epoch(commit_timestamp: &str) -> Option<i64> {
     let epoch = std::env::var("SOURCE_DATE_EPOCH")
         .ok()
         .and_then(|v| v.parse().ok())
