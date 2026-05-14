@@ -89,9 +89,27 @@ pub fn dispatch(
         }
 
         for p in publishers.iter().filter(|p| p.group() == group) {
-            let (outcome, evidence) = match p.run(ctx) {
-                Ok(evidence) => (PublisherOutcome::Succeeded, Some(evidence)),
-                Err(err) => (PublisherOutcome::Failed(err.to_string()), None),
+            // Test-harness short-circuit: when the operator listed this
+            // publisher in `--simulate-failure` (env-gated by
+            // `ANODIZE_TEST_HARNESS=1` at the CLI layer), bypass
+            // `p.run()` entirely and record a synthetic failure so the
+            // gate / rollback / report paths can be exercised
+            // deterministically without monkey-patching the publisher.
+            let simulated = ctx
+                .options
+                .simulate_failure_publishers
+                .iter()
+                .any(|name| name == p.name());
+            let (outcome, evidence) = if simulated {
+                (
+                    PublisherOutcome::Failed(format!("simulated failure: {}", p.name())),
+                    None,
+                )
+            } else {
+                match p.run(ctx) {
+                    Ok(evidence) => (PublisherOutcome::Succeeded, Some(evidence)),
+                    Err(err) => (PublisherOutcome::Failed(err.to_string()), None),
+                }
             };
             let failed = matches!(outcome, PublisherOutcome::Failed(_));
             report.results.push(PublisherResult {
@@ -277,5 +295,57 @@ mod tests {
         let names: Vec<&str> = report.results.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["m1", "m2"], "m3 must not have run");
         assert!(report.results.iter().all(|r| r.name != "m3"));
+    }
+
+    #[test]
+    fn dispatch_substitutes_err_for_simulated_failure() {
+        // Even when a publisher's `run()` would succeed, listing it in
+        // `ctx.options.simulate_failure_publishers` must short-circuit
+        // and record a synthetic `Failed("simulated failure: <name>")`
+        // entry. Sibling publishers continue to run normally so the
+        // gate/fail-fast/rollback paths can be tested in isolation.
+        let mut ctx = Context::test_fixture();
+        ctx.options.simulate_failure_publishers = vec!["cargo".to_string()];
+        let publishers = vec![
+            fake("cargo", PublisherGroup::Manager, true, FakeOutcome::Succeed),
+            fake("brew", PublisherGroup::Manager, false, FakeOutcome::Succeed),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let cargo = report
+            .results
+            .iter()
+            .find(|r| r.name == "cargo")
+            .expect("cargo entry present");
+        match &cargo.outcome {
+            PublisherOutcome::Failed(msg) => {
+                assert!(
+                    msg.contains("simulated failure") && msg.contains("cargo"),
+                    "simulated-failure message should name the publisher, got: {}",
+                    msg
+                );
+            }
+            other => panic!("expected Failed, got {:?}", other),
+        }
+        assert!(
+            cargo.evidence.is_none(),
+            "simulated failure has no evidence"
+        );
+
+        let brew = report
+            .results
+            .iter()
+            .find(|r| r.name == "brew")
+            .expect("brew entry present");
+        assert!(
+            matches!(brew.outcome, PublisherOutcome::Succeeded),
+            "non-simulated sibling publisher must run normally"
+        );
+
+        // Required-cargo failed + default gate_submitter => Submitter
+        // group (if present) would be gated. Even without submitters
+        // here the report should mark `any_failed(Manager, true)`.
+        assert!(report.any_failed(PublisherGroup::Manager, true));
     }
 }

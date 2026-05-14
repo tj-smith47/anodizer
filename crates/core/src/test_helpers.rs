@@ -376,6 +376,12 @@ impl TestContextBuilder {
             replace_existing_artifacts: false,
             skip_post_publish_poll: false,
             gate_submitter: None,
+            rollback_mode: None,
+            simulate_failure_publishers: Vec::new(),
+            rollback_only: false,
+            from_run: None,
+            runtime_nondeterministic_allowlist: Vec::new(),
+            summary_json_path: None,
         };
 
         let mut ctx = Context::new(config, options);

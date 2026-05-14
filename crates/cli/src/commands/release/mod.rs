@@ -6,7 +6,7 @@ pub use split::run_merge;
 use super::helpers;
 use crate::pipeline;
 use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
-use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::context::{Context, ContextOptions, RollbackMode};
 use anodizer_core::git;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template;
@@ -67,6 +67,39 @@ pub struct ReleaseOpts {
     /// after the publish step's HTTP 2xx. Plumbed into
     /// `ContextOptions::skip_post_publish_poll`.
     pub no_post_publish_poll: bool,
+    /// `--no-gate-submitter`: disable the Submitter gate so Submitter
+    /// publishers dispatch even when a required Assets/Manager
+    /// publisher failed. Plumbed into
+    /// `ContextOptions::gate_submitter` as `Some(false)`. Default
+    /// (`None`) means gate-on.
+    pub no_gate_submitter: bool,
+    /// `--rollback=<none|best-effort>`: post-publish rollback policy
+    /// override. Validated against the {none, best-effort} set in
+    /// `run()` and stored as `ContextOptions::rollback_mode`.
+    pub rollback: Option<String>,
+    /// `--simulate-failure=<publisher>` (repeatable): names of
+    /// publishers whose `run()` should be replaced with a synthetic
+    /// failure in `stage-publish::dispatch`. Only honored when
+    /// `ANODIZE_TEST_HARNESS=1` is set; otherwise rejected at the
+    /// translation site so production releases cannot trip it.
+    pub simulate_failure: Vec<String>,
+    /// `--rollback-only`: skip publish; re-attempt rollback from a
+    /// prior run report. The replay logic lands in a follow-up task
+    /// (tracked in `.claude/known-bugs.md`); `run()` bails with a
+    /// clear "not yet implemented" error in this revision so the
+    /// flag is discoverable via `--help`.
+    pub rollback_only: bool,
+    /// `--from-run=<id>`: prior run id whose `report.json` to load
+    /// when running with `--rollback-only`.
+    pub from_run: Option<String>,
+    /// `--allow-nondeterministic <name>=<reason>` (repeatable):
+    /// runtime non-determinism opt-outs. Parsed at the translation
+    /// site into `(name, reason)` tuples; empty reasons are rejected
+    /// so the report always carries a human-readable justification.
+    pub allow_nondeterministic: Vec<String>,
+    /// `--summary-json=<path>`: when set, the per-publisher run
+    /// summary is written here.
+    pub summary_json: Option<PathBuf>,
 }
 
 /// Decide whether the pre-flight publisher-state check should run.
@@ -114,6 +147,28 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // `--skip=release,publish,announce` exactly.
     if opts.prepare {
         apply_prepare_mode_to_skip(&mut opts.skip);
+    }
+
+    // `--rollback-only` is plumbed end-to-end (clap surface, ReleaseOpts,
+    // ContextOptions) but the replay-from-prior-run logic lands in a
+    // follow-up task. Bail with a clear pending-implementation error
+    // so operators see the flag in `--help` and discover its status.
+    if opts.rollback_only {
+        anyhow::bail!(
+            "--rollback-only is plumbed but not yet implemented (planned for the rollback-only follow-up task)"
+        );
+    }
+
+    // `--strict` and `--allow-nondeterministic` are mutually exclusive:
+    // strict mode forbids the determinism stage from suppressing
+    // findings, the allowlist's whole purpose is to suppress one. clap
+    // can't express this directly (--strict lives on the top-level Cli
+    // struct and the allowlist on the Release variant), so the check
+    // runs here.
+    if opts.strict && !opts.allow_nondeterministic.is_empty() {
+        anyhow::bail!(
+            "--strict and --allow-nondeterministic are mutually exclusive (drop --strict if a runtime exemption is required)"
+        );
     }
 
     let log = StageLogger::new(
@@ -331,6 +386,52 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         None
     };
 
+    // Translate `--rollback=<v>` into the enum; reject invalid values
+    // up front so the dispatch site can rely on a clean value.
+    let rollback_mode: Option<RollbackMode> = match opts.rollback.as_deref() {
+        Some("none") => Some(RollbackMode::None),
+        Some("best-effort") => Some(RollbackMode::BestEffort),
+        Some(other) => {
+            anyhow::bail!(
+                "invalid --rollback value: {} (expected: none, best-effort)",
+                other
+            );
+        }
+        None => None,
+    };
+
+    // `--simulate-failure` is a test-only flag and is gated by the
+    // `ANODIZE_TEST_HARNESS=1` env var. Production releases that
+    // accidentally set the flag get a hard error rather than silent
+    // pass-through, so the surface cannot be weaponized.
+    let simulate_failure_publishers = if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1")
+    {
+        std::mem::take(&mut opts.simulate_failure)
+    } else if !opts.simulate_failure.is_empty() {
+        anyhow::bail!(
+            "--simulate-failure requires ANODIZE_TEST_HARNESS=1 (test-harness gated flag)"
+        );
+    } else {
+        Vec::new()
+    };
+
+    // Translate `--allow-nondeterministic name=reason` (repeatable)
+    // into `(name, reason)` tuples. Empty reasons are rejected so the
+    // run summary always carries a human-readable justification.
+    let runtime_nondeterministic_allowlist: Vec<(String, String)> = opts
+        .allow_nondeterministic
+        .iter()
+        .map(|s| {
+            let (name, reason) = s.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("--allow-nondeterministic must be NAME=REASON, got: {}", s)
+            })?;
+            if reason.trim().is_empty() {
+                anyhow::bail!("--allow-nondeterministic reason cannot be empty for: {}", s);
+            }
+            Ok::<_, anyhow::Error>((name.to_string(), reason.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
     let ctx_opts = ContextOptions {
         snapshot: opts.snapshot,
         nightly: opts.nightly,
@@ -352,11 +453,20 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         resume_release: opts.resume_release,
         replace_existing_artifacts: opts.replace_existing,
         skip_post_publish_poll: opts.no_post_publish_poll,
-        // CLI flag wiring lands in a follow-up task; default to the
-        // gating-on behaviour resolved via `unwrap_or(true)` at the
-        // dispatch site so a `None` here flips into a gate-on
-        // dispatch.
-        gate_submitter: None,
+        // `--no-gate-submitter` flips to `Some(false)`; absent flag
+        // means `None`, which the dispatch site resolves to gate-on
+        // via `unwrap_or(true)`.
+        gate_submitter: if opts.no_gate_submitter {
+            Some(false)
+        } else {
+            None
+        },
+        rollback_mode,
+        simulate_failure_publishers,
+        rollback_only: opts.rollback_only,
+        from_run: opts.from_run,
+        runtime_nondeterministic_allowlist,
+        summary_json_path: opts.summary_json,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);

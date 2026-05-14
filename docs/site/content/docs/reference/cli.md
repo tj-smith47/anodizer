@@ -55,6 +55,13 @@ Run the full release pipeline
 | `--release-footer-tmpl` | — | — | Path to a template file for release footer (rendered with template variables) |
 | `--release-notes-tmpl` | — | — | Path to a template file for release notes (rendered with template variables, overrides --release-notes) |
 | `--fail-fast` | — | — | Abort immediately on first error during publishing |
+| `--no-gate-submitter` | — | — | Disable the Submitter gate: dispatch Submitter publishers even when required Assets/Manager publishers failed |
+| `--rollback` | — | — | Rollback policy after publish stage. Defaults to best-effort when preflight is clean, none otherwise. |
+| `--simulate-failure` | — | — | (TEST HARNESS) Force a named publisher to fail. Gated by ANODIZE_TEST_HARNESS=1. |
+| `--rollback-only` | — | — | Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>. |
+| `--from-run` | — | — | Prior run id whose report.json to load when running --rollback-only. |
+| `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
+| `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
 | `--prepare` | — | — | Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. |

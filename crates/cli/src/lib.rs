@@ -34,6 +34,11 @@ pub struct Cli {
 }
 
 #[derive(Subcommand)]
+// The `Release` variant carries one field per CLI flag (~40 fields) so its
+// size dwarfs the other subcommands. Boxing every flag bag would just hide
+// the same fields behind an extra allocation per parse with no callsite
+// win; the enum is allocated once per invocation. Local allow only.
+#[allow(clippy::large_enum_variant)]
 pub enum Commands {
     /// Run the full release pipeline
     Release {
@@ -129,6 +134,51 @@ pub enum Commands {
         release_notes_tmpl: Option<PathBuf>,
         #[arg(long, help = "Abort immediately on first error during publishing")]
         fail_fast: bool,
+        #[arg(
+            long = "no-gate-submitter",
+            help = "Disable the Submitter gate: dispatch Submitter publishers even when required Assets/Manager publishers failed"
+        )]
+        no_gate_submitter: bool,
+        #[arg(
+            long = "rollback",
+            value_name = "none|best-effort",
+            help = "Rollback policy after publish stage. Defaults to best-effort when preflight is clean, none otherwise."
+        )]
+        rollback: Option<String>,
+        #[arg(
+            long = "simulate-failure",
+            value_name = "publisher",
+            action = clap::ArgAction::Append,
+            hide = true,
+            help = "(TEST HARNESS) Force a named publisher to fail. Gated by ANODIZE_TEST_HARNESS=1."
+        )]
+        simulate_failure: Vec<String>,
+        #[arg(
+            long = "rollback-only",
+            requires = "from_run",
+            help = "Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>."
+        )]
+        rollback_only: bool,
+        #[arg(
+            long = "from-run",
+            value_name = "id",
+            requires = "rollback_only",
+            help = "Prior run id whose report.json to load when running --rollback-only."
+        )]
+        from_run: Option<String>,
+        #[arg(
+            long = "allow-nondeterministic",
+            value_name = "name=reason",
+            action = clap::ArgAction::Append,
+            help = "Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict."
+        )]
+        allow_nondeterministic: Vec<String>,
+        #[arg(
+            long = "summary-json",
+            value_name = "path",
+            help = "Write the per-publisher run summary JSON to this path."
+        )]
+        summary_json: Option<PathBuf>,
         #[arg(
             long,
             conflicts_with = "merge",

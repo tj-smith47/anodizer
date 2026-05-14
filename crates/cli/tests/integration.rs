@@ -4394,3 +4394,224 @@ crates:
         stderr
     );
 }
+
+// ---- Release-resilience CLI flag runtime behaviour (Task 17) ----
+
+/// `--rollback-only --from-run X` should bail with a pending-implementation
+/// error so the flag is discoverable via `--help` today while the replay
+/// task remains outstanding.
+#[test]
+fn release_rollback_only_bails_with_plumbed_message() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--rollback-only", "--from-run", "abc123"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --rollback-only must exit non-zero (pending impl)"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--rollback-only") && stderr.contains("not yet implemented"),
+        "stderr should explain --rollback-only is plumbed but not yet implemented, got: {}",
+        stderr
+    );
+}
+
+/// Invalid `--rollback` values are caught at the translation site before any
+/// pipeline work runs.
+#[test]
+fn release_rejects_invalid_rollback_value() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--rollback", "wat"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --rollback=wat must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --rollback value")
+            && stderr.contains("none")
+            && stderr.contains("best-effort"),
+        "stderr should explain valid set, got: {}",
+        stderr
+    );
+}
+
+/// `--simulate-failure` without `ANODIZE_TEST_HARNESS=1` must be rejected
+/// hard so production releases cannot weaponize the test harness.
+#[test]
+fn release_simulate_failure_gated_by_env() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--simulate-failure", "cargo"])
+        .env_remove("ANODIZE_TEST_HARNESS")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --simulate-failure without ANODIZE_TEST_HARNESS=1 must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--simulate-failure") && stderr.contains("ANODIZE_TEST_HARNESS"),
+        "stderr should explain the env gate, got: {}",
+        stderr
+    );
+}
+
+/// `--allow-nondeterministic foo` (no `=`) errors at the translation site.
+#[test]
+fn release_allow_nondeterministic_rejects_no_eq() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--allow-nondeterministic", "barevalue"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --allow-nondeterministic barevalue must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("NAME=REASON"),
+        "stderr should require NAME=REASON, got: {}",
+        stderr
+    );
+}
+
+/// `--allow-nondeterministic foo=` with empty reason is rejected so the
+/// summary always carries a human-readable justification.
+#[test]
+fn release_allow_nondeterministic_rejects_empty_reason() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--allow-nondeterministic", "foo="])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --allow-nondeterministic foo= must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("reason cannot be empty"),
+        "stderr should reject empty reason, got: {}",
+        stderr
+    );
+}
+
+/// `--strict` is mutually exclusive with `--allow-nondeterministic`. clap
+/// can't express this across the global/subcommand boundary, so the runtime
+/// check in `release::run` handles it.
+#[test]
+fn release_strict_conflicts_with_allow_nondeterministic() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "--strict",
+            "release",
+            "--allow-nondeterministic",
+            "foo.rpm=tool-bug",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release --strict --allow-nondeterministic=... must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--strict") && stderr.contains("--allow-nondeterministic"),
+        "stderr should name both conflicting flags, got: {}",
+        stderr
+    );
+}

@@ -177,6 +177,13 @@ fn main() {
             resume_release,
             replace_existing,
             no_post_publish_poll,
+            no_gate_submitter,
+            rollback,
+            simulate_failure,
+            rollback_only,
+            from_run,
+            allow_nondeterministic,
+            summary_json,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -236,6 +243,13 @@ fn main() {
                     no_preflight,
                     strict_preflight,
                     no_post_publish_poll,
+                    no_gate_submitter,
+                    rollback,
+                    simulate_failure,
+                    rollback_only,
+                    from_run,
+                    allow_nondeterministic,
+                    summary_json,
                 })
             })
         }
@@ -1226,6 +1240,158 @@ mod tests {
             result.is_ok(),
             "check --workspace should parse successfully: {:?}",
             result.err()
+        );
+    }
+
+    // ---- Release-resilience CLI flag tests (Task 17) ----
+
+    #[test]
+    fn release_parses_no_gate_submitter_flag() {
+        let cli =
+            Cli::try_parse_from(["anodizer", "release", "--no-gate-submitter"]).expect("parses");
+        if let Some(Commands::Release {
+            no_gate_submitter, ..
+        }) = cli.command
+        {
+            assert!(no_gate_submitter, "--no-gate-submitter should be true");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn release_parses_rollback_none() {
+        let cli =
+            Cli::try_parse_from(["anodizer", "release", "--rollback", "none"]).expect("parses");
+        if let Some(Commands::Release { rollback, .. }) = cli.command {
+            assert_eq!(rollback.as_deref(), Some("none"));
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn release_parses_rollback_best_effort() {
+        let cli = Cli::try_parse_from(["anodizer", "release", "--rollback", "best-effort"])
+            .expect("parses");
+        if let Some(Commands::Release { rollback, .. }) = cli.command {
+            assert_eq!(rollback.as_deref(), Some("best-effort"));
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn release_simulate_failure_repeatable() {
+        let cli = Cli::try_parse_from([
+            "anodizer",
+            "release",
+            "--simulate-failure",
+            "foo",
+            "--simulate-failure",
+            "bar",
+        ])
+        .expect("parses");
+        if let Some(Commands::Release {
+            simulate_failure, ..
+        }) = cli.command
+        {
+            assert_eq!(simulate_failure, vec!["foo".to_string(), "bar".to_string()]);
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn release_from_run_requires_rollback_only() {
+        // --from-run without --rollback-only should be rejected by clap
+        // because the `requires = "rollback_only"` attribute fires.
+        let result = Cli::try_parse_from(["anodizer", "release", "--from-run", "abc123"]);
+        assert!(
+            result.is_err(),
+            "--from-run without --rollback-only must error"
+        );
+    }
+
+    #[test]
+    fn release_rollback_only_requires_from_run() {
+        // Symmetric requirement: --rollback-only without --from-run errors.
+        let result = Cli::try_parse_from(["anodizer", "release", "--rollback-only"]);
+        assert!(
+            result.is_err(),
+            "--rollback-only without --from-run must error"
+        );
+    }
+
+    #[test]
+    fn release_parses_allow_nondeterministic_repeatable() {
+        let cli = Cli::try_parse_from([
+            "anodizer",
+            "release",
+            "--allow-nondeterministic",
+            "foo.rpm=tool-bug",
+            "--allow-nondeterministic",
+            "bar.deb=other-reason",
+        ])
+        .expect("parses");
+        if let Some(Commands::Release {
+            allow_nondeterministic,
+            ..
+        }) = cli.command
+        {
+            assert_eq!(
+                allow_nondeterministic,
+                vec![
+                    "foo.rpm=tool-bug".to_string(),
+                    "bar.deb=other-reason".to_string(),
+                ]
+            );
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn release_parses_summary_json() {
+        let cli =
+            Cli::try_parse_from(["anodizer", "release", "--summary-json", "/tmp/summary.json"])
+                .expect("parses");
+        if let Some(Commands::Release { summary_json, .. }) = cli.command {
+            assert_eq!(
+                summary_json,
+                Some(std::path::PathBuf::from("/tmp/summary.json"))
+            );
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn release_help_lists_resilience_flags() {
+        let mut cmd = Cli::command();
+        let release_help = cmd
+            .find_subcommand_mut("release")
+            .expect("release subcommand should exist")
+            .render_help()
+            .to_string();
+        for flag in [
+            "--no-gate-submitter",
+            "--rollback",
+            "--rollback-only",
+            "--from-run",
+            "--allow-nondeterministic",
+            "--summary-json",
+        ] {
+            assert!(
+                release_help.contains(flag),
+                "release help should mention {} flag",
+                flag
+            );
+        }
+        // --simulate-failure is hidden; it should NOT appear in --help.
+        assert!(
+            !release_help.contains("--simulate-failure"),
+            "release help should NOT mention --simulate-failure (it's hide=true)"
         );
     }
 }

@@ -8,8 +8,28 @@ use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
 use anyhow::Context as _;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+
+/// Rollback policy after the publish stage. `BestEffort` is the default when
+/// pre-flight ran clean; `None` is the implicit default otherwise (callers
+/// should warn that rollback is disabled). The CLI flag `--rollback=<v>`
+/// sets `ContextOptions::rollback_mode` to `Some(v)` to override the
+/// default-resolution at the dispatch site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RollbackMode {
+    /// Do not attempt rollback. Useful when the operator wants to inspect
+    /// half-published state before deciding.
+    None,
+    /// Run best-effort rollback for every reversible publisher whose
+    /// evidence is present in the report. Irreversible publishers
+    /// (chocolatey moderation, winget PRs, AUR) are never rolled back —
+    /// the Submitter gate is the only protection.
+    #[default]
+    BestEffort,
+}
 
 /// Valid --skip values for the `release` command (matches GoReleaser).
 ///
@@ -133,6 +153,40 @@ pub struct ContextOptions {
     /// `stage-publish::dispatch::DispatchOptions::gate_submitter` for
     /// the gating mechanics.
     pub gate_submitter: Option<bool>,
+    /// `--rollback=<none|best-effort>`: post-publish rollback policy.
+    /// `None` means "resolve from preflight state at dispatch time"
+    /// (best-effort when preflight ran clean, none otherwise with a
+    /// warn). Consumed by the rollback-dispatch task.
+    pub rollback_mode: Option<RollbackMode>,
+    /// `--simulate-failure=<publisher>` (repeatable, hidden, env-gated
+    /// behind `ANODIZE_TEST_HARNESS=1`): names of publishers whose
+    /// `run()` should be skipped and a synthetic `Failed("simulated
+    /// failure: <name>")` recorded in the report instead. Lets the
+    /// failure-mode test harness exercise gate / rollback / report
+    /// paths deterministically without monkey-patching production
+    /// publisher code.
+    pub simulate_failure_publishers: Vec<String>,
+    /// `--rollback-only`: skip publish; re-attempt rollback from a
+    /// prior run report. Requires `from_run` to identify which prior
+    /// run's `report.json` to load. The actual replay logic lands in
+    /// a follow-up task; this field is plumbed so the flag is visible
+    /// in `--help` today.
+    pub rollback_only: bool,
+    /// `--from-run=<id>`: prior run id whose `report.json` to load
+    /// when running in `--rollback-only` mode. clap enforces the
+    /// `requires = "rollback_only"` relationship at parse time.
+    pub from_run: Option<String>,
+    /// `--allow-nondeterministic <name>=<reason>` (repeatable):
+    /// runtime non-determinism opt-outs for specific artifacts. The
+    /// determinism stage suppresses its non-determinism error for
+    /// any matching artifact name, recording the supplied reason in
+    /// the report. Mutually exclusive with `--strict` at the clap
+    /// layer.
+    pub runtime_nondeterministic_allowlist: Vec<(String, String)>,
+    /// `--summary-json=<path>`: when set, the per-publisher run
+    /// summary is written to this path. Consumed by the run-summary
+    /// task.
+    pub summary_json_path: Option<PathBuf>,
 }
 
 impl Default for ContextOptions {
@@ -159,6 +213,12 @@ impl Default for ContextOptions {
             replace_existing_artifacts: false,
             skip_post_publish_poll: false,
             gate_submitter: None,
+            rollback_mode: None,
+            simulate_failure_publishers: Vec::new(),
+            rollback_only: false,
+            from_run: None,
+            runtime_nondeterministic_allowlist: Vec::new(),
+            summary_json_path: None,
         }
     }
 }
