@@ -608,9 +608,9 @@ dependencies = [
 
 [[package]]
 name = "brontes"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "531563b35049350fe0ee472f7e34fa5010caf6e321bacaaaaebf51f3df1a475b"
+checksum = "4f9391be73329d218379b2f87f68840daf87af57946fece5bda3ab38e6bcd157"
 dependencies = [
  "async-trait",
  "clap",

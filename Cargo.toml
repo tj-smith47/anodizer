@@ -99,7 +99,7 @@ anodizer-stage-notarize = { path = "crates/stage-notarize", version = "0.1.0" }
 anodizer-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.1.0" }
 anodizer-stage-makeself = { path = "crates/stage-makeself", version = "0.1.0" }
 anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.1.0" }
-brontes = "0.1.0"
+brontes = "0.2.0"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
