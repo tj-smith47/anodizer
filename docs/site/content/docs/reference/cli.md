@@ -88,12 +88,7 @@ Build binaries only (always runs in snapshot mode)
 
 ### `anodizer check`
 
-Validate configuration
-
-
-| Flag | Short | Default | Description |
-|------|-------|---------|-------------|
-| `--workspace` | — | — | Validate a specific workspace in a monorepo config |
+Validate configuration and run determinism checks
 
 
 ### `anodizer init`

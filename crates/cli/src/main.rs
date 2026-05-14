@@ -1,4 +1,4 @@
-use anodizer_cli::{Cli, Commands, detect_host_target, num_cpus};
+use anodizer_cli::{CheckCmd, Cli, Commands, detect_host_target, num_cpus};
 use anodizer_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
 
 use clap::{CommandFactory, FromArgMatches};
@@ -290,13 +290,16 @@ fn main() {
                 })
             })
         }
-        Commands::Check { workspace } => commands::check::run(
-            cli.config.as_deref(),
-            workspace.as_deref(),
-            cli.verbose,
-            cli.debug,
-            cli.quiet,
-        ),
+        Commands::Check { cmd } => match cmd {
+            CheckCmd::Config { workspace } => commands::check::config::run(
+                cli.config.as_deref(),
+                workspace.as_deref(),
+                cli.verbose,
+                cli.debug,
+                cli.quiet,
+            ),
+            CheckCmd::Determinism(args) => commands::check::determinism::run(args),
+        },
         Commands::Init => commands::init::run(),
         Commands::Changelog { crate_name } => commands::changelog::run(
             crate_name,
@@ -857,38 +860,96 @@ mod tests {
         );
     }
 
-    // ---- Check --workspace tests ----
+    // ---- Check subcommand tests ----
 
     #[test]
-    fn test_cli_parses_check_workspace_flag() {
-        let cli = Cli::try_parse_from(["anodizer", "check", "--workspace", "backend"]);
+    fn check_config_accepts_workspace_flag() {
+        let cli = Cli::try_parse_from(["anodizer", "check", "config", "--workspace", "backend"]);
         assert!(
             cli.is_ok(),
-            "CLI should parse check --workspace: {:?}",
+            "CLI should parse check config --workspace: {:?}",
             cli.err()
         );
-        if let Some(Commands::Check { workspace }) = cli.unwrap().command {
-            assert_eq!(workspace, Some("backend".to_string()));
+        if let Some(Commands::Check { cmd }) = cli.unwrap().command {
+            match cmd {
+                CheckCmd::Config { workspace } => {
+                    assert_eq!(workspace, Some("backend".to_string()));
+                }
+                _ => panic!("expected Check::Config command"),
+            }
         } else {
             panic!("expected Check command");
         }
     }
 
     #[test]
-    fn test_cli_check_workspace_defaults_none() {
-        let cli = Cli::try_parse_from(["anodizer", "check"]).unwrap();
-        if let Some(Commands::Check { workspace }) = cli.command {
-            assert!(
-                workspace.is_none(),
-                "check --workspace should default to None"
-            );
+    fn check_config_workspace_defaults_none() {
+        let cli = Cli::try_parse_from(["anodizer", "check", "config"]).unwrap();
+        if let Some(Commands::Check { cmd }) = cli.command {
+            match cmd {
+                CheckCmd::Config { workspace } => {
+                    assert!(
+                        workspace.is_none(),
+                        "check config --workspace should default to None"
+                    );
+                }
+                _ => panic!("expected Check::Config command"),
+            }
         } else {
             panic!("expected Check command");
         }
     }
 
     #[test]
-    fn test_help_output_check_contains_workspace_flag() {
+    fn check_determinism_parses_runs() {
+        let cli = Cli::try_parse_from(["anodizer", "check", "determinism", "--runs", "3"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse check determinism --runs: {:?}",
+            cli.err()
+        );
+        if let Some(Commands::Check { cmd }) = cli.unwrap().command {
+            match cmd {
+                CheckCmd::Determinism(args) => {
+                    assert_eq!(args.runs, 3);
+                }
+                _ => panic!("expected Check::Determinism command"),
+            }
+        } else {
+            panic!("expected Check command");
+        }
+    }
+
+    #[test]
+    fn check_determinism_default_runs_is_2() {
+        let cli = Cli::try_parse_from(["anodizer", "check", "determinism"]).unwrap();
+        if let Some(Commands::Check { cmd }) = cli.command {
+            match cmd {
+                CheckCmd::Determinism(args) => {
+                    assert_eq!(args.runs, 2, "default --runs should be 2");
+                }
+                _ => panic!("expected Check::Determinism command"),
+            }
+        } else {
+            panic!("expected Check command");
+        }
+    }
+
+    #[test]
+    fn bare_check_prints_help_or_errors() {
+        // Bare `anodize check` (no subcommand) should fail to parse — clap's
+        // default for a required subcommand. Either prints help or errors;
+        // both are acceptable as long as no Commands::Check is produced.
+        let result = Cli::try_parse_from(["anodizer", "check"]);
+        assert!(
+            result.is_err(),
+            "bare `anodize check` should error (subcommand required), got: {:?}",
+            result.ok().and_then(|c| c.command.map(|_| "parsed"))
+        );
+    }
+
+    #[test]
+    fn test_help_output_check_subcommand_lists_leaves() {
         let mut cmd = Cli::command();
         let check_help = cmd
             .find_subcommand_mut("check")
@@ -896,8 +957,13 @@ mod tests {
             .render_help()
             .to_string();
         assert!(
-            check_help.contains("--workspace"),
-            "check help should mention --workspace flag, got: {}",
+            check_help.contains("config"),
+            "check help should list 'config' subcommand, got: {}",
+            check_help
+        );
+        assert!(
+            check_help.contains("determinism"),
+            "check help should list 'determinism' subcommand, got: {}",
             check_help
         );
     }
@@ -1233,12 +1299,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cli_check_workspace_has_no_crate_conflict() {
-        // Check command has --workspace but no --crate, so no conflict applies.
-        let result = Cli::try_parse_from(["anodizer", "check", "--workspace", "bar"]);
+    fn test_cli_check_config_workspace_has_no_crate_conflict() {
+        // Check config has --workspace but no --crate, so no conflict applies.
+        let result = Cli::try_parse_from(["anodizer", "check", "config", "--workspace", "bar"]);
         assert!(
             result.is_ok(),
-            "check --workspace should parse successfully: {:?}",
+            "check config --workspace should parse successfully: {:?}",
             result.err()
         );
     }

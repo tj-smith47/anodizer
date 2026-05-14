@@ -22,7 +22,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -39,7 +39,7 @@ fn test_check_invalid_config() {
     let tmp = TempDir::new().unwrap();
     // No anodizer.yaml at all
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -144,7 +144,7 @@ crates:
 
     // Use -f to point to the custom config
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["-f", config_path.to_str().unwrap(), "check"])
+        .args(["-f", config_path.to_str().unwrap(), "check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -176,7 +176,7 @@ crates:
 
     // Use --config (long form) to point to the custom config
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["--config", config_path.to_str().unwrap(), "check"])
+        .args(["--config", config_path.to_str().unwrap(), "check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -191,7 +191,7 @@ crates:
 #[test]
 fn test_check_with_config_flag_nonexistent() {
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["-f", "/tmp/does-not-exist-anodizer.yaml", "check"])
+        .args(["-f", "/tmp/does-not-exist-anodizer.yaml", "check", "config"])
         .output()
         .unwrap();
 
@@ -1037,7 +1037,7 @@ changelog:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -1128,7 +1128,7 @@ fn test_e2e_init_generates_parseable_yaml() {
     create_config(tmp2.path(), &config_content);
 
     let check_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp2.path())
         .output()
         .unwrap();
@@ -1161,7 +1161,7 @@ fn test_e2e_workspace_all_force_detects_crates() {
 
     // 1. Verify config is valid
     let check_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -1375,7 +1375,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -1536,7 +1536,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -1570,7 +1570,7 @@ crates: "this should be an array not a string"
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -1970,7 +1970,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -2004,7 +2004,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -2105,7 +2105,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -2142,7 +2142,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -2172,7 +2172,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -2204,7 +2204,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -2235,7 +2235,7 @@ crates:
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -2700,7 +2700,7 @@ fn test_e2e_config_validation_round_trip() {
 
     // Step 3: Validate with `check`
     let check_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -3073,7 +3073,7 @@ crates:
 
     // Verify config with format_overrides passes validation
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .arg("check")
+        .args(["check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -3316,7 +3316,7 @@ crates:
     .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["-f", config_path.to_str().unwrap(), "check"])
+        .args(["-f", config_path.to_str().unwrap(), "check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -4186,7 +4186,7 @@ tag_template = "v{{ .Version }}"
     .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["-f", config_path.to_str().unwrap(), "check"])
+        .args(["-f", config_path.to_str().unwrap(), "check", "config"])
         .current_dir(tmp.path())
         .output()
         .unwrap();

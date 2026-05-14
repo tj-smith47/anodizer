@@ -249,10 +249,10 @@ pub enum Commands {
         )]
         skip: Vec<String>,
     },
-    /// Validate configuration
+    /// Validate configuration and run determinism checks
     Check {
-        #[arg(long, help = "Validate a specific workspace in a monorepo config")]
-        workspace: Option<String>,
+        #[command(subcommand)]
+        cmd: CheckCmd,
     },
     /// Generate starter config
     Init,
@@ -418,6 +418,46 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated)")]
         skip: Vec<String>,
     },
+}
+
+/// `anodize check` parent subcommand.
+///
+/// `Config` is the historic `check` body (validate `.anodizer.yaml`); the
+/// determinism harness is plumbed here so the flag set ships with this
+/// commit, but the body lands in a follow-up task.
+#[derive(Subcommand)]
+pub enum CheckCmd {
+    /// Validate the workspace's anodize config.
+    Config {
+        #[arg(long, help = "Validate a specific workspace in a monorepo config")]
+        workspace: Option<String>,
+    },
+    /// Run the determinism harness (build pipeline twice, diff artifacts).
+    Determinism(CheckDeterminismArgs),
+}
+
+#[derive(clap::Args)]
+pub struct CheckDeterminismArgs {
+    #[arg(
+        long,
+        default_value = "2",
+        help = "Number of from-clean rebuilds to diff"
+    )]
+    pub runs: u32,
+    #[arg(
+        long,
+        value_name = "stages",
+        help = "Optional stage subset (build,archive,sbom,sign,checksum)"
+    )]
+    pub stages: Option<String>,
+    #[arg(
+        long,
+        value_name = "path",
+        help = "JSON report path; default dist/run-<id>/determinism.json"
+    )]
+    pub report: Option<PathBuf>,
+    #[arg(long, help = "Seed SDE from snapshot rules instead of HEAD commit")]
+    pub snapshot: bool,
 }
 
 /// Detect the host target triple by parsing `rustc -vV` output.

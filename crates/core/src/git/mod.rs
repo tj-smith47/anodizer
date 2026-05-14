@@ -9,6 +9,7 @@ mod semver;
 mod snapshot_sde;
 mod status;
 mod tags;
+pub mod worktree;
 
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,7 @@ pub use tags::{
     get_all_semver_tags, get_branch_semver_tags, get_first_commit, has_version_placeholder,
     list_tags_with_prefix, render_ignore_patterns, strip_monorepo_prefix, tag_points_at_head,
 };
+pub use worktree::Worktree;
 
 /// Run a git command and return stdout, trimmed.
 ///

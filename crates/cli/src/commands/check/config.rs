@@ -1,4 +1,4 @@
-use super::helpers;
+use super::super::helpers;
 use crate::pipeline;
 use anodizer_core::config::{Config, CrateConfig};
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -29,7 +29,7 @@ pub fn run(
 
     // When --workspace is specified, also validate the resolved (overlaid) config
     if let Some(ws_name) = workspace {
-        let ws = super::release::resolve_workspace(&config, ws_name)?;
+        let ws = super::super::release::resolve_workspace(&config, ws_name)?;
         let mut resolved = config.clone();
         helpers::apply_workspace_overlay(&mut resolved, ws);
         log.status(&format!(
