@@ -592,9 +592,11 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
 /// Classified as `Submitter` + `required=true`: crates.io publish is
 /// effectively one-way (versions cannot be re-uploaded), so a failure
 /// here should fail the release and other Submitter publishers must
-/// already be gated. The existing `PublishStage::run` body continues to
-/// invoke `publish_to_cargo` directly until the per-publisher migration
-/// flips over the dispatch path.
+/// already be gated.
+///
+/// (Marker for follow-up: when the `PublishStage::run` dispatch swap
+/// lands in the return-type-swap task, update this doc to reflect that
+/// the new dispatch path is the only consumer.)
 pub struct CargoPublisher;
 
 impl CargoPublisher {
@@ -644,6 +646,14 @@ impl anodizer_core::Publisher for CargoPublisher {
         evidence: &anodizer_core::PublishEvidence,
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
+        if evidence.artifact_paths.is_empty() {
+            log.warn(
+                "cargo: no .crate paths recorded in evidence; yank skipped, verify crates.io manually",
+            );
+            return Ok(());
+        }
+        let mut yanked = 0usize;
+        let mut failed = 0usize;
         for path in &evidence.artifact_paths {
             // .crate paths are <name>-<version>.crate; parse name/version.
             // crates.io versions are immutable, so `cargo yank` is the
@@ -651,10 +661,14 @@ impl anodizer_core::Publisher for CargoPublisher {
             // and any consumer that already resolved against it keeps
             // working. Operators must still bump to recover.
             if let Some((name, version)) = parse_crate_name_version(path) {
+                log.status(&format!("cargo: yank {} {}", name, version));
                 let output = Command::new("cargo")
                     .args(["yank", "--version", &version, &name])
                     .output()?;
-                if !output.status.success() {
+                if output.status.success() {
+                    yanked += 1;
+                } else {
+                    failed += 1;
                     log.warn(&format!(
                         "cargo yank failed for {} {}: {}",
                         name,
@@ -664,6 +678,10 @@ impl anodizer_core::Publisher for CargoPublisher {
                 }
             }
         }
+        log.status(&format!(
+            "cargo: yanked {} crate(s), {} failure(s)",
+            yanked, failed
+        ));
         Ok(())
     }
 
@@ -686,15 +704,25 @@ struct PublishedCrateRef {
     version: String,
 }
 
-/// First crate in the active config that has `publish.cargo` configured.
-/// Returns its name plus the run's tag (stripped of any leading `v`) as
-/// the version. None when no crate opts in.
+/// Returns the canonical published crate for `primary_ref` reporting.
+///
+/// Multi-crate workspaces release many crates in one run; the
+/// [`PublishEvidence`](anodizer_core::PublishEvidence) schema's
+/// `primary_ref` carries one canonical URL. We prefer the crate whose
+/// `name` matches `ctx.config.project_name` so operators see the marquee
+/// crate (e.g. `anodizer` from the `anodizer-*` workspace) instead of
+/// whichever crate happens to iterate first. If no such match exists
+/// (project_name unset, or no eligible crate matches it), fall back to
+/// the first crate with `publish.cargo` configured.
 fn first_published_crate(ctx: &Context) -> Option<PublishedCrateRef> {
+    let eligible = |c: &&CrateConfig| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some();
+    let project_name = ctx.config.project_name.as_str();
     let name = ctx
         .config
         .crates
         .iter()
-        .find(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some())
+        .find(|c| !project_name.is_empty() && c.name == project_name && eligible(c))
+        .or_else(|| ctx.config.crates.iter().find(eligible))
         .map(|c| c.name.clone())?;
     let version = {
         let tag = ctx
@@ -710,35 +738,88 @@ fn first_published_crate(ctx: &Context) -> Option<PublishedCrateRef> {
     Some(PublishedCrateRef { name, version })
 }
 
-/// Best-effort enumeration of locally-produced `.crate` archive paths.
+/// Build the expected `.crate` archive path for a crate published by
+/// `cargo package` / `cargo publish`.
 ///
-/// `cargo package` writes to `target/package/<name>-<version>.crate`, but
-/// the workspace target dir + per-crate versions can be moved around; the
-/// determinism harness will own resolving this precisely. For now we
-/// return an empty vec; `primary_ref` is the load-bearing evidence
-/// field, and rollback can only act on entries we actually surface.
-fn collect_local_crate_paths(_ctx: &Context) -> Vec<std::path::PathBuf> {
-    // Deliberately empty for now: enumeration of
-    // target/package/<name>-<version>.crate per configured crate lands
-    // alongside the determinism harness, which needs the same walk and
-    // will own the canonical implementation. Tracked separately to keep
-    // this adapter focused on the trait shape.
-    Vec::new()
+/// Cargo writes to `<target_dir>/package/<name>-<version>.crate`. When
+/// the per-crate `publish.cargo.target_dir` is set, cargo respects it;
+/// otherwise cargo uses `<project_root>/target/`. We compute the
+/// predicted location so [`collect_local_crate_paths`] can probe the
+/// filesystem deterministically — the helper is split out so it can be
+/// unit-tested without spinning up a full publish fixture.
+fn expected_crate_path(
+    project_root: &std::path::Path,
+    target_dir: Option<&std::path::Path>,
+    name: &str,
+    version: &str,
+) -> std::path::PathBuf {
+    let base = match target_dir {
+        Some(td) => td.to_path_buf(),
+        None => project_root.join("target"),
+    };
+    base.join("package").join(format!("{name}-{version}.crate"))
+}
+
+/// Enumeration of locally-produced `.crate` archive paths used by
+/// rollback. Walks `ctx.config.crates` (plus workspace crates) for every
+/// crate with `publish.cargo` configured, computes the predicted
+/// `cargo package` output location via [`expected_crate_path`], and
+/// returns those that exist on disk. Missing files are filtered out so
+/// rollback's per-path yank loop never trips on a stale path.
+///
+/// The crate version comes from the crate's own `Cargo.toml` so
+/// workspaces with mixed cadences (e.g. `cfgd-core@0.2.2` while
+/// `cfgd@0.3.2`) yank the correct slot per crate. Falls back to the
+/// run's release version when the manifest can't be parsed.
+fn collect_local_crate_paths(ctx: &Context) -> Vec<std::path::PathBuf> {
+    let release_version = ctx.version();
+    let project_root = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    let mut out = Vec::new();
+    for c in crate::util::all_crates(ctx) {
+        let Some(ref publish) = c.publish else {
+            continue;
+        };
+        let Some(ref cargo_cfg) = publish.cargo else {
+            continue;
+        };
+        let version = read_cargo_toml_version(&c.path).unwrap_or_else(|| release_version.clone());
+        if version.is_empty() {
+            continue;
+        }
+        let path = expected_crate_path(
+            &project_root,
+            cargo_cfg.target_dir.as_deref(),
+            &c.name,
+            &version,
+        );
+        if path.exists() {
+            out.push(path);
+        }
+    }
+    out
 }
 
 /// Parse `name-1.2.3.crate` (or any `<name>-<version>` stem) into its
-/// component parts. Names may contain `-`, so split on the LAST `-` and
-/// sanity-check that the version starts with an ASCII digit.
+/// component parts. Crate names may contain `-`, and versions may carry
+/// prerelease suffixes (`0.2.1-rc.1`) or build metadata (`0.2.1+build.5`)
+/// that include additional `-` characters — so we scan for the FIRST
+/// `-<digit>` boundary: everything before is the name, everything from
+/// the digit onward is the version. This handles hyphenated names,
+/// prereleases, build metadata, and snapshot suffixes uniformly.
 fn parse_crate_name_version(path: &std::path::Path) -> Option<(String, String)> {
     let stem = path.file_stem()?.to_str()?;
-    let (name, version) = stem.rsplit_once('-')?;
-    if !version.chars().next()?.is_ascii_digit() {
-        return None;
+    let bytes = stem.as_bytes();
+    for i in 0..bytes.len().saturating_sub(1) {
+        if bytes[i] == b'-' && bytes[i + 1].is_ascii_digit() {
+            return Some((stem[..i].to_string(), stem[i + 1..].to_string()));
+        }
     }
-    // Strip a trailing `.crate` extension component if `file_stem` left
-    // one (e.g. `foo-1.2.3.crate.tmp` is not a thing we expect, but be
-    // defensive about future suffixes).
-    Some((name.to_string(), version.to_string()))
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -763,6 +844,8 @@ mod publisher_tests {
 
     #[test]
     fn cargo_preflight_defaults_to_pass() {
+        // stub: when preflight gains CARGO_REGISTRY_TOKEN logic this test
+        // gets replaced.
         let ctx = TestContextBuilder::new().build();
         let p = CargoPublisher::new();
         assert!(matches!(
@@ -780,12 +863,160 @@ mod publisher_tests {
     }
 
     #[test]
+    fn parse_crate_name_version_handles_prerelease() {
+        assert_eq!(
+            parse_crate_name_version(Path::new("anodizer-core-0.2.1-rc.1.crate")),
+            Some(("anodizer-core".to_string(), "0.2.1-rc.1".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_crate_name_version_handles_build_metadata() {
+        assert_eq!(
+            parse_crate_name_version(Path::new("foo-0.2.1+build.5.crate")),
+            Some(("foo".to_string(), "0.2.1+build.5".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_crate_name_version_handles_snapshot_suffix() {
+        assert_eq!(
+            parse_crate_name_version(Path::new("anodizer-0.2.1-SNAPSHOT-abc.crate")),
+            Some(("anodizer".to_string(), "0.2.1-SNAPSHOT-abc".to_string()))
+        );
+    }
+
+    #[test]
     fn parse_crate_name_version_rejects_non_versioned_stems() {
-        // No trailing digit-prefixed segment.
+        // No `-<digit>` boundary anywhere in the stem.
         assert_eq!(
             parse_crate_name_version(Path::new("anodizer-core.crate")),
             None
         );
+        assert_eq!(parse_crate_name_version(Path::new("plain-package")), None);
+    }
+
+    #[test]
+    fn expected_crate_path_uses_project_root_target_when_unset() {
+        let p = expected_crate_path(Path::new("/repo"), None, "anodizer-core", "0.2.1");
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/repo/target/package/anodizer-core-0.2.1.crate")
+        );
+    }
+
+    #[test]
+    fn expected_crate_path_uses_configured_target_dir() {
+        let p = expected_crate_path(
+            Path::new("/repo"),
+            Some(Path::new("/custom-target")),
+            "foo",
+            "1.2.3-rc.1",
+        );
+        assert_eq!(
+            p,
+            std::path::PathBuf::from("/custom-target/package/foo-1.2.3-rc.1.crate")
+        );
+    }
+
+    #[test]
+    fn collect_local_crate_paths_finds_published_crates() {
+        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let project_root = tmp.path().to_path_buf();
+
+        // Create the crate's source dir with a Cargo.toml so
+        // read_cargo_toml_version returns a concrete version.
+        let crate_dir = project_root.join("crates/anodizer-core");
+        std::fs::create_dir_all(&crate_dir).expect("mkdir crate");
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"anodizer-core\"\nversion = \"0.2.1\"\n",
+        )
+        .expect("write Cargo.toml");
+
+        // Create the predicted .crate emission so the path probe hits.
+        let pkg_dir = project_root.join("target/package");
+        std::fs::create_dir_all(&pkg_dir).expect("mkdir pkg");
+        let crate_path = pkg_dir.join("anodizer-core-0.2.1.crate");
+        std::fs::write(&crate_path, b"fake").expect("write .crate");
+
+        // Second crate is configured but has NO .crate file on disk;
+        // the walker must filter it out (missing path => not surfaced).
+        let crate_cfg = CrateConfig {
+            name: "anodizer-core".to_string(),
+            path: crate_dir.display().to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let other = CrateConfig {
+            name: "anodizer-missing".to_string(),
+            path: "nonexistent".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let ctx = TestContextBuilder::new()
+            .project_root(project_root.clone())
+            .crates(vec![crate_cfg, other])
+            .build();
+
+        let paths = collect_local_crate_paths(&ctx);
+        assert_eq!(paths, vec![crate_path]);
+    }
+
+    #[test]
+    fn first_published_crate_prefers_project_name_match() {
+        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+
+        let with_cargo = |name: &str| CrateConfig {
+            name: name.to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Iteration order: util crate is first, but project_name matches
+        // the marquee crate later in the list — the helper MUST prefer
+        // the project_name match instead of first-iterated.
+        let ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .crates(vec![with_cargo("anodizer-util"), with_cargo("anodizer")])
+            .build();
+
+        let r = first_published_crate(&ctx).expect("eligible crate");
+        assert_eq!(r.name, "anodizer");
+    }
+
+    #[test]
+    fn first_published_crate_falls_back_to_first_when_no_project_match() {
+        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+
+        let with_cargo = |name: &str| CrateConfig {
+            name: name.to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // project_name doesn't match ANY eligible crate; fall back to
+        // first-iterated to preserve historical behaviour.
+        let ctx = TestContextBuilder::new()
+            .project_name("ghost")
+            .crates(vec![with_cargo("anodizer-util"), with_cargo("anodizer")])
+            .build();
+
+        let r = first_published_crate(&ctx).expect("eligible crate");
+        assert_eq!(r.name, "anodizer-util");
     }
 }
 
