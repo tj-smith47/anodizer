@@ -16,6 +16,7 @@ pub(crate) fn release_log() -> StageLogger {
 mod gitea;
 mod github;
 mod gitlab;
+pub mod publisher;
 mod release_body;
 mod run;
 

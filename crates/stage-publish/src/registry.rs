@@ -42,6 +42,11 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if anodizer_stage_blob::publisher::is_configured(ctx) {
         v.push(Box::new(anodizer_stage_blob::BlobPublisher::new()));
     }
+    if is_github_release_configured(ctx) {
+        v.push(Box::new(
+            anodizer_stage_release::publisher::GithubReleasePublisher::new(),
+        ));
+    }
     // Bundle B (Manager — git-revert rollback against publisher-owned repo).
     if is_homebrew_configured(ctx) {
         v.push(Box::new(
@@ -166,6 +171,28 @@ fn is_artifactory_configured(ctx: &Context) -> bool {
 /// True when the top-level `cloudsmiths:` block has at least one entry.
 fn is_cloudsmith_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_top_level_block_configured(ctx.config.cloudsmiths.as_ref())
+}
+
+/// True when the resolved SCM is GitHub and at least one selected
+/// crate has a `release:` block configured. Mirrors the per-crate
+/// filter `ReleaseStage::run` applies internally (`c.release.is_some()`)
+/// so the publisher iterates the same crate universe.
+///
+/// GitLab and Gitea backends have their own publishers (added in a
+/// follow-up task); when `ctx.token_type` is one of those,
+/// [`GithubReleasePublisher`](anodizer_stage_release::publisher::GithubReleasePublisher)
+/// must NOT register so the registry doesn't double-publish a single
+/// release run.
+fn is_github_release_configured(ctx: &Context) -> bool {
+    if !matches!(ctx.token_type, anodizer_core::scm::ScmTokenType::GitHub) {
+        return false;
+    }
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .any(|c| c.release.is_some())
 }
 
 /// Group dispatch order: Assets first (uploadable bytes, server-side
@@ -416,6 +443,71 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn github_release_publisher_registered_when_configured() {
+        use anodizer_core::config::{ReleaseConfig, ScmRepoConfig};
+        // Per-crate `release.github` opts in. The default token_type
+        // for `Context::test_fixture` / TestContextBuilder is GitHub,
+        // matching the production default in `Context::new`.
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        assert!(
+            names.contains(&"github-release"),
+            "github-release missing from registered publishers (got {names:?})"
+        );
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "github-release")
+            .expect("github-release present");
+        assert_eq!(p.group(), PublisherGroup::Assets);
+        assert!(p.required(), "github-release is required");
+        assert_eq!(
+            p.rollback_scope_needed(),
+            Some("GITHUB_TOKEN contents:write")
+        );
+    }
+
+    #[test]
+    fn github_release_publisher_not_registered_when_scm_is_gitlab() {
+        use anodizer_core::config::{ReleaseConfig, ScmRepoConfig};
+        use anodizer_core::scm::ScmTokenType;
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                gitlab: Some(ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        ctx.token_type = ScmTokenType::GitLab;
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        assert!(
+            !names.contains(&"github-release"),
+            "github-release should NOT register when SCM is GitLab (got {names:?})"
+        );
     }
 
     #[test]

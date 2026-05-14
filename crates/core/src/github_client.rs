@@ -92,6 +92,35 @@ pub struct DeleteReleaseParams {
     pub release_id: u64,
 }
 
+/// Parameters for looking up a release by tag name.
+///
+/// Wraps `GET /repos/{owner}/{repo}/releases/tags/{tag}`. Returned by
+/// [`GitHubClient::get_release_by_tag`] as `Ok(Some(ReleaseInfo))` when
+/// the release exists, `Ok(None)` when the tag has no release, or an
+/// `Err` for transport / auth failures. Used by
+/// `GithubReleasePublisher` to capture release IDs into evidence
+/// without modifying `ReleaseStage::run`.
+#[derive(Debug, Clone)]
+pub struct GetReleaseByTagParams {
+    pub owner: String,
+    pub repo: String,
+    pub tag: String,
+}
+
+/// Parameters for deleting a git tag reference.
+///
+/// Wraps `DELETE /repos/{owner}/{repo}/git/refs/tags/{tag}`. GitHub's
+/// `DELETE /releases/{id}` only removes the release record; the tag
+/// itself survives. `GithubReleasePublisher::rollback` follows the
+/// release delete with a tag delete so the rollback fully reverses the
+/// publish — otherwise a re-run would still see the old tag.
+#[derive(Debug, Clone)]
+pub struct DeleteTagParams {
+    pub owner: String,
+    pub repo: String,
+    pub tag: String,
+}
+
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -113,6 +142,25 @@ pub trait GitHubClient {
 
     /// Delete a release by ID.
     fn delete_release(&self, params: &DeleteReleaseParams) -> anyhow::Result<()>;
+
+    /// Look up a release by tag name.
+    ///
+    /// Returns `Ok(Some(info))` when the release exists, `Ok(None)` when
+    /// the tag has no release (HTTP 404 for the `/releases/tags/{tag}`
+    /// endpoint), and `Err` for transport / auth failures.
+    fn get_release_by_tag(
+        &self,
+        params: &GetReleaseByTagParams,
+    ) -> anyhow::Result<Option<ReleaseInfo>>;
+
+    /// Delete a git tag reference.
+    ///
+    /// GitHub's `DELETE /repos/{owner}/{repo}/releases/{id}` leaves the
+    /// underlying tag alive; a complete rollback issues a follow-up
+    /// `DELETE /repos/{owner}/{repo}/git/refs/tags/{tag}` to remove it.
+    /// 404 here should be bucketed as already-absent by the caller —
+    /// the tag was either never created or was already deleted.
+    fn delete_tag(&self, params: &DeleteTagParams) -> anyhow::Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,11 +179,15 @@ pub struct MockGitHubClient {
     upload_asset_calls: Mutex<Vec<UploadAssetParams>>,
     list_releases_calls: Mutex<Vec<ListReleasesParams>>,
     delete_release_calls: Mutex<Vec<DeleteReleaseParams>>,
+    get_release_by_tag_calls: Mutex<Vec<GetReleaseByTagParams>>,
+    delete_tag_calls: Mutex<Vec<DeleteTagParams>>,
 
     create_release_response: Mutex<Option<Result<ReleaseInfo, String>>>,
     upload_asset_response: Mutex<Option<Result<AssetInfo, String>>>,
     list_releases_response: Mutex<Option<Result<Vec<ReleaseInfo>, String>>>,
     delete_release_response: Mutex<Option<Result<(), String>>>,
+    get_release_by_tag_response: Mutex<Option<Result<Option<ReleaseInfo>, String>>>,
+    delete_tag_response: Mutex<Option<Result<(), String>>>,
 }
 
 #[cfg(feature = "test-helpers")]
@@ -151,10 +203,14 @@ impl MockGitHubClient {
             upload_asset_calls: Mutex::new(Vec::new()),
             list_releases_calls: Mutex::new(Vec::new()),
             delete_release_calls: Mutex::new(Vec::new()),
+            get_release_by_tag_calls: Mutex::new(Vec::new()),
+            delete_tag_calls: Mutex::new(Vec::new()),
             create_release_response: Mutex::new(None),
             upload_asset_response: Mutex::new(None),
             list_releases_response: Mutex::new(None),
             delete_release_response: Mutex::new(None),
+            get_release_by_tag_response: Mutex::new(None),
+            delete_tag_response: Mutex::new(None),
         }
     }
 
@@ -188,6 +244,26 @@ impl MockGitHubClient {
     pub fn set_delete_release_response(&self, response: Result<(), String>) {
         *self
             .delete_release_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
+    }
+
+    /// Configure the response for `get_release_by_tag` calls.
+    ///
+    /// `Ok(Some(info))` mirrors a 200 OK response, `Ok(None)` mirrors a
+    /// 404 (no release for this tag), and `Err(msg)` mirrors any other
+    /// failure (transport, 5xx, auth).
+    pub fn set_get_release_by_tag_response(&self, response: Result<Option<ReleaseInfo>, String>) {
+        *self
+            .get_release_by_tag_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
+    }
+
+    /// Configure the response for `delete_tag` calls.
+    pub fn set_delete_tag_response(&self, response: Result<(), String>) {
+        *self
+            .delete_tag_response
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
     }
@@ -253,6 +329,38 @@ impl MockGitHubClient {
     /// Get a clone of all recorded `delete_release` call parameters.
     pub fn delete_release_calls(&self) -> Vec<DeleteReleaseParams> {
         self.delete_release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Number of times `get_release_by_tag` was called.
+    pub fn get_release_by_tag_call_count(&self) -> usize {
+        self.get_release_by_tag_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Get a clone of all recorded `get_release_by_tag` call parameters.
+    pub fn get_release_by_tag_calls(&self) -> Vec<GetReleaseByTagParams> {
+        self.get_release_by_tag_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Number of times `delete_tag` was called.
+    pub fn delete_tag_call_count(&self) -> usize {
+        self.delete_tag_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Get a clone of all recorded `delete_tag` call parameters.
+    pub fn delete_tag_calls(&self) -> Vec<DeleteTagParams> {
+        self.delete_tag_calls
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -344,6 +452,49 @@ impl GitHubClient for MockGitHubClient {
             Some(Err(msg)) => Err(anyhow::anyhow!("{}", msg)),
             None => Err(anyhow::anyhow!(
                 "MockGitHubClient: no delete_release response configured"
+            )),
+        }
+    }
+
+    fn get_release_by_tag(
+        &self,
+        params: &GetReleaseByTagParams,
+    ) -> anyhow::Result<Option<ReleaseInfo>> {
+        self.get_release_by_tag_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(params.clone());
+
+        match self
+            .get_release_by_tag_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            Some(Ok(info)) => Ok(info.clone()),
+            Some(Err(msg)) => Err(anyhow::anyhow!("{}", msg)),
+            None => Err(anyhow::anyhow!(
+                "MockGitHubClient: no get_release_by_tag response configured"
+            )),
+        }
+    }
+
+    fn delete_tag(&self, params: &DeleteTagParams) -> anyhow::Result<()> {
+        self.delete_tag_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(params.clone());
+
+        match self
+            .delete_tag_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
+            Some(Ok(())) => Ok(()),
+            Some(Err(msg)) => Err(anyhow::anyhow!("{}", msg)),
+            None => Err(anyhow::anyhow!(
+                "MockGitHubClient: no delete_tag response configured"
             )),
         }
     }
