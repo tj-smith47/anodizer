@@ -4,6 +4,7 @@ pub mod aur_source;
 pub mod cargo;
 pub mod chocolatey;
 pub mod cloudsmith;
+pub mod dispatch;
 pub mod dockerhub;
 pub mod homebrew;
 pub(crate) mod http_upload;
@@ -12,10 +13,14 @@ pub mod mcp;
 pub mod nix;
 pub mod post_publish;
 pub mod preflight;
+pub mod registry;
 pub mod scoop;
 pub mod upload;
 pub(crate) mod util;
 pub mod winget;
+
+pub use dispatch::{DispatchOptions, dispatch};
+pub use registry::{configured_publishers, group_dispatch_order};
 
 use anodizer_core::config::PublishConfig;
 use anodizer_core::context::Context;
