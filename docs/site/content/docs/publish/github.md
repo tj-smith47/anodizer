@@ -7,6 +7,14 @@ template = "docs.html"
 
 The release stage creates a GitHub release and uploads all artifacts as assets.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Assets | true | delete release + delete tag + delete assets | `contents:write` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml

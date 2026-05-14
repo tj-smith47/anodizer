@@ -7,6 +7,14 @@ template = "docs.html"
 
 Publish your crate to [crates.io](https://crates.io) with dependency-aware ordering.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Submitter | true | `cargo yank` (version stays reserved; consumers cannot install fresh) | `CARGO_REGISTRY_TOKEN yank` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml

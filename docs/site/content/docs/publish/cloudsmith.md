@@ -7,6 +7,14 @@ template = "docs.html"
 
 Anodizer can upload deb, rpm, and apk packages to [Cloudsmith](https://cloudsmith.io/) repositories.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Assets | false | structured warn line per (org, repo, filename) tuple (DELETE migration pending) | `CLOUDSMITH_API_KEY package_delete` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml

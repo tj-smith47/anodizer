@@ -5,7 +5,15 @@ weight = 83
 template = "docs.html"
 +++
 
-Anodizer can sync short and full descriptions to your Docker Hub repositories. This does not build or push images — it updates the repository metadata that appears on the Docker Hub page.
+Anodizer can sync short and full descriptions to your Docker Hub repositories. This does not build or push images; it updates the repository metadata that appears on the Docker Hub page.
+
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Assets | false | manual cleanup checklist (description PATCH cannot be programmatically reverted) | `DOCKER_TOKEN write` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
 ## Minimal config
 

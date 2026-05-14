@@ -248,6 +248,11 @@ anodizer continue                   Merge split build artifacts and resume pipel
 
 Full documentation is available at **[tj-smith47.github.io/anodizer](https://tj-smith47.github.io/anodizer/)**.
 
+Operator guides:
+
+- [Release resilience guide](docs/site/content/docs/advanced/release-resilience.md) - three-group publisher dispatch, Submitter gate, rollback, replay-from-run
+- [Determinism guide](docs/site/content/docs/advanced/determinism.md) - byte-stability contract, `anodize check determinism` harness, runtime allow-list
+
 ## License
 
 MIT
