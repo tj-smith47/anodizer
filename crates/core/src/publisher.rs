@@ -59,6 +59,11 @@ pub enum PreflightCheck {
 ///   token scope that rollback would require (e.g. `"delete_repo"` for
 ///   GitHub-fork-based publishers). Defaults to `None`. Surfaced by
 ///   the CLI when explaining why a rollback path is unavailable.
+///
+/// Implementations must be `Send + Sync` so the publish stage can fan out
+/// across publisher groups in parallel. Wrap non-`Send` clients (Rc-based,
+/// thread-local channels) behind an `Arc<Mutex<_>>` or move them inside
+/// `run()`'s scope rather than holding them on `self`.
 pub trait Publisher: Send + Sync {
     /// Stable, lowercase identifier for this publisher (e.g. `"cargo"`).
     fn name(&self) -> &str;
@@ -103,8 +108,6 @@ pub trait Publisher: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::Context;
-    use crate::{PublishEvidence, PublisherGroup};
 
     struct MinimalPublisher;
     impl Publisher for MinimalPublisher {
