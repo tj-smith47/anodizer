@@ -92,6 +92,12 @@ pub struct ReleaseOpts {
     /// `--from-run=<id>`: prior run id whose `report.json` to load
     /// when running with `--rollback-only`.
     pub from_run: Option<String>,
+    /// `--allow-rerun`: force `PublishStage::run` to proceed even when
+    /// a prior `dist/run-<id>/report.json` exists. Plumbed into
+    /// `ContextOptions::allow_rerun`. See the audit reference in
+    /// `crates/stage-publish/src/lib.rs::PublishStage::run` for the
+    /// duplicate-publish-risk rationale.
+    pub allow_rerun: bool,
     /// `--allow-nondeterministic <name>=<reason>` (repeatable):
     /// runtime non-determinism opt-outs. Parsed at the translation
     /// site into `(name, reason)` tuples; empty reasons are rejected
@@ -456,6 +462,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         rollback_mode,
         simulate_failure_publishers,
         rollback_only: opts.rollback_only,
+        allow_rerun: opts.allow_rerun,
         from_run: opts.from_run,
         runtime_nondeterministic_allowlist,
         summary_json_path: opts.summary_json,

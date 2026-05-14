@@ -718,7 +718,7 @@ fn run_publisher_preflight_extension(
     for p in &publishers {
         // ---- rollback scope check ------------------------------------
         if let Some(label) = p.rollback_scope_needed()
-            && !scope_label_is_available(ctx, label)
+            && !crate::scope::scope_available(label)
         {
             let msg = format!(
                 "rollback scope '{}' is not available for publisher '{}'; rollback will be skipped or limited",
@@ -768,36 +768,6 @@ fn run_publisher_preflight_extension(
     }
 
     Ok(())
-}
-
-/// Parse a rollback-scope label like `"GITHUB_TOKEN contents:write"` or
-/// `"CARGO_REGISTRY_TOKEN yank"` and check whether the env var named in
-/// the first whitespace-separated token is set (non-empty) in the process
-/// environment. The trailing scope description after the space is
-/// informational only — we cannot verify scope strings against the actual
-/// token's permissions without an API round-trip.
-///
-/// For `GITHUB_TOKEN`, also accept `ANODIZER_GITHUB_TOKEN` to match the
-/// fallback that the publish / rollback paths use for GitHub-credentialed
-/// publishers (Bundle B/C).
-fn scope_label_is_available(_ctx: &anodizer_core::context::Context, label: &str) -> bool {
-    let env_var = label.split_once(' ').map(|(v, _)| v).unwrap_or(label);
-    if std::env::var(env_var)
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    // Honor the ANODIZER_-prefixed fallback that publish / rollback paths
-    // use for GitHub-credentialed publishers.
-    if env_var == "GITHUB_TOKEN"
-        && std::env::var("ANODIZER_GITHUB_TOKEN")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    {
-        return true;
-    }
-    false
 }
 
 // ---------------------------------------------------------------------------

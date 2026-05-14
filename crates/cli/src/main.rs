@@ -183,6 +183,7 @@ fn main() {
             simulate_failure,
             rollback_only,
             from_run,
+            allow_rerun,
             allow_nondeterministic,
             summary_json,
         } => {
@@ -249,6 +250,7 @@ fn main() {
                     simulate_failure,
                     rollback_only,
                     from_run,
+                    allow_rerun,
                     allow_nondeterministic,
                     summary_json,
                 })

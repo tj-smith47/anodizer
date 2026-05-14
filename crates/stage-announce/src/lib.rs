@@ -32,4 +32,4 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-pub use run::AnnounceStage;
+pub use run::{AnnounceStage, emit_summary};

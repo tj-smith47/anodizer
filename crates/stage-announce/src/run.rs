@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anodizer_core::config::AnnounceGate;
 use anodizer_core::context::Context;
-use anodizer_core::publish_report::{PublishReport, PublisherOutcome};
+use anodizer_core::publish_report::{PublishReport, PublisherOutcome, SkipReason};
 use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result};
 
@@ -27,9 +27,25 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
         AnnounceGate::None => false,
         AnnounceGate::RequiredPublishers => report.is_some_and(|r| r.required_failures() > 0),
         AnnounceGate::AllPublishers => report.is_some_and(|r| {
-            r.results
-                .iter()
-                .any(|res| !matches!(res.outcome, PublisherOutcome::Succeeded))
+            // Audit ref: 2026-05-15 release-resilience-review finding I2.
+            // Only *failure-like* outcomes gate announce. The previous
+            // `!Succeeded` rule treated happy-path pending states
+            // (`PendingModeration` from chocolatey, `PendingValidation`
+            // from winget) and `Skipped(NotConfigured)` as if they were
+            // failures — defeating the stage on any release that
+            // included a moderated publisher.
+            //
+            // Listed as a positive match so adding a new failure-like
+            // variant is a fail-loud regression (review-blocker) rather
+            // than a silent "still gates" inclusion.
+            r.results.iter().any(|res| {
+                matches!(
+                    res.outcome,
+                    PublisherOutcome::Failed(_)
+                        | PublisherOutcome::RollbackFailed(_)
+                        | PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+                )
+            })
         }),
     }
 }
@@ -46,21 +62,20 @@ impl Stage for AnnounceStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
-        // Run the actual announce body; whatever its outcome, we still
-        // emit the end-of-pipeline run summary so the audit trail is
-        // produced even when the announce gate fires or an announcer
-        // fails. The summary captures every publisher result accumulated
-        // by upstream stages (publish, blob, snapcraft), independent of
-        // whether announce itself ran.
-        let outcome = announce_body(self, ctx);
-        emit_summary(ctx);
-        outcome
+        // Audit ref: I1 — `emit_summary` is invoked by `Pipeline::run`
+        // (single source of truth), not here. Moving the call to the
+        // pipeline layer ensures the summary fires even when announce
+        // is operator-skipped via `--skip=announce` (the stage's `run`
+        // is never invoked in that case). Keeping a fallback call here
+        // would double-write the file; removing it lets the
+        // pipeline-level scope-guard own the contract.
+        announce_body(self, ctx)
     }
 }
 
-/// Body of `AnnounceStage::run` — extracted so `run` can always emit
-/// the end-of-pipeline run summary (`emit_summary`) regardless of how
-/// announce itself resolved (no-op skip / gate-skip / dispatch errors).
+/// Body of `AnnounceStage::run` — kept separated from the trait `run`
+/// to make the I1 boundary explicit: the trait `run` is "announce body
+/// only" while `Pipeline::run` is responsible for `emit_summary`.
 fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     let log = ctx.logger("announce");
     if ctx.skip_in_snapshot(&log, "announce") {
@@ -998,7 +1013,20 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
 /// the point. Errors writing the file are warned, never fatal: a
 /// secondary observability channel must not be able to fail the
 /// release.
-pub(crate) fn emit_summary(ctx: &mut Context) {
+/// End-of-pipeline run-summary emitter.
+///
+/// Always invoked by `Pipeline::run` at the very end (success or
+/// failure) so the per-publisher status table prints to stderr and
+/// `--summary-json=<path>` is honored regardless of whether the
+/// announce stage itself ran. Audit ref: 2026-05-15
+/// release-resilience-review finding I1 — previously this was only
+/// invoked from inside `AnnounceStage::run`, so `--skip=announce`
+/// silently dropped `--summary-json`.
+///
+/// Best-effort: a `summary.json` write failure logs a warn but never
+/// escalates to a pipeline error — the release itself is unaffected
+/// by a missing observability artifact.
+pub fn emit_summary(ctx: &mut Context) {
     let summary = anodizer_stage_publish::run_summary::RunSummary::from_context(ctx);
     if let Some(path) = ctx.options.summary_json_path.clone() {
         let log = ctx.logger("announce");
@@ -1022,7 +1050,7 @@ mod gate_tests {
     use anodizer_core::config::{AnnounceConfig, Config};
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::publish_report::{
-        PublishReport, PublisherGroup, PublisherOutcome, PublisherResult,
+        PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
     };
     use anodizer_core::stage::Stage;
 
@@ -1074,11 +1102,176 @@ mod gate_tests {
     }
 
     #[test]
-    fn evaluate_gate_all_skips_on_any_non_succeeded() {
+    fn evaluate_gate_all_skips_on_any_failure() {
+        // Audit ref: I2 — AllPublishers gates on Failed (regardless of
+        // required), not on "any non-Succeeded". This test covers the
+        // base failure case; the dedicated tests below pin every
+        // happy-path-pending / skip-not-configured variant to NOT gate.
         let mut r = PublishReport::default();
         r.results
             .push(failed_result("p", PublisherGroup::Manager, false));
         assert!(evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
+    }
+
+    // ---- I2 happy-path-pending must NOT gate ---------------------------
+
+    /// Construct a `PublisherResult` with an arbitrary outcome — used by
+    /// the I2-specific tests below where we need to exercise variants
+    /// the basic `failed_result` helper doesn't reach.
+    fn result_with_outcome(
+        name: &str,
+        group: PublisherGroup,
+        required: bool,
+        outcome: PublisherOutcome,
+    ) -> PublisherResult {
+        PublisherResult {
+            name: name.to_string(),
+            group,
+            required,
+            outcome,
+            evidence: None,
+        }
+    }
+
+    #[test]
+    fn evaluate_gate_all_does_not_gate_on_pending_moderation() {
+        // Chocolatey publishers always end on PendingModeration on a
+        // first run — gating announce on this would defeat the stage
+        // for any release that includes chocolatey.
+        let mut r = PublishReport::default();
+        r.results.push(result_with_outcome(
+            "choco",
+            PublisherGroup::Submitter,
+            true,
+            PublisherOutcome::PendingModeration,
+        ));
+        assert!(!evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
+    }
+
+    #[test]
+    fn evaluate_gate_all_does_not_gate_on_pending_validation() {
+        // winget publishers always end on PendingValidation while the
+        // microsoft/winget-pkgs PR pipeline runs — same rationale as
+        // PendingModeration above.
+        let mut r = PublishReport::default();
+        r.results.push(result_with_outcome(
+            "winget",
+            PublisherGroup::Submitter,
+            true,
+            PublisherOutcome::PendingValidation,
+        ));
+        assert!(!evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
+    }
+
+    #[test]
+    fn evaluate_gate_all_does_not_gate_on_skipped_not_configured() {
+        // "No work to do" is not a failure.
+        let mut r = PublishReport::default();
+        r.results.push(result_with_outcome(
+            "p",
+            PublisherGroup::Manager,
+            false,
+            PublisherOutcome::Skipped(SkipReason::NotConfigured),
+        ));
+        assert!(!evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
+    }
+
+    #[test]
+    fn evaluate_gate_all_does_not_gate_on_skipped_snapshot_or_dry_run() {
+        for reason in [SkipReason::Snapshot, SkipReason::DryRun] {
+            let mut r = PublishReport::default();
+            r.results.push(result_with_outcome(
+                "p",
+                PublisherGroup::Manager,
+                false,
+                PublisherOutcome::Skipped(reason),
+            ));
+            assert!(
+                !evaluate_gate(Some(&r), AnnounceGate::AllPublishers),
+                "skipped(reason={reason:?}) must not gate announce",
+            );
+        }
+    }
+
+    #[test]
+    fn evaluate_gate_all_does_not_gate_on_rolled_back_or_published_no_rollback() {
+        // Both outcomes represent "publisher reached a clean terminal
+        // state without escalating to Failed". They are NOT failures.
+        for outcome in [
+            PublisherOutcome::RolledBack,
+            PublisherOutcome::PublishedNoRollback,
+            PublisherOutcome::RollbackSkippedNoScope,
+        ] {
+            let mut r = PublishReport::default();
+            r.results.push(result_with_outcome(
+                "p",
+                PublisherGroup::Manager,
+                false,
+                outcome.clone(),
+            ));
+            assert!(
+                !evaluate_gate(Some(&r), AnnounceGate::AllPublishers),
+                "outcome={outcome:?} must not gate announce",
+            );
+        }
+    }
+
+    #[test]
+    fn evaluate_gate_all_gates_on_rollback_failed() {
+        // RollbackFailed IS a failure-like outcome — the operator
+        // needs to know announce was suppressed pending recovery.
+        let mut r = PublishReport::default();
+        r.results.push(result_with_outcome(
+            "p",
+            PublisherGroup::Manager,
+            false,
+            PublisherOutcome::RollbackFailed("transient".into()),
+        ));
+        assert!(evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
+    }
+
+    #[test]
+    fn evaluate_gate_all_gates_on_submitter_gated_skip() {
+        // SubmitterGated means a Submitter publisher was held back
+        // because an upstream Assets/Manager failure tripped the
+        // dispatch-time submitter gate. From announce's perspective
+        // this is a failure-like outcome — the release did not reach
+        // every configured channel and announcing as-is would be
+        // misleading.
+        let mut r = PublishReport::default();
+        r.results.push(result_with_outcome(
+            "p",
+            PublisherGroup::Submitter,
+            true,
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+        ));
+        assert!(evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
+    }
+
+    #[test]
+    fn evaluate_gate_all_mixed_happy_path_pending_alongside_succeeded() {
+        // Realistic post-release report: chocolatey pending, cargo
+        // succeeded, krew skipped(not_configured). No gating expected.
+        let mut r = PublishReport::default();
+        r.results.push(result_with_outcome(
+            "choco",
+            PublisherGroup::Submitter,
+            true,
+            PublisherOutcome::PendingModeration,
+        ));
+        r.results.push(result_with_outcome(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            PublisherOutcome::Succeeded,
+        ));
+        r.results.push(result_with_outcome(
+            "krew",
+            PublisherGroup::Submitter,
+            false,
+            PublisherOutcome::Skipped(SkipReason::NotConfigured),
+        ));
+        assert!(!evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
     }
 
     #[test]
@@ -1211,20 +1404,29 @@ mod summary_tests {
         serde_json::from_str(&text).expect("parse summary.json")
     }
 
+    // Audit ref: I1 — `emit_summary` was moved out of
+    // `AnnounceStage::run` and is now invoked at the pipeline layer
+    // (see `crates/cli/src/pipeline.rs::Pipeline::run`). These tests
+    // exercise `emit_summary` directly to keep the contract pinned at
+    // the stage level; the pipeline-layer integration that ensures
+    // the call always fires (including under `--skip=announce`) is
+    // covered by the integration test
+    // `announce_skipped_via_skip_flag_still_emits_summary` in
+    // `crates/cli/tests`.
+
     #[test]
-    fn announce_stage_writes_summary_when_path_set() {
+    fn emit_summary_writes_summary_when_path_set() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let summary_path = tmp.path().join("summary.json");
 
-        // No announce config so the stage short-circuits on "no announce
-        // config" — the summary must still land on disk because the
-        // emission lives outside the early-return path.
+        // No announce config — irrelevant to emit_summary; we are
+        // testing the summary-emission contract directly.
         let mut ctx = ctx_with(
             opts_with_summary_path(summary_path.clone()),
             None,
             Some(PublishReport::default()),
         );
-        AnnounceStage.run(&mut ctx).expect("run");
+        emit_summary(&mut ctx);
 
         assert!(summary_path.exists(), "summary.json must be written");
         let summary = parse_summary(&summary_path);
@@ -1233,26 +1435,33 @@ mod summary_tests {
     }
 
     #[test]
-    fn announce_stage_does_not_fail_when_summary_write_fails() {
+    fn emit_summary_does_not_panic_when_write_fails() {
         // Path points at a directory — `fs::write` will fail with EISDIR.
-        // The stage must still return Ok because the run-summary write
-        // is a secondary observability channel, not a release gate.
+        // emit_summary must NOT panic (the write is best-effort); the
+        // caller (pipeline) treats it as an observability channel, not
+        // a release gate. The function returns `()` so there is no
+        // outcome to assert beyond "did not panic."
         let tmp = tempfile::tempdir().expect("tempdir");
         let bad_path = tmp.path().to_path_buf(); // existing directory
 
         let mut ctx = ctx_with(opts_with_summary_path(bad_path), None, None);
-        assert!(
-            AnnounceStage.run(&mut ctx).is_ok(),
-            "summary write failure must not fail the stage"
-        );
+        emit_summary(&mut ctx);
+        // No panic = pass.
     }
 
     #[test]
-    fn announce_stage_emits_summary_when_gate_fires() {
+    fn emit_summary_writes_when_gate_would_fire() {
+        // Mirrors the original `announce_stage_emits_summary_when_gate_fires`
+        // intent: the summary must be emitted even when announce was
+        // gated off. We drive `AnnounceStage.run` first (which sets
+        // `announce_gated = true` via the gate path), then invoke
+        // `emit_summary` — the order the pipeline layer enforces.
         let tmp = tempfile::tempdir().expect("tempdir");
         let summary_path = tmp.path().join("summary.json");
 
-        // Required failure + gate=required => gate fires => early return.
+        // Required failure + gate=required => gate fires inside
+        // AnnounceStage::run, which sets announce_gated=true and
+        // returns Ok.
         let mut report = PublishReport::default();
         report.results.push(PublisherResult {
             name: "cargo".to_string(),
@@ -1270,6 +1479,7 @@ mod summary_tests {
             Some(report),
         );
         AnnounceStage.run(&mut ctx).expect("run");
+        emit_summary(&mut ctx);
 
         assert!(
             summary_path.exists(),
@@ -1285,13 +1495,36 @@ mod summary_tests {
     }
 
     #[test]
-    fn announce_stage_skips_summary_when_path_unset() {
+    fn emit_summary_skips_summary_when_path_unset() {
         // summary_json_path = None => no write; the status table still
         // prints to stderr but that's not asserted here (covered by the
         // dedicated print_status_table test in stage-publish).
         let mut ctx = ctx_with(ContextOptions::default(), None, None);
-        AnnounceStage.run(&mut ctx).expect("run");
+        emit_summary(&mut ctx);
         // The absence of a panic / error is the assertion; nothing to
         // grep on disk because no path was configured.
+    }
+
+    #[test]
+    fn emit_summary_writes_when_announce_stage_was_not_called() {
+        // Direct regression test for I1: a release that operator-
+        // skipped announce entirely (`--skip=announce` in the
+        // pipeline) STILL gets a summary write. We model
+        // "AnnounceStage.run never invoked" by simply not calling it.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let summary_path = tmp.path().join("summary.json");
+
+        let mut ctx = ctx_with(
+            opts_with_summary_path(summary_path.clone()),
+            None,
+            Some(PublishReport::default()),
+        );
+        // Do NOT call AnnounceStage.run — simulate `--skip=announce`.
+        emit_summary(&mut ctx);
+
+        assert!(
+            summary_path.exists(),
+            "summary must be written even when AnnounceStage::run was skipped",
+        );
     }
 }

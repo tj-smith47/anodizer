@@ -172,6 +172,14 @@ pub enum Commands {
         )]
         from_run: Option<String>,
         #[arg(
+            long = "allow-rerun",
+            help = "DANGEROUS: force publish to proceed even when a prior \
+                    dist/run-<id>/report.json exists for this tag. PR-based publishers \
+                    (homebrew, scoop, nix, krew, MCP) will open DUPLICATE pull requests. \
+                    Recover from partial failures with --rollback-only --from-run=<id> first."
+        )]
+        allow_rerun: bool,
+        #[arg(
             long = "allow-nondeterministic",
             value_name = "name=reason",
             action = clap::ArgAction::Append,

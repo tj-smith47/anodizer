@@ -99,7 +99,7 @@ pub fn run(
         // If rollback_scope_needed() returns Some but the scope isn't
         // available, skip with the RollbackSkippedNoScope outcome.
         if let Some(label) = publisher.rollback_scope_needed()
-            && !scope_available(label)
+            && !crate::scope::scope_available(label)
         {
             skipped_no_scope += 1;
             report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;
@@ -129,34 +129,6 @@ pub fn run(
         "rollback: {} rolled back, {} failed, {} skipped-no-scope",
         rolled_back, failed, skipped_no_scope,
     ));
-}
-
-/// Check whether the scope label declared by a publisher's
-/// [`Publisher::rollback_scope_needed`] is currently available.
-///
-/// The label is conventionally formatted as `"<ENV_VAR> <scope-name>"`
-/// (e.g. `"GITHUB_TOKEN delete_repo"`); the leading whitespace-delimited
-/// token is interpreted as an env-var name and the rollback is allowed
-/// when the var is set and non-empty. As a special case, `GITHUB_TOKEN`
-/// also accepts the anodize-specific override
-/// `ANODIZER_GITHUB_TOKEN` (the same lookup pattern the post-publish
-/// pollers use).
-fn scope_available(label: &str) -> bool {
-    let env_var = label.split_once(' ').map(|(v, _)| v).unwrap_or(label);
-    if std::env::var(env_var)
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if env_var == "GITHUB_TOKEN"
-        && std::env::var("ANODIZER_GITHUB_TOKEN")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    {
-        return true;
-    }
-    false
 }
 
 // ---------------------------------------------------------------------------

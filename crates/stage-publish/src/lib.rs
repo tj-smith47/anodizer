@@ -24,6 +24,7 @@ pub mod rollback;
 pub mod rollback_only;
 pub mod run_summary;
 pub mod scoop;
+pub(crate) mod scope;
 pub mod upload;
 pub(crate) mod util;
 pub mod winget;
@@ -515,6 +516,54 @@ fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], 
     ctx.set_publish_report(report);
 }
 
+/// Refuse to re-run `PublishStage::run` when a prior end-of-pipeline
+/// `report.json` already exists for the current `run_id`. Returns
+/// `Ok(())` on first run (no report yet), when `--allow-rerun` is
+/// set, or under any of the skip conditions documented at the call
+/// site (snapshot / dry-run / rollback-only / run_id == "local").
+///
+/// Audit ref: 2026-05-15 release-resilience-review finding I4.
+fn refuse_rerun_if_report_exists(ctx: &Context) -> Result<()> {
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return Ok(());
+    }
+    if ctx.options.rollback_only {
+        return Ok(());
+    }
+    if ctx.options.allow_rerun {
+        return Ok(());
+    }
+
+    let run_id = derive_run_id(ctx);
+    // The "local" id is the no-git fallback; enforcing the guard
+    // against it would create false positives across unrelated
+    // `cargo test` runs in CI (they all derive the same id). Only
+    // enforce when the id is a real tag or short_commit.
+    if run_id == "local" {
+        return Ok(());
+    }
+
+    let report_path = ctx
+        .config
+        .dist
+        .join(format!("run-{}", run_id))
+        .join("report.json");
+    if report_path.exists() {
+        anyhow::bail!(
+            "publish refusing to run: a prior report.json exists at {} (run_id={}). \
+             To recover from a partial failure, run \
+             `anodizer release --rollback-only --from-run={}` first (this reverts \
+             reversible publishers and is idempotent). Pass --allow-rerun to force \
+             re-publish anyway — WARNING: PR-based publishers (homebrew, scoop, nix, \
+             krew, MCP) will open DUPLICATE pull requests against the same tag.",
+            report_path.display(),
+            run_id,
+            run_id,
+        );
+    }
+    Ok(())
+}
+
 /// Verify every `--allow-nondeterministic <name>=<reason>` entry
 /// matches at least one artifact emitted by the build-side pipeline.
 /// Glob entries (`*.ext`) match by suffix; bare names match exactly.
@@ -648,6 +697,31 @@ impl Stage for PublishStage {
         if ctx.skip_in_snapshot(&log, "publish") {
             return Ok(());
         }
+
+        // Audit ref: 2026-05-15 release-resilience-review finding I4.
+        // Refuse to re-run publish when a prior `report.json` exists
+        // for the current `run_id` unless the operator explicitly
+        // opts in via `--allow-rerun`. The guard exists because
+        // PR-based publishers (homebrew / scoop / nix / krew / MCP)
+        // open a fresh pull request on each publish — re-running
+        // them against the same tag duplicates the PR with no
+        // safeguard. Operators recovering from a partial failure
+        // should use `--rollback-only --from-run=<id>` first (which
+        // has its own idempotency via `dist/run-<id>/rollback.json`,
+        // covered by Bundle B5).
+        //
+        // Skip the check in:
+        //   - snapshot / dry-run (no report.json gets written in
+        //     those modes — the file's existence is meaningless);
+        //   - rollback-only (the CLI dispatches directly to
+        //     `rollback_only::run` and never enters PublishStage,
+        //     but defense-in-depth: refuse here too if a future
+        //     refactor wires the path differently);
+        //   - run_id == "local" (the no-git fallback produces
+        //     false positives across unrelated `cargo test` runs
+        //     in CI; only enforce when the id is derived from a
+        //     real tag or commit).
+        refuse_rerun_if_report_exists(ctx)?;
 
         // Preflight: every `--allow-nondeterministic <name>=<reason>`
         // entry must match at least one artifact emitted by the
@@ -1672,5 +1746,139 @@ mod tests {
 
         let mut ctx = dry_run_ctx(config);
         assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // I4 — refuse_rerun_if_report_exists.
+    //
+    // Guards PublishStage::run from re-publishing when a prior run's
+    // report.json is on disk for the same `run_id`. Audit ref:
+    // 2026-05-15 release-resilience-review finding I4.
+    // -----------------------------------------------------------------------
+
+    /// Build a Context whose `config.dist` is a real on-disk tempdir
+    /// AND whose `git_info` has a stable tag so `derive_run_id` returns
+    /// a deterministic non-"local" value.
+    fn ctx_with_dist_and_tag(tag: &str) -> (Context, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).expect("mkdir dist");
+        let ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+            .tag(tag)
+            .dist(dist)
+            .build();
+        (ctx, tmp)
+    }
+
+    /// Pre-seed `dist/run-<tag>/report.json` so the guard sees a prior run.
+    fn seed_prior_report(ctx: &Context, tag: &str) {
+        let dir = ctx.config.dist.join(format!("run-{}", tag));
+        std::fs::create_dir_all(&dir).expect("mkdir run dir");
+        std::fs::write(dir.join("report.json"), "{}").expect("write fixture report.json");
+    }
+
+    #[test]
+    fn refuse_rerun_passes_on_first_run_no_prior_report() {
+        let (ctx, _tmp) = ctx_with_dist_and_tag("v1.0.0");
+        // No prior report.json on disk — guard must allow proceeding.
+        refuse_rerun_if_report_exists(&ctx).expect("first run must pass guard");
+    }
+
+    #[test]
+    fn publish_stage_refuses_when_report_exists() {
+        let (ctx, _tmp) = ctx_with_dist_and_tag("v1.0.0");
+        seed_prior_report(&ctx, "v1.0.0");
+
+        let err = refuse_rerun_if_report_exists(&ctx)
+            .expect_err("guard must refuse when prior report.json exists");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("publish refusing to run"),
+            "error must announce refusal: {msg}",
+        );
+        assert!(
+            msg.contains("--rollback-only"),
+            "error must point operators at the safer recovery flow: {msg}",
+        );
+        assert!(
+            msg.contains("--allow-rerun"),
+            "error must cite the override flag: {msg}",
+        );
+        assert!(
+            msg.contains("DUPLICATE"),
+            "error must warn loudly about duplicate-PR risk: {msg}",
+        );
+        assert!(
+            msg.contains("v1.0.0"),
+            "error must include the run_id so operators know which prior run blocked the re-run: {msg}",
+        );
+    }
+
+    #[test]
+    fn publish_stage_allows_rerun_when_flag_set() {
+        let (mut ctx, _tmp) = ctx_with_dist_and_tag("v1.0.0");
+        seed_prior_report(&ctx, "v1.0.0");
+        ctx.options.allow_rerun = true;
+
+        refuse_rerun_if_report_exists(&ctx).expect("allow_rerun must override the guard");
+    }
+
+    #[test]
+    fn publish_stage_skips_check_in_snapshot_mode() {
+        let (mut ctx, _tmp) = ctx_with_dist_and_tag("v1.0.0");
+        seed_prior_report(&ctx, "v1.0.0");
+        ctx.options.snapshot = true;
+
+        refuse_rerun_if_report_exists(&ctx)
+            .expect("snapshot mode must skip the guard (no report.json gets written there)");
+    }
+
+    #[test]
+    fn publish_stage_skips_check_in_dry_run_mode() {
+        let (mut ctx, _tmp) = ctx_with_dist_and_tag("v1.0.0");
+        seed_prior_report(&ctx, "v1.0.0");
+        ctx.options.dry_run = true;
+
+        refuse_rerun_if_report_exists(&ctx).expect("dry-run mode must skip the guard");
+    }
+
+    #[test]
+    fn publish_stage_skips_check_in_rollback_only_mode() {
+        let (mut ctx, _tmp) = ctx_with_dist_and_tag("v1.0.0");
+        seed_prior_report(&ctx, "v1.0.0");
+        ctx.options.rollback_only = true;
+
+        refuse_rerun_if_report_exists(&ctx).expect(
+            "rollback-only mode bypasses PublishStage entirely; \
+                defense-in-depth guard must also let it through here",
+        );
+    }
+
+    #[test]
+    fn publish_stage_skips_check_when_run_id_is_local() {
+        // Build a context whose `derive_run_id` returns "local" — that
+        // requires `git_info == None` (the no-git fallback path).
+        // `TestContextBuilder` always populates git_info, so we drop
+        // it explicitly here.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).expect("mkdir dist");
+        let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+            .dist(dist)
+            .build();
+        ctx.git_info = None;
+        // Pre-condition: the derived id is "local".
+        assert_eq!(derive_run_id(&ctx), "local");
+
+        // Seed a stale `run-local/report.json` (the kind of file an
+        // earlier `cargo test` run might leave behind in shared CI).
+        let dir = ctx.config.dist.join("run-local");
+        std::fs::create_dir_all(&dir).expect("mkdir run-local");
+        std::fs::write(dir.join("report.json"), "{}").expect("write");
+
+        refuse_rerun_if_report_exists(&ctx).expect(
+            "the 'local' run_id is the no-git fallback; the guard must \
+                not produce false positives across unrelated CI runs",
+        );
     }
 }

@@ -60,6 +60,7 @@ Run the full release pipeline
 | `--simulate-failure` | — | — | (TEST HARNESS) Force a named publisher to fail. Gated by ANODIZE_TEST_HARNESS=1. |
 | `--rollback-only` | — | — | Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>. |
 | `--from-run` | — | — | Prior run id whose state to load when running --rollback-only. Loads <dist>/run-<id>/rollback.json if present (a prior replay's state), otherwise <dist>/run-<id>/report.json. Delete rollback.json to force a full re-roll. Must match the run_id format written by the release pipeline (alphanumeric, dot, dash, underscore; no path separators). |
+| `--allow-rerun` | — | — | DANGEROUS: force publish to proceed even when a prior dist/run-<id>/report.json exists for this tag. PR-based publishers (homebrew, scoop, nix, krew, MCP) will open DUPLICATE pull requests. Recover from partial failures with --rollback-only --from-run=<id> first. |
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
 | `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |

@@ -311,6 +311,7 @@ anodize release \
   --simulate-failure=<publisher> \
   --rollback-only \
   --from-run=<id> \
+  --allow-rerun \
   --summary-json=<path>
 ```
 
@@ -323,6 +324,7 @@ anodize release \
 | `--simulate-failure=<publisher>` | Forces a named publisher to return `Err`. Hidden flag, gated by `ANODIZE_TEST_HARNESS=1`. | unset |
 | `--rollback-only` | Reads a prior run report and re-attempts rollback only. No new publishing. | n/a |
 | `--from-run=<id>` | Run id whose `dist/run-<id>/report.json` to load when using `--rollback-only`. | n/a |
+| `--allow-rerun` | DANGEROUS: force `release` to re-run publish even when a prior `dist/run-<id>/report.json` exists. PR-based publishers (homebrew/scoop/nix/krew/MCP) will open duplicate PRs. Prefer `--rollback-only --from-run=<id>` first. | off |
 | `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | unset |
 
 See also: [Determinism](./determinism.md) for the byte-stability contract that

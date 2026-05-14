@@ -232,6 +232,7 @@ pub(crate) fn run_with_publishers(
     let mut rolled_back = 0usize;
     let mut failed = 0usize;
     let mut not_found = 0usize;
+    let mut skipped_no_scope = 0usize;
 
     for i in target_indices {
         let (name, evidence) = {
@@ -261,6 +262,28 @@ pub(crate) fn run_with_publishers(
             continue;
         };
 
+        // Audit ref: 2026-05-15 release-resilience-review finding I3 —
+        // honor `rollback_scope_needed()` just like the live `rollback::run`
+        // path. Without this check, replaying against a host that lost
+        // its credential between the original run and the replay would
+        // invoke `publisher.rollback(...)`, which itself would fail
+        // hard rather than recording `RollbackSkippedNoScope`. The
+        // operator-visible outcome is identical to what the original
+        // run would have recorded had the credential been missing
+        // there: a clear "not enough scope to roll this back; fix the
+        // env and retry" signal in the replay state file.
+        if let Some(label) = publisher.rollback_scope_needed()
+            && !crate::scope::scope_available(label)
+        {
+            skipped_no_scope += 1;
+            report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;
+            log.warn(&format!(
+                "rollback-only: '{}' skipped - scope '{}' unavailable",
+                name, label,
+            ));
+            continue;
+        }
+
         log.status(&format!("rollback-only: invoking '{}'", name));
         match publisher.rollback(ctx, &evidence) {
             Ok(()) => {
@@ -277,8 +300,8 @@ pub(crate) fn run_with_publishers(
     }
 
     log.status(&format!(
-        "rollback-only: {} rolled back, {} failed, {} not found",
-        rolled_back, failed, not_found,
+        "rollback-only: {} rolled back, {} failed, {} not found, {} skipped-no-scope",
+        rolled_back, failed, not_found, skipped_no_scope,
     ));
 
     // Persist the updated state to <dist>/run-<id>/rollback.json so the
@@ -821,5 +844,130 @@ mod tests {
         );
         // Postcondition: rollback.json now exists (the replay wrote it).
         assert!(rollback_path(&ctx, "fixt").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // Scope-check parity with `rollback::run` (audit finding I3).
+    //
+    // The replay path must honor `rollback_scope_needed()` the same way
+    // the live rollback dispatcher does — otherwise the replay invokes
+    // `publisher.rollback(...)` against a host that's missing the
+    // credential, which would either fail-hard or (worse) silently
+    // degrade to no-op for a publisher that swallows auth errors.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial(scope_env)]
+    fn rollback_only_skips_when_scope_unavailable_records_no_scope() {
+        // SAFETY: env mutation is single-threaded within a serial group.
+        unsafe {
+            std::env::remove_var("ROLLBACK_ONLY_SCOPE_TEST_TOKEN");
+        }
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("scoped", PublisherGroup::Manager, true));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        let publishers: Vec<Box<dyn Publisher>> = vec![fake_with_scope(
+            "scoped",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+            "ROLLBACK_ONLY_SCOPE_TEST_TOKEN write",
+        )];
+
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("replay");
+        assert!(
+            matches!(
+                updated.results[0].outcome,
+                PublisherOutcome::RollbackSkippedNoScope,
+            ),
+            "missing scope must record RollbackSkippedNoScope, got {:?}",
+            updated.results[0].outcome,
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(scope_env)]
+    fn rollback_only_does_not_invoke_rollback_when_scope_unavailable() {
+        // Regression guard: when the scope check fires, the publisher's
+        // `rollback()` must NOT be called. Using FakeCountingPublisher
+        // would not work here because it has no scope hook — instead we
+        // use a fake_with_rollback that errors on rollback, plus the
+        // scope-bearing fake. If the scope check is honored, the
+        // outcome flips to RollbackSkippedNoScope (no error from the
+        // rollback impl). If the scope check is missing, the outcome
+        // would flip to RollbackFailed (because rollback errored).
+        // SAFETY: env mutation is single-threaded within a serial group.
+        unsafe {
+            std::env::remove_var("ROLLBACK_ONLY_SCOPE_GUARD_TOKEN");
+        }
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("scoped", PublisherGroup::Manager, true));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        // Construct a FakePublisher with BOTH a non-None scope AND a
+        // failing rollback — so the test can distinguish "scope-check
+        // honored" (RollbackSkippedNoScope) from "scope-check skipped
+        // and rollback() actually ran" (RollbackFailed).
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(crate::testing::FakePublisher {
+            name: "scoped".into(),
+            group: PublisherGroup::Manager,
+            required: true,
+            outcome: FakeOutcome::Succeed,
+            rollback_outcome: crate::testing::FakeRollback::Fail(
+                "rollback() must not be called".into(),
+            ),
+            rollback_scope: Some("ROLLBACK_ONLY_SCOPE_GUARD_TOKEN write"),
+        })];
+
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("replay");
+        assert!(
+            matches!(
+                updated.results[0].outcome,
+                PublisherOutcome::RollbackSkippedNoScope,
+            ),
+            "scope-check must short-circuit before rollback(); got {:?}",
+            updated.results[0].outcome,
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(scope_env)]
+    fn rollback_only_proceeds_when_scope_available() {
+        // SAFETY: env mutation is single-threaded within a serial group.
+        unsafe {
+            std::env::set_var("ROLLBACK_ONLY_SCOPE_PRESENT_TOKEN", "xyz");
+        }
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("scoped", PublisherGroup::Manager, true));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        let publishers: Vec<Box<dyn Publisher>> = vec![fake_with_scope(
+            "scoped",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+            "ROLLBACK_ONLY_SCOPE_PRESENT_TOKEN write",
+        )];
+
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("replay");
+        assert!(
+            matches!(updated.results[0].outcome, PublisherOutcome::RolledBack),
+            "available scope must allow rollback to proceed; got {:?}",
+            updated.results[0].outcome,
+        );
+        // SAFETY: env mutation is single-threaded within a serial group.
+        unsafe {
+            std::env::remove_var("ROLLBACK_ONLY_SCOPE_PRESENT_TOKEN");
+        }
     }
 }

@@ -574,6 +574,24 @@ impl Pipeline {
     }
 
     pub fn run(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
+        // Audit ref: 2026-05-15 release-resilience-review finding I1.
+        // `emit_summary` runs at the pipeline level (not inside
+        // `AnnounceStage::run`) so the end-of-pipeline status table
+        // and `--summary-json=<path>` write always fire — including
+        // when announce itself is operator-skipped via
+        // `--skip=announce`. The scope-guard shape (inner-closure
+        // returns the outcome, outer wrapper calls `emit_summary`
+        // then propagates) means the summary fires on Ok, Err, AND
+        // even when the pipeline body short-circuits early via `?`.
+        let outcome = self.run_inner(ctx, log);
+        anodizer_stage_announce::emit_summary(ctx);
+        outcome
+    }
+
+    /// Inner pipeline body. Lives separately so `Pipeline::run` can
+    /// wrap it in the unconditional `emit_summary` post-call — see
+    /// the audit reference at the top of `run`.
+    fn run_inner(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
         // Skip-stage validation runs at the CLI entry (`validate_skip_values`
         // in main.rs); the command never reaches this point with an unknown
         // value. No runtime warning is needed.
@@ -1662,5 +1680,57 @@ crates:
         let p = build_merge_pipeline();
         let names = p.stage_names();
         assert_blob_before_snapcraft(&names, "build_merge_pipeline");
+    }
+
+    // -----------------------------------------------------------------------
+    // I1 — Pipeline-level emit_summary contract.
+    //
+    // Pipeline::run must ALWAYS invoke `emit_summary` (regardless of
+    // whether `AnnounceStage::run` was reached). The unit tests in
+    // `stage-announce` pin the stage-side contract; this test pins the
+    // pipeline-side contract — specifically that `--skip=announce`
+    // doesn't drop `--summary-json`. Audit ref: 2026-05-15
+    // release-resilience-review finding I1.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pipeline_emits_summary_when_announce_is_skipped_via_skip_flag() {
+        use anodizer_core::context::ContextOptions;
+        use anodizer_stage_announce::AnnounceStage;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let summary_path = tmp.path().join("summary.json");
+
+        // Build a pipeline whose only stage is AnnounceStage and skip
+        // it via `--skip=announce`. With the I1 fix the summary still
+        // lands on disk because Pipeline::run invokes emit_summary
+        // after the stage loop, regardless of whether the stage ran.
+        let mut p = Pipeline::new();
+        p.add(Box::new(AnnounceStage));
+
+        let opts = ContextOptions {
+            summary_json_path: Some(summary_path.clone()),
+            skip_stages: vec!["announce".to_string()],
+            ..ContextOptions::default()
+        };
+        let config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = anodizer_core::context::Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        ctx.publish_report = Some(anodizer_core::publish_report::PublishReport::default());
+
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log).expect("pipeline run");
+
+        // The stage was skipped — but the summary must STILL be written.
+        // Pre-I1, the assertion below would have failed because the
+        // emit_summary call lived inside AnnounceStage::run and the
+        // skipped stage never reached it.
+        assert!(
+            summary_path.exists(),
+            "summary.json must be written even when announce is operator-skipped",
+        );
     }
 }
