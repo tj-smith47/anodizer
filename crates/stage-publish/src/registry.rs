@@ -57,6 +57,13 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if is_aur_configured(ctx) {
         v.push(Box::new(crate::aur::AurOurPublisher::new()));
     }
+    // Bundle C (Manager — close-PR / registry rollback).
+    if is_krew_configured(ctx) {
+        v.push(Box::new(crate::krew::KrewPublisher::new()));
+    }
+    if is_mcp_configured(ctx) {
+        v.push(Box::new(crate::mcp::publisher::McpPublisher::new()));
+    }
     v
 }
 
@@ -103,6 +110,27 @@ fn is_aur_configured(ctx: &Context) -> bool {
         .crates
         .iter()
         .any(|c| c.publish.as_ref().is_some_and(|p| p.aur.is_some()))
+}
+
+/// True when at least one crate has a `publish.krew` block.
+fn is_krew_configured(ctx: &Context) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
+}
+
+/// True when the top-level `mcp.name` is set and non-empty. Mirrors
+/// the skip-gate in [`crate::mcp::publish_to_mcp`] — an empty / unset
+/// name short-circuits the publisher to a no-op, so we treat the same
+/// state as not-configured here.
+fn is_mcp_configured(ctx: &Context) -> bool {
+    ctx.config
+        .mcp
+        .name
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
 }
 
 /// True when at least one crate in the active config has a
@@ -324,5 +352,80 @@ mod tests {
             );
             assert!(!p.required(), "{} should not be required", expected);
         }
+    }
+
+    #[test]
+    fn bundle_c_publishers_registered_when_configured() {
+        use anodizer_core::config::{KrewConfig, McpConfig, RepositoryConfig};
+        // krew is per-crate (publish.krew); mcp is top-level (Config.mcp).
+        // One fixture exercises both registration gates.
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                krew: Some(KrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("krew-index-fork".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        ctx.config.mcp = McpConfig {
+            name: Some("io.github.acme/widget".to_string()),
+            ..Default::default()
+        };
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        for expected in ["krew", "mcp"] {
+            assert!(
+                names.contains(&expected),
+                "{} missing from registered publishers (got {:?})",
+                expected,
+                names
+            );
+            let p = publishers
+                .iter()
+                .find(|p| p.name() == expected)
+                .expect("publisher present");
+            assert_eq!(
+                p.group(),
+                PublisherGroup::Manager,
+                "{} should be Manager group",
+                expected
+            );
+            assert!(!p.required(), "{} should not be required", expected);
+            assert_eq!(
+                p.rollback_scope_needed(),
+                Some("GITHUB_TOKEN pull_request:write"),
+                "{} rollback scope",
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_publisher_skipped_when_name_empty() {
+        // mcp's skip-gate triggers on empty `name`. The registry
+        // predicate mirrors that gate so we don't instantiate a
+        // publisher whose run() would no-op anyway.
+        let mut ctx = Context::test_fixture();
+        ctx.config.mcp = anodizer_core::config::McpConfig {
+            name: Some("   ".to_string()),
+            ..Default::default()
+        };
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        assert!(
+            !names.contains(&"mcp"),
+            "mcp should not register when name trims to empty (got {:?})",
+            names
+        );
     }
 }

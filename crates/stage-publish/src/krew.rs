@@ -959,3 +959,459 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// KrewPublisher — Publisher trait wrapper (Bundle C)
+// ---------------------------------------------------------------------------
+
+/// Krew plugin-index publisher. Each successful per-crate publish opens a
+/// PR against an upstream `krew-index`-style repo from a fork. The rollback
+/// path closes those PRs via `PATCH /repos/<upstream>/pulls/<n>` with
+/// `state=closed`.
+///
+/// PR-number discovery uses the **query-at-rollback-time** approach: at
+/// publish time we only record the upstream coordinates, the fork owner,
+/// and the branch name the publish path pushed to. At rollback time we
+/// list open PRs filtered by `head=<fork_owner>:<branch>` and close each
+/// match. This sidesteps modifying the unchanged `publish_to_krew` body
+/// to surface the new PR number, and stays robust against a stale
+/// evidence file stitched in from an older run.
+///
+/// CREDENTIAL HANDLING: [`KrewPrTarget`] stores `token_env_var` — the
+/// NAME of the env var to consult at rollback time — not the resolved
+/// token VALUE. Same rule applies to every Bundle B / Bundle C publisher
+/// that touches GitHub auth.
+use serde::Deserialize;
+
+simple_publisher!(
+    KrewPublisher,
+    "krew",
+    anodizer_core::PublisherGroup::Manager,
+    false,
+    Some("GITHUB_TOKEN pull_request:write"),
+);
+
+/// Serialized shape of a recorded krew PR target. One entry per crate
+/// whose publish path successfully pushed a branch to its fork. See
+/// the module-level rustdoc for the query-at-rollback-time rationale.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct KrewPrTarget {
+    /// Per-target label — the crate the manifest was generated for.
+    /// Surfaces in log lines.
+    target: String,
+    /// Upstream owner — typically `kubernetes-sigs` (or whatever
+    /// `repository.pull_request.base.owner` overrides to).
+    upstream_owner: String,
+    /// Upstream repo — typically `krew-index`.
+    upstream_repo: String,
+    /// Fork owner — the user/org the publish path pushed the branch to.
+    fork_owner: String,
+    /// Branch name on the fork — `{plugin_name}-v{version}`.
+    branch: String,
+    /// Env var name to consult for the rollback close-PR token.
+    /// Captured at run-time so rollback uses the same env contract the
+    /// publish path validated.
+    token_env_var: Option<String>,
+}
+
+/// Decode the `krew_targets` array from
+/// [`anodizer_core::PublishEvidence::extra`].
+///
+/// Returns an empty Vec on any of: missing key, wrong shape, empty
+/// array. Rollback treats empty-decode the same as no-evidence and
+/// emits the canonical empty-evidence warn.
+fn decode_krew_targets(extra: &serde_json::Value) -> Vec<KrewPrTarget> {
+    extra
+        .get("krew_targets")
+        .and_then(|v| serde_json::from_value::<Vec<KrewPrTarget>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Resolve the upstream `<owner>/<repo>` slug for a krew target — mirrors
+/// the dispatch logic in `publish_to_krew`: prefer
+/// `repository.pull_request.base` when set, else fall back to the
+/// canonical kubernetes-sigs/krew-index.
+fn resolve_krew_upstream(krew_cfg: &anodizer_core::config::KrewConfig) -> (String, String) {
+    if let Some(base) = krew_cfg
+        .repository
+        .as_ref()
+        .and_then(|r| r.pull_request.as_ref())
+        .and_then(|pr| pr.base.as_ref())
+        && let (Some(o), Some(n)) = (base.owner.as_deref(), base.name.as_deref())
+    {
+        return (o.to_string(), n.to_string());
+    }
+    ("kubernetes-sigs".to_string(), "krew-index".to_string())
+}
+
+/// Build a [`KrewPrTarget`] for each crate the publisher would run on.
+/// Reads config + the live process version so the branch name matches
+/// what `publish_to_krew` will push.
+fn collect_krew_run_targets(ctx: &Context) -> Vec<KrewPrTarget> {
+    let mut out: Vec<KrewPrTarget> = Vec::new();
+    let version = ctx.version();
+    let selected = &ctx.options.selected_crates;
+    for c in &ctx.config.crates {
+        if !selected.is_empty() && !selected.contains(&c.name) {
+            continue;
+        }
+        let Some(krew_cfg) = c.publish.as_ref().and_then(|p| p.krew.as_ref()) else {
+            continue;
+        };
+        let Some((fork_owner_raw, _)) =
+            crate::util::resolve_repo_owner_name(krew_cfg.repository.as_ref())
+        else {
+            continue;
+        };
+        let fork_owner = ctx
+            .render_template(&fork_owner_raw)
+            .unwrap_or(fork_owner_raw);
+        // Plugin-name override mirrors `publish_to_krew`'s resolution.
+        let plugin_name_raw = krew_cfg.name.as_deref().unwrap_or(&c.name);
+        let plugin_name = ctx
+            .render_template(plugin_name_raw)
+            .unwrap_or_else(|_| plugin_name_raw.to_string());
+        let branch = format!("{}-v{}", plugin_name, version);
+        let (upstream_owner, upstream_repo) = resolve_krew_upstream(krew_cfg);
+        out.push(KrewPrTarget {
+            target: c.name.clone(),
+            upstream_owner,
+            upstream_repo,
+            fork_owner,
+            branch,
+            token_env_var: Some("KREW_INDEX_TOKEN".to_string()),
+        });
+    }
+    out
+}
+
+/// True when the crate has a `publish.krew` block — mirrors the
+/// `per_crate!` predicate in `lib.rs` so the publisher iterates
+/// exactly the same crate universe.
+fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
+}
+
+impl anodizer_core::Publisher for KrewPublisher {
+    fn name(&self) -> &str {
+        Self::PUBLISHER_NAME
+    }
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        Self::PUBLISHER_GROUP
+    }
+    fn required(&self) -> bool {
+        Self::PUBLISHER_REQUIRED
+    }
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Self::ROLLBACK_SCOPE
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        // Snapshot rollback targets from config BEFORE the publish path
+        // runs, mirroring Bundle B's `run` shape.
+        let targets = collect_krew_run_targets(ctx);
+        let selected = ctx.options.selected_crates.clone();
+        for crate_name in &selected {
+            if !is_krew_per_crate_configured(ctx, crate_name) {
+                continue;
+            }
+            publish_to_krew(ctx, crate_name, &log)?;
+        }
+        let mut evidence = anodizer_core::PublishEvidence::new("krew");
+        evidence.extra = serde_json::json!({ "krew_targets": targets });
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        let targets = decode_krew_targets(&evidence.extra);
+        if targets.is_empty() {
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "krew",
+                "PR targets",
+            ));
+            return Ok(());
+        }
+
+        // Resolve token at rollback time — never persisted in evidence.
+        // Falls back to ANODIZER_GITHUB_TOKEN then GITHUB_TOKEN, same as
+        // every Bundle B publisher.
+        let resolve_token = |t: &KrewPrTarget| -> Option<String> {
+            t.token_env_var
+                .as_deref()
+                .and_then(|n| std::env::var(n).ok())
+                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
+                .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+        };
+
+        // Fan out at PR granularity, not target granularity: a single
+        // krew target can map to multiple open PRs if the publish path
+        // pushed the same branch twice (idempotent re-publish). We dedup
+        // PR numbers per (upstream, n) so we don't try to close the same
+        // PR twice when two targets share the same fork branch.
+        struct CloseJob {
+            upstream_owner: String,
+            upstream_repo: String,
+            pr_number: u64,
+            token: String,
+            target_label: String,
+        }
+        let mut jobs: Vec<CloseJob> = Vec::new();
+        let mut seen: std::collections::BTreeSet<(String, String, u64)> =
+            std::collections::BTreeSet::new();
+        for t in &targets {
+            let Some(token) = resolve_token(t) else {
+                log.warn(&format!(
+                    "krew: no token resolvable for {} (env var ${} / \
+                     ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN all unset); \
+                     skipping rollback for this target",
+                    t.target,
+                    t.token_env_var.as_deref().unwrap_or("KREW_INDEX_TOKEN"),
+                ));
+                continue;
+            };
+            let pr_numbers = crate::util::find_open_pr_numbers_for_head(
+                &t.upstream_owner,
+                &t.upstream_repo,
+                &t.fork_owner,
+                &t.branch,
+                Some(&token),
+            );
+            if pr_numbers.is_empty() {
+                log.warn(&format!(
+                    "krew: no open PRs found for head={}:{} against {}/{}; \
+                     verify manually",
+                    t.fork_owner, t.branch, t.upstream_owner, t.upstream_repo,
+                ));
+                continue;
+            }
+            for n in pr_numbers {
+                let key = (t.upstream_owner.clone(), t.upstream_repo.clone(), n);
+                if seen.insert(key) {
+                    jobs.push(CloseJob {
+                        upstream_owner: t.upstream_owner.clone(),
+                        upstream_repo: t.upstream_repo.clone(),
+                        pr_number: n,
+                        token: token.clone(),
+                        target_label: t.target.clone(),
+                    });
+                }
+            }
+        }
+
+        let env_hint = targets
+            .first()
+            .and_then(|t| t.token_env_var.as_deref())
+            .unwrap_or("KREW_INDEX_TOKEN");
+
+        let counts = std::sync::Mutex::new((0usize, 0usize));
+        for chunk in jobs.chunks(crate::util::ROLLBACK_PARALLELISM) {
+            std::thread::scope(|s| {
+                let mut handles = Vec::with_capacity(chunk.len());
+                for job in chunk {
+                    let log = log.clone();
+                    let counts = &counts;
+                    handles.push(s.spawn(move || {
+                        let pr_url = format!(
+                            "https://github.com/{}/{}/pull/{}",
+                            job.upstream_owner, job.upstream_repo, job.pr_number
+                        );
+                        log.status(&format!(
+                            "krew: closing PR {} ({})",
+                            job.target_label, pr_url
+                        ));
+                        match crate::util::close_pr_via_api(
+                            &job.upstream_owner,
+                            &job.upstream_repo,
+                            job.pr_number,
+                            &job.token,
+                        ) {
+                            Ok(()) => {
+                                let mut c = counts.lock().expect("counts lock");
+                                c.0 += 1;
+                            }
+                            Err(err) => {
+                                let mut c = counts.lock().expect("counts lock");
+                                c.1 += 1;
+                                log.warn(&crate::publisher_helpers::rollback_failure_warning_msg(
+                                    "krew",
+                                    &job.target_label,
+                                    &pr_url,
+                                    &err,
+                                    Some(env_hint),
+                                ));
+                            }
+                        }
+                    }));
+                }
+                for h in handles {
+                    let _ = h.join();
+                }
+            });
+        }
+        let (closed, failed) = counts.into_inner().expect("counts lock");
+        log.status(&format!(
+            "krew: closed {} PR(s), {} failure(s)",
+            closed, failed
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::config::{CrateConfig, KrewConfig, PublishConfig, RepositoryConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    fn krew_crate(name: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                krew: Some(KrewConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("krew-index-fork".to_string()),
+                        ..Default::default()
+                    }),
+                    short_description: Some("a kubectl plugin".to_string()),
+                    description: Some("a kubectl plugin".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn krew_publisher_classification() {
+        let p = KrewPublisher::new();
+        assert_eq!(p.name(), "krew");
+        assert_eq!(p.group(), PublisherGroup::Manager);
+        assert!(!p.required());
+        assert_eq!(
+            p.rollback_scope_needed(),
+            Some("GITHUB_TOKEN pull_request:write")
+        );
+    }
+
+    #[test]
+    fn krew_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = KrewPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn krew_rollback_warns_when_no_targets_recorded() {
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("krew");
+        let p = KrewPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let msg = crate::publisher_helpers::rollback_empty_warning_msg("krew", "PR targets");
+        assert!(msg.starts_with("krew:"), "{msg}");
+        assert!(msg.contains("PR targets"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+        assert!(msg.contains("manually"), "{msg}");
+    }
+
+    #[test]
+    fn krew_target_extra_roundtrips() {
+        let original = vec![KrewPrTarget {
+            target: "demo".into(),
+            upstream_owner: "kubernetes-sigs".into(),
+            upstream_repo: "krew-index".into(),
+            fork_owner: "acme".into(),
+            branch: "demo-v1.2.3".into(),
+            token_env_var: Some("KREW_INDEX_TOKEN".into()),
+        }];
+        let extra = serde_json::json!({ "krew_targets": original.clone() });
+        let decoded = decode_krew_targets(&extra);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn krew_target_extra_carries_no_secret_material() {
+        // Defense-in-depth: serialize a target and assert no field
+        // names that could leak a token / pat are present. Mirrors
+        // the Bundle B credential-handling test.
+        let t = KrewPrTarget {
+            target: "demo".into(),
+            upstream_owner: "kubernetes-sigs".into(),
+            upstream_repo: "krew-index".into(),
+            fork_owner: "acme".into(),
+            branch: "demo-v1.2.3".into(),
+            token_env_var: Some("KREW_INDEX_TOKEN".into()),
+        };
+        let s = serde_json::to_string(&t).expect("serialize");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"pat\":"), "{s}");
+        // The env-var NAME is fine; values must never appear.
+        assert!(s.contains("KREW_INDEX_TOKEN"), "{s}");
+    }
+
+    #[test]
+    fn krew_collect_run_targets_uses_default_upstream() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![krew_crate("demo")])
+            .build();
+        let targets = collect_krew_run_targets(&ctx);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].target, "demo");
+        assert_eq!(targets[0].upstream_owner, "kubernetes-sigs");
+        assert_eq!(targets[0].upstream_repo, "krew-index");
+        assert_eq!(targets[0].fork_owner, "acme");
+        assert!(
+            targets[0].branch.starts_with("demo-v"),
+            "branch: {}",
+            targets[0].branch
+        );
+    }
+
+    #[test]
+    fn krew_collect_run_targets_honors_pull_request_base_override() {
+        use anodizer_core::config::{PullRequestBaseConfig, PullRequestConfig};
+        let mut c = krew_crate("demo");
+        if let Some(p) = c.publish.as_mut()
+            && let Some(k) = p.krew.as_mut()
+            && let Some(r) = k.repository.as_mut()
+        {
+            r.pull_request = Some(PullRequestConfig {
+                enabled: Some(true),
+                base: Some(PullRequestBaseConfig {
+                    owner: Some("custom-org".to_string()),
+                    name: Some("custom-index".to_string()),
+                    branch: None,
+                }),
+                draft: None,
+                body: None,
+            });
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let targets = collect_krew_run_targets(&ctx);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].upstream_owner, "custom-org");
+        assert_eq!(targets[0].upstream_repo, "custom-index");
+    }
+}

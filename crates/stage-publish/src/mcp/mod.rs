@@ -22,6 +22,7 @@
 
 mod auth;
 mod manifest;
+pub mod publisher;
 
 #[cfg(test)]
 mod tests;
