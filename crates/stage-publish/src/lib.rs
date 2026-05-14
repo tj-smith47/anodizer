@@ -19,6 +19,9 @@ pub mod upload;
 pub(crate) mod util;
 pub mod winget;
 
+#[cfg(test)]
+pub(crate) mod testing;
+
 pub use dispatch::{DispatchOptions, dispatch};
 pub use registry::{configured_publishers, group_dispatch_order};
 

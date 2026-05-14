@@ -52,9 +52,10 @@ impl Default for DispatchOptions {
     }
 }
 
-/// Group-aware publisher dispatch.
-///
-/// See module-level docs for the gate + fail-fast semantics.
+/// Dispatch publishers in Assets -> Manager -> Submitter order, applying
+/// the Submitter gate when a required Assets/Manager publisher failed.
+/// Returns Ok(partial-report) on per-publisher failure or fail-fast;
+/// Err is reserved for catastrophic non-publisher errors.
 pub fn dispatch(
     publishers: &[Box<dyn Publisher>],
     ctx: &mut Context,
@@ -82,6 +83,8 @@ pub fn dispatch(
                 });
             }
             report.submitter_gated = true;
+            // Skip the inner per-publisher loop; gate already recorded
+            // Skipped(SubmitterGated) for every Submitter publisher.
             continue;
         }
 
@@ -110,51 +113,7 @@ pub fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodizer_core::PublishEvidence;
-
-    struct FakePublisher {
-        name: String,
-        group: PublisherGroup,
-        required: bool,
-        outcome: FakeOutcome,
-    }
-
-    enum FakeOutcome {
-        Succeed,
-        Fail(String),
-    }
-
-    impl Publisher for FakePublisher {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn group(&self) -> PublisherGroup {
-            self.group
-        }
-        fn required(&self) -> bool {
-            self.required
-        }
-        fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
-            match &self.outcome {
-                FakeOutcome::Succeed => Ok(PublishEvidence::new(self.name.clone())),
-                FakeOutcome::Fail(msg) => anyhow::bail!("{}", msg),
-            }
-        }
-    }
-
-    fn fake(
-        name: &str,
-        group: PublisherGroup,
-        required: bool,
-        outcome: FakeOutcome,
-    ) -> Box<dyn Publisher> {
-        Box::new(FakePublisher {
-            name: name.to_string(),
-            group,
-            required,
-            outcome,
-        })
-    }
+    use crate::testing::*;
 
     #[test]
     fn empty_registry_yields_empty_report() {

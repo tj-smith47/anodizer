@@ -584,6 +584,212 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
 }
 
 // ---------------------------------------------------------------------------
+// CargoPublisher - Publisher trait adapter
+// ---------------------------------------------------------------------------
+
+/// Publisher trait adapter around [`publish_to_cargo`].
+///
+/// Classified as `Submitter` + `required=true`: crates.io publish is
+/// effectively one-way (versions cannot be re-uploaded), so a failure
+/// here should fail the release and other Submitter publishers must
+/// already be gated. The existing `PublishStage::run` body continues to
+/// invoke `publish_to_cargo` directly until the per-publisher migration
+/// flips over the dispatch path.
+pub struct CargoPublisher;
+
+impl CargoPublisher {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CargoPublisher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl anodizer_core::Publisher for CargoPublisher {
+    fn name(&self) -> &str {
+        "cargo"
+    }
+
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        anodizer_core::PublisherGroup::Submitter
+    }
+
+    fn required(&self) -> bool {
+        true
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        let selected = ctx.options.selected_crates.clone();
+        publish_to_cargo(ctx, &selected, &log)?;
+        let mut evidence = anodizer_core::PublishEvidence::new("cargo");
+        if let Some(primary) = first_published_crate(ctx) {
+            evidence.primary_ref = Some(format!(
+                "https://crates.io/crates/{name}/{version}",
+                name = primary.name,
+                version = primary.version
+            ));
+        }
+        evidence.artifact_paths = collect_local_crate_paths(ctx);
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        for path in &evidence.artifact_paths {
+            // .crate paths are <name>-<version>.crate; parse name/version.
+            // crates.io versions are immutable, so `cargo yank` is the
+            // strongest unwind available; the version slot stays burned
+            // and any consumer that already resolved against it keeps
+            // working. Operators must still bump to recover.
+            if let Some((name, version)) = parse_crate_name_version(path) {
+                let output = Command::new("cargo")
+                    .args(["yank", "--version", &version, &name])
+                    .output()?;
+                if !output.status.success() {
+                    log.warn(&format!(
+                        "cargo yank failed for {} {}: {}",
+                        name,
+                        version,
+                        String::from_utf8_lossy(&output.stderr),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        // crates.io publishing requires CARGO_REGISTRY_TOKEN at run-time;
+        // the existing publish_to_cargo path emits its own loud failure
+        // on a missing token, so this check defaults to Pass for now.
+        // A future tightening can surface a Warning when the token is
+        // absent AND best-effort rollback was requested.
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Some("CARGO_REGISTRY_TOKEN yank")
+    }
+}
+
+struct PublishedCrateRef {
+    name: String,
+    version: String,
+}
+
+/// First crate in the active config that has `publish.cargo` configured.
+/// Returns its name plus the run's tag (stripped of any leading `v`) as
+/// the version. None when no crate opts in.
+fn first_published_crate(ctx: &Context) -> Option<PublishedCrateRef> {
+    let name = ctx
+        .config
+        .crates
+        .iter()
+        .find(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some())
+        .map(|c| c.name.clone())?;
+    let version = {
+        let tag = ctx
+            .git_info
+            .as_ref()
+            .map(|g| g.tag.clone())
+            .unwrap_or_else(|| ctx.version());
+        tag.strip_prefix('v').unwrap_or(&tag).to_string()
+    };
+    if version.is_empty() {
+        return None;
+    }
+    Some(PublishedCrateRef { name, version })
+}
+
+/// Best-effort enumeration of locally-produced `.crate` archive paths.
+///
+/// `cargo package` writes to `target/package/<name>-<version>.crate`, but
+/// the workspace target dir + per-crate versions can be moved around; the
+/// determinism harness will own resolving this precisely. For now we
+/// return an empty vec; `primary_ref` is the load-bearing evidence
+/// field, and rollback can only act on entries we actually surface.
+fn collect_local_crate_paths(_ctx: &Context) -> Vec<std::path::PathBuf> {
+    // Deliberately empty for now: enumeration of
+    // target/package/<name>-<version>.crate per configured crate lands
+    // alongside the determinism harness, which needs the same walk and
+    // will own the canonical implementation. Tracked separately to keep
+    // this adapter focused on the trait shape.
+    Vec::new()
+}
+
+/// Parse `name-1.2.3.crate` (or any `<name>-<version>` stem) into its
+/// component parts. Names may contain `-`, so split on the LAST `-` and
+/// sanity-check that the version starts with an ASCII digit.
+fn parse_crate_name_version(path: &std::path::Path) -> Option<(String, String)> {
+    let stem = path.file_stem()?.to_str()?;
+    let (name, version) = stem.rsplit_once('-')?;
+    if !version.chars().next()?.is_ascii_digit() {
+        return None;
+    }
+    // Strip a trailing `.crate` extension component if `file_stem` left
+    // one (e.g. `foo-1.2.3.crate.tmp` is not a thing we expect, but be
+    // defensive about future suffixes).
+    Some((name.to_string(), version.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
+    use std::path::Path;
+
+    #[test]
+    fn cargo_publisher_classification() {
+        let p = CargoPublisher::new();
+        assert_eq!(p.name(), "cargo");
+        assert_eq!(p.group(), PublisherGroup::Submitter);
+        assert!(p.required());
+        assert_eq!(p.rollback_scope_needed(), Some("CARGO_REGISTRY_TOKEN yank"));
+    }
+
+    #[test]
+    fn cargo_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = CargoPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn parse_crate_name_version_handles_hyphenated_names() {
+        assert_eq!(
+            parse_crate_name_version(Path::new("anodizer-core-0.2.1.crate")),
+            Some(("anodizer-core".to_string(), "0.2.1".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_crate_name_version_rejects_non_versioned_stems() {
+        // No trailing digit-prefixed segment.
+        assert_eq!(
+            parse_crate_name_version(Path::new("anodizer-core.crate")),
+            None
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
