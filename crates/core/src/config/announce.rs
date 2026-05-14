@@ -9,12 +9,39 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 // AnnounceConfig
 // ---------------------------------------------------------------------------
 
+/// Announce-stage gate semantics.
+///
+/// Decides whether [`AnnounceStage`] runs based on the `PublishReport`
+/// produced by `PublishStage` (and contributed to by `BlobStage`):
+///
+/// - `required_publishers` (default): announce runs only if every
+///   `required: true` publisher across the run succeeded.
+/// - `all_publishers`: announce runs only if every configured
+///   publisher succeeded (Submitter gate failures count here too).
+/// - `none`: announce always runs.
+///
+/// [`AnnounceStage`]: ../../stage-announce/struct.AnnounceStage.html
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AnnounceGate {
+    #[default]
+    RequiredPublishers,
+    AllPublishers,
+    None,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct AnnounceConfig {
     /// Template-conditional skip: if rendered to "true", skip the entire announce stage.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
+    /// Selects when AnnounceStage runs vs. skips based on the
+    /// `PublishReport` written by PublishStage/BlobStage. Default is
+    /// `required_publishers` (announce only if every required publisher
+    /// succeeded). See [`AnnounceGate`] for the other variants.
+    #[serde(default)]
+    pub gate_on: AnnounceGate,
     /// Discord announcement configuration.
     pub discord: Option<DiscordAnnounce>,
     /// Discourse announcement configuration.

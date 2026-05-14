@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
+use anodizer_core::config::AnnounceGate;
 use anodizer_core::context::Context;
+use anodizer_core::publish_report::{PublishReport, PublisherOutcome};
 use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result};
 
@@ -14,6 +16,23 @@ use crate::{
     bluesky, discord, discourse, email, linkedin, mastodon, mattermost, opencollective, reddit,
     slack, teams, telegram, twitter, webhook,
 };
+
+/// Evaluate the announce-stage gate against the supplied PublishReport.
+///
+/// Returns `true` when AnnounceStage must skip and `false` when it
+/// should proceed. Pure / report-only so unit tests can drive every
+/// gate × report combination without touching the stage body.
+pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) -> bool {
+    match gate {
+        AnnounceGate::None => false,
+        AnnounceGate::RequiredPublishers => report.is_some_and(|r| r.required_failures() > 0),
+        AnnounceGate::AllPublishers => report.is_some_and(|r| {
+            r.results
+                .iter()
+                .any(|res| !matches!(res.outcome, PublisherOutcome::Succeeded))
+        }),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AnnounceStage
@@ -52,6 +71,23 @@ impl Stage for AnnounceStage {
                 log.status("announce.skip evaluated to true — skipping");
                 return Ok(());
             }
+        }
+
+        // PublishReport-driven gate: skip when configured required (or all)
+        // publishers didn't succeed. The flag on PublishReport lets the
+        // run-summary JSON expose the skip cleanly to CI.
+        let gate_on = announce.gate_on;
+        let report_ref = ctx.publish_report.as_ref();
+        if evaluate_gate(report_ref, gate_on) {
+            let required_failures = report_ref.map_or(0, |r| r.required_failures());
+            log.status(&format!(
+                "announce skipped via gate_on={gate_on:?}; publish_report has \
+                 {required_failures} required-failure(s)"
+            ));
+            if let Some(report_mut) = ctx.publish_report.as_mut() {
+                report_mut.announce_gated = true;
+            }
+            return Ok(());
         }
 
         // Collect errors from all providers instead of failing fast on the first one.
@@ -937,5 +973,155 @@ impl Stage for AnnounceStage {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use anodizer_core::config::{AnnounceConfig, Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::publish_report::{
+        PublishReport, PublisherGroup, PublisherOutcome, PublisherResult,
+    };
+    use anodizer_core::stage::Stage;
+
+    fn failed_result(name: &str, group: PublisherGroup, required: bool) -> PublisherResult {
+        PublisherResult {
+            name: name.to_string(),
+            group,
+            required,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        }
+    }
+
+    fn make_ctx(gate_on: AnnounceGate, report: Option<PublishReport>) -> Context {
+        let config = Config {
+            project_name: "myapp".to_string(),
+            announce: Some(AnnounceConfig {
+                gate_on,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.publish_report = report;
+        ctx
+    }
+
+    // ---- helper coverage -----------------------------------------------
+
+    #[test]
+    fn evaluate_gate_none_never_skips() {
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed_result("p", PublisherGroup::Manager, true));
+        assert!(!evaluate_gate(None, AnnounceGate::None));
+        assert!(!evaluate_gate(Some(&r), AnnounceGate::None));
+    }
+
+    #[test]
+    fn evaluate_gate_required_skips_only_on_required_failure() {
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed_result("p", PublisherGroup::Manager, false));
+        assert!(!evaluate_gate(Some(&r), AnnounceGate::RequiredPublishers));
+
+        r.results
+            .push(failed_result("q", PublisherGroup::Submitter, true));
+        assert!(evaluate_gate(Some(&r), AnnounceGate::RequiredPublishers));
+    }
+
+    #[test]
+    fn evaluate_gate_all_skips_on_any_non_succeeded() {
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed_result("p", PublisherGroup::Manager, false));
+        assert!(evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
+    }
+
+    #[test]
+    fn evaluate_gate_returns_false_when_report_is_none() {
+        // No report ≡ no failures, so announce proceeds under any gate.
+        assert!(!evaluate_gate(None, AnnounceGate::RequiredPublishers));
+        assert!(!evaluate_gate(None, AnnounceGate::AllPublishers));
+        assert!(!evaluate_gate(None, AnnounceGate::None));
+    }
+
+    // ---- stage-level coverage ------------------------------------------
+
+    #[test]
+    fn announce_runs_when_gate_is_none() {
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed_result("p", PublisherGroup::Submitter, true));
+        let mut ctx = make_ctx(AnnounceGate::None, Some(r));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        // Stage proceeded past the gate, so announce_gated must remain false.
+        assert!(!ctx.publish_report.as_ref().unwrap().announce_gated);
+    }
+
+    #[test]
+    fn announce_skips_when_gate_required_and_required_failure() {
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed_result("p", PublisherGroup::Submitter, true));
+        let mut ctx = make_ctx(AnnounceGate::RequiredPublishers, Some(r));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        assert!(ctx.publish_report.as_ref().unwrap().announce_gated);
+    }
+
+    #[test]
+    fn announce_runs_when_gate_required_and_only_optional_failed() {
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed_result("p", PublisherGroup::Manager, false));
+        let mut ctx = make_ctx(AnnounceGate::RequiredPublishers, Some(r));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        assert!(!ctx.publish_report.as_ref().unwrap().announce_gated);
+    }
+
+    #[test]
+    fn announce_skips_when_gate_all_and_any_failure() {
+        let mut r = PublishReport::default();
+        r.results
+            .push(failed_result("p", PublisherGroup::Manager, false));
+        let mut ctx = make_ctx(AnnounceGate::AllPublishers, Some(r));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        assert!(ctx.publish_report.as_ref().unwrap().announce_gated);
+    }
+
+    #[test]
+    fn announce_runs_when_report_is_none() {
+        // No report on Context (publish stage --skip'd). All three gates
+        // resolve to "proceed" because no failures means nothing to gate on.
+        for gate in [
+            AnnounceGate::RequiredPublishers,
+            AnnounceGate::AllPublishers,
+            AnnounceGate::None,
+        ] {
+            let mut ctx = make_ctx(gate, None);
+            assert!(AnnounceStage.run(&mut ctx).is_ok(), "gate={gate:?}");
+            assert!(ctx.publish_report.is_none(), "gate={gate:?}");
+        }
+    }
+
+    #[test]
+    fn announce_gate_serializes_as_snake_case() {
+        let s = serde_json::to_string(&AnnounceGate::RequiredPublishers).expect("serialize");
+        assert_eq!(s, "\"required_publishers\"");
+        let s = serde_json::to_string(&AnnounceGate::AllPublishers).expect("serialize");
+        assert_eq!(s, "\"all_publishers\"");
+        let s = serde_json::to_string(&AnnounceGate::None).expect("serialize");
+        assert_eq!(s, "\"none\"");
+    }
+
+    #[test]
+    fn announce_config_default_gate_is_required_publishers() {
+        assert_eq!(
+            AnnounceConfig::default().gate_on,
+            AnnounceGate::RequiredPublishers
+        );
     }
 }
