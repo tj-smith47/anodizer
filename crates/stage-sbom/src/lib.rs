@@ -790,9 +790,13 @@ fn run_sbom_builtin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use anodizer_core::artifact::ArtifactKind;
+    #[cfg(unix)]
     use anodizer_core::config::SbomConfig;
+    #[cfg(unix)]
     use anodizer_core::stage::Stage;
+    #[cfg(unix)]
     use anodizer_core::test_helpers::TestContextBuilder;
 
     /// Regression for GoReleaser parity P8.1 (commit 292203e):

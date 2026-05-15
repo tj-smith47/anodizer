@@ -484,18 +484,27 @@ mod tests {
 
     // ---- gpg --faked-system-time capability probe (Task 25) ----------
 
-    use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
 
-    fn mk_output(success: bool) -> Output {
-        let status = if success {
+    #[cfg(unix)]
+    fn mk_exit_status(success: bool) -> ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        if success {
             ExitStatus::from_raw(0)
         } else {
-            // non-zero exit
             ExitStatus::from_raw(1 << 8)
-        };
+        }
+    }
+
+    #[cfg(windows)]
+    fn mk_exit_status(success: bool) -> ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+        ExitStatus::from_raw(if success { 0 } else { 1 })
+    }
+
+    fn mk_output(success: bool) -> Output {
         Output {
-            status,
+            status: mk_exit_status(success),
             stdout: Vec::new(),
             stderr: Vec::new(),
         }
