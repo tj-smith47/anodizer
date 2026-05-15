@@ -4,61 +4,30 @@
 //! abort siblings before or after it in the same group. Ships
 //! regardless of whether B10 needed a code fix — guards against
 //! future regression.
+//!
+//! Drives the canonical [`anodizer_stage_publish::testing::FakePublisher`]
+//! (exposed via the `test-support` feature, enabled by this crate's own
+//! `[dev-dependencies]`) so the shape of the double — including the
+//! trait-default `rollback` — stays in lockstep with the in-crate unit
+//! tests.
 
 use anodizer_core::context::Context;
-use anodizer_core::{PublishEvidence, Publisher, PublisherGroup, PublisherOutcome};
+use anodizer_core::{Publisher, PublisherGroup, PublisherOutcome};
+use anodizer_stage_publish::testing::{FakeOutcome, fake};
 use anodizer_stage_publish::{DispatchOptions, dispatch};
-
-// Re-implement a minimal FakePublisher here rather than importing the
-// crate-internal `testing` mod (it's pub(crate)). Same shape.
-struct FakePublisher {
-    name: &'static str,
-    group: PublisherGroup,
-    required: bool,
-    succeed: bool,
-}
-
-impl Publisher for FakePublisher {
-    fn name(&self) -> &str {
-        self.name
-    }
-    fn group(&self) -> PublisherGroup {
-        self.group
-    }
-    fn required(&self) -> bool {
-        self.required
-    }
-    fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
-        if self.succeed {
-            Ok(PublishEvidence::new(self.name))
-        } else {
-            anyhow::bail!("fake failure from '{}'", self.name)
-        }
-    }
-}
 
 #[test]
 fn three_managers_middle_fails_siblings_still_run() {
     // A succeeds, B fails, C succeeds. All Manager. None required.
     let publishers: Vec<Box<dyn Publisher>> = vec![
-        Box::new(FakePublisher {
-            name: "a",
-            group: PublisherGroup::Manager,
-            required: false,
-            succeed: true,
-        }),
-        Box::new(FakePublisher {
-            name: "b",
-            group: PublisherGroup::Manager,
-            required: false,
-            succeed: false,
-        }),
-        Box::new(FakePublisher {
-            name: "c",
-            group: PublisherGroup::Manager,
-            required: false,
-            succeed: true,
-        }),
+        fake("a", PublisherGroup::Manager, false, FakeOutcome::Succeed),
+        fake(
+            "b",
+            PublisherGroup::Manager,
+            false,
+            FakeOutcome::Fail("fake failure from 'b'".into()),
+        ),
+        fake("c", PublisherGroup::Manager, false, FakeOutcome::Succeed),
     ];
 
     let mut ctx = Context::test_fixture();
@@ -98,24 +67,14 @@ fn three_managers_middle_fails_siblings_still_run() {
 fn three_managers_middle_required_failure_counts_in_required_failures() {
     // Same shape but B is required=true.
     let publishers: Vec<Box<dyn Publisher>> = vec![
-        Box::new(FakePublisher {
-            name: "a",
-            group: PublisherGroup::Manager,
-            required: false,
-            succeed: true,
-        }),
-        Box::new(FakePublisher {
-            name: "b",
-            group: PublisherGroup::Manager,
-            required: true,
-            succeed: false,
-        }),
-        Box::new(FakePublisher {
-            name: "c",
-            group: PublisherGroup::Manager,
-            required: false,
-            succeed: true,
-        }),
+        fake("a", PublisherGroup::Manager, false, FakeOutcome::Succeed),
+        fake(
+            "b",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Fail("fake failure from 'b'".into()),
+        ),
+        fake("c", PublisherGroup::Manager, false, FakeOutcome::Succeed),
     ];
 
     let mut ctx = Context::test_fixture();

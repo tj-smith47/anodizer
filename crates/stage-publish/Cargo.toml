@@ -9,6 +9,13 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# Exposes the `testing` module (`FakePublisher` + helpers) to consumers.
+# Enabled by this crate's own `[dev-dependencies]` so integration tests
+# under `tests/` can drive the same fakes that in-crate unit tests use.
+# NOT a stable public API — shape may change without notice.
+test-support = []
+
 [dependencies]
 anodizer-core.workspace = true
 anodizer-stage-release.workspace = true
@@ -29,4 +36,5 @@ schemars.workspace = true
 
 [dev-dependencies]
 anodizer-core = { workspace = true, features = ["test-helpers"] }
+anodizer-stage-publish = { path = ".", features = ["test-support"] }
 serial_test.workspace = true

@@ -29,8 +29,18 @@ pub mod upload;
 pub(crate) mod util;
 pub mod winget;
 
-#[cfg(test)]
-pub(crate) mod testing;
+/// Test-support module: `FakePublisher`, `FakeOutcome`, etc.
+///
+/// Gated behind the `test-support` Cargo feature (and `cfg(test)` for
+/// the in-crate unit tests). The feature is enabled by this crate's own
+/// `[dev-dependencies]` so integration tests under `tests/` can drive
+/// the same fakes the in-crate unit tests use.
+///
+/// NOT a stable public API — shape may change without notice. External
+/// consumers outside this workspace MUST NOT rely on it.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod testing;
 
 pub use dispatch::{DispatchOptions, dispatch};
 pub use registry::{configured_publishers, group_dispatch_order};

@@ -1,16 +1,43 @@
 //! Integration tests for `anodize check determinism`.
 //!
-//! The full N-runs harness against a real cargo workspace is too costly
-//! for the default test suite (each run is a full `cargo build
-//! --release` cycle, ~5 min wallclock × N runs). Those scenarios live as
-//! `#[ignore]`-flagged tests in this file — invoke with
-//! `cargo test -p anodizer --test check_determinism -- --ignored`.
+//! The fast tests below cover the CLI surface and the harness error
+//! paths that don't require a real `cargo build`. The drift-injection
+//! integration test (`inject_drift_archive_reports_drift_on_minimal_workspace`)
+//! synthesizes a minimal cargo workspace and exercises the full
+//! harness end-to-end; it is feature-gated on `cargo` being present on
+//! `PATH` and skipped (with an eprintln) otherwise to keep the suite
+//! green on hosts without a Rust toolchain.
 //!
-//! The non-ignored test below asserts the CLI surface is wired (it
-//! errors fast outside a git repo) and that the `--help` output documents
-//! every flag in the spec — i.e. the dispatcher reaches clap and the
-//! flag set survives.
+//! ## Manual integration runs (not driven by `cargo test`)
+//!
+//! Cases not covered automatically — kept here so an operator can
+//! reproduce ad-hoc:
+//!
+//! ### Full N-runs harness against a fixture workspace
+//!
+//! ```text
+//! cd <fixture-workspace>
+//! anodize check determinism --runs=1 --report=det.json
+//! test -f det.json && jq .schema_version det.json == 1
+//! ```
+//!
+//! ### Drift-injection round-trip (production binary)
+//!
+//! ```text
+//! ANODIZE_TEST_HARNESS=1 anodize check determinism \
+//!   --runs=2 --inject-drift=archive
+//! # Expected: exit code 1, report's drift_count > 0.
+//! ```
+//!
+//! Both flows are covered automatically by the
+//! `inject_drift_archive_reports_drift_on_minimal_workspace` test below
+//! plus the unit tests in `crates/cli/src/determinism_harness.rs`. The
+//! manual recipes survive here for operator debugging on hosts whose
+//! `cargo`/`rustup` configuration differs from CI.
 
+use anodizer_core::DeterminismReport;
+use std::fs;
+use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -64,7 +91,8 @@ fn check_determinism_errors_cleanly_outside_git_repo() {
 /// fast (the report dir is NOT created in the error path; the test
 /// passes by virtue of the binary exiting non-zero without panicking).
 /// This is the lowest-cost shape that pins "the dispatcher reaches the
-/// SDE resolver". A full N-runs harness test is below, gated `#[ignore]`.
+/// SDE resolver". A full N-runs harness test is below
+/// (`inject_drift_archive_reports_drift_on_minimal_workspace`).
 #[test]
 fn check_determinism_respects_report_flag_in_error_path() {
     let tmp = TempDir::new().unwrap();
@@ -84,25 +112,6 @@ fn check_determinism_respects_report_flag_in_error_path() {
         "binary panicked instead of erroring cleanly: {}",
         stderr
     );
-}
-
-/// Full-fledged harness run against a minimal cargo workspace.
-///
-/// Ignored by default — needs cargo + rustup + git in PATH and runs a
-/// full `cargo build --release` per run (~5 min wallclock). Invoke
-/// manually with `cargo test --test check_determinism -- --ignored`.
-#[test]
-#[ignore]
-fn check_determinism_runs_at_least_once_against_fixture_workspace() {
-    // Document the integration shape; the body intentionally stays
-    // minimal until the harness's subprocess invocation matures (see
-    // follow-up: snapshot-mode resolver + sandboxed cargo registry
-    // prefetch).
-    //
-    // Expected manual invocation:
-    //   $ cd <fixture-workspace>
-    //   $ anodize check determinism --runs=1 --report=det.json
-    //   $ test -f det.json && jq .schema_version det.json == 1
 }
 
 /// `--inject-drift=<stage>` is a hidden test-harness flag — it must be
@@ -155,20 +164,187 @@ fn inject_drift_hidden_from_help() {
     );
 }
 
-/// Full-fledged drift-injection harness run.
+// ── Drift-injection round-trip — fast (~1s with warm cache) ──────────────
+//
+// I12 (release-resilience audit 2026-05-15): the audit asked for a fast
+// integration test that synthesizes a tiny cargo workspace, runs the
+// harness with `--runs=2 --inject-drift=archive`, and asserts the report
+// shape + `drift_count > 0`. This test does that against a minimal
+// no-deps `hello-world` binary crate.
+//
+// Cost: dominated by the harness's per-run `cargo build --release` (×2).
+// A no-deps binary builds in ~0.2-0.5s warm, ~5-10s cold. Real
+// measurements on this checkout: ~0.6s end-to-end (build + archive +
+// sbom + sign + checksum × 2 runs + worktree setup + JSON serdes). Cold
+// CI runs without a rustup toolchain cached will be slower but still
+// well under the 30s "fast" budget the audit allows.
+//
+// Skipped (with a `cargo test` warning line) when `cargo`/`git` aren't
+// on PATH so the suite stays green on minimal hosts.
+
+fn tool_on_path(tool: &str) -> bool {
+    Command::new(tool)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn run_git(dir: &Path, args: &[&str]) {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
+    assert!(
+        out.status.success(),
+        "git {:?} failed: stdout={} stderr={}",
+        args,
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Bootstrap a minimal cargo workspace (no deps) at `dir`, init it as a
+/// git repo, and commit. Returns the populated fixture root.
+fn bootstrap_minimal_cargo_repo(dir: &Path) {
+    fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "anodize-det-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "anodize-det-fixture"
+path = "src/main.rs"
+"#,
+    )
+    .unwrap();
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    // Minimal `.anodizer.yaml` — without a configured crate the snapshot
+    // path skips git resolution and the `{{ Version }}` template render
+    // bombs. A single-crate block is enough to populate Version/Tag/etc.
+    // from the synthetic v0.0.0 fallback the snapshot resolver applies
+    // when no git tags are present.
+    //
+    // `path: .` is load-bearing: without it the default CrateConfig.path
+    // is empty, and the build stage's `Command::new("cargo")
+    // .current_dir("")` fails to spawn (cwd resolution treats empty as
+    // a nonexistent dir on some kernels).
+    fs::write(
+        dir.join(".anodizer.yaml"),
+        r#"crates:
+  - name: anodize-det-fixture
+    path: .
+    builds:
+      - id: anodize-det-fixture
+        binary: anodize-det-fixture
+        targets:
+          - x86_64-unknown-linux-gnu
+"#,
+    )
+    .unwrap();
+
+    run_git(dir, &["init", "-q", "-b", "master"]);
+    run_git(dir, &["config", "user.email", "test@test.com"]);
+    run_git(dir, &["config", "user.name", "Test"]);
+    run_git(dir, &["config", "commit.gpgsign", "false"]);
+    run_git(dir, &["add", "-A"]);
+    run_git(dir, &["commit", "-q", "-m", "init"]);
+}
+
+/// End-to-end drift-injection integration test (I12). Synthesizes a
+/// minimal cargo workspace, drives the harness with `--runs=2
+/// --inject-drift=archive`, and asserts the JSON report records drift.
 ///
-/// Ignored by default for the same wallclock reason as the
-/// fixture-workspace test above. Documents the manual invocation:
-///
-/// ```text
-/// ANODIZE_TEST_HARNESS=1 anodize check determinism \
-///   --runs=2 --inject-drift=archive
-/// ```
-///
-/// Expected: exit code 1 + report's `drift_count > 0`.
+/// On hosts without `cargo` or `git` on PATH, prints a skip marker and
+/// returns early so the suite stays green on minimal hosts.
 #[test]
-#[ignore]
-fn inject_drift_archive_exits_nonzero_and_reports_drift() {
-    // See above — runs a full `cargo build --release` per run. Invoke
-    // manually with `cargo test --test check_determinism -- --ignored`.
+fn inject_drift_archive_reports_drift_on_minimal_workspace() {
+    if !tool_on_path("cargo") || !tool_on_path("git") {
+        eprintln!(
+            "SKIP inject_drift_archive_reports_drift_on_minimal_workspace: \
+             cargo or git missing from PATH"
+        );
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo);
+
+    // Per-run HOME inside the harness is a fresh tmpdir, so the rustup
+    // proxy cargo can't find its toolchain unless RUSTUP_HOME is
+    // explicitly set. The harness allow-lists RUSTUP_HOME for exactly
+    // this case — supply a default pointing at the host's `~/.rustup`
+    // when the var is unset.
+    let host_home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
+    let rustup_home =
+        std::env::var("RUSTUP_HOME").unwrap_or_else(|_| format!("{host_home}/.rustup"));
+
+    let report_path = repo.join("det.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "check",
+            "determinism",
+            "--runs",
+            "2",
+            "--inject-drift",
+            "archive",
+            "--report",
+        ])
+        .arg(&report_path)
+        .current_dir(repo)
+        .env("ANODIZE_TEST_HARNESS", "1")
+        .env("RUSTUP_HOME", &rustup_home)
+        .output()
+        .expect("invoking anodize check determinism");
+
+    // Non-zero exit when drift is detected (the dispatcher calls
+    // `process::exit(1)` after writing the report).
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit on drift; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        report_path.exists(),
+        "report file missing at {}; stderr was: {}",
+        report_path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = fs::read_to_string(&report_path).unwrap();
+    let report: DeterminismReport =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("parsing report JSON: {e}\n{json}"));
+
+    assert_eq!(report.schema_version, 1, "schema_version pinned at 1");
+    assert_eq!(report.runs, 2, "harness ran exactly --runs=2 times");
+    assert!(
+        report.drift_count > 0,
+        "expected drift_count > 0 after --inject-drift=archive; report: {:?}\nstderr: {}",
+        report,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !report.drift.is_empty(),
+        "drift list non-empty alongside drift_count > 0"
+    );
+
+    // Sanity: at least one drift row is the archive itself (the target
+    // of `--inject-drift=archive`). The other rows are transitive —
+    // artifacts that record the archive's hash (e.g. metadata.json,
+    // checksums.txt) propagate the byte-flip.
+    assert!(
+        report
+            .drift
+            .iter()
+            .any(|d| d.artifact.ends_with(".tar.gz") || d.artifact.ends_with(".zip")),
+        "at least one drift row should be an archive artifact; got: {:?}",
+        report.drift.iter().map(|d| &d.artifact).collect::<Vec<_>>()
+    );
 }

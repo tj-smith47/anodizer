@@ -173,4 +173,25 @@ mod tests {
             assert_eq!(a, b);
         }
     }
+
+    /// Every name the harness shovels into `--skip=...` MUST be accepted
+    /// by the release CLI's skip validator. Surfaced by the I12
+    /// drift-injection integration test (audit 2026-05-15) when `docker-sign`
+    /// was present in [`SIDE_EFFECT_STAGES`] but missing from
+    /// [`crate::context::VALID_RELEASE_SKIPS`] — the harness's child
+    /// subprocess bombed with `invalid --skip value(s): docker-sign`. This
+    /// pure-cross-check unit test catches the drift in milliseconds so a
+    /// future addition to either list flags the gap immediately.
+    #[test]
+    fn side_effect_stages_are_all_valid_release_skip_values() {
+        use crate::context::VALID_RELEASE_SKIPS;
+        for &name in SIDE_EFFECT_STAGES {
+            assert!(
+                VALID_RELEASE_SKIPS.contains(&name),
+                "SIDE_EFFECT_STAGES contains `{name}` but VALID_RELEASE_SKIPS does not — \
+                 the harness would fail at `anodize release --skip=<list>` invocation. \
+                 Add `{name}` to VALID_RELEASE_SKIPS in crates/core/src/context.rs."
+            );
+        }
+    }
 }

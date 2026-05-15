@@ -1,10 +1,10 @@
-//! Shared in-crate test doubles for publisher dispatch tests.
+//! Shared test doubles for publisher dispatch tests.
 //!
-//! Gated as `#[cfg(test)] pub(crate) mod testing;` in `lib.rs` so it's
-//! visible to every test module in the crate but never compiled into the
-//! library. The dispatch tests originally defined `FakePublisher` /
-//! `FakeOutcome` privately; promoting them here lets the per-publisher
-//! migrations reuse the same double without re-rolling one each time.
+//! Gated as `#[cfg(any(test, feature = "test-support"))] #[doc(hidden)]
+//! pub mod testing;` in `lib.rs`. The `test-support` Cargo feature is
+//! enabled by this crate's own `[dev-dependencies]` so integration tests
+//! under `tests/` can import the same fakes the in-crate unit tests
+//! use. NOT a stable public API.
 
 use anodizer_core::context::Context;
 use anodizer_core::{PublishEvidence, Publisher, PublisherGroup};
@@ -114,7 +114,7 @@ pub fn fake_with_rollback(
 /// to assert "rollback() was NOT called a second time" across two
 /// `run_with_publishers` invocations — the standard [`FakePublisher`]
 /// exposes no such counter.
-pub(crate) struct FakeCountingPublisher {
+pub struct FakeCountingPublisher {
     pub name: String,
     pub group: PublisherGroup,
     pub required: bool,
