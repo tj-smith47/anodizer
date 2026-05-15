@@ -4652,6 +4652,144 @@ crates:
     );
 }
 
+/// E2E regression for audit I14: a required-publisher failure in real-
+/// release mode (not snapshot, not dry-run) must surface as a non-zero
+/// exit even though the pipeline body returned `Ok`. Pinned at
+/// `crates/cli/src/commands/release/mod.rs` (the
+/// `gate_required_failures(&ctx)?` call after the pipeline returns).
+/// If that call is dropped, the simulated cargo failure rides through
+/// to exit 0 and this test fails.
+///
+/// The bail message under audit lives in `gate_required_failures` and
+/// reads `"release pipeline finished but {N} required publisher(s)
+/// failed: {names}. ..."` — so this test asserts both `"required
+/// publisher"` and `"cargo"` appear in stderr. It also confirms
+/// `report.json` was persisted *before* the gate fired so operators
+/// can replay rollback via `--rollback-only --from-run=<id>`.
+#[test]
+fn release_required_publisher_failure_gates_exit_code() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    // Write config BEFORE `init_git_repo` so the initial commit
+    // captures `.anodizer.yaml` — otherwise the validate stage trips
+    // the "git is in a dirty state" check and we never reach the
+    // publish gate.
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      cargo: {}
+"#,
+    );
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--no-preflight",
+            "--simulate-failure",
+            "cargo",
+            "--skip=build,upx,appbundle,dmg,msi,pkg,nsis,notarize,changelog,archive,source,nfpm,srpm,makeself,snapcraft,flatpak,sbom,templatefiles,checksum,sign,release,docker,docker-sign,blob,snapcraft-publish,announce",
+        ])
+        .env("ANODIZE_TEST_HARNESS", "1")
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "release with required-publisher failure must exit non-zero; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("required publisher") && stderr.contains("cargo"),
+        "stderr must carry the gate bail message; got: {stderr}"
+    );
+    // Sanity: report.json was written before the gate fired, so
+    // `--rollback-only --from-run=v0.1.0` has something to replay.
+    // `init_git_repo` tags the initial commit `v0.1.0`, which becomes
+    // the run-id via `derive_run_id` in `crates/stage-publish/src/lib.rs`.
+    let report = tmp
+        .path()
+        .join("dist")
+        .join("run-v0.1.0")
+        .join("report.json");
+    assert!(
+        report.exists(),
+        "report.json must persist before gate fires; expected at {}",
+        report.display()
+    );
+}
+
+/// Companion to `release_required_publisher_failure_gates_exit_code`:
+/// proves `gate_required_failures` does NOT false-positive when the
+/// failing publisher is non-required. Uses scoop (group=Manager,
+/// required=false; see `crates/stage-publish/src/scoop.rs`) with
+/// `--simulate-failure scoop` so we exercise the gate's filter on
+/// `required` without ever invoking the real publisher (which would
+/// need git push to a bucket repo).
+///
+/// Together, these two tests pin both directions of the I14 wiring:
+/// - required + failed → non-zero exit (the regression class)
+/// - non-required + failed → zero exit (no false-positive gate)
+#[test]
+fn release_non_required_publisher_failure_does_not_gate() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      scoop:
+        repository:
+          owner: test
+          name: scoop-bucket
+"#,
+    );
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--no-preflight",
+            "--simulate-failure",
+            "scoop",
+            "--skip=build,upx,appbundle,dmg,msi,pkg,nsis,notarize,changelog,archive,source,nfpm,srpm,makeself,snapcraft,flatpak,sbom,templatefiles,checksum,sign,release,docker,docker-sign,blob,snapcraft-publish,announce",
+        ])
+        .env("ANODIZE_TEST_HARNESS", "1")
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "release with only non-required publisher failure must exit 0;\nstderr: {stderr}\nstdout: {stdout}"
+    );
+    // The gate's bail message must NOT appear — that string is unique
+    // to `gate_required_failures` and would only show if the gate
+    // mistakenly fired for a non-required publisher.
+    assert!(
+        !stderr.contains("required publisher(s) failed"),
+        "gate bail message must NOT appear for non-required failure; got: {stderr}"
+    );
+}
+
 /// `--allow-nondeterministic foo` (no `=`) errors at the translation site.
 #[test]
 fn release_allow_nondeterministic_rejects_no_eq() {
