@@ -26,24 +26,30 @@
 //!    - **Linux / macOS**: everything else is stripped. Unix env is
 //!      sparse and well-understood; an explicit identity-only allow-list
 //!      is the safest contract.
-//!    - **Windows**: inherits the FULL host env, then drops a
-//!      credential-bearing deny-list (`GITHUB_TOKEN`,
-//!      `CARGO_REGISTRY_TOKEN`, `AWS_*`, cosign / gpg / docker /
-//!      chocolatey / snapcraft creds, anodize-publisher creds), the GH
-//!      Actions workflow internals (`ACTIONS_*`, `RUNNER_TOKEN`), and a
-//!      defense-in-depth suffix sweep (any name ending in `_TOKEN`,
-//!      `_KEY`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`).
-//!      Rationale: Windows env is sprawling — cc-rs / cargo / rustc
-//!      need `PROCESSOR_ARCHITECTURE`, `PROGRAMFILES*`, `WINDIR`,
-//!      `SystemRoot`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`,
-//!      `TMP`, `PATHEXT`, plus the entire MSVC toolchain block
-//!      (`VC*` / `VS*` / `INCLUDE` / `LIB` / `LIBPATH` /
-//!      `WindowsSdk*` / `UCRT*`) and likely more. Enumerating each in
-//!      an allow-list is whack-a-mole; a deny-list with a suffix sweep
-//!      is the auditable inverse. Audit reference
+//!    - **Windows**: inherits the FULL host env, then drops everything
+//!      covered by [`windows_env_should_drop`]: a credential-bearing
+//!      deny-list (`GITHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`, `AWS_*`,
+//!      cosign / gpg / docker / chocolatey / snapcraft creds,
+//!      anodize-publisher creds), the GH Actions workflow internals
+//!      (`ACTIONS_*`, `RUNNER_TOKEN`), a defense-in-depth credential
+//!      suffix sweep (`_TOKEN`, `_KEY`, `_SECRET`, `_PASSWORD`,
+//!      `_PASSPHRASE`, `_CREDENTIALS`), AND a hermeticity sweep that
+//!      drops every `GITHUB_*` / `RUNNER_*` not on the identity-only
+//!      [`HARNESS_ENV_ALLOWLIST`] (e.g. `RUNNER_TEMP`,
+//!      `RUNNER_TOOL_CACHE`, `RUNNER_WORKSPACE`, `GITHUB_WORKSPACE`,
+//!      `GITHUB_EVENT_PATH`). Rationale: Windows env is sprawling —
+//!      cc-rs / cargo / rustc need `PROCESSOR_ARCHITECTURE`,
+//!      `PROGRAMFILES*`, `WINDIR`, `SystemRoot`, `USERPROFILE`,
+//!      `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `PATHEXT`, plus the
+//!      entire MSVC toolchain block (`VC*` / `VS*` / `INCLUDE` / `LIB`
+//!      / `LIBPATH` / `WindowsSdk*` / `UCRT*`) and likely more.
+//!      Enumerating each in an allow-list is whack-a-mole; an inverse
+//!      skip predicate is the auditable contract. Audit reference
 //!      `.claude/audits/2026-05-15-release-resilience-review.md#i7`
-//!      asked for "no credentials leak through"; the deny-list (plus
-//!      suffix sweep) upholds that contract on Windows.
+//!      asked for "no credentials leak through" AND "no host workflow
+//!      state leaks through" (the original design excluded
+//!      `RUNNER_TEMP` for this reason); the skip predicate upholds both
+//!      contracts on Windows.
 //! 3. Invokes the build-side pipeline (`anodize release --snapshot
 //!    --skip=<SIDE_EFFECT_STAGES>`, see
 //!    [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`]) inside
@@ -381,11 +387,15 @@ impl Harness {
 ///
 /// This list is the contractual surface on **all** platforms. On Windows,
 /// [`build_subprocess_env`] additionally inherits the rest of the host env
-/// (minus a credential deny-list and suffix sweep — see
-/// [`WINDOWS_ENV_DENYLIST`] / [`windows_env_is_credential`]) because the
-/// MSVC toolchain block alone spans dozens of vars that an allow-list
-/// cannot reasonably enumerate. The deny-list approach is the auditable
-/// inverse: every name added there is a known credential carrier.
+/// minus everything covered by [`windows_env_should_drop`] — credentials,
+/// workflow-internal state, AND a hermeticity sweep that drops any
+/// `GITHUB_*` / `RUNNER_*` name not present on this allow-list (those
+/// namespaces carry host workflow state like `RUNNER_TEMP` /
+/// `GITHUB_WORKSPACE` that would leak runner-owned paths into the
+/// hermetic child). The MSVC toolchain block alone spans dozens of vars
+/// that an allow-list cannot reasonably enumerate; the inverse approach
+/// is the auditable contract — every entry in the skip set is either a
+/// known credential carrier or a known hermeticity hazard.
 const HARNESS_ENV_ALLOWLIST: &[&str] = &[
     // Toolchain identity.
     "RUSTUP_HOME",
@@ -408,14 +418,14 @@ const HARNESS_ENV_ALLOWLIST: &[&str] = &[
 
 /// Credential-bearing env vars the Windows inherit-everything pass MUST
 /// drop. The explicit list is the contractual surface; the
-/// [`windows_env_is_credential`] suffix sweep is the defense-in-depth net
+/// [`windows_env_should_drop`] suffix sweep is the defense-in-depth net
 /// for vars not named here.
 ///
 /// Membership policy: any var whose value grants network reach, signing
 /// authority, or store-publishing rights. Workflow-internal vars that
 /// aren't strictly credentials but pollute the child env
 /// (`ACTIONS_RUNTIME_TOKEN`, `ACTIONS_CACHE_URL`, etc.) are also dropped
-/// by name-pattern matching in [`windows_env_is_credential`].
+/// by name-pattern matching in [`windows_env_should_drop`].
 #[cfg(windows)]
 const WINDOWS_ENV_DENYLIST: &[&str] = &[
     // GitHub Actions / generic Git credentials.
@@ -447,7 +457,7 @@ const WINDOWS_ENV_DENYLIST: &[&str] = &[
     "ARTIFACTORY_TOKEN",
     "APK_PRIVATE_KEY",
     // Runner workflow-internal (drops also caught by ACTIONS_* prefix
-    // and RUNNER_TOKEN exact-match in `windows_env_is_credential`; listed
+    // and RUNNER_TOKEN exact-match in `windows_env_should_drop`; listed
     // here for explicit documentation).
     "ACTIONS_RUNTIME_TOKEN",
     "ACTIONS_RUNTIME_URL",
@@ -456,21 +466,31 @@ const WINDOWS_ENV_DENYLIST: &[&str] = &[
     "RUNNER_TOKEN",
 ];
 
-/// True when `key` names a credential-bearing or workflow-internal env
-/// var the Windows inherit-everything pass must drop.
+/// True when `key` names an env var the Windows inherit-everything pass
+/// must drop. The predicate covers two distinct contracts:
 ///
-/// Three checks, in order:
+/// 1. **Credentials / workflow-internal state** — vars whose value grants
+///    network reach, signing authority, or store-publishing rights, plus
+///    GH Actions workflow internals that pollute the child env.
+/// 2. **Hermeticity** — vars in the `GITHUB_*` / `RUNNER_*` namespaces that
+///    are NOT on [`HARNESS_ENV_ALLOWLIST`]. The allow-list captures the
+///    identity-only subset (repo / sha / refs / run #, os / arch /
+///    hostname); the rest of those namespaces is host workflow state
+///    (`RUNNER_TEMP`, `RUNNER_TOOL_CACHE`, `RUNNER_WORKSPACE`,
+///    `GITHUB_WORKSPACE`, `GITHUB_EVENT_PATH`, ...) — path-pointing or
+///    workflow-state values that would leak the GH Actions runner's
+///    on-host directories into the supposedly hermetic child, breaking
+///    determinism (cargo / cc-rs / Win32 would see host paths that aren't
+///    isolated). Audit reference: I7 in
+///    `.claude/audits/2026-05-15-release-resilience-review.md` — the
+///    original design explicitly excluded `RUNNER_TEMP` for this reason;
+///    the inverse-by-deny-list redesign for Windows had to broaden the
+///    skip rule to cover the whole namespace.
 ///
-/// 1. Exact match (case-insensitive) against [`WINDOWS_ENV_DENYLIST`].
-/// 2. Workflow-internal pattern: `ACTIONS_*` prefix and exact
-///    `RUNNER_TOKEN`. These aren't strictly credentials but they pollute
-///    the child env with runner-side state.
-/// 3. Defense-in-depth suffix sweep: any name ending (case-insensitive)
-///    in `_TOKEN`, `_KEY`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, or
-///    `_CREDENTIALS`. Catches future creds not in the explicit list
-///    (e.g. `STRIPE_API_KEY`, `NPM_TOKEN`).
+/// Check order: explicit deny-list → ACTIONS_* / RUNNER_TOKEN → credential
+/// suffix sweep → GH/RUNNER namespace hermeticity gate.
 #[cfg(windows)]
-fn windows_env_is_credential(key: &str) -> bool {
+fn windows_env_should_drop(key: &str) -> bool {
     if WINDOWS_ENV_DENYLIST
         .iter()
         .any(|d| d.eq_ignore_ascii_case(key))
@@ -490,6 +510,20 @@ fn windows_env_is_credential(key: &str) -> bool {
         "_credentials",
     ] {
         if lower.ends_with(suffix) {
+            return true;
+        }
+    }
+    // Hermeticity sweep: GH/RUNNER namespace vars not on the
+    // identity-only allow-list are host workflow state and must not
+    // propagate into the hermetic child. The allow-list pass earlier in
+    // `build_subprocess_env` already re-populated the identity subset
+    // from the host env, so dropping the rest here doesn't lose anything
+    // we still want.
+    if key.starts_with("GITHUB_") || key.starts_with("RUNNER_") {
+        let in_allowlist = HARNESS_ENV_ALLOWLIST
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case(key));
+        if !in_allowlist {
             return true;
         }
     }
@@ -552,14 +586,15 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
     // toolchain block (VC* / VS* / INCLUDE / LIB / LIBPATH / WindowsSdk*
     // / UCRT* / Platform). Enumerating each in the allow-list is fragile
     // and discovery-driven. Instead: inherit everything from the host
-    // env and drop the credential deny-list (plus a suffix sweep as a
-    // safety net for vars not in the explicit list). The allow-list
-    // pass above still ran first; this loop adds the rest. `or_insert`
-    // preserves any value already set (the child's CARGO_HOME / HOME /
-    // TMPDIR overrides above survive even if the host carries them).
+    // env and drop the credential deny-list, a suffix sweep, and the
+    // GH/RUNNER hermeticity sweep (see [`windows_env_should_drop`]).
+    // The allow-list pass above still ran first; this loop adds the
+    // rest. `or_insert` preserves any value already set (the child's
+    // CARGO_HOME / HOME / TMPDIR overrides above survive even if the
+    // host carries them).
     #[cfg(windows)]
     for (key, value) in std::env::vars() {
-        if windows_env_is_credential(&key) {
+        if windows_env_should_drop(&key) {
             continue;
         }
         env.entry(key).or_insert(value);
@@ -1392,6 +1427,88 @@ mod tests {
                 assert!(
                     !env.contains_key("ACTIONS_RUNTIME_TOKEN"),
                     "ACTIONS_* workflow-internal vars must be dropped by the Windows pass"
+                );
+            });
+        }
+
+        // ── Windows hermeticity sweep: GH/RUNNER namespace ───────────────
+        //
+        // `GITHUB_*` / `RUNNER_*` vars NOT on `HARNESS_ENV_ALLOWLIST` are
+        // host workflow state (path-pointing or runner-side scratch). The
+        // Linux/macOS path drops them naturally (strip-everything-except-
+        // allow-list); the Windows inherit-everything pass must also drop
+        // them via `windows_env_should_drop`'s namespace gate or
+        // hermeticity breaks (cargo / cc-rs / Win32 would see runner-owned
+        // paths instead of the per-run worktree).
+        //
+        // Regression guard: the inverse-by-deny-list redesign at d1bd9eb
+        // originally missed this carve-out; this set of tests pins it.
+
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_drops_runner_temp_for_hermeticity() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUNNER_TEMP"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("RUNNER_TEMP", r"C:\fake\temp") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert!(
+                    !env.contains_key("RUNNER_TEMP"),
+                    "RUNNER_TEMP must NOT propagate on Windows — it points at the runner's on-host scratch and the harness owns TMPDIR"
+                );
+            });
+        }
+
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_drops_runner_workspace_for_hermeticity() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUNNER_WORKSPACE"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("RUNNER_WORKSPACE", r"C:\fake\workspace") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert!(
+                    !env.contains_key("RUNNER_WORKSPACE"),
+                    "RUNNER_WORKSPACE must NOT propagate on Windows — host workflow state, not identity"
+                );
+            });
+        }
+
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_drops_github_workspace_for_hermeticity() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["GITHUB_WORKSPACE"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("GITHUB_WORKSPACE", r"C:\fake\gh_workspace") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert!(
+                    !env.contains_key("GITHUB_WORKSPACE"),
+                    "GITHUB_WORKSPACE must NOT propagate on Windows — points at the GH-runner-owned checkout, not the hermetic worktree"
+                );
+            });
+        }
+
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_keeps_runner_os_allow_listed() {
+            // Positive control for the hermeticity gate: identity vars on
+            // `HARNESS_ENV_ALLOWLIST` must still propagate. Catches a
+            // future skip-predicate regression that over-broadens the
+            // namespace drop.
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUNNER_OS"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("RUNNER_OS", "Windows") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert_eq!(
+                    env.get("RUNNER_OS").map(String::as_str),
+                    Some("Windows"),
+                    "RUNNER_OS is on the identity allow-list and MUST propagate even though the namespace gate would otherwise drop it"
                 );
             });
         }
