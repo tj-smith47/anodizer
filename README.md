@@ -1,8 +1,20 @@
-# Anodizer
+<div align="center">
 
-A Rust-native release automation tool. The same declarative, config-driven release pipeline that [GoReleaser](https://goreleaser.com/) provides for Go — built for Rust.
+<img src="assets/logo.svg" width="200" alt="anodizer logo">
 
-Anodizer reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, sign, release, publish, and announce — all from a single `anodizer release` command.
+# anodizer
+
+A Rust-native release pipeline — GoReleaser parity, signed and deterministic by default.
+
+[![CI](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml)
+[![Release](https://github.com/tj-smith47/anodizer/actions/workflows/release.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/release.yml)
+[![Docs](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml)
+[![Crates.io](https://img.shields.io/crates/v/anodizer.svg)](https://crates.io/crates/anodizer)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+</div>
+
+Anodizer reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, sign, release, publish, and announce — all from a single `anodizer release` command. The same declarative, config-driven release pipeline that [GoReleaser](https://goreleaser.com/) provides for Go — built for Rust.
 
 Written by [Claude](https://claude.ai); maintained by us.
 
@@ -107,9 +119,13 @@ anodizer release --snapshot
 # Dry run (full pipeline, no side effects)
 anodizer release --dry-run
 
-# Create a tag and release
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+# Auto-tag from commit directives
+# (Conventional Commits: feat: → minor, fix: → patch, BREAKING CHANGE: → major)
+anodizer tag --dry-run   # preview what tag would be created
+anodizer tag             # create + push the tag, which triggers the release workflow
+
+# Or force a specific tag value:
+anodizer tag --custom-tag v0.1.0
 ```
 
 For CI-based releases, set `GITHUB_TOKEN` (or `ANODIZER_GITHUB_TOKEN`) as a secret — the release pipeline picks it up automatically.
@@ -158,6 +174,8 @@ See the [full configuration reference](https://tj-smith47.github.io/anodizer/doc
 
 ## GitHub Actions
 
+Anodizer ships a first-party action, [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action), which is what this repo dogfoods in its own `release.yml`:
+
 ```yaml
 name: Release
 
@@ -178,69 +196,29 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install anodizer
-        run: cargo install anodizer
-
       - name: Release
-        run: anodizer release --clean
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: latest
+          auto-install: true   # auto-detect nfpm/makeself/snapcraft/cosign/etc from .anodizer.yaml
+          args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
+For split/merge fan-out, GPG key import, registry login, and per-platform variants, see [anodizer-action](https://github.com/tj-smith47/anodizer-action) and the live [`.github/workflows/release.yml`](.github/workflows/release.yml) in this repo.
+
 ## CLI Reference
 
-### Commands
-
 ```
-anodizer release                    Full release pipeline
-anodizer build                      Build binaries only (snapshot mode)
-anodizer check                      Validate configuration
-anodizer init                       Generate starter config
-anodizer changelog                  Generate changelog only
-anodizer completion <shell>         Shell completions (bash/zsh/fish/powershell)
-anodizer healthcheck                Check external tool availability
-anodizer man                        Generate man pages
-anodizer jsonschema                 Output JSON Schema for .anodizer.yaml
-anodizer tag                        Auto-tag from commit directives
-anodizer publish                    Run publish stages from completed dist/
-anodizer announce                   Run announce stage from completed dist/
-anodizer continue                   Merge split build artifacts and resume pipeline
+anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --rollback-only)
+anodizer tag           Auto-tag from commit directives
+anodizer check         Validate configuration + run determinism harness
+anodizer init          Generate starter .anodizer.yaml
+anodizer healthcheck   Probe external tools (nfpm, cosign, ...)
 ```
 
-### Global Flags
-
-```
--f, --config <path>                Path to config file (overrides auto-detection)
-    --verbose                      Enable verbose output
-    --debug                        Enable debug output
--q, --quiet                        Suppress non-error output
-```
-
-### Release Flags
-
-```
-    --crate <name>                 Release a specific crate (repeatable)
-    --all                          Release all crates with unreleased changes
-    --force                        Force release even without changes
-    --snapshot                     Build without publishing
-    --nightly                      Nightly release with date-based version
-    --dry-run                      Full pipeline, no side effects
-    --clean                        Remove dist/ directory first
-    --skip=<stages>                Skip stages (comma-separated)
-    --token <token>                GitHub token (overrides env vars)
-    --timeout <duration>           Pipeline timeout (default: 60m)
--p, --parallelism <n>              Max parallel build jobs (default: CPU count)
-    --auto-snapshot                Auto-enable snapshot if repo is dirty
-    --single-target                Build only for the host target triple
-    --split                        Fan-out: build only, output artifacts JSON
-    --merge                        Fan-in: merge split artifacts, run post-build
-    --draft                        Set the release as a draft
-    --release-notes <path>         Custom release notes file
-    --release-header <path>        Custom release header file
-    --release-footer <path>        Custom release footer file
-    --workspace <name>             Release a specific monorepo workspace
-    --fail-fast                    Abort on first publish error
-```
+Full reference: `anodizer --help` or the [docs site](https://tj-smith47.github.io/anodizer/docs/reference/cli/).
 
 ## Documentation
 
@@ -249,7 +227,7 @@ Full documentation is available at **[tj-smith47.github.io/anodizer](https://tj-
 Operator guides:
 
 - [Release resilience guide](docs/site/content/docs/advanced/release-resilience.md) - three-group publisher dispatch, Submitter gate, rollback, replay-from-run
-- [Determinism guide](docs/site/content/docs/advanced/determinism.md) - byte-stability contract, `anodize check determinism` harness, runtime allow-list
+- [Determinism guide](docs/site/content/docs/advanced/determinism.md) - byte-stability contract, `anodizer check determinism` harness, runtime allow-list
 
 ## License
 
