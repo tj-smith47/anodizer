@@ -200,20 +200,70 @@ pub fn print_status_table(
     summary: &RunSummary,
     out: &mut dyn std::io::Write,
 ) -> std::io::Result<()> {
+    // Cap the name column so a pathological publisher name (e.g. an
+    // operator pastes a URL into `publishers.custom[].name`) cannot
+    // blow out the terminal width in CI logs. 40 chars covers every
+    // realistic publisher name in the built-in registry (longest is
+    // `homebrew-formula` at 16) plus generous headroom for custom
+    // ones; anything longer is truncated with an ellipsis so the
+    // remaining columns still line up.
+    const NAME_CAP: usize = 40;
+
+    let truncate_name = |name: &str| -> String {
+        // `char_indices` keeps the truncation UTF-8-safe; slicing by
+        // byte index inside a multi-byte char would panic. The cap
+        // operates on char count, not byte count, so a name with
+        // multibyte characters fits the visual width consistently.
+        if name.chars().count() > NAME_CAP {
+            let cutoff = name
+                .char_indices()
+                .nth(NAME_CAP - 1)
+                .map(|(i, _)| i)
+                .unwrap_or(name.len());
+            format!("{}…", &name[..cutoff])
+        } else {
+            name.to_string()
+        }
+    };
+
+    let name_width = summary
+        .results
+        .iter()
+        .map(|r| truncate_name(&r.name).chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("name".len());
+    let group_width = summary
+        .results
+        .iter()
+        .map(|r| format!("{:?}", r.group).len())
+        .max()
+        .unwrap_or(0)
+        .max("group".len());
+    let required_width = "required".len();
+
     writeln!(out, "Publisher status:")?;
     writeln!(
         out,
-        "  {:<20} {:<10} {:<10} status",
-        "name", "group", "required",
+        "  {:<nw$} {:<gw$} {:<rw$} status",
+        "name",
+        "group",
+        "required",
+        nw = name_width,
+        gw = group_width,
+        rw = required_width,
     )?;
     for r in &summary.results {
         writeln!(
             out,
-            "  {:<20} {:<10} {:<10} {}",
-            r.name,
+            "  {:<nw$} {:<gw$} {:<rw$} {}",
+            truncate_name(&r.name),
             format!("{:?}", r.group),
             r.required,
             r.status,
+            nw = name_width,
+            gw = group_width,
+            rw = required_width,
         )?;
     }
     writeln!(out)?;
@@ -512,6 +562,100 @@ mod tests {
         assert!(
             text.contains("Run flags: submitter_gated=true announce_gated=false"),
             "run-flags line missing: {text}"
+        );
+    }
+
+    #[test]
+    fn print_status_table_widens_for_long_publisher_names() {
+        // 25-char publisher name (longer than the historical 20-char
+        // fixed width). The header and the row must agree on column
+        // boundaries: the `group` header should start at the same
+        // offset as the row's group column.
+        let s = RunSummary {
+            schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: "v0.0.0".to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![RunSummaryResult {
+                name: "custom-publisher-with-long-id".to_string(), // 29 chars
+                group: PublisherGroup::Manager,
+                required: false,
+                status: "succeeded".to_string(),
+                evidence: None,
+            }],
+            determinism_allowlist: DeterminismAllowlist::default(),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        print_status_table(&s, &mut buf).expect("print");
+        let text = String::from_utf8(buf).expect("utf8");
+        let lines: Vec<&str> = text.lines().collect();
+        // Lines: "Publisher status:", header, row.
+        let header = lines[1];
+        let row = lines[2];
+        // Find `group` in header and `Manager` in row; their starting
+        // byte offsets must match (column alignment).
+        let header_group_at = header.find("group").expect("group header present");
+        let row_group_at = row.find("Manager").expect("Manager cell present");
+        assert_eq!(
+            header_group_at, row_group_at,
+            "header `group` column at {header_group_at} must align with row `Manager` cell at \
+             {row_group_at}\nheader: {header:?}\nrow:    {row:?}",
+        );
+        // And the full long name must appear (no truncation at this length).
+        assert!(
+            row.contains("custom-publisher-with-long-id"),
+            "long name must render untruncated: {row:?}",
+        );
+    }
+
+    #[test]
+    fn print_status_table_truncates_extremely_long_names() {
+        // 60-char publisher name exceeds the 40-char cap; the rendered
+        // row must replace the tail with an ellipsis so the remaining
+        // columns still line up in the CI log.
+        let long_name = "x".repeat(60);
+        let s = RunSummary {
+            schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: "v0.0.0".to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![RunSummaryResult {
+                name: long_name.clone(),
+                group: PublisherGroup::Assets,
+                required: true,
+                status: "succeeded".to_string(),
+                evidence: None,
+            }],
+            determinism_allowlist: DeterminismAllowlist::default(),
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        print_status_table(&s, &mut buf).expect("print");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            !text.contains(&long_name),
+            "full 60-char name must NOT appear verbatim: {text}",
+        );
+        assert!(
+            text.contains('…'),
+            "ellipsis must mark the truncation: {text}",
+        );
+        // Header and row must still align — compare by visual (char)
+        // offset, not byte offset, since `…` is a 3-byte UTF-8 char.
+        let lines: Vec<&str> = text.lines().collect();
+        let header = lines[1];
+        let row = lines[2];
+        let char_offset = |line: &str, needle: &str| -> usize {
+            let byte_at = line.find(needle).expect("needle present");
+            line[..byte_at].chars().count()
+        };
+        let header_group_at = char_offset(header, "group");
+        let row_group_at = char_offset(row, "Assets");
+        assert_eq!(
+            header_group_at, row_group_at,
+            "truncated row must still align (char offsets): header {header_group_at} vs row \
+             {row_group_at}\nheader: {header:?}\nrow:    {row:?}",
         );
     }
 
