@@ -1924,6 +1924,14 @@
             "null"
           ]
         },
+        "required": {
+          "description": "When `true`, a failed blob upload counts as a required-publisher failure: trips the submitter gate (chocolatey/winget/snapcraft/aur don't run if blob failed) and surfaces in `report.required_failures()` so the CLI exits non-zero.\n\nDefault: `false`. Snapshot release pipelines typically don't require blobs; production pipelines that ship binaries via S3/GCS often do.\n\nWhen multiple blob configs exist, the blob stage records ONE aggregated `PublisherResult`: `required = true` if ANY config opted in. Same semantics as \"any required blob target failing should fail the release.\"",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "s3_force_path_style": {
           "description": "Enable path-style addressing for S3-compatible backends. Defaults to `true` when `endpoint` is set (MinIO, R2, DO Spaces need this), `false` otherwise (standard AWS virtual-hosted style).",
           "default": null,

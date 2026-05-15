@@ -73,6 +73,16 @@ impl anodizer_core::Publisher for BlobPublisher {
         anodizer_core::PublisherGroup::Assets
     }
 
+    /// Forward-compat trait surface only. The load-bearing
+    /// `required` flag for the blob stage's outcome is derived
+    /// per-run from `BlobConfig.required` in
+    /// [`crate::run::record_blob_result`] (called by
+    /// [`crate::run::BlobStage`]), not by this trait method. The
+    /// trait impl has no access to the active `Context`, so it
+    /// returns `false` and the actual policy is enforced inside the
+    /// stage. Kept as `false` so a future refactor that drops the
+    /// trait-vs-stage split doesn't silently start failing pipelines
+    /// that don't opt into `required:`.
     fn required(&self) -> bool {
         false
     }

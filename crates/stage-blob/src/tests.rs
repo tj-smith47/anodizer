@@ -1496,7 +1496,7 @@ fn blob_stage_appends_succeeded_to_publish_report() {
         "s3://my-bucket/proj/v1/a.tar.gz".to_string(),
         "s3://my-bucket/proj/v1/b.tar.gz".to_string(),
     ];
-    record_blob_result(&mut ctx, &uploaded, &Ok(()));
+    record_blob_result(&mut ctx, &uploaded, &Ok(()), /* required = */ false);
 
     let report = ctx
         .publish_report()
@@ -1505,7 +1505,10 @@ fn blob_stage_appends_succeeded_to_publish_report() {
     let r = &report.results[0];
     assert_eq!(r.name, "blob");
     assert_eq!(r.group, PublisherGroup::Assets);
-    assert!(!r.required, "blob is Assets-group and not required");
+    assert!(
+        !r.required,
+        "default `required = false` until BlobConfig.required opts in"
+    );
     assert!(
         matches!(r.outcome, PublisherOutcome::Succeeded),
         "expected Succeeded, got {:?}",
@@ -1535,7 +1538,7 @@ fn blob_stage_appends_failed_to_publish_report() {
     // artifact_paths snapshot.
     let partial = vec!["s3://my-bucket/proj/v1/a.tar.gz".to_string()];
     let err = anyhow::anyhow!("upload failed: 503 Service Unavailable");
-    record_blob_result(&mut ctx, &partial, &Err(err));
+    record_blob_result(&mut ctx, &partial, &Err(err), /* required = */ false);
 
     let report = ctx.publish_report().expect("publish_report initialized");
     assert_eq!(report.results.len(), 1);
@@ -1566,7 +1569,7 @@ fn blob_stage_initializes_publish_report_when_none() {
     let mut ctx = make_ctx();
     assert!(ctx.publish_report().is_none(), "fixture invariant");
 
-    record_blob_result(&mut ctx, &[], &Ok(()));
+    record_blob_result(&mut ctx, &[], &Ok(()), /* required = */ false);
 
     let report = ctx
         .publish_report()
@@ -1601,4 +1604,141 @@ fn blob_stage_does_not_touch_publish_report_when_no_work() {
         ctx.publish_report().is_none(),
         "no work attempted → no report entry"
     );
+}
+
+// -----------------------------------------------------------------------
+// `BlobConfig.required` wire-up (audit I15 / Bundle B12)
+//
+// `record_blob_result` now takes a `required: bool` parameter derived
+// from any blob config opting in via `required: true`. The tests pin
+// the three relevant shapes: default-off, opt-in-on, and aggregated
+// (any-true-makes-the-stage-required). Aggregation matches the
+// "any failed required publisher in Assets group fails the release"
+// semantics in `PublishReport::any_failed`.
+// -----------------------------------------------------------------------
+
+#[test]
+fn record_blob_result_required_false_by_default() {
+    use crate::run::record_blob_result;
+
+    let mut ctx = make_ctx();
+    record_blob_result(
+        &mut ctx,
+        &["s3://b/k".to_string()],
+        &Ok(()),
+        /* required = */ false,
+    );
+    let report = ctx.publish_report().expect("report initialized");
+    assert!(
+        !report.results[0].required,
+        "BlobConfig.required = None (default) → PublisherResult.required = false"
+    );
+}
+
+#[test]
+fn record_blob_result_required_true_when_set() {
+    use crate::run::record_blob_result;
+
+    let mut ctx = make_ctx();
+    record_blob_result(
+        &mut ctx,
+        &["s3://b/k".to_string()],
+        &Ok(()),
+        /* required = */ true,
+    );
+    let report = ctx.publish_report().expect("report initialized");
+    assert!(
+        report.results[0].required,
+        "required = true threads into PublisherResult.required"
+    );
+}
+
+#[test]
+fn derive_blob_required_aggregates_any_true_across_configs() {
+    use crate::run::derive_blob_required;
+
+    // Two blob configs on one crate; only the second opts in. The
+    // stage-level aggregation must report `true` so a failed upload
+    // anywhere in the stage trips the submitter gate.
+    let crate_cfg = anodizer_core::config::CrateConfig {
+        name: "demo".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        blobs: Some(vec![
+            BlobConfig {
+                provider: "s3".to_string(),
+                bucket: "b1".to_string(),
+                required: Some(false),
+                ..Default::default()
+            },
+            BlobConfig {
+                provider: "gcs".to_string(),
+                bucket: "b2".to_string(),
+                required: Some(true),
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    };
+    let config = anodizer_core::config::Config {
+        project_name: "test".to_string(),
+        crates: vec![crate_cfg],
+        ..Default::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    assert!(
+        derive_blob_required(&ctx),
+        "any-true aggregation: one required-blob config makes the stage required"
+    );
+}
+
+#[test]
+fn derive_blob_required_false_when_no_config_opts_in() {
+    use crate::run::derive_blob_required;
+
+    let crate_cfg = anodizer_core::config::CrateConfig {
+        name: "demo".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        blobs: Some(vec![BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b1".to_string(),
+            // `required` omitted → defaults to None → false
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let config = anodizer_core::config::Config {
+        project_name: "test".to_string(),
+        crates: vec![crate_cfg],
+        ..Default::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    assert!(
+        !derive_blob_required(&ctx),
+        "no config opts in → derived required = false"
+    );
+}
+
+#[test]
+fn record_blob_result_failed_required_blob_trips_assets_required_gate() {
+    use crate::run::record_blob_result;
+
+    // Integration-shaped unit test: a required blob fails →
+    // `PublishReport::any_failed(Assets, required_only=true)` returns
+    // true. This is exactly the predicate the SnapcraftPublishStage
+    // submitter gate consults to skip-with-`Skipped(SubmitterGated)`.
+    let mut ctx = make_ctx();
+    let err = anyhow::anyhow!("upload failed: 503 Service Unavailable");
+    record_blob_result(&mut ctx, &[], &Err(err), /* required = */ true);
+    let report = ctx.publish_report().expect("report initialized");
+    assert!(
+        report.any_failed(
+            anodizer_core::PublisherGroup::Assets,
+            /* required_only = */ true
+        ),
+        "required-blob failure must trip the Assets-group required-only gate"
+    );
+    // And the non-required gate sees it too (sanity).
+    assert!(report.any_failed(anodizer_core::PublisherGroup::Assets, false));
 }

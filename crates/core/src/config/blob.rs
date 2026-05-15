@@ -70,4 +70,18 @@ pub struct BlobConfig {
     /// Maximum number of parallel uploads for this blob config.
     /// Overrides the global `--parallelism` setting when set.
     pub parallelism: Option<usize>,
+    /// When `true`, a failed blob upload counts as a required-publisher
+    /// failure: trips the submitter gate (chocolatey/winget/snapcraft/aur
+    /// don't run if blob failed) and surfaces in
+    /// `report.required_failures()` so the CLI exits non-zero.
+    ///
+    /// Default: `false`. Snapshot release pipelines typically don't
+    /// require blobs; production pipelines that ship binaries via S3/GCS
+    /// often do.
+    ///
+    /// When multiple blob configs exist, the blob stage records ONE
+    /// aggregated `PublisherResult`: `required = true` if ANY config opted
+    /// in. Same semantics as "any required blob target failing should
+    /// fail the release."
+    pub required: Option<bool>,
 }

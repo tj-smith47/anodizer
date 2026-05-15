@@ -114,7 +114,15 @@ impl Stage for BlobStage {
         // via the `?` operator in `run_with_evidence` -> `prepare_jobs`.
         let (uploaded, exec_result) = self.run_report(ctx)?;
         if let Some(exec_result) = exec_result {
-            record_blob_result(ctx, &uploaded, &exec_result);
+            // Aggregated `required` across every blob config on every
+            // selected crate: when ANY blob config opts in
+            // (`required: true`), the recorded outcome carries
+            // `required = true` so a failed upload trips the submitter
+            // gate (`any_failed(Assets, required_only=true)`) and the
+            // CLI's required-failures exit-code gate. See
+            // `BlobConfig.required` rustdoc for the semantics.
+            let derived_required = derive_blob_required(ctx);
+            record_blob_result(ctx, &uploaded, &exec_result, derived_required);
         }
         // Per-target upload errors are reported via PublisherResult;
         // they must NOT bail the pipeline because the same gate that
@@ -126,11 +134,17 @@ impl Stage for BlobStage {
 
 /// Append a `PublisherResult` for the blob stage to `ctx.publish_report`.
 /// Initializes the report when `None` (covers `--publish` runs where
-/// `PublishStage` was skipped). The required flag mirrors the
-/// `BlobPublisher` trait impl (`required = false`) so the submitter gate
-/// only fires when an operator explicitly opts into a required blob
-/// target via future policy work.
-pub(crate) fn record_blob_result(ctx: &mut Context, uploaded: &[String], exec_result: &Result<()>) {
+/// `PublishStage` was skipped). The `required` flag is derived from
+/// `BlobConfig.required` — when any blob config is required, the
+/// recorded outcome carries `required = true` so the submitter gate
+/// and the CLI's required-failures exit-code gate fire on a failed
+/// blob upload.
+pub(crate) fn record_blob_result(
+    ctx: &mut Context,
+    uploaded: &[String],
+    exec_result: &Result<()>,
+    required: bool,
+) {
     let outcome = match exec_result {
         Ok(()) => PublisherOutcome::Succeeded,
         Err(e) => PublisherOutcome::Failed(format!("{e:#}")),
@@ -154,10 +168,27 @@ pub(crate) fn record_blob_result(ctx: &mut Context, uploaded: &[String], exec_re
     report.results.push(PublisherResult {
         name: "blob".to_string(),
         group: PublisherGroup::Assets,
-        required: false,
+        required,
         outcome,
         evidence,
     });
+}
+
+/// Derive the aggregated `required` flag for the blob stage's
+/// `PublisherResult`: `true` iff any selected crate's blob config sets
+/// `required: true`. Keeps semantics simple — one aggregated outcome
+/// per stage, one bit per stage — so the submitter gate just consults
+/// `any_failed(Assets, required_only=true)` without per-config
+/// bookkeeping.
+pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter_map(|c| c.blobs.as_ref())
+        .flat_map(|configs| configs.iter())
+        .any(|cfg| cfg.required.unwrap_or(false))
 }
 
 impl BlobStage {
