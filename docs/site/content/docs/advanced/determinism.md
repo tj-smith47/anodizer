@@ -50,14 +50,31 @@ Some artifacts are exempt out of the box because the relevant tooling does
 not yet honor SDE or because byte-stability has been deferred to a
 follow-up.
 
-| Artifact | Reason | Mitigation |
+The allow-list is seeded in
+[`crates/core/src/determinism.rs::seed_from_commit`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/determinism.rs)
+and contains exactly six glob patterns at HEAD:
+
+| Artifact pattern | Reason | Mitigation |
 |---|---|---|
-| cargo `.crate` | `cargo package` is non-deterministic by default | consumers verify via the crates.io index, not anodizer-published checksums |
-| Docker image manifest descriptor | cosign attestation blobs embed timestamps | image digest is content-addressable; consumers verify the digest |
-| Docker image | BuildKit reproducible-build flags integration deferred | image digest content-addressable; consumers verify the digest |
-| RPM / MSI / NSIS / DMG / PKG installers | per-tool reproducibility conventions, follow-up work | consumers verify post-tool signatures (signtool, productsign, codesign) |
-| DEB (nfpm-emitted) | `dpkg-deb` reproducibility varies by version, follow-up | cloudsmith publisher byte-mismatch detection already loud-fails on retry |
-| External-service signatures (Apple notarization, public TSA) | server embeds a timestamp anodize cannot control | documented allow-list entry per publisher |
+| `*.crate` | `cargo package` is non-deterministic by default | consumers verify via the crates.io index, not anodizer-published checksums |
+| `*.rpm` | `rpmbuild` reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures (signtool, productsign, codesign) |
+| `*.msi` | wix/candle/light reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures |
+| `*.dmg` | `hdiutil` reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures |
+| `*.pkg` | `pkgbuild` reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures |
+| `*.deb` | `dpkg-deb` reproducibility varies by version, follow-up | cloudsmith publisher byte-mismatch detection already loud-fails on retry |
+
+Notably absent from the table (intentional, post-M10 cleanup): Docker
+image manifest descriptors, Docker image blobs, NSIS-emitted `.exe`
+installers, Apple notarization receipts, and external public-TSA
+signatures. These artifacts mutate inside side-effect stages
+(`crate::determinism_runner::SIDE_EFFECT_STAGES`) and are reproducible
+by virtue of being skipped during determinism rebuilds; the harness
+never diffs them. NSIS `.exe` files only appear on Windows/Wine runs,
+where operators can use the runtime `--allow-nondeterministic
+<name>=<reason>` flag rather than baking in a dead compile-time
+sentinel. The Docker stage's only `dist/` output is a `.digest` text
+file (content-addressable sha256), which is byte-stable without
+allow-listing.
 
 The canonical follow-up list lives at
 [`.claude/specs/2026-05-14-determinism-followups.md`](https://github.com/tj-smith47/anodizer/blob/master/.claude/specs/2026-05-14-determinism-followups.md).

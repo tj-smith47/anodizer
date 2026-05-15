@@ -47,7 +47,7 @@ logic.
 | Publisher | Group | required (default) | Rollback action | Token scope |
 |---|---|---|---|---|
 | github-release | Assets | true | delete release + delete tag + delete assets | `contents:write` |
-| dockerhub | Assets | false | manual cleanup checklist (description PATCH) | `DOCKER_TOKEN write` |
+| dockerhub | Assets | false | warn-only (description PATCH manual-cleanup checklist; prior description not snapshotted) | `DOCKER_TOKEN description snapshot+restore` |
 | artifactory | Assets | false | DELETE artifact path | `ARTIFACTORY_TOKEN delete` |
 | cloudsmith | Assets | false | DELETE `/v1/packages/<id>` | `CLOUDSMITH_API_KEY package_delete` |
 | blob (s3/gcs/azure) | Assets | false | delete object | backend creds |
@@ -55,13 +55,13 @@ logic.
 | scoop (bucket) | Manager | false | git revert + push | `GITHUB_TOKEN contents:write` |
 | nix (overlay repo) | Manager | false | git revert + push | `GITHUB_TOKEN contents:write` |
 | krew | Manager | false | close PR | `GITHUB_TOKEN pull_request:write` |
-| mcp | Manager | false | warn-only (manual cleanup) | n/a |
+| mcp | Manager | false | warn-only (no programmatic unpublish; manual mark-deprecated via registry admin UI) | `MCP_GITHUB_TOKEN publish` |
 | our-AUR-repos | Manager | false | git revert + push | `AUR_SSH_KEY write` |
 | custom-publishers | Manager | false | none | depends on publisher |
 | upstream-AUR (force-push) | Submitter | false | none | `AUR_SSH_KEY write` |
 | cargo | Submitter | true | `cargo yank` (documented limits) | `CARGO_REGISTRY_TOKEN yank` |
 | chocolatey | Submitter | false | none (manual withdraw) | n/a |
-| winget | Submitter | false | none (manual PR close) | n/a |
+| winget | Submitter | false | warn-only (manual PR close against `microsoft/winget-pkgs`; upstream validation cannot be cancelled mid-flight) | `GITHUB_TOKEN pull_request:write` (preflight bookkeeping; warn-only at runtime) |
 | snapcraft | Submitter | false | none (already-installed snaps keep the revision) | `SNAPCRAFT_LOGIN` |
 
 `required: true` means the release pipeline treats this publisher's failure as
@@ -365,7 +365,6 @@ anodize release \
   --no-gate-submitter \
   --rollback={none|best-effort} \
   --strict \
-  --simulate-failure=<publisher> \
   --rollback-only \
   --from-run=<id> \
   --allow-rerun                  # DANGEROUS — see "Recovery flow" above
@@ -378,7 +377,6 @@ anodize release \
 | `--no-gate-submitter` | Disables the Submitter gate. Submitter group dispatches even when required Assets/Manager publishers failed. | gate on |
 | `--rollback` | `none` skips rollback; `best-effort` runs each Assets/Manager rollback independently. | `best-effort` when preflight is clean, `none` otherwise (with a warning) |
 | `--strict` | Config + preflight strictness (unchanged from prior versions). | off |
-| `--simulate-failure=<publisher>` | Forces a named publisher to return `Err`. Hidden flag, gated by `ANODIZE_TEST_HARNESS=1`. | unset |
 | `--rollback-only` | Reads a prior run report and re-attempts rollback only. No new publishing. | n/a |
 | `--from-run=<id>` | Run id whose `dist/run-<id>/report.json` to load when using `--rollback-only`. | n/a |
 | `--allow-rerun` | DANGEROUS: force `release` to re-run publish even when a prior `dist/run-<id>/report.json` exists. PR-based publishers (homebrew/scoop/nix/krew/MCP) will open duplicate PRs. Prefer `--rollback-only --from-run=<id>` first. | off |

@@ -1,20 +1,50 @@
 use crate::publish_evidence::PublishEvidence;
 use serde::{Deserialize, Serialize};
 
+/// Three-group dispatch classification for publishers. Dispatch order is
+/// always Assets → Manager → Submitter. The Submitter gate sits between
+/// Manager and Submitter and short-circuits Submitter dispatch when any
+/// `required: true` publisher in Assets or Manager failed (so a botched
+/// homebrew tap push cannot burn a crates.io version slot).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PublisherGroup {
+    /// Writes uploadable bytes to systems we control end-to-end. Failures
+    /// are reversible via API delete (github-release, dockerhub,
+    /// artifactory, cloudsmith, blob).
     Assets,
+    /// Writes to package-manager state. Server-side deletable, but
+    /// consumer machines may have already pulled the artifact
+    /// (homebrew, scoop, nix, krew, mcp, our-AUR repos, custom).
     Manager,
+    /// Writes to a third-party submission queue, an immutable registry
+    /// slot, or a channel position we cannot reclaim. Gated behind the
+    /// Submitter gate; rollback is informational only
+    /// (cargo, chocolatey, winget, snapcraft, upstream-AUR force-push).
     Submitter,
 }
 
+/// Per-publisher terminal state in [`PublishReport`]. Stage-level statuses
+/// like `pending-moderation` / `pending-validation` / `announce-gated`
+/// live on the run summary, not here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PublisherOutcome {
+    /// `Publisher::run` returned `Ok` and the artifact is live.
     Succeeded,
+    /// Publisher did not execute; see [`SkipReason`] for why.
     Skipped(SkipReason),
+    /// `Publisher::run` returned `Err`; the carried `String` is the error
+    /// message (already rendered via `{:#}`).
     Failed(String),
+    /// Initially [`PublisherOutcome::Succeeded`], then revert dispatch
+    /// successfully reverted the action.
     RolledBack,
+    /// Initial run succeeded but revert dispatch failed; manual
+    /// intervention required. The carried `String` is the rollback
+    /// error message.
     RollbackFailed(String),
+    /// Rollback was skipped because the required scope token env var
+    /// (per `Publisher::rollback_scope_needed`) is not set in the
+    /// environment.
     RollbackSkippedNoScope,
     /// Publisher succeeded but the version is queued for moderation (chocolatey, AUR-like).
     PendingModeration,
@@ -24,12 +54,21 @@ pub enum PublisherOutcome {
     PublishedNoRollback,
 }
 
+/// Reason a publisher was [`PublisherOutcome::Skipped`]. Serialized as
+/// kebab-case (e.g. `"submitter-gated"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SkipReason {
+    /// Skipped because a required Assets/Manager publisher failed; the
+    /// Submitter gate closed before this publisher could dispatch.
+    /// Preserves rollback safety on irreversible publishers.
     SubmitterGated,
+    /// Publisher entry absent from the workspace config; the
+    /// `Publisher::run` impl was never invoked.
     NotConfigured,
+    /// Pipeline ran in `--snapshot` mode; publishers do not fire.
     Snapshot,
+    /// Pipeline ran in `--dry-run` mode; publishers do not fire.
     DryRun,
 }
 
