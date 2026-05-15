@@ -1734,7 +1734,8 @@ mod tests {
         };
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Version", "1.0.0");
-        ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(0));
+        ctx.determinism =
+            Some(anodizer_core::DeterminismState::seed_from_commit(0).expect("0 is non-negative"));
         ctx
     }
 
@@ -1752,7 +1753,8 @@ mod tests {
         };
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Version", "1.0.0");
-        ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(0));
+        ctx.determinism =
+            Some(anodizer_core::DeterminismState::seed_from_commit(0).expect("0 is non-negative"));
         ctx
     }
 

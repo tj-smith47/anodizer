@@ -47,7 +47,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     };
 
     let commit = head_commit_hash_in(&repo_root)?;
-    let stages = parse_stages(args.stages.as_deref());
+    let stages = parse_stages(args.stages.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
 
     let report_path = args.report.clone().unwrap_or_else(|| {
         repo_root.join(format!(
@@ -60,7 +60,8 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // DeterminismState (single source of truth); the runtime allow-list
     // is empty here because the harness is invoked outside the
     // `release` pipeline that would have populated it.
-    let state = DeterminismState::seed_from_commit(sde);
+    let state = DeterminismState::seed_from_commit(sde)
+        .context("seeding determinism state from HEAD commit timestamp")?;
     let allowlist = AllowList {
         compile_time: state
             .compile_time_allowlist
@@ -113,10 +114,15 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
 }
 
 /// Parse a comma-separated stage subset (`--stages=build,archive,...`).
-/// Unknown tokens are silently dropped; an empty / all-unknown selection
+///
+/// Returns `Err` on unknown tokens — silently dropping typos like
+/// `--stages=archve,checksum` (note the missing `i`) is a UX trap that
+/// quietly under-verifies the release; the operator typed a stage they
+/// expected to be exercised. Empty / whitespace-only tokens (e.g. a
+/// trailing comma) are tolerated. An empty selection (`--stages=""`)
 /// falls back to the canonical build-side set. Spec calls out "build,
 /// archive, sbom, sign, checksum" as the legal vocabulary.
-fn parse_stages(s: Option<&str>) -> Vec<StageId> {
+fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
     let default = || {
         vec![
             StageId::Build,
@@ -127,20 +133,35 @@ fn parse_stages(s: Option<&str>) -> Vec<StageId> {
         ]
     };
     match s {
-        None => default(),
+        None => Ok(default()),
         Some(list) => {
-            let parsed: Vec<StageId> = list
-                .split(',')
-                .filter_map(|tok| match tok.trim() {
-                    "build" => Some(StageId::Build),
-                    "archive" => Some(StageId::Archive),
-                    "sbom" => Some(StageId::Sbom),
-                    "sign" => Some(StageId::Sign),
-                    "checksum" => Some(StageId::Checksum),
-                    _ => None,
-                })
-                .collect();
-            if parsed.is_empty() { default() } else { parsed }
+            let mut parsed: Vec<StageId> = Vec::new();
+            let mut unknown: Vec<String> = Vec::new();
+            for tok in list.split(',') {
+                let tok = tok.trim();
+                if tok.is_empty() {
+                    // Tolerate trailing / empty tokens (e.g.
+                    // `archive,checksum,`); the operator clearly meant
+                    // the named stages and the empty slot is noise.
+                    continue;
+                }
+                match tok {
+                    "build" => parsed.push(StageId::Build),
+                    "archive" => parsed.push(StageId::Archive),
+                    "sbom" => parsed.push(StageId::Sbom),
+                    "sign" => parsed.push(StageId::Sign),
+                    "checksum" => parsed.push(StageId::Checksum),
+                    other => unknown.push(other.to_string()),
+                }
+            }
+            if !unknown.is_empty() {
+                return Err(format!(
+                    "--stages contained unknown stage(s): {}. \
+                     Known stages: build, archive, sbom, sign, checksum.",
+                    unknown.join(", ")
+                ));
+            }
+            Ok(if parsed.is_empty() { default() } else { parsed })
         }
     }
 }
@@ -161,7 +182,7 @@ mod tests {
 
     #[test]
     fn parse_stages_default_returns_full_build_side_set() {
-        let stages = parse_stages(None);
+        let stages = parse_stages(None).expect("None is always Ok");
         assert_eq!(
             stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             vec!["build", "archive", "sbom", "sign", "checksum"]
@@ -170,7 +191,7 @@ mod tests {
 
     #[test]
     fn parse_stages_subset_filters_to_named_set() {
-        let stages = parse_stages(Some("archive,checksum"));
+        let stages = parse_stages(Some("archive,checksum")).expect("all known stages");
         assert_eq!(
             stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             vec!["archive", "checksum"]
@@ -178,8 +199,36 @@ mod tests {
     }
 
     #[test]
-    fn parse_stages_drops_unknown_tokens_and_trims_whitespace() {
-        let stages = parse_stages(Some(" archive , bogus, checksum "));
+    fn parse_stages_errors_on_unknown_token() {
+        // Audit M11: typos like `--stages=archve,checksum` previously
+        // filtered to just `checksum` and quietly under-verified. The
+        // unknown token must surface as an error naming the bad token
+        // and the legal vocabulary.
+        let err = parse_stages(Some(" archive , bogus, checksum "))
+            .expect_err("unknown token must error");
+        assert!(
+            err.contains("bogus") && err.contains("Known stages"),
+            "error must name the bad token and the legal vocabulary: {err}"
+        );
+        // Multiple unknowns are reported together rather than failing on
+        // the first — the operator gets a complete picture in one shot.
+        let err = parse_stages(Some("archve,nope")).expect_err("multiple unknowns must error");
+        assert!(
+            err.contains("archve") && err.contains("nope"),
+            "all unknown tokens must be named: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_stages_tolerates_trailing_comma_and_whitespace() {
+        // Empty / whitespace-only tokens (trailing comma, double comma,
+        // surrounding spaces) are noise rather than typos.
+        let stages = parse_stages(Some("archive,checksum,")).expect("trailing comma tolerated");
+        assert_eq!(
+            stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            vec!["archive", "checksum"]
+        );
+        let stages = parse_stages(Some(" archive , , checksum ")).expect("empty middle tolerated");
         assert_eq!(
             stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             vec!["archive", "checksum"]
@@ -187,8 +236,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_stages_all_unknown_falls_back_to_default() {
-        let stages = parse_stages(Some("bogus,nope"));
+    fn parse_stages_empty_string_falls_back_to_default() {
+        // An empty / all-whitespace selection picks the canonical build-
+        // side set so `--stages=""` doesn't degrade into a no-op.
+        let stages = parse_stages(Some("")).expect("empty list returns default");
+        assert_eq!(stages.len(), 5);
+        let stages = parse_stages(Some(" , , ")).expect("whitespace-only returns default");
         assert_eq!(stages.len(), 5);
     }
 

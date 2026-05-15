@@ -17,6 +17,7 @@
 //! artifact field; both entries still appear in the report so the
 //! audit trail is complete.
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 
@@ -31,7 +32,49 @@ impl DeterminismState {
     /// Seed from a commit timestamp (seconds since UNIX epoch). All built-
     /// in compile-time allow-list entries listed in the spec's contract
     /// table are added here.
-    pub fn seed_from_commit(commit_ts: i64) -> Self {
+    ///
+    /// Returns `Err` when `commit_ts` is negative — a negative epoch would
+    /// propagate a bogus `SOURCE_DATE_EPOCH` into child processes (where
+    /// shells / build tools may misinterpret it) and almost always
+    /// indicates a corrupted commit graph or a test passing a sentinel
+    /// like `-1`. Fail-fast is the correct UX for a determinism API.
+    ///
+    /// ## Compile-time allow-list scope
+    ///
+    /// Each entry below corresponds to an artifact pattern the
+    /// [`crate::determinism_report`] verification harness will actually
+    /// see in `dist/`. Entries are matched by `*.ext` suffix or exact
+    /// filename against the basename of every file the harness walks
+    /// under the per-run worktree's `dist/` tree. Pattern names that do
+    /// not match any real emitter output are dead code (silently never
+    /// resolve) — keep this list aligned with what stages actually drop
+    /// into `dist/`.
+    ///
+    /// Notably absent (and intentionally so, per audit M10):
+    ///
+    /// - `docker-manifest-descriptor` / `docker-image-blob`: the docker
+    ///   stage is in [`crate::determinism_runner::SIDE_EFFECT_STAGES`]
+    ///   and skipped by the harness; the only docker file that lands in
+    ///   `dist/` is a `.digest` text file written by buildx (a
+    ///   deterministic sha256). No need for an allow-list entry.
+    /// - `apple-notarization-receipt`: the notarize stage mutates
+    ///   existing artifacts in-place (staples) rather than emitting new
+    ///   files; no separate "receipt" artifact lands in `dist/`.
+    /// - `*.exe-nsis`: makensis writes plain `.exe` files into
+    ///   `dist/windows/`; the suffix `.exe-nsis` matches nothing the
+    ///   harness ever sees. NSIS-built `.exe` files only appear when
+    ///   running on Windows (or under Wine), and operators can use the
+    ///   runtime `--allow-nondeterministic <name>=<reason>` flag on
+    ///   those releases rather than hard-coding a dead sentinel here.
+    pub fn seed_from_commit(commit_ts: i64) -> Result<Self> {
+        if commit_ts < 0 {
+            anyhow::bail!(
+                "commit_ts must be non-negative (got {}); a corrupted commit graph or future-bug? \
+                 Negative SOURCE_DATE_EPOCH would propagate to child processes and be \
+                 misinterpreted by shells/build tools.",
+                commit_ts
+            );
+        }
         // Per spec contract table: these are the artifacts whose
         // deeper reproducibility work is deferred. Listed up-front so
         // every stage that consumes them sees the same allow-list.
@@ -41,24 +84,13 @@ impl DeterminismState {
                 "cargo package non-determinism, tracked in determinism-followups".into(),
             ),
             (
-                "docker-manifest-descriptor".into(),
-                "cosign attestation timestamp embedded; consumers verify image digest, not descriptor bytes".into(),
-            ),
-            (
-                "docker-image-blob".into(),
-                "BuildKit reproducible-build flags deferred to determinism-docker follow-up".into(),
-            ),
-            (
                 "*.rpm".into(),
                 "rpmbuild reproducibility deferred to determinism-installers follow-up".into(),
             ),
             (
                 "*.msi".into(),
-                "wix/candle/light reproducibility deferred to determinism-installers follow-up".into(),
-            ),
-            (
-                "*.exe-nsis".into(),
-                "makensis reproducibility deferred to determinism-installers follow-up".into(),
+                "wix/candle/light reproducibility deferred to determinism-installers follow-up"
+                    .into(),
             ),
             (
                 "*.dmg".into(),
@@ -70,19 +102,16 @@ impl DeterminismState {
             ),
             (
                 "*.deb".into(),
-                "dpkg-deb reproducibility varies by version; tracked in determinism-installers".into(),
-            ),
-            (
-                "apple-notarization-receipt".into(),
-                "Apple notarization service embeds a timestamp anodize cannot control".into(),
+                "dpkg-deb reproducibility varies by version; tracked in determinism-installers"
+                    .into(),
             ),
         ];
 
-        Self {
+        Ok(Self {
             sde: commit_ts,
             compile_time_allowlist,
             runtime_allowlist: Vec::new(),
-        }
+        })
     }
 
     /// Export SOURCE_DATE_EPOCH onto a `std::process::Command` so
@@ -135,15 +164,15 @@ mod tests {
 
     #[test]
     fn sde_from_commit_timestamp_is_idempotent() {
-        let s = DeterminismState::seed_from_commit(1_715_000_000);
+        let s = DeterminismState::seed_from_commit(1_715_000_000).expect("non-negative");
         assert_eq!(s.sde, 1_715_000_000);
-        let s2 = DeterminismState::seed_from_commit(1_715_000_000);
+        let s2 = DeterminismState::seed_from_commit(1_715_000_000).expect("non-negative");
         assert_eq!(s, s2);
     }
 
     #[test]
     fn compile_time_allowlist_resolves_for_cargo_crate() {
-        let s = DeterminismState::seed_from_commit(0);
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
         let reason = s
             .resolve_reason("anodizer-0.2.1.crate")
             .expect("matches *.crate");
@@ -152,13 +181,13 @@ mod tests {
 
     #[test]
     fn compile_time_allowlist_resolves_for_rpm() {
-        let s = DeterminismState::seed_from_commit(0);
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
         assert!(s.resolve_reason("foo-1.0.rpm").is_some());
     }
 
     #[test]
     fn nondeterministic_allowlist_compile_time_wins_on_collision() {
-        let mut s = DeterminismState::seed_from_commit(0);
+        let mut s = DeterminismState::seed_from_commit(0).expect("non-negative");
         // Runtime entry shadowing a compile-time pattern. Compile-time
         // wins so the report shows the deeper rationale.
         s.append_runtime(
@@ -174,7 +203,7 @@ mod tests {
 
     #[test]
     fn nondeterministic_allowlist_serializes_with_both_categories() {
-        let mut s = DeterminismState::seed_from_commit(0);
+        let mut s = DeterminismState::seed_from_commit(0).expect("non-negative");
         s.append_runtime("foo.bin".into(), "tool-bug-1234".into());
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("compile_time_allowlist"));
@@ -184,7 +213,7 @@ mod tests {
 
     #[test]
     fn export_env_sets_source_date_epoch() {
-        let s = DeterminismState::seed_from_commit(1_715_000_000);
+        let s = DeterminismState::seed_from_commit(1_715_000_000).expect("non-negative");
         let mut cmd = Command::new("true");
         s.export_env(&mut cmd);
         let env_vars: Vec<(_, _)> = cmd
@@ -198,7 +227,33 @@ mod tests {
 
     #[test]
     fn resolve_reason_returns_none_for_unrecognized() {
-        let s = DeterminismState::seed_from_commit(0);
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
         assert!(s.resolve_reason("unrelated.txt").is_none());
+    }
+
+    #[test]
+    fn seed_from_commit_accepts_zero() {
+        // Epoch zero (1970-01-01) is a legitimate sentinel — some
+        // determinism modes anchor SDE to UNIX epoch when the commit
+        // graph isn't usable. Must not be rejected.
+        let s = DeterminismState::seed_from_commit(0).expect("zero is non-negative");
+        assert_eq!(s.sde, 0);
+    }
+
+    #[test]
+    fn seed_from_commit_accepts_positive() {
+        // Typical real-world commit timestamp.
+        let s = DeterminismState::seed_from_commit(1_715_000_000).expect("non-negative");
+        assert_eq!(s.sde, 1_715_000_000);
+    }
+
+    #[test]
+    fn seed_from_commit_rejects_negative() {
+        let err = DeterminismState::seed_from_commit(-1).expect_err("negative must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("non-negative") && msg.contains("-1"),
+            "error must name the bad input and the constraint: {msg}"
+        );
     }
 }

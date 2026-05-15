@@ -225,7 +225,7 @@ impl Stage for super::BuildStage {
                 match anodizer_core::git::resolve_snapshot_sde(&repo) {
                     Ok(epoch) => {
                         ctx.determinism =
-                            Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+                            Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
                     }
                     Err(err) => {
                         log.status(&format!(
@@ -234,12 +234,12 @@ impl Stage for super::BuildStage {
                         ));
                         if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
                             ctx.determinism =
-                                Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+                                Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
                         }
                     }
                 }
             } else if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
-                ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+                ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
             }
         }
 

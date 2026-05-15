@@ -380,7 +380,8 @@ mod tests {
         // run-summary reads both compile-time and runtime entries from
         // there (the single source of truth).
         let mut ctx = anodizer_core::context::Context::test_fixture();
-        let mut state = anodizer_core::DeterminismState::seed_from_commit(1_715_000_000);
+        let mut state =
+            anodizer_core::DeterminismState::seed_from_commit(1_715_000_000).expect("non-negative");
         state.append_runtime(
             "anodizer.tar.gz".to_string(),
             "embedded build date".to_string(),
@@ -410,7 +411,8 @@ mod tests {
         // trail is complete; the per-artifact precedence is verified
         // separately via `DeterminismState::resolve_reason`.
         let mut ctx = anodizer_core::context::Context::test_fixture();
-        let mut state = anodizer_core::DeterminismState::seed_from_commit(1_715_000_000);
+        let mut state =
+            anodizer_core::DeterminismState::seed_from_commit(1_715_000_000).expect("non-negative");
         state.append_runtime("foo.crate".to_string(), "local-override".to_string());
         ctx.determinism = Some(state.clone());
         let s = RunSummary::from_context(&ctx);
