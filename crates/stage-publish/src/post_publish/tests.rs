@@ -51,7 +51,15 @@ fn tight_poll_cfg() -> PostPublishPollConfig {
     PostPublishPollConfig {
         enabled: true,
         interval: HumanDuration(Duration::from_millis(5)),
-        timeout: HumanDuration(Duration::from_millis(200)),
+        // 5s is generous enough that even a heavily-contended shared CI
+        // runner (notably macOS GH Actions runners, which have flaked at
+        // ~250ms under load) won't trip false timeouts; the happy-path
+        // tests still complete in single-digit ms because the polling
+        // client returns as soon as it gets an Approved response. The
+        // `chocolatey_poller_times_out_on_persistent_pending` test below
+        // declares its own short-timeout config (30ms) — it WANTS the
+        // timeout to fire, so it stays separate from `tight_poll_cfg`.
+        timeout: HumanDuration(Duration::from_secs(5)),
     }
 }
 

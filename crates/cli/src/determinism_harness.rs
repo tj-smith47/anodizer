@@ -358,6 +358,18 @@ impl Harness {
 /// Adding a new var here must be justified as identity-only; cred-bearing
 /// vars belong in `crates/core/src/user_command.rs`'s sandboxed env
 /// whitelist, not the harness's inheritance set.
+///
+/// **Windows MSVC toolchain identity** — the `V*INSTALLDIR`, `INCLUDE`,
+/// `LIB`, `LIBPATH`, `Windows*`, `UCRTVersion`, and `Platform` vars at the
+/// tail of the list are populated by `vcvarsall.bat` / `Set-VsDevShell` on
+/// the GH Actions windows-latest runner. They let `cc-rs` and rustc locate
+/// MSVC's `link.exe` by absolute path rather than by bare PATH lookup —
+/// which is critical because Git for Windows ships a GNU coreutils
+/// `link.exe` (the hardlink tool) that shadows MSVC's `link.exe` (the
+/// linker) on the inherited PATH (see [`allow_listed_path`] for the
+/// matching PATH filter). Identity-only: these vars carry directory
+/// locations and version strings, no credentials. They're a no-op on
+/// macOS / Linux runners where they aren't set.
 const HARNESS_ENV_ALLOWLIST: &[&str] = &[
     // Toolchain identity.
     "RUSTUP_HOME",
@@ -376,6 +388,20 @@ const HARNESS_ENV_ALLOWLIST: &[&str] = &[
     "RUNNER_OS",
     "RUNNER_ARCH",
     "RUNNER_NAME",
+    // MSVC toolchain identity (Windows only; no-op elsewhere). These let
+    // cc-rs / rustc locate the MSVC linker via env rather than bare PATH
+    // lookup, which avoids the Git-Bash `link.exe` shadow problem on
+    // Windows runners. Identity-only — no credentials.
+    "VCINSTALLDIR",
+    "VSINSTALLDIR",
+    "INCLUDE",
+    "LIB",
+    "LIBPATH",
+    "WindowsSdkDir",
+    "WindowsSdkVerBinPath",
+    "WindowsSDKVersion",
+    "UCRTVersion",
+    "Platform",
 ];
 
 /// Inputs for [`build_subprocess_env`]. Bundled so the function signature
@@ -460,7 +486,8 @@ struct ArtifactInfo {
     stage: String,
 }
 
-/// PATH for harness children — inherits the host's PATH directly.
+/// PATH for harness children — inherits the host's PATH, filtered on
+/// Windows to remove Git-Bash's GNU coreutils directories.
 ///
 /// The harness's hermeticity goal is to isolate cargo/build outputs
 /// from the host's CARGO_HOME and HOME (so two runs of the same commit
@@ -470,8 +497,37 @@ struct ArtifactInfo {
 /// harness work uniformly on Windows (git at `C:\Program Files\Git\cmd`),
 /// macOS Apple Silicon (`/opt/homebrew/bin`), and Linux (`/usr/bin`,
 /// `~/.cargo/bin`) without per-platform allow-list maintenance.
+///
+/// **Windows caveat**: Git for Windows ships GNU coreutils at
+/// `<git>\usr\bin` and `<git>\mingw64\bin`, including a `link.exe` (the
+/// GNU hardlink tool) that shadows MSVC's `link.exe` (the linker) for any
+/// `cargo build --target *-msvc`. Both directories are filtered out of
+/// the inherited PATH on Windows so rustc / cc-rs resolve `link.exe` to
+/// the real linker. `<git>\cmd` is preserved so `git.exe` itself remains
+/// resolvable. See also the MSVC-identity entries in
+/// [`HARNESS_ENV_ALLOWLIST`], which let cc-rs locate the linker by
+/// absolute path even if the PATH ordering is still wrong.
 fn allow_listed_path() -> String {
-    std::env::var("PATH").unwrap_or_default()
+    let raw = std::env::var("PATH").unwrap_or_default();
+    #[cfg(windows)]
+    {
+        let filtered: Vec<&str> = raw
+            .split(';')
+            .filter(|p| {
+                // Normalize: lowercase + forward-to-back slashes so a
+                // PATH entry written as `C:/Program Files/Git/usr/bin`
+                // (cygwin-style) is matched the same as the canonical
+                // backslash form.
+                let norm = p.to_ascii_lowercase().replace('/', "\\");
+                !norm.contains(r"\git\usr\bin") && !norm.contains(r"\git\mingw64\bin")
+            })
+            .collect();
+        filtered.join(";")
+    }
+    #[cfg(not(windows))]
+    {
+        raw
+    }
 }
 
 /// Walk `<worktree>/dist` and collect every regular file. Sorted by path
@@ -801,16 +857,81 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn allow_listed_path_inherits_host_path() {
-        // The harness inherits the host PATH verbatim — its hermeticity
-        // goal is CARGO_HOME/HOME isolation, not PATH narrowing. Two runs
-        // from the same host process see identical PATH, so determinism
-        // is preserved while the harness stays cross-platform (Windows
-        // git lives at `C:\Program Files\Git\cmd`, macOS Homebrew at
-        // `/opt/homebrew/bin`, etc.).
-        // SAFETY: this test is read-only on the env; no need to serialize.
+        // The harness inherits the host PATH verbatim on Unix — its
+        // hermeticity goal is CARGO_HOME/HOME isolation, not PATH
+        // narrowing. Two runs from the same host process see identical
+        // PATH, so determinism is preserved while the harness stays
+        // cross-platform (macOS Homebrew at `/opt/homebrew/bin`, Linux
+        // at `/usr/bin` / `~/.cargo/bin`, etc.). The Windows path
+        // filtering is exercised in
+        // `allow_listed_path_filters_git_bash_gnu_coreutils_on_windows`.
+        // SAFETY: this test is read-only on the env; no need to
+        // serialize.
         let expected = std::env::var("PATH").unwrap_or_default();
         assert_eq!(allow_listed_path(), expected);
+    }
+
+    /// Windows runners ship Git for Windows with GNU coreutils on PATH,
+    /// including a `link.exe` (hardlink tool) at `<git>\usr\bin` that
+    /// shadows MSVC's `link.exe` (the linker). The harness's PATH
+    /// constructor must filter those entries out so `cargo build
+    /// --target *-msvc` resolves the right `link.exe`. We test by
+    /// temporarily overlaying the process PATH with a synthetic value
+    /// that contains both shadowing dirs and verifying they're stripped
+    /// while every non-Git-Bash entry survives.
+    ///
+    /// Serialized via `serial_test::serial(harness_env)` because PATH
+    /// is process-global and other harness-env tests race on the same
+    /// key.
+    #[test]
+    #[cfg(windows)]
+    #[serial_test::serial(harness_env)]
+    fn allow_listed_path_filters_git_bash_gnu_coreutils_on_windows() {
+        let original = std::env::var_os("PATH");
+        let synthetic = [
+            r"C:\Windows\System32",
+            r"C:\Program Files\Git\cmd",
+            r"C:\Program Files\Git\usr\bin",
+            r"C:\Program Files\Git\mingw64\bin",
+            r"C:/Program Files/Git/usr/bin", // forward-slash variant
+            r"C:\Users\runneradmin\.cargo\bin",
+        ]
+        .join(";");
+        // SAFETY: we restore the original PATH before returning, and the
+        // test is serialized on the `harness_env` group.
+        unsafe { std::env::set_var("PATH", &synthetic) };
+        let got = allow_listed_path();
+        // Restore PATH before asserting so a failed assertion doesn't
+        // poison sibling tests in the same process.
+        match original {
+            Some(v) => unsafe { std::env::set_var("PATH", v) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
+
+        let entries: Vec<&str> = got.split(';').collect();
+        assert!(entries.contains(&r"C:\Windows\System32"), "got: {got}");
+        assert!(
+            entries.contains(&r"C:\Program Files\Git\cmd"),
+            "Git's cmd dir (where git.exe lives) must survive: {got}"
+        );
+        assert!(
+            entries.contains(&r"C:\Users\runneradmin\.cargo\bin"),
+            "cargo bin must survive: {got}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains(r"\Git\usr\bin")),
+            "Git Bash usr\\bin (GNU coreutils, incl. link.exe) must be filtered: {got}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains(r"/Git/usr/bin")),
+            "forward-slash variant of Git Bash usr/bin must be filtered too: {got}"
+        );
+        assert!(
+            !entries.iter().any(|e| e.contains(r"\Git\mingw64\bin")),
+            "Git Bash mingw64\\bin must be filtered: {got}"
+        );
     }
 
     #[test]
