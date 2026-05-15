@@ -113,6 +113,15 @@ jobs:
       - name: Build anodize CLI
         run: cargo build --release -p anodizer
       - name: Run fast determinism check
+        env:
+          # The harness `env_clear()`s the child env and only re-populates
+          # the allow-list via std::env::var lookup. RUSTUP_HOME isn't set
+          # by GH Actions runners by default; rustup falls back to
+          # $HOME/.rustup on the host but the harness's per-run HOME is a
+          # fresh tmpdir. Pin the host's rustup root explicitly so the
+          # child sees a real toolchain. Tracked for upstream fix in
+          # `.claude/specs/2026-05-15-v0.3.0-deferred-work.md` (W5).
+          RUSTUP_HOME: /home/runner/.rustup
         run: ./target/release/anodizer check determinism --stages=archive,sbom,sign,checksum --runs=2
 
   check-config:
@@ -125,7 +134,7 @@ jobs:
       - name: Build anodize CLI
         run: cargo build --release -p anodizer
       - name: Validate .anodizer.yaml
-        run: ./target/release/anodizer check config --workspace=.
+        run: ./target/release/anodizer check config
 
   tag:
     name: Auto-tag

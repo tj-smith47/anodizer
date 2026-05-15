@@ -263,6 +263,10 @@ path = "src/main.rs"
 /// On hosts without `cargo` or `git` on PATH, prints a skip marker and
 /// returns early so the suite stays green on minimal hosts.
 #[test]
+#[cfg_attr(
+    not(target_os = "linux"),
+    ignore = "fixture targets x86_64-unknown-linux-gnu; harness PATH is Unix-only (tracked in v0.3.0 deferred-work W5)"
+)]
 fn inject_drift_archive_reports_drift_on_minimal_workspace() {
     if !tool_on_path("cargo") || !tool_on_path("git") {
         eprintln!(

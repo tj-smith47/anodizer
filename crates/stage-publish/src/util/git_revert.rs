@@ -204,10 +204,36 @@ mod tests {
     use super::*;
     use anodizer_core::log::{StageLogger, Verbosity};
     use std::process::Command;
+    use std::sync::OnceLock;
+
+    /// Ensure the test process has a git identity that `git revert` /
+    /// `git commit` can use. Cargo CI runners (Linux + macOS + Windows)
+    /// do not ship a global ~/.gitconfig, so without this the helper's
+    /// internal `git revert` (which spawns its own `Command::new("git")`
+    /// inheriting our env) fails with "Author identity unknown". We can't
+    /// pass `.env()` to that internal spawn from the test, but env vars
+    /// set on the parent process propagate. Set them once per test
+    /// process via `OnceLock` to avoid the parallel-test race that
+    /// repeated `set_var` calls would otherwise introduce.
+    fn ensure_git_identity() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            // SAFETY: env mutation runs once per process, guarded by
+            // OnceLock; no other test thread observes a half-applied
+            // identity. The values are constants, not user input.
+            unsafe {
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+            }
+        });
+    }
 
     /// Build a bare remote + a working clone with one commit on `master`.
     /// Returns `(bare_remote_url, _tmp_holder_for_lifetime)`.
     fn init_bare_remote_with_one_commit() -> (String, tempfile::TempDir, tempfile::TempDir) {
+        ensure_git_identity();
         let bare = tempfile::tempdir().expect("bare tempdir");
         let work = tempfile::tempdir().expect("work tempdir");
 
