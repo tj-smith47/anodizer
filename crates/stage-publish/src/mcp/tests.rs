@@ -10,10 +10,8 @@
 //! scenario completes in a few milliseconds rather than waiting on the
 //! default 10s base delay.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::Ordering;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use anodizer_core::config::{
@@ -26,6 +24,7 @@ use super::{
     infer_repository_from_release, publish_with_registry, reset_experimental_warned_for_test,
     warn_experimental_once,
 };
+use crate::test_responder::spawn_oneshot_http_responder;
 
 // ---------------------------------------------------------------------------
 // Cross-test serialization for the EXPERIMENTAL_WARNED static
@@ -48,40 +47,6 @@ fn warn_once_lock() -> MutexGuard<'static, ()> {
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
-
-/// Spawn a one-shot HTTP responder on `127.0.0.1:0` that returns each
-/// configured raw HTTP/1.1 response to successive connections, then exits.
-/// Returns the bound address and a counter so a test can assert the exact
-/// number of attempts the publisher made.
-///
-/// Mirrors the pattern in `dockerhub.rs::spawn_oneshot_http_responder` —
-/// keeping the two harnesses identical means we can lift this to a shared
-/// helper once a third HTTP publisher reuses it.
-fn spawn_oneshot_http_responder(responses: Vec<&'static str>) -> (SocketAddr, Arc<AtomicU32>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local_addr");
-    let counter = Arc::new(AtomicU32::new(0));
-    let counter_inner = counter.clone();
-    std::thread::spawn(move || {
-        for (i, resp) in responses.iter().enumerate() {
-            let (mut stream, _) = match listener.accept() {
-                Ok(pair) => pair,
-                Err(_) => return,
-            };
-            counter_inner.fetch_add(1, Ordering::SeqCst);
-            let mut buf = [0u8; 8192];
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.flush();
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-            if i == responses.len() - 1 {
-                break;
-            }
-        }
-    });
-    (addr, counter)
-}
 
 /// Build a minimal context with a sufficiently-configured `mcp:` block to
 /// reach the publish loop. `name`, `auth.token`, `packages[0]` all populated.

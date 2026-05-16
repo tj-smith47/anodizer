@@ -5,47 +5,14 @@
 //! `http://127.0.0.1:<port>`. The polling config uses 1ms intervals + a
 //! tight timeout so a multi-round poll completes in single-digit ms.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use anodizer_core::config::{HumanDuration, PostPublishPollConfig};
 use anodizer_core::log::{StageLogger, Verbosity};
 
 use super::status::PostPublishStatus;
-
-// ---------------------------------------------------------------------------
-// Test harness — one-shot HTTP responder
-// ---------------------------------------------------------------------------
-
-/// Bind an ephemeral-port TCP listener and serve `responses` in order,
-/// one per `accept()`. A connection that arrives after the last response
-/// receives EOF. Returns the bound address and a call counter that
-/// increments on every accept.
-fn spawn_oneshot_http_responder(responses: Vec<&'static str>) -> (SocketAddr, Arc<AtomicU32>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local_addr");
-    let counter = Arc::new(AtomicU32::new(0));
-    let counter_inner = counter.clone();
-    std::thread::spawn(move || {
-        for resp in responses.iter() {
-            let (mut stream, _) = match listener.accept() {
-                Ok(pair) => pair,
-                Err(_) => return,
-            };
-            counter_inner.fetch_add(1, Ordering::SeqCst);
-            let mut buf = [0u8; 8192];
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(resp.as_bytes());
-            let _ = stream.flush();
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        }
-    });
-    (addr, counter)
-}
+use crate::test_responder::spawn_oneshot_http_responder;
 
 fn tight_poll_cfg() -> PostPublishPollConfig {
     PostPublishPollConfig {

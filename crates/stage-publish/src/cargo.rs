@@ -1314,41 +1314,7 @@ mod tests {
     // 404 (crate never published) must remain Ok(None) — preserved via the
     // HttpError(404)-from-Break catch in is_already_published_at.
 
-    fn spawn_oneshot_http_responder(
-        responses: Vec<&'static str>,
-    ) -> (
-        std::net::SocketAddr,
-        std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::time::Duration;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = listener.local_addr().expect("local_addr");
-        let counter = std::sync::Arc::new(AtomicU32::new(0));
-        let counter_inner = counter.clone();
-        std::thread::spawn(move || {
-            for (i, resp) in responses.iter().enumerate() {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(pair) => pair,
-                    Err(_) => return,
-                };
-                counter_inner.fetch_add(1, Ordering::SeqCst);
-                let mut buf = [0u8; 8192];
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                if i == responses.len() - 1 {
-                    break;
-                }
-            }
-        });
-        (addr, counter)
-    }
+    use crate::test_responder::spawn_oneshot_http_responder;
 
     fn fast_retry_policy() -> anodizer_core::retry::RetryPolicy {
         anodizer_core::retry::RetryPolicy {

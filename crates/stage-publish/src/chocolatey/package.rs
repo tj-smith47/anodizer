@@ -487,66 +487,7 @@ mod tests {
         }
     }
 
-    fn spawn_oneshot_http_responder(
-        responses: Vec<&'static str>,
-    ) -> (
-        std::net::SocketAddr,
-        std::sync::Arc<std::sync::atomic::AtomicU32>,
-    ) {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::time::Duration;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = listener.local_addr().expect("local_addr");
-        let counter = std::sync::Arc::new(AtomicU32::new(0));
-        let counter_inner = counter.clone();
-        std::thread::spawn(move || {
-            for resp in responses.iter() {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(pair) => pair,
-                    Err(_) => return,
-                };
-                counter_inner.fetch_add(1, Ordering::SeqCst);
-                let mut buf = [0u8; 16384];
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-            }
-            // Soak in-flight connect attempts that the client may have
-            // initiated before its retry returned success. Without this,
-            // a stray SYN arriving after the listener is dropped sees
-            // "Connection refused (os error 111)" and the test goes
-            // flaky on slow CI runners. We keep accepting briefly and
-            // serve any straggler an empty 503 so the client logic
-            // (which has already returned success) ignores it.
-            let _ = listener.set_nonblocking(true);
-            let drain_deadline = std::time::Instant::now() + Duration::from_millis(250);
-            while std::time::Instant::now() < drain_deadline {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let mut buf = [0u8; 16384];
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
-                        let _ = stream.set_nonblocking(false);
-                        let _ = stream.read(&mut buf);
-                        let _ = stream.write_all(
-                            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
-                        );
-                        let _ = stream.flush();
-                        let _ = stream.shutdown(std::net::Shutdown::Both);
-                    }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        (addr, counter)
-    }
+    use crate::test_responder::spawn_oneshot_http_responder;
 
     fn write_dummy_nupkg() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
