@@ -665,7 +665,7 @@ mod tests {
     // resolve_full_description. Exercises the policy-plumbing rather than
     // the helper itself (which has its own 5xx-then-success test in
     // crates/core/src/retry.rs).
-    use crate::test_responder::spawn_oneshot_http_responder;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
     #[test]
     fn resolve_full_description_from_url_retries_5xx_then_succeeds() {

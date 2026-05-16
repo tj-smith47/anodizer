@@ -1,33 +1,59 @@
-//! Shared `#[cfg(test)]` HTTP responder for unit tests across this crate.
+//! Shared in-process HTTP responder for unit tests across the workspace.
 //!
-//! Six tests sites previously inlined a near-identical
-//! `spawn_oneshot_http_responder` helper (`chocolatey/package.rs`,
-//! `cargo.rs`, `dockerhub.rs`, `preflight.rs`, `post_publish/tests.rs`,
-//! `mcp/tests.rs`). All of them shared the same race: read one 8–16 KiB
-//! chunk (or time out at 500 ms), write the canned response, and close
-//! the connection — without first consuming the client's full HTTP
-//! request body.
+//! **All test HTTP responders MUST use this helper.** Inline duplicates
+//! have a known race; see commit `45a8e78` (chocolatey CI flake) and the
+//! workspace-wide centralization that followed it.
 //!
-//! On slow CI runners (notably ubuntu-latest under load) the responder
-//! could close the socket while the client was still uploading its
-//! multipart request body. The client then saw `BrokenPipe` /
-//! `Connection reset` on its next write, interpreted that as a
-//! transport-layer failure (NOT an HTTP 503/401), and the surrounding
-//! retry loop exhausted itself on the drain-phase 503s. That manifested
-//! as `push_nupkg_retries_503_then_succeeds` and
-//! `push_nupkg_4xx_with_json_body_fast_fails` failing intermittently
-//! with `counter == 4` and an "attempt 4" error message.
+//! ## History
 //!
-//! This module fixes the race by reading the full HTTP request
-//! (request line + headers up to the `\r\n\r\n` terminator, then
-//! exactly `Content-Length` bytes of body) before writing the response.
-//! If `Content-Length` is missing or unparseable, we fall back to a
-//! best-effort drain bounded by a generous deadline. The read timeout
-//! is also bumped from 500 ms to 5 s across the accept loop and the
-//! drain phase, since 500 ms is too tight for scheduling jitter on
-//! shared CI runners.
-
-#![cfg(test)]
+//! Originally each consumer crate had a near-identical inline
+//! `spawn_oneshot_http_responder` (≈11 copies across `stage-publish`,
+//! `stage-release`, `stage-changelog`, `cli`, and `core`). All of them
+//! shared the same race: read one 8–16 KiB chunk (or time out at 500 ms),
+//! write the canned response, and close the connection — without first
+//! consuming the client's full HTTP request body.
+//!
+//! On slow CI runners (notably `ubuntu-latest` and `macos-latest` under
+//! load) the responder could close the socket while the client was still
+//! uploading its multipart request body. The client then saw
+//! `BrokenPipe` / `Connection reset` on its next write, interpreted that
+//! as a transport-layer failure (NOT an HTTP 503/401), and the
+//! surrounding retry loop exhausted itself on the drain-phase 503s. That
+//! manifested as intermittent test failures with `counter == 4` and an
+//! "attempt 4" error message — different tests in successive release
+//! cycles (cycle 5: `chocolatey::package::tests::push_nupkg_*`; cycle 6:
+//! `github::secondary_rate_limit::*`).
+//!
+//! ## The fix
+//!
+//! Read the full HTTP request (request line + headers up to the
+//! `\r\n\r\n` terminator, then exactly `Content-Length` bytes of body)
+//! before writing the response. If `Content-Length` is missing or
+//! unparseable, fall back to a best-effort drain bounded by a generous
+//! deadline. Per-connection read timeout is also bumped from 500 ms to
+//! 5 s since 500 ms is too tight for scheduling jitter on shared CI
+//! runners.
+//!
+//! ## Feature gating
+//!
+//! This module is part of `crate::test_helpers`, which is gated behind
+//! the `test-helpers` Cargo feature. Sibling crates pull it in as:
+//!
+//! ```toml
+//! [dev-dependencies]
+//! anodizer-core = { workspace = true, features = ["test-helpers"] }
+//! ```
+//!
+//! and call it from `#[cfg(test)]` modules:
+//!
+//! ```rust,ignore
+//! use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+//!
+//! let (addr, calls) = spawn_oneshot_http_responder(vec![
+//!     "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+//!     "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+//! ]);
+//! ```
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -37,9 +63,10 @@ use std::time::{Duration, Instant};
 
 /// Per-connection read timeout. 5 seconds is wildly generous for a
 /// localhost loopback but tolerates CI scheduling jitter (the previous
-/// 500 ms timeout occasionally fired on cold-started ubuntu-latest
-/// runners). The test still completes in a few ms on the happy path
-/// because we break out as soon as we've read the full request.
+/// 500 ms timeout occasionally fired on cold-started `ubuntu-latest` and
+/// `macos-latest` runners). The test still completes in a few ms on the
+/// happy path because we break out as soon as we've read the full
+/// request.
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Hard ceiling on how long a single request read may take, in case a
@@ -52,15 +79,16 @@ const REQUEST_READ_DEADLINE: Duration = Duration::from_secs(5);
 /// soaks up any in-flight retries the client may have initiated before
 /// its loop noticed it had a success.
 ///
-/// Returns the bound address and a counter that increments on every
-/// accepted connection (including drain-phase connections, matching
-/// the inline-helper semantics this module replaces — tests assert on
-/// `counter.load() == <expected attempts>` and the drain phase is
-/// reached only AFTER all canned responses have been served, by which
-/// point any successful test has already passed its assertion).
-pub(crate) fn spawn_oneshot_http_responder(
-    responses: Vec<&'static str>,
-) -> (SocketAddr, Arc<AtomicU32>) {
+/// Returns the bound address and a counter that increments **only for
+/// the canned `responses`** — drain-phase straggler connections are
+/// served but NOT counted, so tests can assert
+/// `counter.load() == <expected attempts>` without false positives from
+/// over-eager client middleware (e.g. octocrab's tower retry layer
+/// connecting more times than the user-level policy permits).
+///
+/// To serve the same response N times (e.g. when a retrying client is
+/// expected to make N attempts), pass `vec![resp; n]`.
+pub fn spawn_oneshot_http_responder(responses: Vec<&'static str>) -> (SocketAddr, Arc<AtomicU32>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local_addr");
     let counter = Arc::new(AtomicU32::new(0));
@@ -87,7 +115,12 @@ pub(crate) fn spawn_oneshot_http_responder(
         while Instant::now() < drain_deadline {
             match listener.accept() {
                 Ok((stream, _)) => {
-                    counter_inner.fetch_add(1, Ordering::SeqCst);
+                    // Drain-phase connections are NOT counted: tests
+                    // pin `counter.load() == <canned attempts>` and an
+                    // over-eager client middleware (e.g. octocrab's
+                    // tower retry layer making extra connects beyond
+                    // the user-level retry policy) must not inflate
+                    // that assertion.
                     let _ = stream.set_nonblocking(false);
                     serve_one(
                         stream,
@@ -103,6 +136,39 @@ pub(crate) fn spawn_oneshot_http_responder(
     });
 
     (addr, counter)
+}
+
+/// Capture the first request bytes and reply with a canned response so a
+/// caller can assert specific headers were sent verbatim. Serves
+/// **exactly one** connection (no retry/drain phase) — pair with a test
+/// that issues a single HTTP request.
+///
+/// Returns the bound address and a `Mutex<String>` that holds the raw
+/// request bytes (request line + headers + as much of the body as fit
+/// in the first read chunk after the headers — sufficient for header
+/// assertions, which is the only documented use).
+///
+/// Like [`spawn_oneshot_http_responder`], this consumes the full HTTP
+/// request before writing the response so the client never sees
+/// `BrokenPipe` on its body write.
+pub fn spawn_request_capturing_responder(
+    response: &'static str,
+) -> (SocketAddr, Arc<std::sync::Mutex<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local_addr");
+    let captured = Arc::new(std::sync::Mutex::new(String::new()));
+    let captured_inner = captured.clone();
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
+            let request_bytes = consume_request_capturing(&mut stream);
+            *captured_inner.lock().unwrap() = String::from_utf8_lossy(&request_bytes).to_string();
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    });
+    (addr, captured)
 }
 
 /// Consume one HTTP request from `stream` (headers + Content-Length-
@@ -181,6 +247,60 @@ fn consume_request(stream: &mut TcpStream) {
             Err(_) => return,
         }
     }
+}
+
+/// Variant of [`consume_request`] that returns the bytes it consumed.
+/// Used by [`spawn_request_capturing_responder`] so callers can assert
+/// on the raw request that was sent.
+fn consume_request_capturing(stream: &mut TcpStream) -> Vec<u8> {
+    let deadline = Instant::now() + REQUEST_READ_DEADLINE;
+    let mut accum: Vec<u8> = Vec::with_capacity(8 * 1024);
+    let mut chunk = [0u8; 8 * 1024];
+
+    let header_end = loop {
+        if Instant::now() >= deadline {
+            return accum;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) => return accum,
+            Ok(n) => {
+                accum.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = find_double_crlf(&accum) {
+                    break pos + 4;
+                }
+                if accum.len() > 1 << 20 {
+                    return accum;
+                }
+            }
+            Err(_) => return accum,
+        }
+    };
+
+    let content_length = parse_content_length(&accum[..header_end]);
+    let already_have = accum.len() - header_end;
+    let Some(total_body) = content_length else {
+        return accum;
+    };
+
+    if already_have >= total_body {
+        return accum;
+    }
+    let mut remaining = total_body - already_have;
+    while remaining > 0 {
+        if Instant::now() >= deadline {
+            return accum;
+        }
+        let want = remaining.min(chunk.len());
+        match stream.read(&mut chunk[..want]) {
+            Ok(0) => return accum,
+            Ok(n) => {
+                accum.extend_from_slice(&chunk[..n]);
+                remaining -= n;
+            }
+            Err(_) => return accum,
+        }
+    }
+    accum
 }
 
 /// Find the byte offset of the first `\r\n\r\n` in `buf`, returning the
@@ -294,5 +414,47 @@ mod self_tests {
             "unexpected response: {response:?}"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1, "exactly one accept");
+    }
+
+    /// Capturing variant must record the full request line and headers
+    /// so a caller can assert e.g. an Authorization header was sent.
+    #[test]
+    fn capturing_responder_records_request_headers() {
+        use std::io::Write;
+        use std::net::TcpStream;
+
+        let canned = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let (addr, captured) = spawn_request_capturing_responder(canned);
+
+        let request = "GET /search/issues HTTP/1.1\r\n\
+                       Host: 127.0.0.1\r\n\
+                       Authorization: Bearer secret-token\r\n\
+                       Content-Length: 0\r\n\r\n";
+        let mut stream = TcpStream::connect(addr).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("read timeout");
+        stream.write_all(request.as_bytes()).expect("write");
+        stream.flush().expect("flush");
+        // Give the responder thread a beat to capture+write before we
+        // inspect the captured buffer.
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+
+        // Poll briefly for the capture (the responder writes the
+        // captured string from a worker thread).
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let captured_str = loop {
+            let s = captured.lock().unwrap().clone();
+            if !s.is_empty() || Instant::now() >= deadline {
+                break s;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let lower = captured_str.to_ascii_lowercase();
+        assert!(
+            lower.contains("authorization: bearer secret-token"),
+            "captured request missing Authorization: {captured_str:?}"
+        );
     }
 }

@@ -1308,9 +1308,7 @@ mod tests {
     #[test]
     fn retry_request_redacts_bearer_in_error_body() {
         use anodizer_core::log::{StageLogger, Verbosity};
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::sync::atomic::Ordering;
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
         use std::time::Duration;
 
         let leaky = "Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg";
@@ -1322,26 +1320,8 @@ mod tests {
             .into_boxed_str(),
         );
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = listener.local_addr().expect("local_addr");
-        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
-        let counter_inner = counter.clone();
-        std::thread::spawn(move || {
-            // Serve up to 3 attempts (matches fast_policy max_attempts).
-            for _ in 0..3 {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(pair) => pair,
-                    Err(_) => return,
-                };
-                counter_inner.fetch_add(1, Ordering::SeqCst);
-                let mut buf = [0u8; 8192];
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-            }
-        });
+        // Serve up to 3 identical attempts (matches fast_policy max_attempts).
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp; 3]);
 
         let policy = RetryPolicy {
             max_attempts: 3,

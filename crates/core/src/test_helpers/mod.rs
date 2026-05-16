@@ -18,6 +18,11 @@
 //! - [`create_config`] — writes `.anodizer.yaml`
 //! - [`make_git_info`] — creates a [`GitInfo`] with sensible defaults
 //! - [`create_fake_binary`] — creates a dummy binary file for archive/checksum tests
+//! - [`responder`] — shared in-process HTTP responder for unit tests
+//!   (consolidates ~11 inline copies; fixes the v0.3.0 chocolatey /
+//!   v0.3.0 github-rate-limit CI flakes)
+
+pub mod responder;
 
 use crate::config::{Config, CrateConfig, Defaults, SignConfig, UpxConfig};
 use crate::context::{Context, ContextOptions};

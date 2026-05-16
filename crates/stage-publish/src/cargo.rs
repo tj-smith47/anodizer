@@ -1314,7 +1314,7 @@ mod tests {
     // 404 (crate never published) must remain Ok(None) — preserved via the
     // HttpError(404)-from-Break catch in is_already_published_at.
 
-    use crate::test_responder::spawn_oneshot_http_responder;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
     fn fast_retry_policy() -> anodizer_core::retry::RetryPolicy {
         anodizer_core::retry::RetryPolicy {

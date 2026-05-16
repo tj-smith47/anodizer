@@ -1043,38 +1043,7 @@ mod tests {
     // hand-rolled TCP server so we can exercise the success / non-success
     // status branches with a real reqwest::blocking::Client end-to-end.
 
-    fn spawn_oneshot_http_responder(
-        responses: Vec<&'static str>,
-    ) -> (std::net::SocketAddr, std::sync::Arc<AtomicU32>) {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
-        let addr = listener.local_addr().expect("local_addr");
-        let counter = std::sync::Arc::new(AtomicU32::new(0));
-        let counter_inner = counter.clone();
-        std::thread::spawn(move || {
-            for (i, resp) in responses.iter().enumerate() {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(pair) => pair,
-                    Err(_) => return, // client dropped — ok
-                };
-                counter_inner.fetch_add(1, Ordering::SeqCst);
-                // Drain the request line + headers so the client doesn't
-                // see a connection-reset before reading the response.
-                let mut buf = [0u8; 8192];
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                if i == responses.len() - 1 {
-                    break;
-                }
-            }
-        });
-        (addr, counter)
-    }
+    use crate::test_helpers::responder::spawn_oneshot_http_responder;
 
     #[test]
     fn retry_http_blocking_success_returns_first_attempt() {

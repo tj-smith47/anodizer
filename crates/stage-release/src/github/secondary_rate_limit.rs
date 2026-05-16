@@ -82,8 +82,7 @@ pub(crate) fn secondary_rl_delay() -> Duration {
 mod tests {
     use super::*;
 
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
     use std::time::Duration;
 
     /// Synthesise an `octocrab::Error::GitHub` for the given status and body.
@@ -115,21 +114,10 @@ mod tests {
             .build()
             .expect("tokio rt for test helper");
         rt.block_on(async move {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-            let addr = listener.local_addr().expect("local_addr");
-            std::thread::spawn(move || {
-                for _ in 0..serve_count {
-                    if let Ok((mut s, _)) = listener.accept() {
-                        let mut buf = [0u8; 4096];
-                        let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-                        let _ = s.read(&mut buf);
-                        let _ = s.write_all(raw.as_bytes());
-                        let _ = s.flush();
-                    } else {
-                        break;
-                    }
-                }
-            });
+            // Serve `serve_count` identical responses. octocrab's tower
+            // retry middleware makes up to 4 attempts on 429 / 5xx; for
+            // 4xx other than 429 a single response is enough.
+            let (addr, _calls) = spawn_oneshot_http_responder(vec![raw; serve_count]);
             let octo = octocrab::OctocrabBuilder::new()
                 .base_uri(format!("http://{addr}/"))
                 .expect("base_uri")
@@ -196,13 +184,19 @@ mod tests {
         );
     }
 
+    // Both env-var tests below mutate ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS,
+    // which is a process-wide side effect. Without `#[serial]` they race
+    // on parallel cargo-test threads and the "default_when_unset" test can
+    // observe the "3" value set by "env_override". The race was unmasked
+    // by the test-responder centralization (faster test runs => tighter
+    // interleaving window); the underlying bug pre-dates that change.
     #[test]
+    #[serial_test::serial]
     fn secondary_rl_delay_env_override() {
         // When ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS is set to a positive
         // integer, secondary_rl_delay() must return that duration.
-        // SAFETY: test-only; no other thread reads this var concurrently
-        // during this test (cargo runs each #[test] fn in its own thread but
-        // we use a unique key so the window is short and isolated).
+        // SAFETY: `#[serial]` (above) prevents concurrent readers/writers
+        // of this env var across the test suite.
         unsafe {
             std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "3");
         }
@@ -214,6 +208,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn secondary_rl_delay_default_when_unset() {
         unsafe {
             std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");

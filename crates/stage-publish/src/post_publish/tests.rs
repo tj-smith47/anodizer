@@ -12,7 +12,7 @@ use anodizer_core::config::{HumanDuration, PostPublishPollConfig};
 use anodizer_core::log::{StageLogger, Verbosity};
 
 use super::status::PostPublishStatus;
-use crate::test_responder::spawn_oneshot_http_responder;
+use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
 fn tight_poll_cfg() -> PostPublishPollConfig {
     PostPublishPollConfig {

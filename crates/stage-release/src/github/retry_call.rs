@@ -200,43 +200,10 @@ mod tests {
     //! single raw `get` call so the helper's retry + classifier behaviour is
     //! verified end-to-end with a real `octocrab::Error` instead of a mock.
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::{SocketAddr, TcpListener};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use std::net::SocketAddr;
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
-
-    /// Bind a loopback listener and feed each accepted connection one
-    /// scripted HTTP response, in order. Returns the listener address plus
-    /// an atomic connection counter so tests can assert the retry count.
-    fn spawn_oneshot_http_responder(responses: Vec<&'static str>) -> (SocketAddr, Arc<AtomicU32>) {
-        let listener =
-            TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port for retry-helper test");
-        let addr = listener
-            .local_addr()
-            .expect("local_addr on freshly bound listener");
-        let counter = Arc::new(AtomicU32::new(0));
-        let counter_inner = counter.clone();
-        std::thread::spawn(move || {
-            for (i, resp) in responses.iter().enumerate() {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(pair) => pair,
-                    Err(_) => return,
-                };
-                counter_inner.fetch_add(1, Ordering::SeqCst);
-                let mut buf = [0u8; 8192];
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                let _ = stream.read(&mut buf);
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.flush();
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-                if i == responses.len() - 1 {
-                    break;
-                }
-            }
-        });
-        (addr, counter)
-    }
 
     fn build_test_octocrab(addr: SocketAddr) -> octocrab::Octocrab {
         let builder = octocrab::OctocrabBuilder::new()

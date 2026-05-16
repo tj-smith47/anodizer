@@ -869,7 +869,7 @@ mod tests {
 
     // ---- HTTP-mock tests for crates.io index check ------------------------
 
-    use crate::test_responder::spawn_oneshot_http_responder;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
     fn fast_retry() -> RetryPolicy {
         RetryPolicy {
@@ -1111,37 +1111,7 @@ mod tests {
 
     // ---- Winget: Authorization header is sent when token is set --------
 
-    /// Capture the first request bytes and reply with a canned response so
-    /// the test can assert headers were sent verbatim.
-    fn spawn_request_capturing_responder(
-        response: &'static str,
-    ) -> (
-        std::net::SocketAddr,
-        std::sync::Arc<std::sync::Mutex<String>>,
-    ) {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        use std::sync::{Arc, Mutex};
-
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let captured = Arc::new(Mutex::new(String::new()));
-        let captured_inner = captured.clone();
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 8192];
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
-                if let Ok(n) = stream.read(&mut buf) {
-                    *captured_inner.lock().unwrap() =
-                        String::from_utf8_lossy(&buf[..n]).to_string();
-                }
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
-                let _ = stream.shutdown(std::net::Shutdown::Both);
-            }
-        });
-        (addr, captured)
-    }
+    use anodizer_core::test_helpers::responder::spawn_request_capturing_responder;
 
     #[test]
     fn winget_pr_sends_authorization_header_when_token_set() {

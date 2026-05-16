@@ -24,7 +24,7 @@ use super::{
     infer_repository_from_release, publish_with_registry, reset_experimental_warned_for_test,
     warn_experimental_once,
 };
-use crate::test_responder::spawn_oneshot_http_responder;
+use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
 // ---------------------------------------------------------------------------
 // Cross-test serialization for the EXPERIMENTAL_WARNED static

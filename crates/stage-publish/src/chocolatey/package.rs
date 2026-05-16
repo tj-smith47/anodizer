@@ -487,7 +487,7 @@ mod tests {
         }
     }
 
-    use crate::test_responder::spawn_oneshot_http_responder;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
     fn write_dummy_nupkg() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
