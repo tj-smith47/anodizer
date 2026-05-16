@@ -22,6 +22,38 @@ fn parse_timeout_or_exit(timeout: &str) -> std::time::Duration {
     })
 }
 
+/// Parse a comma-separated triple list (`--targets=...`) into the
+/// canonical `Option<Vec<String>>` form consumed by `ReleaseOpts.targets`
+/// and the Determinism Harness dispatcher.
+///
+/// Behaviour mirrors `--stages=<csv>`:
+/// - `None`           → `None` (no filter).
+/// - `Some("a,b")`    → `Some(["a", "b"])`.
+/// - Empty / whitespace-only tokens (trailing comma, double comma,
+///   surrounding spaces) are dropped — they're noise, not intent.
+/// - `Some("")` or `Some(" , ")` (all-empty after trimming) → `Err`. The
+///   operator clearly meant to pass *something*; surfacing the typo
+///   beats silently degrading into a no-op filter.
+fn parse_targets_csv(raw: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    match raw {
+        None => Ok(None),
+        Some(list) => {
+            let parsed: Vec<String> = list
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            if parsed.is_empty() {
+                return Err("--targets must list at least one target triple (e.g. \
+                     --targets=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu)"
+                    .to_string());
+            }
+            Ok(Some(parsed))
+        }
+    }
+}
+
 /// Resolve --single-target flag to the actual host target triple.
 fn resolve_single_target(single_target: bool) -> Option<String> {
     if single_target {
@@ -160,6 +192,7 @@ fn main() {
             parallelism,
             auto_snapshot,
             single_target,
+            targets,
             release_notes,
             workspace,
             preflight,
@@ -203,6 +236,18 @@ fn main() {
 
             let resolved_single_target = resolve_single_target(single_target);
 
+            // --targets=<csv> mirrors --stages=<csv>: comma-split, trim,
+            // drop empty tokens (trailing-comma tolerance), error on the
+            // all-empty case so the user sees the typo. Conflict with
+            // --single-target is enforced at the clap level.
+            let resolved_targets = match parse_targets_csv(targets.as_deref()) {
+                Ok(v) => v,
+                Err(msg) => {
+                    eprintln!("{} {}", "Error:".red().bold(), msg);
+                    std::process::exit(1);
+                }
+            };
+
             if let Err(msg) = validate_skip_values(&skip, VALID_RELEASE_SKIPS) {
                 eprintln!("{} {}", "Error:".red().bold(), msg);
                 std::process::exit(1);
@@ -226,6 +271,7 @@ fn main() {
                     config_override: cli.config.clone(),
                     parallelism,
                     single_target: resolved_single_target,
+                    targets: resolved_targets,
                     release_notes,
                     release_notes_tmpl,
                     workspace,

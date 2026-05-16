@@ -18,25 +18,39 @@ env:
 
 jobs:
   determinism-check:
-    name: Determinism Harness
-    runs-on: ubuntu-latest
+    # Sharded 3-way to mirror the `build` job below: each OS only
+    # validates targets it can natively compile. The previous single-
+    # ubuntu-latest shape tried to cross-compile macOS / Windows targets
+    # from Linux and failed at link time (missing Apple SDK / MSVC).
+    name: Determinism Harness (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          - os: macos-latest
+            targets: x86_64-apple-darwin,aarch64-apple-darwin
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          targets: ${{ matrix.targets }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-determinism
+          key: release-determinism-${{ matrix.os }}
       - name: Run determinism harness
         uses: tj-smith47/anodizer-action@v1
         with:
           from-source: true
           install-rust: false
           install: zig,cargo-zigbuild,upx
-          args: check determinism --stages=build,archive,sbom,sign,checksum --runs=2
+          args: check determinism --stages=build,archive,sbom,sign,checksum --runs=2 --targets=${{ matrix.targets }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 

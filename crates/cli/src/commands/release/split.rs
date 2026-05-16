@@ -138,6 +138,7 @@ pub(super) fn run_split(
                     os.clone()
                 }
             }
+            anodizer_core::partial::PartialTarget::Targets(list) => list.join(","),
         },
         subdir
     ));
@@ -157,6 +158,8 @@ pub(super) fn run_split(
                         format!("ANODIZER_OS={}", os)
                     }
                 }
+                anodizer_core::partial::PartialTarget::Targets(list) =>
+                    format!("--targets={}", list.join(",")),
             },
             all_targets.join(", ")
         );

@@ -85,6 +85,13 @@ pub enum Commands {
         single_target: bool,
         #[arg(
             long,
+            value_name = "csv",
+            conflicts_with = "single_target",
+            help = "Restrict the build to a comma-separated subset of configured target triples (e.g. x86_64-apple-darwin,aarch64-apple-darwin). Used by the Determinism Harness's sharded job matrix; conflicts with --single-target."
+        )]
+        targets: Option<String>,
+        #[arg(
+            long,
             help = "Path to a custom release notes file (overrides changelog)"
         )]
         release_notes: Option<PathBuf>,
@@ -465,6 +472,12 @@ pub struct CheckDeterminismArgs {
         help = "Optional stage subset (build,archive,sbom,sign,checksum)"
     )]
     pub stages: Option<String>,
+    #[arg(
+        long,
+        value_name = "csv",
+        help = "Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess."
+    )]
+    pub targets: Option<String>,
     #[arg(
         long,
         value_name = "path",

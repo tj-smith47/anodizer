@@ -152,6 +152,15 @@ pub struct Harness {
     /// `ANODIZE_TEST_HARNESS=1` env (rejected upstream by the CLI
     /// dispatcher).
     pub inject_drift: Option<String>,
+    /// `--targets=<csv>`: restrict the harness to a subset of configured
+    /// target triples. Forwarded to the child `anodize release
+    /// --snapshot` subprocess as `--targets=<csv>` so the rebuild only
+    /// touches buildable targets on this runner. `None` validates every
+    /// configured target (legacy single-runner behavior). The sharded
+    /// `release.yml` job matrix supplies this so the Linux runner skips
+    /// Apple/Windows targets (and vice versa) — cross-compile would
+    /// otherwise fail at link time on missing SDKs.
+    pub targets: Option<Vec<String>>,
 }
 
 impl Harness {
@@ -242,7 +251,12 @@ impl Harness {
         env: &HashMap<String, String>,
     ) -> Result<()> {
         let exe = anodizer_core::determinism_runner::current_anodize_binary()?;
-        anodizer_core::determinism_runner::run_build_pipeline_subprocess(&exe, worktree_path, env)
+        anodizer_core::determinism_runner::run_build_pipeline_subprocess(
+            &exe,
+            worktree_path,
+            env,
+            self.targets.as_deref(),
+        )
     }
 
     /// Aggregate per-run hashes into the final report.
@@ -825,6 +839,7 @@ mod tests {
             allowlist: AllowList::default(),
             report_path: PathBuf::from("/tmp/unused/report.json"),
             inject_drift: None,
+            targets: None,
         }
     }
 

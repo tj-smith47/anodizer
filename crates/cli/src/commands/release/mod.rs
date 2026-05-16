@@ -30,6 +30,16 @@ pub struct ReleaseOpts {
     pub config_override: Option<PathBuf>,
     pub parallelism: usize,
     pub single_target: Option<String>,
+    /// `--targets=<csv>`: restrict the build to a comma-separated subset
+    /// of configured target triples. Used by the sharded Determinism
+    /// Harness (each runner only validates its own native targets) and
+    /// available to operators driving custom CI matrices. When `Some`,
+    /// the release dispatcher populates
+    /// `ContextOptions::partial_target = Some(PartialTarget::Targets(...))`
+    /// so the existing build-stage filter (`partial.filter_targets`)
+    /// trims the configured list down to the intersection. Mutually
+    /// exclusive with `single_target` (clap-level `conflicts_with`).
+    pub targets: Option<Vec<String>>,
     pub release_notes: Option<PathBuf>,
     pub release_notes_tmpl: Option<PathBuf>,
     pub workspace: Option<String>,
@@ -444,7 +454,16 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         single_target: opts.single_target,
         release_notes_path: opts.release_notes,
         fail_fast: opts.fail_fast,
-        partial_target: None, // Set by --split mode in run_split()
+        // `--targets=<csv>` populates `partial_target` so the existing
+        // build-stage filter (`partial.filter_targets`) trims the
+        // configured list down to the requested intersection. `--split`
+        // overwrites this in `run_split()` if used together (split-mode
+        // resolves its target from env vars / host detection, not from
+        // `--targets`), so the precedence is "split wins".
+        partial_target: opts
+            .targets
+            .clone()
+            .map(anodizer_core::partial::PartialTarget::Targets),
         merge: opts.merge,
         project_root: None,
         strict: opts.strict,

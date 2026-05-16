@@ -48,6 +48,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
 
     let commit = head_commit_hash_in(&repo_root)?;
     let stages = parse_stages(args.stages.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
+    let targets = parse_targets(args.targets.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
 
     let report_path = args.report.clone().unwrap_or_else(|| {
         repo_root.join(format!(
@@ -83,6 +84,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         allowlist,
         report_path: report_path.clone(),
         inject_drift,
+        targets,
     };
 
     let report = harness.run()?;
@@ -162,6 +164,41 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                 ));
             }
             Ok(if parsed.is_empty() { default() } else { parsed })
+        }
+    }
+}
+
+/// Parse a comma-separated triple list (`--targets=x86_64-...,aarch64-...`).
+///
+/// Mirrors [`parse_stages`]'s tolerance rules:
+/// - `None` → `None` (no filter; harness validates every configured target).
+/// - Empty / whitespace-only tokens (trailing / repeated commas) are noise
+///   and dropped silently.
+/// - `Some("")` or `Some(" , , ")` (all-empty after trimming) is an
+///   error: the operator typed something to filter on but gave nothing
+///   to filter to. Surfacing the typo beats silently degrading into "no
+///   filter".
+///
+/// Unlike `--stages=<csv>`, there is no closed vocabulary to validate
+/// against: the legal set is whatever appears in the project's
+/// `.anodizer.yaml` `targets` list, and that's resolved later in the
+/// pipeline. Forwarding raw triples is correct here.
+fn parse_targets(s: Option<&str>) -> Result<Option<Vec<String>>, String> {
+    match s {
+        None => Ok(None),
+        Some(list) => {
+            let parsed: Vec<String> = list
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect();
+            if parsed.is_empty() {
+                return Err("--targets must list at least one target triple (e.g. \
+                     --targets=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu)"
+                    .to_string());
+            }
+            Ok(Some(parsed))
         }
     }
 }
@@ -246,6 +283,56 @@ mod tests {
     }
 
     #[test]
+    fn parse_targets_default_is_none() {
+        assert_eq!(parse_targets(None).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_targets_subset_filters_to_named_list() {
+        let got = parse_targets(Some("x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu"))
+            .expect("ascii triples accepted");
+        assert_eq!(
+            got,
+            Some(vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "aarch64-unknown-linux-gnu".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_targets_tolerates_trailing_comma_and_whitespace() {
+        let got = parse_targets(Some(" x86_64-apple-darwin , aarch64-apple-darwin , "))
+            .expect("trailing comma + spaces tolerated");
+        assert_eq!(
+            got,
+            Some(vec![
+                "x86_64-apple-darwin".to_string(),
+                "aarch64-apple-darwin".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_targets_errors_on_all_empty_csv() {
+        // Operator typed `--targets=""` or `--targets=", , "` — they
+        // clearly meant to pass *something* but gave nothing. Silent
+        // fallback to "no filter" would mask the typo and cross-compile
+        // every configured target (the very bug Option B exists to
+        // prevent).
+        let err = parse_targets(Some("")).expect_err("empty CSV must error");
+        assert!(
+            err.contains("at least one target triple"),
+            "error must explain the requirement: {err}"
+        );
+        let err = parse_targets(Some(" , , ")).expect_err("whitespace-only CSV must error");
+        assert!(
+            err.contains("at least one target triple"),
+            "error must explain the requirement: {err}"
+        );
+    }
+
+    #[test]
     fn commit_short_truncates_to_seven_chars() {
         assert_eq!(commit_short("abcdef1234567890"), "abcdef1");
     }
@@ -266,6 +353,7 @@ mod tests {
         let _args = CheckDeterminismArgs {
             runs: 2,
             stages: None,
+            targets: None,
             report: None,
             snapshot: false,
             inject_drift: None,

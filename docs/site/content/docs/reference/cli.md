@@ -43,6 +43,7 @@ Run the full release pipeline
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
 | `--single-target` | — | — | Build only for the host target triple |
+| `--targets` | — | — | Restrict the build to a comma-separated subset of configured target triples (e.g. x86_64-apple-darwin,aarch64-apple-darwin). Used by the Determinism Harness's sharded job matrix; conflicts with --single-target. |
 | `--release-notes` | — | — | Path to a custom release notes file (overrides changelog) |
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
 | `--preflight` | — | — | Run pre-flight publisher-state check and exit (don't start the pipeline) |
@@ -110,6 +111,7 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 |------|-------|---------|-------------|
 | `--runs` | — | `2` | Number of from-clean rebuilds to diff |
 | `--stages` | — | — | Optional stage subset (build,archive,sbom,sign,checksum) |
+| `--targets` | — | — | Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess. |
 | `--report` | — | — | JSON report path; default dist/run-<id>/determinism.json |
 | `--snapshot` | — | — | Seed SDE from snapshot rules instead of HEAD commit |
 

@@ -19,6 +19,12 @@ pub enum PartialTarget {
     Exact(String),
     /// Match by OS (and optionally arch) components.
     OsArch { os: String, arch: Option<String> },
+    /// Restrict to an explicit list of target triples. Used by the
+    /// Determinism Harness and `release --targets=<csv>` to drive
+    /// platform-sharded rebuilds: the build stage retains only those
+    /// configured targets that intersect the supplied list, leaving the
+    /// remaining cross-shard targets to sibling jobs.
+    Targets(Vec<String>),
 }
 
 impl PartialTarget {
@@ -34,6 +40,11 @@ impl PartialTarget {
                 })
                 .cloned()
                 .collect(),
+            PartialTarget::Targets(list) => targets
+                .iter()
+                .filter(|tt| list.iter().any(|wanted| wanted == *tt))
+                .cloned()
+                .collect(),
         }
     }
 
@@ -41,6 +52,7 @@ impl PartialTarget {
     /// - `Exact("x86_64-unknown-linux-gnu")` → `"x86_64-unknown-linux-gnu"`
     /// - `OsArch { os: "linux", arch: None }` → `"linux"`
     /// - `OsArch { os: "linux", arch: Some("amd64") }` → `"linux_amd64"`
+    /// - `Targets(["x86_64-...", "aarch64-..."])` → `"targets-x86_64-..."` (first triple)
     pub fn dist_subdir(&self) -> String {
         match self {
             PartialTarget::Exact(t) => t.clone(),
@@ -49,6 +61,16 @@ impl PartialTarget {
                     format!("{}_{}", os, a)
                 } else {
                     os.clone()
+                }
+            }
+            PartialTarget::Targets(list) => {
+                // Deterministic name derived from the first triple. This
+                // is only consulted by `--split`/`--merge` for split-
+                // artifact directory naming; the harness path does not
+                // round-trip through `dist/<subdir>/context.json`.
+                match list.first() {
+                    Some(first) => format!("targets-{}", first),
+                    None => "targets-empty".to_string(),
                 }
             }
         }
@@ -273,6 +295,64 @@ mod tests {
             arch: Some("amd64".to_string()),
         };
         assert_eq!(target.dist_subdir(), "linux_amd64");
+    }
+
+    // -----------------------------------------------------------------------
+    // PartialTarget::Targets — explicit triple list (sharded build / harness)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_targets_filter_matches_intersection() {
+        let target = PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+        ]);
+        let configured = vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-apple-darwin".to_string(),
+            "aarch64-apple-darwin".to_string(),
+        ];
+        let filtered = target.filter_targets(&configured);
+        assert_eq!(
+            filtered,
+            vec!["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+        );
+    }
+
+    #[test]
+    fn test_targets_filter_drops_non_configured_entries() {
+        // Triples requested but not configured are simply absent from the
+        // result — `filter_targets` is intersection, not union.
+        let target = PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "x86_64-pc-windows-msvc".to_string(),
+        ]);
+        let configured = vec!["x86_64-unknown-linux-gnu".to_string()];
+        let filtered = target.filter_targets(&configured);
+        assert_eq!(filtered, vec!["x86_64-unknown-linux-gnu"]);
+    }
+
+    #[test]
+    fn test_targets_filter_empty_list_yields_empty() {
+        let target = PartialTarget::Targets(Vec::new());
+        let configured = vec!["x86_64-unknown-linux-gnu".to_string()];
+        assert!(target.filter_targets(&configured).is_empty());
+    }
+
+    #[test]
+    fn test_dist_subdir_targets_uses_first_triple() {
+        let target = PartialTarget::Targets(vec![
+            "x86_64-apple-darwin".to_string(),
+            "aarch64-apple-darwin".to_string(),
+        ]);
+        assert_eq!(target.dist_subdir(), "targets-x86_64-apple-darwin");
+    }
+
+    #[test]
+    fn test_dist_subdir_targets_empty_list_has_stable_name() {
+        let target = PartialTarget::Targets(Vec::new());
+        assert_eq!(target.dist_subdir(), "targets-empty");
     }
 
     // -----------------------------------------------------------------------
