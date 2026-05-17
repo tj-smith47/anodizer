@@ -708,6 +708,17 @@ impl Context {
                 "false"
             },
         );
+        // Surfaced to user `if_condition:` templates so stages can
+        // selectively run inside the determinism harness even when
+        // `IsSnapshot == "false"` would otherwise skip them.
+        self.template_vars.set(
+            "IsHarness",
+            if std::env::var_os("ANODIZER_IN_DETERMINISM_HARNESS").is_some() {
+                "true"
+            } else {
+                "false"
+            },
+        );
         // Wire IsDraft from config (GoReleaser reads ctx.Config.Release.Draft).
         let is_draft = self
             .config

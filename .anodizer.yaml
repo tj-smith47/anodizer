@@ -630,7 +630,7 @@ signs:
     # both "true" and "false" as truthy non-empty strings. Compare explicitly
     # so the rendered output is empty in snapshot mode (process.rs treats
     # empty / "false" as skip) and "true" in release mode.
-    if_condition: '{% if IsSnapshot == "false" %}true{% endif %}'
+    if_condition: '{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}'
 
 source:
   enabled: true
@@ -695,7 +695,7 @@ binary_signs:
     env:
       - "COSIGN_EXPERIMENTAL=1"
     # See archive `signs:` block above for why this form is required.
-    if_condition: '{% if IsSnapshot == "false" %}true{% endif %}'
+    if_condition: '{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}'
 
 # Docker image signing
 docker_signs:
@@ -710,7 +710,7 @@ docker_signs:
     env:
       - "COSIGN_EXPERIMENTAL=1"
     # See archive `signs:` block above for why this form is required.
-    if_condition: '{% if IsSnapshot == "false" %}true{% endif %}'
+    if_condition: '{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}'
 
 # Milestone closing — close GitHub milestones matching the release tag
 milestones:

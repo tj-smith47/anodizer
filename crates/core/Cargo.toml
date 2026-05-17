@@ -15,7 +15,6 @@ test-helpers = []
 [dev-dependencies]
 anodizer-core = { path = ".", features = ["test-helpers"] }
 serial_test.workspace = true
-tempfile = "3"
 
 [dependencies]
 anyhow.workspace = true
@@ -38,5 +37,6 @@ crc32fast.workspace = true
 md-5.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -13,6 +13,7 @@ pub mod env_expand;
 pub mod extrafiles;
 pub mod git;
 pub mod github_client;
+pub mod harness_signing;
 pub mod hashing;
 pub mod hooks;
 pub mod http;

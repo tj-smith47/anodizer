@@ -390,6 +390,7 @@ dependencies = [
  "anodizer-core",
  "anyhow",
  "serde_yaml_ng",
+ "serial_test",
  "tempfile",
 ]
 

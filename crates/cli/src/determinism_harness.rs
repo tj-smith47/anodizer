@@ -84,6 +84,7 @@
 //! [`ArtifactRow::nondeterministic_reason`].
 
 use anodizer_core::git::worktree::Worktree;
+use anodizer_core::harness_signing::EphemeralSigningKeys;
 use anodizer_core::{AllowList, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -228,6 +229,15 @@ impl Harness {
         let mut per_run_hashes: Vec<BTreeMap<String, ArtifactInfo>> =
             Vec::with_capacity(self.runs as usize);
 
+        // Provision once: both runs must sign with identical key
+        // material, otherwise even byte-deterministic GPG signatures
+        // would diverge.
+        let signing_keys: Option<EphemeralSigningKeys> = if self.stages.contains(&StageId::Sign) {
+            Some(anodizer_core::harness_signing::provision_ephemeral_keys()?)
+        } else {
+            None
+        };
+
         for run_idx in 0..self.runs {
             // Default to <repo_root>/.det-worktrees/ — keeps the harness
             // off `/tmp` (which is tmpfs on many distros and exhausts
@@ -249,7 +259,7 @@ impl Harness {
             let _ = std::fs::remove_dir_all(&worktree_path);
             let worktree = Worktree::add(&self.repo_root, &worktree_path, &self.commit)
                 .with_context(|| format!("creating worktree for determinism run {}", run_idx))?;
-            let env = self.build_isolated_env(&worktree)?;
+            let env = self.build_isolated_env(&worktree, signing_keys.as_ref())?;
             self.run_build_pipeline(worktree.path(), &env)
                 .with_context(|| format!("building pipeline for determinism run {}", run_idx))?;
             let artifacts = discover_artifacts(worktree.path())?;
@@ -277,7 +287,11 @@ impl Harness {
 
     /// Construct the env map handed to each child build process. See the
     /// module doc for the policy summary.
-    fn build_isolated_env(&self, worktree: &Worktree) -> Result<HashMap<String, String>> {
+    fn build_isolated_env(
+        &self,
+        worktree: &Worktree,
+        signing_keys: Option<&EphemeralSigningKeys>,
+    ) -> Result<HashMap<String, String>> {
         let tmpdir = worktree.path().join(".det-tmp");
         std::fs::create_dir_all(&tmpdir)?;
         let cargo_home = tmpdir.join("cargo");
@@ -293,6 +307,7 @@ impl Harness {
             home_dir: &home_dir,
             sde: self.sde,
             worktree: worktree.path(),
+            signing_keys,
         }))
     }
 
@@ -372,7 +387,27 @@ impl Harness {
             let info = last_info.expect("artifact name came from union of run maps");
             let all_equal =
                 hashes.iter().all(|h| h == &hashes[0]) && !hashes.iter().any(|h| h == "<missing>");
-            let allow_reason = self.resolve_allow_reason(name);
+            // Sign-stage drift auto-allowlist: cosign sign-blob uses
+            // ECDSA P-256 with a random nonce, so its signature bytes
+            // can never be byte-identical across runs. Byte-equality is
+            // not the right determinism signal for signatures —
+            // verification (`cosign verify-blob` / `gpg --verify`) is.
+            // The harness still records the per-run hashes in the drift
+            // row for audit; the `<missing>` check above remains the
+            // gate that catches a sign stage failing to produce output.
+            let signed_artifact_drift = !all_equal && info.stage == "sign";
+            let allow_reason = self.resolve_allow_reason(name).or_else(|| {
+                if signed_artifact_drift {
+                    Some(
+                        "signed artifact: signature bytes vary by signer \
+                         (cosign ECDSA random nonce); validate via \
+                         `cosign verify-blob` / `gpg --verify`"
+                            .into(),
+                    )
+                } else {
+                    None
+                }
+            });
 
             if all_equal {
                 artifacts.push(ArtifactRow {
@@ -645,6 +680,14 @@ pub(crate) struct BuildSubprocessEnv<'a> {
     /// strings (`file!()`, `Location::caller()`), driving binary drift
     /// that then propagates into every archive that wraps the binary.
     pub worktree: &'a Path,
+    /// Ephemeral signing keys for the sign stage. `None` skips the
+    /// keying env-var block (caller is opting out of sign-stage
+    /// validation). When `Some`, the harness exports `COSIGN_KEY` /
+    /// `COSIGN_PASSWORD` / `GNUPGHOME` / `GPG_FINGERPRINT` / `GPG_TTY` /
+    /// `GPG_KEY_PATH` / `ANODIZER_IN_DETERMINISM_HARNESS=1` into the
+    /// child env. The same `signing_keys` reference is passed to every
+    /// run so both rebuilds sign with identical key material.
+    pub signing_keys: Option<&'a EphemeralSigningKeys>,
 }
 
 /// Pure constructor for the child env map. Factored out of
@@ -813,6 +856,25 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
     });
     // Always set CI=true so build scripts know they're in a sealed env.
     env.entry("CI".into()).or_insert_with(|| "true".into());
+
+    // Inserted last so the harness's ephemeral material wins over any
+    // host-leaked credential vars under either the allow-list or the
+    // Windows inherit pass.
+    if let Some(keys) = inputs.signing_keys {
+        env.insert("ANODIZER_IN_DETERMINISM_HARNESS".into(), "1".into());
+        env.insert("COSIGN_KEY".into(), keys.cosign_key_contents.clone());
+        env.insert("COSIGN_PASSWORD".into(), keys.cosign_password.clone());
+        env.insert(
+            "GNUPGHOME".into(),
+            keys.gnupg_home.to_string_lossy().into_owned(),
+        );
+        env.insert("GPG_FINGERPRINT".into(), keys.gpg_fingerprint.clone());
+        env.insert("GPG_TTY".into(), "/dev/null".into());
+        env.insert(
+            "GPG_KEY_PATH".into(),
+            keys.gpg_key_path.to_string_lossy().into_owned(),
+        );
+    }
 
     env
 }
@@ -1855,6 +1917,7 @@ mod tests {
                 home_dir: scratch,
                 sde: 1_715_000_000,
                 worktree: scratch,
+                signing_keys: None,
             }
         }
 
