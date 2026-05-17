@@ -96,7 +96,7 @@ anodize check determinism \
 | Flag | Default | Description |
 |---|---|---|
 | `--runs=<N>` | `2` | Number of from-clean rebuilds to diff against each other. |
-| `--stages=<subset>` | `build,archive,sbom,checksum` | Restrict to a stage subset; legal vocabulary `build,archive,sbom,sign,checksum`. Default omits `sign` because hermetic harness shards typically lack GPG/cosign keys — pass `--stages=...,sign` explicitly when keys are provisioned. |
+| `--stages=<subset>` | full set | Restrict to a stage subset (`build,archive,sbom,sign,checksum`). |
 | `--report=<path>` | `dist/run-<id>/determinism.json` | JSON report destination. |
 | `--snapshot` | off | Seed SDE from snapshot rules (env > HEAD > dirty-tree hash) instead of the release commit. |
 
@@ -263,7 +263,7 @@ anodize check determinism --runs=2
 Output (abbreviated):
 
 ```
-anodize check determinism: runs=2 stages=build,archive,sbom,checksum
+anodize check determinism: runs=2 stages=build,archive,sbom,sign,checksum
   run 1: 18.4s  (4 artifacts emitted)
   run 2: 17.9s  (4 artifacts emitted)
   diff:  0 artifacts drifted

@@ -469,7 +469,7 @@ pub struct CheckDeterminismArgs {
     #[arg(
         long,
         value_name = "stages",
-        help = "Optional stage subset; legal vocabulary build,archive,sbom,sign,checksum (default omits sign — opt in only when GPG/cosign keys are provisioned)"
+        help = "Optional stage subset (build,archive,sbom,sign,checksum)"
     )]
     pub stages: Option<String>,
     #[arg(

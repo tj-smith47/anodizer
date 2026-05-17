@@ -1481,8 +1481,7 @@ mod tests {
         assert_eq!(StageId::Checksum.as_str(), "checksum");
     }
 
-    /// The full opt-in build-side set
-    /// `--stages=build,archive,sbom,sign,checksum` MUST drive
+    /// Default `--stages=build,archive,sbom,sign,checksum` MUST drive
     /// `compute_extra_skip` to emit produce-stages like `nfpm`, `nsis`,
     /// `msi`, `dmg`, `pkg`, `snapcraft`, `source`, `flatpak`,
     /// `appbundle`, `srpm`, `upx`, `makeself`, `notarize`. The release
@@ -1490,11 +1489,7 @@ mod tests {
     /// being skipped — the child release subprocess attempted `nfpm pkg
     /// --packager deb` on a macOS shard and died with `No such file or
     /// directory`. This test pins the contract that prevented that
-    /// failure. (Note: the dispatcher's actual `--stages` default omits
-    /// `sign` because the harness shards have no keys — see
-    /// `parse_stages` in `commands/check/determinism.rs`. This test
-    /// covers the opt-in case where an operator passes the full set
-    /// with keys provisioned.)
+    /// failure.
     #[test]
     fn harness_extra_skip_with_default_stages_includes_nfpm() {
         let stages = vec![

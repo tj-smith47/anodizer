@@ -110,7 +110,7 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--runs` | — | `2` | Number of from-clean rebuilds to diff |
-| `--stages` | — | — | Optional stage subset; legal vocabulary build,archive,sbom,sign,checksum (default omits sign — opt in only when GPG/cosign keys are provisioned) |
+| `--stages` | — | — | Optional stage subset (build,archive,sbom,sign,checksum) |
 | `--targets` | — | — | Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess. |
 | `--report` | — | — | JSON report path; default dist/run-<id>/determinism.json |
 | `--snapshot` | — | — | Seed SDE from snapshot rules instead of HEAD commit |

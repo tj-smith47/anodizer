@@ -122,19 +122,15 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
 /// quietly under-verifies the release; the operator typed a stage they
 /// expected to be exercised. Empty / whitespace-only tokens (e.g. a
 /// trailing comma) are tolerated. An empty selection (`--stages=""`)
-/// falls back to the canonical build-side set. The legal vocabulary is
-/// `build, archive, sbom, sign, checksum` — `sign` is accepted but NOT
-/// included in the default set because the hermetic harness shards
-/// never have signing keys (GPG_FINGERPRINT / COSIGN_KEY) provisioned;
-/// including it in defaults guarantees a runtime failure for every
-/// consumer. Operators who want to validate signature determinism can
-/// pass `--stages=...,sign` explicitly and supply the keys.
+/// falls back to the canonical build-side set. Spec calls out "build,
+/// archive, sbom, sign, checksum" as the legal vocabulary.
 fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
     let default = || {
         vec![
             StageId::Build,
             StageId::Archive,
             StageId::Sbom,
+            StageId::Sign,
             StageId::Checksum,
         ]
     };
@@ -223,15 +219,10 @@ mod tests {
 
     #[test]
     fn parse_stages_default_returns_full_build_side_set() {
-        // `sign` is intentionally excluded from the default set — the
-        // hermetic harness shards don't have GPG/cosign keys
-        // provisioned, so defaulting to it guarantees a runtime
-        // failure. Operators can still opt in via
-        // `--stages=...,sign` when keys are present.
         let stages = parse_stages(None).expect("None is always Ok");
         assert_eq!(
             stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            vec!["build", "archive", "sbom", "checksum"]
+            vec!["build", "archive", "sbom", "sign", "checksum"]
         );
     }
 
@@ -284,13 +275,11 @@ mod tests {
     #[test]
     fn parse_stages_empty_string_falls_back_to_default() {
         // An empty / all-whitespace selection picks the canonical build-
-        // side set so `--stages=""` doesn't degrade into a no-op. The
-        // default is 4 stages (build/archive/sbom/checksum) — `sign`
-        // is opt-in only because the harness shards have no keys.
+        // side set so `--stages=""` doesn't degrade into a no-op.
         let stages = parse_stages(Some("")).expect("empty list returns default");
-        assert_eq!(stages.len(), 4);
+        assert_eq!(stages.len(), 5);
         let stages = parse_stages(Some(" , , ")).expect("whitespace-only returns default");
-        assert_eq!(stages.len(), 4);
+        assert_eq!(stages.len(), 5);
     }
 
     #[test]
