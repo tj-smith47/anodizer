@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::ops::ControlFlow;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
@@ -94,10 +94,7 @@ fn build_oauth1_header(
     token_secret: &str,
 ) -> Result<String> {
     let method = method.to_uppercase();
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)?
-        .as_secs()
-        .to_string();
+    let timestamp = anodizer_core::sde::resolve_now().timestamp().to_string();
     let nonce = generate_nonce();
 
     let mut params = BTreeMap::new();

@@ -608,11 +608,12 @@ pub fn jitter_duration(base: Duration) -> Duration {
         return base;
     }
     // Cheap pseudo-random offset in [0, window * 2) centred on window,
-    // giving a net range of [base - window, base + window).
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos() as u64;
+    // giving a net range of [base - window, base + window). Routed
+    // through `sde::resolve_now()` so jitter collapses to a constant
+    // under `SOURCE_DATE_EPOCH` (no subsec precision) — required for
+    // determinism-harness byte-equality; real jitter is preserved in
+    // prod where the helper falls back to `Utc::now()`.
+    let seed = crate::sde::resolve_now().timestamp_subsec_nanos() as u64;
     let offset = seed % (window * 2);
     // Saturating arithmetic so we never panic on extreme values.
     let jittered = nanos.saturating_sub(window).saturating_add(offset);

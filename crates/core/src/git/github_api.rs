@@ -183,7 +183,7 @@ pub fn create_tag_via_github_api(
         "tagger": {
             "name": git_output(&["config", "user.name"]).unwrap_or_else(|_| "anodizer".to_string()),
             "email": git_output(&["config", "user.email"]).unwrap_or_else(|_| "anodizer@users.noreply.github.com".to_string()),
-            "date": chrono::Utc::now().to_rfc3339(),
+            "date": crate::sde::resolve_now().to_rfc3339(),
         }
     });
 

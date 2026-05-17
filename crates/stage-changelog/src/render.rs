@@ -432,11 +432,7 @@ pub fn render_crate_section(
 }
 
 fn today_yyyy_mm_dd() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let secs = anodizer_core::sde::resolve_now().timestamp();
     // Days since the Unix epoch, then convert to a (y,m,d) triple via the
     // Howard Hinnant date algorithm (`days_from_civil` inverse). Avoids a
     // chrono dep purely for date formatting in changelog headings.

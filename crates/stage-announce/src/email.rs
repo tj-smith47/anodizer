@@ -3,9 +3,9 @@ use std::process::Command;
 
 use anodizer_core::config::EmailEncryption;
 use anodizer_core::retry::{Retriable, RetryPolicy, is_network_error, retry_sync};
+use anodizer_core::sde;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
-use chrono::Utc;
 
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
@@ -228,7 +228,9 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> 
     vars.set("subject", &sanitize_header(params.subject));
     vars.set(
         "date",
-        &Utc::now().format("%a, %d %b %Y %H:%M:%S +0000").to_string(),
+        &sde::resolve_now()
+            .format("%a, %d %b %Y %H:%M:%S +0000")
+            .to_string(),
     );
     vars.set("body", params.body);
 
