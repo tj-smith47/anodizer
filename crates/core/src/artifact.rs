@@ -381,8 +381,36 @@ impl ArtifactRegistry {
     /// Serialize all artifacts to a JSON value suitable for writing to artifacts.json.
     /// Normalizes all artifact paths to use forward slashes for cross-platform
     /// consistency (GoReleaser always writes forward slashes).
+    ///
+    /// **Determinism**: artifacts are emitted in a stable sort order keyed on
+    /// `(kind, target, crate_name, name, path)` regardless of registration
+    /// order. The harness caught a regression where two runs registered the
+    /// same archive set in opposite orders (`linux-amd64` first vs
+    /// `linux-arm64` first) because the upstream `stage-archive` grouping
+    /// used `HashMap` iteration. Even with that root cause fixed in
+    /// `stage-archive/src/run.rs`, every other stage that registers
+    /// artifacts via `ArtifactRegistry::add` is a future regression risk;
+    /// sorting here forecloses the failure mode entirely. Cost is O(N log N)
+    /// on a small N (~tens of artifacts per release).
     pub fn to_artifacts_json(&self) -> anyhow::Result<serde_json::Value> {
-        let mut val = serde_json::to_value(&self.artifacts)?;
+        let mut sorted: Vec<&Artifact> = self.artifacts.iter().collect();
+        sorted.sort_by(|a, b| {
+            (
+                a.kind.as_str(),
+                a.target.as_deref().unwrap_or(""),
+                a.crate_name.as_str(),
+                a.name.as_str(),
+                a.path.as_path(),
+            )
+                .cmp(&(
+                    b.kind.as_str(),
+                    b.target.as_deref().unwrap_or(""),
+                    b.crate_name.as_str(),
+                    b.name.as_str(),
+                    b.path.as_path(),
+                ))
+        });
+        let mut val = serde_json::to_value(&sorted)?;
         // Normalize backslashes in path fields to forward slashes.
         if let Some(arr) = val.as_array_mut() {
             for entry in arr {
@@ -798,6 +826,72 @@ mod tests {
         );
 
         std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    /// Regression for the determinism harness drift on `dist/artifacts.json`
+    /// surfaced by CI run 25980818371 (cycle 10 → 11):
+    /// two runs produced byte-different `artifacts.json` even though the set
+    /// of artifacts was identical — the upstream `stage-archive` registered
+    /// per-target archives in `HashMap` iteration order, which is randomised
+    /// per process. The diff was archive entries in opposite positions
+    /// (`linux-arm64` before `linux-amd64` vs. the reverse).
+    ///
+    /// `to_artifacts_json` now sorts on (kind, target, crate_name, name,
+    /// path) before emitting, so even if a future stage registers artifacts
+    /// in non-deterministic order the JSON output is byte-identical.
+    #[test]
+    fn to_artifacts_json_output_is_order_insensitive() {
+        // Build registry A: arm64 archive first, then amd64.
+        let mut reg_a = ArtifactRegistry::new();
+        reg_a.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: PathBuf::from("dist/anodize-1.0.0-linux-arm64.tar.gz"),
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "anodize".to_string(),
+            metadata: Default::default(),
+            size: Some(15_000_000),
+        });
+        reg_a.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: PathBuf::from("dist/anodize-1.0.0-linux-amd64.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "anodize".to_string(),
+            metadata: Default::default(),
+            size: Some(18_000_000),
+        });
+
+        // Build registry B: amd64 archive first, then arm64 (opposite order).
+        let mut reg_b = ArtifactRegistry::new();
+        reg_b.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: PathBuf::from("dist/anodize-1.0.0-linux-amd64.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "anodize".to_string(),
+            metadata: Default::default(),
+            size: Some(18_000_000),
+        });
+        reg_b.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: PathBuf::from("dist/anodize-1.0.0-linux-arm64.tar.gz"),
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "anodize".to_string(),
+            metadata: Default::default(),
+            size: Some(15_000_000),
+        });
+
+        let json_a = serde_json::to_string_pretty(&reg_a.to_artifacts_json().unwrap()).unwrap();
+        let json_b = serde_json::to_string_pretty(&reg_b.to_artifacts_json().unwrap()).unwrap();
+
+        assert_eq!(
+            json_a, json_b,
+            "two registries with the same artifacts in different insertion \
+             orders must produce byte-identical artifacts.json — otherwise \
+             the determinism harness will surface per-run drift in dist/"
+        );
     }
 
     /// Docker image "paths" are image refs (`repo/name:tag`), not on-disk

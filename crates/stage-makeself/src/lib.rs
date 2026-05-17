@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -87,8 +87,15 @@ fn make_args(
 }
 
 /// Group artifacts by platform string (e.g. "linux_amd64").
-fn group_by_platform(artifacts: &[Artifact]) -> HashMap<String, Vec<&Artifact>> {
-    let mut groups: HashMap<String, Vec<&Artifact>> = HashMap::new();
+///
+/// `BTreeMap` (not `HashMap`) so iteration order is deterministic across
+/// runs — callers iterate the result to register one makeself Artifact per
+/// platform, and `HashMap` iteration order is randomised per process. The
+/// matching `stage-archive` regression shipped per-run drift into
+/// `dist/artifacts.json`; this stage uses the same pattern so it gets the
+/// same fix preemptively.
+fn group_by_platform(artifacts: &[Artifact]) -> BTreeMap<String, Vec<&Artifact>> {
+    let mut groups: BTreeMap<String, Vec<&Artifact>> = BTreeMap::new();
     for a in artifacts {
         let platform = match &a.target {
             Some(t) => {

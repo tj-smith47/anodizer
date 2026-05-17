@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 
@@ -263,8 +263,21 @@ impl Stage for ArchiveStage {
                     continue;
                 }
 
-                // Group binaries by target
-                let mut by_target: HashMap<String, Vec<Artifact>> = HashMap::new();
+                // Group binaries by target.
+                //
+                // `BTreeMap` (not `HashMap`) is load-bearing: this map is
+                // iterated below to register one archive Artifact per target,
+                // and `HashMap` iteration order is randomised per process via
+                // `RandomState`. Two runs at identical inputs would therefore
+                // register `linux-amd64` before `linux-arm64` in run #1 and
+                // the reverse in run #2 — same set, different order. That
+                // order then bakes into `dist/artifacts.json` as an
+                // observable per-run drift. The determinism harness caught
+                // exactly this: cycle 10's diff was archive entries in
+                // swapped positions. `BTreeMap` orders by key (the target
+                // triple), so iteration is identical across runs regardless
+                // of insertion order.
+                let mut by_target: BTreeMap<String, Vec<Artifact>> = BTreeMap::new();
                 for bin in &binaries {
                     let target = bin.target.clone().unwrap_or_else(|| "unknown".to_string());
                     by_target.entry(target).or_default().push(bin.clone());

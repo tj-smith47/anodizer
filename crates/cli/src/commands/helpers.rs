@@ -1327,14 +1327,19 @@ list:
         let loaded = ctx.artifacts.all();
         assert_eq!(loaded.len(), 2);
 
-        assert_eq!(loaded[0].kind, ArtifactKind::Checksum);
-        assert_eq!(loaded[0].name, "checksums.txt");
-        assert_eq!(loaded[0].size, Some(256));
+        // `to_artifacts_json` emits a stable sort on (kind, target,
+        // crate_name, name, path) to keep `dist/artifacts.json` byte-
+        // identical across runs regardless of registration order, so the
+        // round-tripped order is Binary (kind="binary") before Checksum
+        // (kind="checksum"), not the insertion order.
+        assert_eq!(loaded[0].kind, ArtifactKind::Binary);
+        assert_eq!(loaded[0].name, "myapp");
+        assert_eq!(loaded[0].target.as_deref(), Some("aarch64-apple-darwin"));
+        assert_eq!(loaded[0].size, None);
 
-        assert_eq!(loaded[1].kind, ArtifactKind::Binary);
-        assert_eq!(loaded[1].name, "myapp");
-        assert_eq!(loaded[1].target.as_deref(), Some("aarch64-apple-darwin"));
-        assert_eq!(loaded[1].size, None);
+        assert_eq!(loaded[1].kind, ArtifactKind::Checksum);
+        assert_eq!(loaded[1].name, "checksums.txt");
+        assert_eq!(loaded[1].size, Some(256));
     }
 
     // -----------------------------------------------------------------------

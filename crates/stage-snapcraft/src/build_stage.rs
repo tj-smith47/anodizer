@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -182,8 +182,15 @@ impl Stage for SnapcraftStage {
                     continue;
                 }
 
-                // Group binaries by target triple (platform) — one snap per platform
-                let mut by_target: HashMap<String, Vec<&Artifact>> = HashMap::new();
+                // Group binaries by target triple (platform) — one snap per
+                // platform. `BTreeMap` (not `HashMap`) so iteration order is
+                // deterministic across runs; this map is iterated below to
+                // register one snap Artifact per target, and `HashMap`'s
+                // randomised iteration would bake per-run order into
+                // `dist/artifacts.json`. See the matching note in
+                // `stage-archive/src/run.rs::run` for the harness regression
+                // that prompted this.
+                let mut by_target: BTreeMap<String, Vec<&Artifact>> = BTreeMap::new();
                 for b in &filtered_binaries {
                     let target = b.target.clone().unwrap_or_else(|| "unknown".to_string());
                     by_target.entry(target).or_default().push(b);
