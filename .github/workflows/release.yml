@@ -34,6 +34,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
+      # Preserve the harness report even when this job fails. The
+      # downstream `release:` job's `Upload run summary` step (lines
+      # below) only fires if determinism passes (gated by `needs:
+      # [build]` which is `needs: [determinism-check]`); without this
+      # step, a drift failure loses the `differing_bytes_summary` and
+      # `head_sample` diagnostic the moment the run's artifacts expire.
+      - name: Upload determinism report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: determinism-${{ matrix.os }}
+          path: dist/run-*/determinism.json
+          if-no-files-found: warn
+
   build:
     name: Build (${{ matrix.os }})
     needs: [determinism-check]

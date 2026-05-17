@@ -105,7 +105,21 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
             report.drift_count, report.runs
         );
         for d in &report.drift {
-            eprintln!("  - {}: {:?}", d.artifact, d.hashes);
+            // Surface `differing_bytes_summary` alongside hashes. The
+            // summary is already computed by the harness and stored in
+            // `determinism.json`, but the JSON only ships if the publish
+            // job runs — and publish is gated on determinism passing.
+            // Printing here makes the offset hint (e.g. `first diff at
+            // offset 0x130`) visible directly in CI logs (90-day
+            // retention), surviving even when the run's artifacts expire.
+            match &d.differing_bytes_summary {
+                Some(summary) => {
+                    eprintln!("  - {}: {} | {:?}", d.artifact, summary, d.hashes);
+                }
+                None => {
+                    eprintln!("  - {}: {:?}", d.artifact, d.hashes);
+                }
+            }
         }
         // Use the conventional process::exit so the gate is observable
         // from CI even if a caller wraps the binary in a script.
