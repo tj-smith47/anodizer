@@ -728,60 +728,35 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
-    // Windows MSVC determinism. Mirrors `.cargo/config.toml` per the
-    // cargo precedence rule:
-    //   `CARGO_TARGET_<triple>_RUSTFLAGS`
-    //   > `[target.<triple>] rustflags`
-    //   > `[build] rustflags` / `RUSTFLAGS`
-    // Because the harness sets `RUSTFLAGS` above for the path remap, the
-    // `[target.<triple>] rustflags` table in `.cargo/config.toml` is
-    // suppressed for harness runs — we therefore mirror it here so the
-    // MSVC build gets the full determinism flag set.
+    // Windows MSVC determinism: link.exe stamps the PE COFF
+    // `TimeDateStamp` with wall-clock build time by default, so two
+    // harness runs at different times produce `anodizer.exe` binaries
+    // that differ in the 4 timestamp bytes — and every archive
+    // (.zip / .tar.gz) that wraps the binary inherits the drift.
+    // `/Brepro` swaps the timestamp for a content hash (same input →
+    // same stamp), per
+    // <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>.
     //
-    // Flags (each addresses a distinct link.exe / rustc non-determinism
-    // source — see the comment block in `.cargo/config.toml` for the
-    // root-cause analysis of each):
+    // Why a per-target env var (not just `[target.<triple>] rustflags`
+    // in `.cargo/config.toml`): cargo precedence is
+    // `CARGO_TARGET_<triple>_RUSTFLAGS` > `[target.<triple>] rustflags`
+    // > `[build] rustflags` / `RUSTFLAGS`. The harness sets `RUSTFLAGS`
+    // above for `--remap-path-prefix`, which suppresses the
+    // `[target.<triple>] rustflags` config entry; we therefore mirror
+    // the same flags via the per-target env var so the MSVC build
+    // gets BOTH the remap (path determinism) and `/Brepro` (timestamp
+    // determinism). Linux/macOS targets fall through to the global
+    // `RUSTFLAGS` (no `/Brepro`, which would error on lld/ld).
     //
-    //   `-C link-arg=/Brepro`
-    //     PE COFF `TimeDateStamp` becomes a content hash instead of the
-    //     wall-clock build time. Per
-    //     <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>.
-    //   `-C link-arg=/EMITTOOLVERSIONINFO:NO`
-    //     Suppresses linker tool-version metadata (Rich header +
-    //     IMAGE_OPTIONAL_HEADER.MajorLinkerVersion fields). Without
-    //     this, link.exe writes its toolchain build number into every
-    //     binary it produces, drifting across runner image updates.
-    //   `-C link-arg=/DEBUG:NONE`
-    //     Forbids the IMAGE_DEBUG_TYPE_CODEVIEW debug-directory entry
-    //     (per-build GUID + Age). `strip = "debuginfo"` is supposed to
-    //     drop this on MSVC but defense-in-depth — the entry still
-    //     appears in some toolchain versions.
-    //   `-C link-arg=/OPT:NOICF`
-    //     Disables Identical COMDAT Folding. link.exe's default
-    //     `/OPT:ICF` is multi-pass and parallel; fold ordering varies
-    //     across runs even with identical input.
-    //   `-C codegen-units=1`
-    //     Forces single codegen-unit emission for this rustc
-    //     invocation. The release default (`codegen-units=16`) emits
-    //     16 .obj files concurrently; rustc may write them in a
-    //     non-deterministic order, and link.exe consumes them in argv
-    //     order, which feeds into PE section layout.
-    //
-    // All flags are MSVC-link-specific (or, in `codegen-units`'s case,
-    // scoped to the cargo invocation targeting MSVC) — Linux/macOS
-    // targets fall through to the global `RUSTFLAGS` (no MSVC link
-    // flags, which would error on lld/ld) and are already at 0-drift.
-    const MSVC_DETERMINISM_FLAGS: &str = "-C link-arg=/Brepro \
-        -C link-arg=/EMITTOOLVERSIONINFO:NO \
-        -C link-arg=/DEBUG:NONE \
-        -C link-arg=/OPT:NOICF \
-        -C codegen-units=1";
+    // The `[target.<triple>] rustflags` entry in `.cargo/config.toml`
+    // covers the non-harness path (normal `cargo build --target=...`)
+    // where `RUSTFLAGS` isn't set.
     for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
         let mut per_target = rustflags.clone();
         if !per_target.is_empty() {
             per_target.push(' ');
         }
-        per_target.push_str(MSVC_DETERMINISM_FLAGS);
+        per_target.push_str("-C link-arg=/Brepro");
         let key = format!(
             "CARGO_TARGET_{}_RUSTFLAGS",
             triple.replace('-', "_").to_uppercase()
@@ -2280,21 +2255,16 @@ mod tests {
         }
 
         /// Regression: the harness MUST inject
-        /// `CARGO_TARGET_<msvc-triple>_RUSTFLAGS` containing the full
-        /// Windows MSVC determinism flag set so two harness runs
-        /// produce byte-identical `anodizer.exe` binaries.
-        ///
-        /// Each flag closes a distinct non-determinism source — see
-        /// `.cargo/config.toml` for the root-cause analysis. CI shard
+        /// `CARGO_TARGET_<msvc-triple>_RUSTFLAGS=-C link-arg=/Brepro`
+        /// so two harness runs produce byte-identical `anodizer.exe`
+        /// binaries. Without `/Brepro`, link.exe stamps the PE COFF
+        /// `TimeDateStamp` with wall-clock time and the .exe (plus
+        /// every archive wrapping it) drifts. CI shard
         /// "Determinism (windows-latest)" surfaced 20 drifted
-        /// artifacts before this knob landed (cycle 8 + 12 + 13 fixed
-        /// path remap / `/Brepro` / `strip=debuginfo`; cycle 14 adds
-        /// the rest).
+        /// artifacts before this knob landed in cycle 12.
         ///
-        /// Per-target (not global) because all flags are link.exe-only
-        /// (or, in `codegen-units`'s case, harmless on lld/ld but
-        /// scoped to MSVC for symmetry with the `.cargo/config.toml`
-        /// entry that covers the non-harness path).
+        /// Per-target (not global) because `/Brepro` is link.exe-only;
+        /// lld/ld would reject the flag.
         ///
         /// Per-target RUSTFLAGS must ALSO carry the remap-path-prefix
         /// entries: cargo precedence is `CARGO_TARGET_<triple>_RUSTFLAGS`
@@ -2313,40 +2283,26 @@ mod tests {
                     "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUSTFLAGS",
                 ] {
                     let rf = env.get(triple_env).unwrap_or_else(|| {
-                        panic!(
-                            "{triple_env} must be injected so link.exe gets the MSVC determinism flag set"
-                        )
+                        panic!("{triple_env} must be injected so link.exe gets /Brepro")
                     });
-                    // Each flag is load-bearing — see the comment block
-                    // above `MSVC_DETERMINISM_FLAGS` for which drift
-                    // source each closes. Asserting every flag prevents
-                    // silent regressions if one entry is dropped.
-                    for flag in [
-                        "-C link-arg=/Brepro",
-                        "-C link-arg=/EMITTOOLVERSIONINFO:NO",
-                        "-C link-arg=/DEBUG:NONE",
-                        "-C link-arg=/OPT:NOICF",
-                        "-C codegen-units=1",
-                    ] {
-                        assert!(
-                            rf.contains(flag),
-                            "{triple_env} must carry `{flag}`. got={rf}"
-                        );
-                    }
+                    assert!(
+                        rf.contains("-C link-arg=/Brepro"),
+                        "{triple_env} must carry `-C link-arg=/Brepro`. got={rf}"
+                    );
                     assert!(
                         rf.contains("--remap-path-prefix="),
                         "{triple_env} must also carry --remap-path-prefix (per-target rustflags REPLACES global RUSTFLAGS, not appends). got={rf}"
                     );
                 }
                 // Linux / macOS targets must NOT get a per-target
-                // entry — `/Brepro` & friends would error on lld/ld.
+                // entry — `/Brepro` would error on lld/ld.
                 for triple_env in [
                     "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
                     "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS",
                 ] {
                     assert!(
                         !env.contains_key(triple_env),
-                        "{triple_env} must NOT be injected — MSVC determinism flags are link.exe-only"
+                        "{triple_env} must NOT be injected — /Brepro is link.exe-only"
                     );
                 }
             });

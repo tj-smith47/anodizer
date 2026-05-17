@@ -1,54 +1,22 @@
 [alias]
 xtask = "run --package xtask --"
 
-# Windows MSVC determinism. v0.3.0 cycle 14: prior cycles (8 path-remap, 12
-# /Brepro, 13 strip=debuginfo) closed three out of four drift sources but
-# the raw `.exe` still differed across harness runs. The residual drift
-# comes from link.exe behaviors that `/Brepro` does NOT cover:
-#
-# 1. Linker tool-version metadata (Rich header + LinkerVersion fields) —
-#    fixed by `/EMITTOOLVERSIONINFO:NO`.
-# 2. Identical COMDAT Folding (`/OPT:ICF`, link.exe's default on release)
-#    is multi-pass and parallel — fold ordering varies across runs even
-#    with identical input .obj files. Disabled here with `/OPT:NOICF`
-#    (slightly larger binary, fully deterministic).
-# 3. Debug-directory entry: even with `strip = "debuginfo"` (which
-#    collapses to `strip = "symbols"` on MSVC and disables .pdb
-#    emission), link.exe still emits an IMAGE_DEBUG_TYPE_CODEVIEW entry
-#    with a per-build GUID/Age tuple. `/DEBUG:NONE` forbids the entry.
-# 4. Parallel codegen non-determinism: `codegen-units=16` (release
-#    default) emits 16 `.obj` files concurrently; rustc may write them
-#    in a non-deterministic order, and link.exe consumes them in argv
-#    order, which feeds into PE section layout. `codegen-units=1`
-#    forces single-codegen-unit emission per target — deterministic
-#    .obj content + ordering.
-#
-# All four flags are MSVC-link-specific (or, in `codegen-units=1`'s
-# case, scoped to the cargo invocation that targets MSVC) so they live
-# in `[target.<msvc-triple>]` and do NOT affect Linux / macOS targets,
-# which are already at 0-drift. The determinism harness (which sets
-# RUSTFLAGS env, suppressing this `[target.<triple>] rustflags` table
-# per cargo's precedence rules) mirrors the same flag set via
+# Windows MSVC determinism: pass `/Brepro` to link.exe so the PE COFF
+# `TimeDateStamp` is set to a content hash (deterministic across runs)
+# instead of the wall-clock build time. Without this, every Windows
+# `anodizer.exe` built from the same source differs in 4 header bytes,
+# propagating drift into every archive that wraps the binary. The
+# determinism harness (which sets `RUSTFLAGS` env, suppressing this
+# `[target.<triple>] rustflags` table per cargo's precedence rules)
+# mirrors the same `link-arg=/Brepro` via
 # `CARGO_TARGET_<triple>_RUSTFLAGS` — see `build_subprocess_env` in
-# `crates/cli/src/determinism_harness.rs`. Both surfaces must agree.
+# `crates/cli/src/determinism_harness.rs`.
 #
-# `/Brepro`, `/EMITTOOLVERSIONINFO`, `/DEBUG:NONE`, `/OPT:NOICF` are
-# link.exe-only — rustc forwards `link-arg` verbatim to the active
-# linker, so lld/ld targets would reject them.
+# `/Brepro` is MSVC-link-specific; we MUST scope it per-target rather
+# than via `[build] rustflags` because rustc forwards `link-arg`
+# verbatim to the active linker, and lld / ld would reject the flag.
 [target.x86_64-pc-windows-msvc]
-rustflags = [
-    "-C", "link-arg=/Brepro",
-    "-C", "link-arg=/EMITTOOLVERSIONINFO:NO",
-    "-C", "link-arg=/DEBUG:NONE",
-    "-C", "link-arg=/OPT:NOICF",
-    "-C", "codegen-units=1",
-]
+rustflags = ["-C", "link-arg=/Brepro"]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = [
-    "-C", "link-arg=/Brepro",
-    "-C", "link-arg=/EMITTOOLVERSIONINFO:NO",
-    "-C", "link-arg=/DEBUG:NONE",
-    "-C", "link-arg=/OPT:NOICF",
-    "-C", "codegen-units=1",
-]
+rustflags = ["-C", "link-arg=/Brepro"]
