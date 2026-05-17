@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use super::BuildStage;
 use super::command::{
     BuildContext, build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
-    detect_cross_strategy, resolve_build_program, same_apple_family, same_windows_family,
+    detect_cross_strategy, detect_cross_strategy_for_target, resolve_build_program,
+    same_apple_family, same_windows_family,
 };
 
 /// Test helper — assembles a [`BuildContext`] from the varying parts most
@@ -1801,7 +1802,13 @@ fn test_detect_cross_strategy_for_target_linux_cross_arch_uses_auto() {
 
 // Test helper — same as detect_cross_strategy_for_target but lets the
 // test pin the host triple instead of reading the real machine's target.
+// Mirrors the production carve-out: Windows MSVC targets prefer Zigbuild
+// when cargo-zigbuild is installed (v0.3.0 cycle 15 fix for link.exe
+// non-determinism).
 fn detect_cross_strategy_for_target_with_host(host: &str, target: &str) -> CrossStrategy {
+    if target.ends_with("-pc-windows-msvc") && anodizer_core::util::find_binary("cargo-zigbuild") {
+        return CrossStrategy::Zigbuild;
+    }
     if !host.is_empty() && target == host {
         return CrossStrategy::Cargo;
     }
@@ -1812,6 +1819,52 @@ fn detect_cross_strategy_for_target_with_host(host: &str, target: &str) -> Cross
         return CrossStrategy::Cargo;
     }
     detect_cross_strategy()
+}
+
+/// Windows MSVC targets must NOT short-circuit to Cargo when
+/// cargo-zigbuild is installed — link.exe has unresolvable
+/// non-determinism (see command.rs doc-comment for cycle 15 rationale).
+/// We assert the production function picks Zigbuild whenever
+/// cargo-zigbuild is on PATH, regardless of host.
+#[test]
+fn test_detect_cross_strategy_msvc_prefers_zigbuild_when_available() {
+    if !anodizer_core::util::find_binary("cargo-zigbuild") {
+        // No cargo-zigbuild on this dev box — exercise the negative side
+        // of the carve-out (must NOT pick Zigbuild when the tool is
+        // missing). Falls through to same-windows-family → Cargo when
+        // host is also windows; otherwise to detect_cross_strategy()
+        // which returns Cargo (no zigbuild, no cross).
+        let strategy = detect_cross_strategy_for_target("x86_64-pc-windows-msvc");
+        assert_ne!(
+            strategy,
+            CrossStrategy::Zigbuild,
+            "must not pick Zigbuild when cargo-zigbuild is missing"
+        );
+        return;
+    }
+
+    // With cargo-zigbuild installed, every MSVC target must route to
+    // Zigbuild regardless of host.
+    for target in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+        let strategy = detect_cross_strategy_for_target(target);
+        assert_eq!(
+            strategy,
+            CrossStrategy::Zigbuild,
+            "MSVC target {target} must route to Zigbuild when cargo-zigbuild is on PATH"
+        );
+    }
+
+    // Windows GNU is NOT covered by the carve-out — mingw uses ld, not
+    // lld-link. Host-dependent: only assert via the with_host helper.
+    let strategy = detect_cross_strategy_for_target_with_host(
+        "x86_64-pc-windows-msvc",
+        "x86_64-pc-windows-gnu",
+    );
+    assert_eq!(
+        strategy,
+        CrossStrategy::Cargo,
+        "Windows GNU target on Windows host must stay on cargo (mingw, not lld-link)"
+    );
 }
 
 // ---- Fix 5: resolve_reproducible_epoch tests ----

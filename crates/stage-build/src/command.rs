@@ -47,13 +47,39 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 ///   links with the host's gcc; cross-arch Linux needs a multilib package
 ///   or the `cross` container, so same-OS-different-arch Linux still
 ///   benefits from zigbuild/cross. Keep the existing auto behaviour.
-/// - **Windows host → any *-pc-windows-* target**: MSVC cl/link handles
-///   both msvc x86_64 and aarch64 via the VS install, no zig needed.
+/// - **Windows host → `*-pc-windows-gnu` target**: cargo + the mingw
+///   toolchain works natively (zig has no advantage for mingw, and lld
+///   would need a separate sysroot we don't ship).
+///
+/// **Windows MSVC exception** (v0.3.0 cycle 15, 2026-05-17): when the
+/// target is `*-pc-windows-msvc` and `cargo-zigbuild` is installed, we
+/// route through Zigbuild even on a Windows host. Microsoft's `link.exe`
+/// has unresolvable non-determinism beyond what `/Brepro`,
+/// `/EMITTOOLVERSIONINFO:NO`, `/DEBUG:NONE`, `/OPT:NOICF`,
+/// `codegen-units=1`, and `strip="debuginfo"` can fix (six cycles of
+/// MSVC-link-flag tuning still left 20 drifted artifacts on CI run
+/// 25988403218). `cargo-zigbuild` invokes `lld-link` (LLVM's
+/// MSVC-compatible linker), which is documented reproducible by design
+/// and is what Chromium / Firefox use for Windows MSVC reproducible
+/// builds. Linker flags (`/Brepro`, etc.) are still honoured by
+/// `lld-link` so the rest of the pipeline is unchanged.
 ///
 /// Only fall back to the cross tooling when actually crossing OS boundaries
-/// (Linux → Windows, Linux → darwin, etc.).
+/// (Linux → Windows, Linux → darwin, etc.) OR when the same-OS path is
+/// known to be non-reproducible (Windows MSVC).
 pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+
+    // Windows MSVC reproducibility carve-out: prefer cargo-zigbuild over
+    // native cargo + link.exe whenever the tool is on PATH, regardless of
+    // host. This MUST run before the exact-host-match and
+    // same-windows-family shortcuts below — both would otherwise route
+    // Windows-host → MSVC-target through `cargo build` and re-introduce
+    // link.exe drift. See doc-comment above for the v0.3.0 cycle 15
+    // rationale.
+    if target.ends_with("-pc-windows-msvc") && find_binary("cargo-zigbuild") {
+        return CrossStrategy::Zigbuild;
+    }
 
     // Exact host match — always cargo.
     if !host.is_empty() && target == host {
@@ -62,9 +88,11 @@ pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
 
     // Same-OS, different-arch — cargo when the host's native toolchain
     // can handle the target without external cross tooling. Applies to
-    // Apple (clang is universal across apple arches) and Windows (MSVC
-    // handles every windows arch). Linux stays on the cross tooling
-    // because same-OS cross-arch still needs a gcc multilib or similar.
+    // Apple (clang is universal across apple arches) and Windows-gnu
+    // (mingw handles every windows arch). Linux stays on the cross
+    // tooling because same-OS cross-arch still needs a gcc multilib or
+    // similar. The Windows-MSVC carve-out above intentionally runs
+    // first so MSVC targets do NOT reach this branch.
     if !host.is_empty() && same_apple_family(&host, target) {
         return CrossStrategy::Cargo;
     }
