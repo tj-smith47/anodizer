@@ -1,22 +1,37 @@
 [alias]
 xtask = "run --package xtask --"
 
-# Windows MSVC determinism: pass `/Brepro` to link.exe so the PE COFF
-# `TimeDateStamp` is set to a content hash (deterministic across runs)
-# instead of the wall-clock build time. Without this, every Windows
-# `anodizer.exe` built from the same source differs in 4 header bytes,
-# propagating drift into every archive that wraps the binary. The
-# determinism harness (which sets `RUSTFLAGS` env, suppressing this
-# `[target.<triple>] rustflags` table per cargo's precedence rules)
-# mirrors the same `link-arg=/Brepro` via
-# `CARGO_TARGET_<triple>_RUSTFLAGS` — see `build_subprocess_env` in
-# `crates/cli/src/determinism_harness.rs`.
+# Windows MSVC determinism. MSVC-only flags (`link-arg=/...`) must be
+# scoped per-target — `[build] rustflags` would forward them to lld /
+# ld on Linux/macOS, which reject MSVC syntax. The determinism harness
+# mirrors these flags via `CARGO_TARGET_<triple>_RUSTFLAGS` because the
+# harness sets `RUSTFLAGS` for `--remap-path-prefix`, which (per cargo
+# precedence) suppresses these per-target entries — see
+# `build_subprocess_env` in `crates/cli/src/determinism_harness.rs`.
 #
-# `/Brepro` is MSVC-link-specific; we MUST scope it per-target rather
-# than via `[build] rustflags` because rustc forwards `link-arg`
-# verbatim to the active linker, and lld / ld would reject the flag.
+# Flags:
+#   - `codegen-units=1` — single codegen unit so cross-CU function
+#     ordering doesn't shuffle the resulting symbol/section layout
+#     (drives Data Directory RVA stability past PE offset 0x108).
+#   - `/Brepro` — substitutes PE `TimeDateStamp` with a content hash.
+#     <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>
+#   - `/OPT:NOICF` — disables Identical COMDAT Folding, whose fold
+#     decisions depend on input-file presentation order.
+#   - `/INCREMENTAL:NO` — release-profile default, but explicit because
+#     `/Brepro` is incompatible with incremental linking and a future
+#     profile edit shouldn't silently re-enable it.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/Brepro"]
+rustflags = [
+    "-C", "codegen-units=1",
+    "-C", "link-arg=/Brepro",
+    "-C", "link-arg=/OPT:NOICF",
+    "-C", "link-arg=/INCREMENTAL:NO",
+]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/Brepro"]
+rustflags = [
+    "-C", "codegen-units=1",
+    "-C", "link-arg=/Brepro",
+    "-C", "link-arg=/OPT:NOICF",
+    "-C", "link-arg=/INCREMENTAL:NO",
+]

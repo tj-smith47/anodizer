@@ -240,11 +240,10 @@ impl Harness {
             // Ensure the parent exists; `git worktree add` won't create
             // intermediate directories.
             let _ = std::fs::create_dir_all(&worktree_root);
-            let worktree_path = worktree_root.join(format!(
-                "anodize-determinism-{}-{}",
-                std::process::id(),
-                run_idx
-            ));
+            // Path is keyed by `run_idx` only — `std::process::id()` would
+            // change between runs and defeat the `--remap-path-prefix`
+            // contract that produces byte-identical compiler output.
+            let worktree_path = worktree_root.join(format!("anodize-determinism-run-{}", run_idx));
             // Defensive: prior aborted runs may have left the dir behind;
             // `git worktree add` would reject a populated target.
             let _ = std::fs::remove_dir_all(&worktree_path);
@@ -728,35 +727,41 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
-    // Windows MSVC determinism: link.exe stamps the PE COFF
-    // `TimeDateStamp` with wall-clock build time by default, so two
-    // harness runs at different times produce `anodizer.exe` binaries
-    // that differ in the 4 timestamp bytes — and every archive
-    // (.zip / .tar.gz) that wraps the binary inherits the drift.
-    // `/Brepro` swaps the timestamp for a content hash (same input →
-    // same stamp), per
-    // <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>.
+    // Windows MSVC determinism flags. See the [target.*] rustflags in
+    // `.cargo/config.toml` for the non-harness path. This per-target
+    // env var path is required because the harness sets RUSTFLAGS for
+    // `--remap-path-prefix`, which (per cargo precedence) suppresses
+    // the `[target.<triple>] rustflags` config entry; the flags must
+    // be re-applied via `CARGO_TARGET_<triple>_RUSTFLAGS` so the
+    // MSVC build gets both the path remap and the MSVC-specific flags.
     //
-    // Why a per-target env var (not just `[target.<triple>] rustflags`
-    // in `.cargo/config.toml`): cargo precedence is
-    // `CARGO_TARGET_<triple>_RUSTFLAGS` > `[target.<triple>] rustflags`
-    // > `[build] rustflags` / `RUSTFLAGS`. The harness sets `RUSTFLAGS`
-    // above for `--remap-path-prefix`, which suppresses the
-    // `[target.<triple>] rustflags` config entry; we therefore mirror
-    // the same flags via the per-target env var so the MSVC build
-    // gets BOTH the remap (path determinism) and `/Brepro` (timestamp
-    // determinism). Linux/macOS targets fall through to the global
-    // `RUSTFLAGS` (no `/Brepro`, which would error on lld/ld).
-    //
-    // The `[target.<triple>] rustflags` entry in `.cargo/config.toml`
-    // covers the non-harness path (normal `cargo build --target=...`)
-    // where `RUSTFLAGS` isn't set.
+    // The flag set:
+    //   - `-C codegen-units=1` — single codegen unit so cross-CU
+    //     function-ordering non-determinism doesn't shuffle the
+    //     resulting object's symbol/section layout. Drives Data
+    //     Directory RVA stability at PE offset 0x108+.
+    //   - `-C link-arg=/Brepro` — substitute PE `TimeDateStamp` with a
+    //     content hash. <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>
+    //   - `-C link-arg=/OPT:NOICF` — disable Identical COMDAT Folding.
+    //     ICF's fold decisions depend on input-file presentation order
+    //     and can shuffle which symbol resolves to which fold target.
+    //   - `-C link-arg=/INCREMENTAL:NO` — disable incremental linking
+    //     (release profile default, but explicit because `/Brepro` is
+    //     incompatible with incremental linking and a future profile
+    //     edit shouldn't silently re-enable it).
     for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
         let mut per_target = rustflags.clone();
-        if !per_target.is_empty() {
-            per_target.push(' ');
+        for flag in [
+            "-C codegen-units=1",
+            "-C link-arg=/Brepro",
+            "-C link-arg=/OPT:NOICF",
+            "-C link-arg=/INCREMENTAL:NO",
+        ] {
+            if !per_target.is_empty() {
+                per_target.push(' ');
+            }
+            per_target.push_str(flag);
         }
-        per_target.push_str("-C link-arg=/Brepro");
         let key = format!(
             "CARGO_TARGET_{}_RUSTFLAGS",
             triple.replace('-', "_").to_uppercase()
@@ -833,6 +838,14 @@ struct ArtifactInfo {
     /// once during the existing `std::fs::read` so there's no extra
     /// I/O.
     head_sample: Vec<u8>,
+    /// Last [`TAIL_SAMPLE_BYTES`] bytes of the artifact. Complements
+    /// `head_sample`: trailing structures that drift past 1 KiB —
+    /// gzip footer (`mtime`, ISIZE), zstd skippable frames, ZIP
+    /// central directory, PE Debug Directory contents, detached
+    /// signature `.sig` trailers — get a localized offset instead of
+    /// `"no diff in first 1 KiB"`. Empty when the artifact is smaller
+    /// than the head window (the head already covers the whole file).
+    tail_sample: Vec<u8>,
 }
 
 /// How many leading bytes of each artifact to retain for drift
@@ -848,12 +861,19 @@ struct ArtifactInfo {
 ///     Catches `mod_time` / `mod_date` drift.
 ///   - CycloneDX SBOM JSON: top-level keys including
 ///     `serialNumber` (per-run UUID — a known drift source).
-///
-/// The summary emits the FIRST differing byte offset within this
-/// window, so an artifact whose drift is entirely past byte 1024
-/// (e.g. signature trailers) gets a "no diff in first 1 KiB" hint
-/// that still helps narrow the search.
 const HEAD_SAMPLE_BYTES: usize = 1024;
+
+/// How many trailing bytes of each artifact to retain alongside the
+/// head sample. Catches trailing-section drift that the head misses:
+///   - gzip footer: 4-byte `mtime` + 4-byte ISIZE.
+///   - zstd: skippable frames + content checksum (last 4 B).
+///   - ZIP: central directory record + end-of-central-directory
+///     record (`EOCD`) including the per-archive comment.
+///   - PE: Debug Directory contents (GUID + age + PDB path), import
+///     address table, resource section drift.
+///   - Detached signatures (`.sig`): cosign/gpg signature blob lives
+///     entirely past the head window.
+const TAIL_SAMPLE_BYTES: usize = 1024;
 
 /// PATH for harness children — inherits the host's PATH verbatim on
 /// every platform.
@@ -1055,6 +1075,15 @@ fn hash_artifacts(
         let stage = infer_stage_from_path(&relative);
         let head_len = bytes.len().min(HEAD_SAMPLE_BYTES);
         let head_sample = bytes[..head_len].to_vec();
+        // Tail sample is non-overlapping with the head: when the file
+        // is smaller than HEAD + TAIL, the head already covers the
+        // whole content and the tail is left empty so the drift
+        // summary doesn't double-count bytes.
+        let tail_sample = if bytes.len() > HEAD_SAMPLE_BYTES + TAIL_SAMPLE_BYTES {
+            bytes[bytes.len() - TAIL_SAMPLE_BYTES..].to_vec()
+        } else {
+            Vec::new()
+        };
         out.insert(
             name,
             ArtifactInfo {
@@ -1063,6 +1092,7 @@ fn hash_artifacts(
                 relative_path: relative,
                 stage,
                 head_sample,
+                tail_sample,
             },
         );
     }
@@ -1076,15 +1106,16 @@ fn hash_artifacts(
 /// already established that the hashes differed, so the missing-sample
 /// path is purely a defensive guard, not the common case).
 ///
-/// Output shape: `"first diff at offset 0xNN (run0=0xXX, run1=0xYY)"`
-/// for offsets within [`HEAD_SAMPLE_BYTES`]; `"no diff in first
-/// {HEAD_SAMPLE_BYTES} bytes; size run0=A run1=B"` when the prefixes
-/// match (drift is past the window, often a trailing-section / payload
-/// difference). This is intentionally terse — `determinism.json` is
-/// machine-readable first, human-readable second, and the offset alone
-/// is enough to point a future fix-cycle at the right PE region (`0x00`
-/// → DOS stub, `0x80` → Rich header, `0xC0-0x100` → COFF / Optional
-/// header / TimeDateStamp, `0x1F0+` → section table).
+/// Output shapes (first applicable):
+///   - `"first diff at offset 0xNN (run0=0xXX, run1=0xYY)"` — head
+///     diverges within [`HEAD_SAMPLE_BYTES`].
+///   - `"tail diff at -0xNN from end (size B, run0=0xXX, run1=0xYY)"` —
+///     heads match but tails diverge; `-0xNN` is the offset from EOF.
+///     Catches gzip/zip footer drift, signature trailers, PE Debug
+///     Directory drift.
+///   - `"no diff in first/last K bytes; sizes differ..."` — both
+///     sampled windows match but total sizes differ: drift is in the
+///     un-sampled middle.
 ///
 /// For three-or-more-run reports (currently the harness defaults to 2
 /// but `--runs=N` is a CLI flag), the summary compares run0 vs the
@@ -1094,28 +1125,28 @@ fn summarize_drift(
     name: &str,
     per_run_hashes: &[BTreeMap<String, ArtifactInfo>],
 ) -> Option<String> {
-    // Gather head samples + sizes for runs that produced this artifact.
-    let samples: Vec<(&[u8], u64)> = per_run_hashes
+    let samples: Vec<(&[u8], &[u8], u64)> = per_run_hashes
         .iter()
         .filter_map(|run| {
-            run.get(name)
-                .map(|info| (info.head_sample.as_slice(), info.size_bytes))
+            run.get(name).map(|info| {
+                (
+                    info.head_sample.as_slice(),
+                    info.tail_sample.as_slice(),
+                    info.size_bytes,
+                )
+            })
         })
         .collect();
     if samples.len() < 2 {
         return None;
     }
-    let (head0, size0) = samples[0];
-    // Prefer the first run whose head bytes differ from run0 (most
-    // actionable signal — points at the exact PE/tar/zip header
-    // offset). Fall back to size or hash divergence reports when all
-    // runs share the same head sample.
+    let (head0, tail0, size0) = samples[0];
     if let Some((idx, head_n, offset)) =
         samples
             .iter()
             .enumerate()
             .skip(1)
-            .find_map(|(idx, &(head_n, _))| {
+            .find_map(|(idx, &(head_n, _, _))| {
                 let common = head0.len().min(head_n.len());
                 (0..common)
                     .find(|&i| head0[i] != head_n[i])
@@ -1127,13 +1158,11 @@ fn summarize_drift(
             offset, head0[offset], head_n[offset]
         ));
     }
-    // No head-byte divergence. Check head-length divergence next
-    // (truncated payload at the very start — rare but possible).
     if let Some((idx, head_n)) = samples
         .iter()
         .enumerate()
         .skip(1)
-        .find_map(|(idx, &(head_n, _))| (head_n.len() != head0.len()).then_some((idx, head_n)))
+        .find_map(|(idx, &(head_n, _, _))| (head_n.len() != head0.len()).then_some((idx, head_n)))
     {
         return Some(format!(
             "head samples differ in length: run0={} bytes, run{idx}={} bytes",
@@ -1141,25 +1170,52 @@ fn summarize_drift(
             head_n.len()
         ));
     }
-    // Heads are bit-identical; drift is past the captured window. If
-    // total sizes also differ, surface those — otherwise it's a
-    // trailing-bytes-only diff (signatures, trailing checksums, etc.).
+    // Heads match. Check the tail window for trailing-section drift.
+    // Only meaningful when both runs captured a non-empty tail and
+    // total sizes agree (otherwise the size-diff branch below is more
+    // informative — different EOFs make tail offsets compare apples
+    // to oranges).
+    if !tail0.is_empty()
+        && let Some((idx, tail_n, offset)) =
+            samples
+                .iter()
+                .enumerate()
+                .skip(1)
+                .find_map(|(idx, &(_, tail_n, size_n))| {
+                    if tail_n.is_empty() || size_n != size0 || tail_n.len() != tail0.len() {
+                        return None;
+                    }
+                    (0..tail0.len())
+                        .find(|&i| tail0[i] != tail_n[i])
+                        .map(|off| (idx, tail_n, off))
+                })
+    {
+        let from_end = tail0.len() - offset;
+        return Some(format!(
+            "tail diff at -{:#x} from end (size {}, run0={:#04x}, run{idx}={:#04x})",
+            from_end, size0, tail0[offset], tail_n[offset]
+        ));
+    }
     if let Some((idx, size_n)) = samples
         .iter()
         .enumerate()
         .skip(1)
-        .find_map(|(idx, &(_, size_n))| (size_n != size0).then_some((idx, size_n)))
+        .find_map(|(idx, &(_, _, size_n))| (size_n != size0).then_some((idx, size_n)))
     {
         return Some(format!(
-            "no diff in first {} bytes; total size run0={} run{idx}={} (diff outside head window)",
+            "no diff in first {} or last {} bytes; total size run0={} run{idx}={} \
+             (drift in un-sampled middle)",
             head0.len(),
+            tail0.len(),
             size0,
             size_n
         ));
     }
     Some(format!(
-        "no diff in first {} bytes; sizes equal at {} bytes (diff is past the head window)",
+        "no diff in first {} or last {} bytes; sizes equal at {} bytes \
+         (drift in un-sampled middle)",
         head0.len(),
+        tail0.len(),
         size0
     ))
 }
@@ -1295,6 +1351,11 @@ mod tests {
                     hasher.update(bytes);
                     let digest = format!("sha256:{:x}", hasher.finalize());
                     let head_len = bytes.len().min(HEAD_SAMPLE_BYTES);
+                    let tail_sample = if bytes.len() > HEAD_SAMPLE_BYTES + TAIL_SAMPLE_BYTES {
+                        bytes[bytes.len() - TAIL_SAMPLE_BYTES..].to_vec()
+                    } else {
+                        Vec::new()
+                    };
                     map.insert(
                         name.into(),
                         ArtifactInfo {
@@ -1303,6 +1364,7 @@ mod tests {
                             relative_path: format!("dist/{}", name),
                             stage: infer_stage_from_path(name),
                             head_sample: bytes[..head_len].to_vec(),
+                            tail_sample,
                         },
                     );
                 }
