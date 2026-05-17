@@ -576,12 +576,25 @@ pub fn setup_env(
 ///
 /// GoReleaser always writes this, including in dry-run mode (effectiveconfig.go).
 /// Shared by `release` and `build` pipelines so both surface the same artifact.
+///
+/// Two runs of the determinism harness must emit a byte-identical
+/// `config.yaml`. The `Config` type carries many `HashMap<String, _>` fields
+/// (`docker.labels`, `docker.build_args`, `variables`, `nfpm.dependencies`,
+/// announcer `extra`, custom headers, …) whose iteration order is randomized
+/// per process. We serialize to a `serde_yaml_ng::Value` first, then
+/// recursively sort every mapping's keys alphabetically, then emit the
+/// canonical form. Centralised here so adding a new HashMap field anywhere
+/// in `Config` is automatically covered without a per-field `serialize_with`
+/// attribute.
 pub fn write_effective_config(config: &Config, log: &StageLogger) -> Result<()> {
     let dist = &config.dist;
     std::fs::create_dir_all(dist)
         .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
     let effective_path = dist.join("config.yaml");
-    let yaml = serde_yaml_ng::to_string(config).context("failed to serialize effective config")?;
+    let mut value: serde_yaml_ng::Value =
+        serde_yaml_ng::to_value(config).context("failed to serialize effective config")?;
+    sort_yaml_mapping(&mut value);
+    let yaml = serde_yaml_ng::to_string(&value).context("failed to serialize effective config")?;
     std::fs::write(&effective_path, &yaml)
         .with_context(|| format!("failed to write {}", effective_path.display()))?;
     log.verbose(&format!(
@@ -589,6 +602,48 @@ pub fn write_effective_config(config: &Config, log: &StageLogger) -> Result<()> 
         effective_path.display()
     ));
     Ok(())
+}
+
+/// Recursively sort every `Value::Mapping` entry by key.
+///
+/// `serde_yaml_ng::Mapping` is an `IndexMap` (insertion-ordered), so the
+/// emit order is whatever order serde visited the source. For
+/// `HashMap<String, _>` fields that order is randomized per process — fatal
+/// for the determinism harness, which fingerprints `dist/config.yaml`. This
+/// helper rebuilds each mapping in sort order (lexicographically by the
+/// `Display` form of `Value`, which for `String` keys is the underlying
+/// string — the only mapping-key shape the `Config` type produces).
+fn sort_yaml_mapping(value: &mut serde_yaml_ng::Value) {
+    use serde_yaml_ng::{Mapping, Value};
+    match value {
+        Value::Mapping(map) => {
+            let mut entries: Vec<(Value, Value)> = std::mem::take(map).into_iter().collect();
+            entries.sort_by_key(|(a, _)| yaml_key_sort_key(a));
+            let mut sorted = Mapping::with_capacity(entries.len());
+            for (k, mut v) in entries {
+                sort_yaml_mapping(&mut v);
+                sorted.insert(k, v);
+            }
+            *map = sorted;
+        }
+        Value::Sequence(seq) => {
+            for v in seq.iter_mut() {
+                sort_yaml_mapping(v);
+            }
+        }
+        Value::Tagged(tagged) => sort_yaml_mapping(&mut tagged.value),
+        _ => {}
+    }
+}
+
+/// Stable string-keyed sort for YAML mapping entries. Strings compare on
+/// their UTF-8 bytes (the common case); every other `Value` flavour falls
+/// back to its `Debug` rendering so the order is at least deterministic.
+fn yaml_key_sort_key(v: &serde_yaml_ng::Value) -> String {
+    match v {
+        serde_yaml_ng::Value::String(s) => s.clone(),
+        other => format!("{:?}", other),
+    }
 }
 
 /// Print the artifact size report if `report_sizes` is enabled in config.
@@ -853,6 +908,131 @@ mod tests {
     use anodizer_core::config::{ChangelogConfig, CrateConfig, SignConfig};
     use anodizer_core::context::ContextOptions;
     use anodizer_core::scm::ScmTokenType;
+
+    /// `Config.variables` is a `HashMap<String, String>` whose iteration order
+    /// is randomized per process. The determinism harness fingerprints
+    /// `dist/config.yaml`, so two runs in the same workspace must emit
+    /// byte-identical YAML. `write_effective_config` is expected to route
+    /// the serialized config through `sort_yaml_mapping`, alphabetising the
+    /// keys of every mapping (top-level AND nested). Without that, the
+    /// `variables:` block's emit order tracks HashMap randomness and drifts.
+    #[test]
+    fn write_effective_config_emits_sorted_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut variables = HashMap::new();
+        // Insert in deliberately non-alphabetical order so the test would
+        // pass on raw HashMap iteration only by luck (1 / N!).
+        variables.insert("zeta".to_string(), "1".to_string());
+        variables.insert("alpha".to_string(), "2".to_string());
+        variables.insert("mu".to_string(), "3".to_string());
+        variables.insert("beta".to_string(), "4".to_string());
+        variables.insert("nu".to_string(), "5".to_string());
+        let config = Config {
+            project_name: "anodize".to_string(),
+            dist: tmp.path().to_path_buf(),
+            variables: Some(variables),
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+
+        // Build a second config with the same contents inserted in REVERSE
+        // order. Two HashMaps containing the same keys may still iterate
+        // differently depending on insertion history; the sort step must
+        // collapse both to the same byte stream.
+        let mut variables_reversed = HashMap::new();
+        for key in ["nu", "beta", "mu", "alpha", "zeta"] {
+            let v = match key {
+                "zeta" => "1",
+                "alpha" => "2",
+                "mu" => "3",
+                "beta" => "4",
+                "nu" => "5",
+                _ => unreachable!(),
+            };
+            variables_reversed.insert(key.to_string(), v.to_string());
+        }
+        let config_reversed = Config {
+            variables: Some(variables_reversed),
+            ..config.clone()
+        };
+
+        write_effective_config(&config, &log).expect("first write");
+        let yaml1 = std::fs::read_to_string(tmp.path().join("config.yaml")).unwrap();
+        // Second write into the same dist with reversed-insertion variables.
+        write_effective_config(&config_reversed, &log).expect("second write");
+        let yaml2 = std::fs::read_to_string(tmp.path().join("config.yaml")).unwrap();
+        assert_eq!(
+            yaml1, yaml2,
+            "two write_effective_config calls with identical input keys \
+             must produce byte-identical YAML regardless of HashMap \
+             insertion order (HashMap-iteration drift would fail this)"
+        );
+
+        // And the variables block keys must be alphabetical.
+        let var_block_lines: Vec<&str> = yaml1
+            .lines()
+            .skip_while(|l| !l.starts_with("variables:"))
+            .skip(1)
+            .take_while(|l| l.starts_with("  ") || l.starts_with('\t'))
+            .collect();
+        let keys: Vec<&str> = var_block_lines
+            .iter()
+            .filter_map(|l| l.trim().split(':').next())
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["alpha", "beta", "mu", "nu", "zeta"],
+            "variables: keys must be emitted in alphabetical order; got {:?} \
+             from yaml:\n{}",
+            keys,
+            yaml1,
+        );
+    }
+
+    /// Recursive guard: the harness's drift channel is most often a *nested*
+    /// HashMap (e.g. `docker.labels`, `nfpm.dependencies`,
+    /// `announce.<flavour>.headers`). `sort_yaml_mapping` must walk into
+    /// sub-mappings AND into sequences-of-mappings. Hand-crafted
+    /// `serde_yaml_ng::Value` to exercise both axes.
+    #[test]
+    fn sort_yaml_mapping_recurses_into_nested_maps_and_sequences() {
+        let yaml = "\
+top:
+  z: 1
+  a: 2
+list:
+  - inner_z: 1
+    inner_a: 2
+  - solo: 3
+";
+        let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_str(yaml).unwrap();
+        sort_yaml_mapping(&mut value);
+        let out = serde_yaml_ng::to_string(&value).unwrap();
+        // Top-level keys: list comes before top alphabetically.
+        let first_line = out.lines().next().unwrap();
+        assert!(
+            first_line.starts_with("list:"),
+            "top-level keys must be sorted alphabetically; got {out:?}"
+        );
+        // Sub-mapping under `top:` must be sorted (a before z).
+        let top_pos = out.find("top:").unwrap();
+        let top_block = &out[top_pos..];
+        let a_pos = top_block.find("a:").expect("a: present");
+        let z_pos = top_block.find("z:").expect("z: present");
+        assert!(
+            a_pos < z_pos,
+            "nested mapping under `top:` must be sorted; got {out:?}"
+        );
+        // Sub-mapping inside the first list element must also be sorted.
+        let list_pos = out.find("list:").unwrap();
+        let list_block = &out[list_pos..];
+        let inner_a = list_block.find("inner_a:").expect("inner_a: present");
+        let inner_z = list_block.find("inner_z:").expect("inner_z: present");
+        assert!(
+            inner_a < inner_z,
+            "nested mapping inside a sequence element must be sorted; got {out:?}"
+        );
+    }
 
     fn make_crate(name: &str) -> CrateConfig {
         CrateConfig {

@@ -258,6 +258,34 @@ impl ArtifactRegistry {
             artifact.name.clone()
         };
 
+        // Relativize absolute paths to the current working directory so the
+        // determinism harness produces byte-identical `artifacts.json` across
+        // runs that operate in different worktrees. Mirrors GoReleaser's
+        // `shouldRelPath` / `relPath` in `internal/artifact/artifact.go:529-547`.
+        //
+        // Without this, raw cargo binaries register paths like
+        // `/tmp/anodize-determinism-12345-0/.det-tmp/target/<triple>/release/<bin>`
+        // — the leading `/tmp/anodize-determinism-<pid>-<idx>` prefix differs
+        // every run and drifts `dist/artifacts.json` even when the bytes of
+        // every other artifact match.
+        //
+        // Guard against cwd being the filesystem root (`/` on Unix, `C:\` on
+        // Windows): in that degenerate case every absolute path "starts with
+        // cwd" but stripping the leading separator yields a path that no
+        // longer resolves under the original cwd. We detect root via
+        // `parent().is_none()` (works cross-platform) and skip the
+        // relativization — production never runs from `/`, but a small
+        // number of unit tests do (e.g. `stage-source`'s
+        // `test_stage_run_does_not_depend_on_cwd`).
+        if should_relativize_path(artifact.kind)
+            && artifact.path.is_absolute()
+            && let Ok(cwd) = std::env::current_dir()
+            && cwd.parent().is_some()
+            && let Ok(rel) = artifact.path.strip_prefix(&cwd)
+        {
+            artifact.path = rel.to_path_buf();
+        }
+
         // Normalize path: convert to forward slashes for cross-platform consistency.
         let path_str = artifact.path.to_string_lossy().replace('\\', "/");
         artifact.path = PathBuf::from(path_str);
@@ -462,6 +490,24 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
 /// Check if an artifact kind is uploadable.
 fn is_uploadable(kind: ArtifactKind) -> bool {
     uploadable_kinds().contains(&kind)
+}
+
+/// Should the `add()` path normaliser convert an absolute path into a path
+/// relative to the current working directory? Mirrors GoReleaser's
+/// `shouldRelPath` in `internal/artifact/artifact.go:540-547`: Docker image
+/// "paths" are actually image refs (e.g. `repo/name:tag`) and must pass
+/// through untouched. Every other kind is a real on-disk file whose absolute
+/// path would otherwise leak the (per-run) worktree prefix into
+/// `dist/artifacts.json`.
+fn should_relativize_path(kind: ArtifactKind) -> bool {
+    !matches!(
+        kind,
+        ArtifactKind::DockerImage
+            | ArtifactKind::DockerImageV2
+            | ArtifactKind::PublishableDockerImage
+            | ArtifactKind::DockerManifest
+            | ArtifactKind::DockerDigest
+    )
 }
 
 /// Return `true` for signature/certificate artifacts produced by the
@@ -707,6 +753,78 @@ mod tests {
         let second = &arr[1];
         assert_eq!(second["kind"], "checksum");
         assert!(second["target"].is_null());
+    }
+
+    /// Regression for the determinism harness drift on `dist/artifacts.json`.
+    /// Two harness runs use different worktrees (e.g.
+    /// `/tmp/anodize-determinism-11193-0` vs `…-22847-0`) and CARGO_TARGET_DIR
+    /// is an absolute per-worktree path; `Artifact.path` for raw cargo binaries
+    /// is therefore absolute. Without the `add()`-time relativization, the
+    /// worktree prefix would land in `artifacts.json` and the two runs would
+    /// disagree on that byte sequence even when every other artifact matches.
+    /// Mirrors GoReleaser's `shouldRelPath` / `relPath`
+    /// (`internal/artifact/artifact.go:529-560`).
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn to_artifacts_json_strips_absolute_worktree_prefix() {
+        let cwd_guard = tempfile::tempdir().unwrap();
+        let original_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd_guard.path()).unwrap();
+        // current_dir() returns a canonicalized path on most platforms; mirror
+        // that so strip_prefix matches what add() will compute internally.
+        let canonical_cwd = std::env::current_dir().unwrap();
+        let abs = canonical_cwd
+            .join("dist")
+            .join("anodize-1.0.0-linux-amd64.tar.gz");
+
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: abs,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "anodize".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let json = registry.to_artifacts_json().unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(
+            arr[0]["path"], "dist/anodize-1.0.0-linux-amd64.tar.gz",
+            "absolute worktree prefix must be stripped at add() time so two \
+             determinism-harness runs at different worktree paths produce \
+             byte-identical artifacts.json"
+        );
+
+        std::env::set_current_dir(original_cwd).unwrap();
+    }
+
+    /// Docker image "paths" are image refs (`repo/name:tag`), not on-disk
+    /// files. The `add()` path normaliser must NOT touch them — stripping a
+    /// `/` prefix off `repo/name:tag` would corrupt downstream stages that
+    /// `docker push` the value verbatim. Mirrors `shouldRelPath`'s
+    /// docker-kind carve-out.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn to_artifacts_json_preserves_docker_image_refs() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            name: "myorg/myimage:v1.2.3".to_string(),
+            path: PathBuf::from("/myorg/myimage:v1.2.3"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let json = registry.to_artifacts_json().unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(
+            arr[0]["path"], "/myorg/myimage:v1.2.3",
+            "docker image refs are pass-through and must not be relativized"
+        );
     }
 
     #[test]
