@@ -226,8 +226,8 @@ Full documentation is available at **[tj-smith47.github.io/anodizer](https://tj-
 
 Operator guides:
 
-- [Release resilience guide](docs/site/content/docs/advanced/release-resilience.md) - three-group publisher dispatch, Submitter gate, rollback, replay-from-run
-- [Determinism guide](docs/site/content/docs/advanced/determinism.md) - byte-stability contract, `anodizer check determinism` harness, runtime allow-list
+- [Release resilience guide](https://tj-smith47.github.io/anodizer/docs/advanced/release-resilience/) - three-group publisher dispatch, Submitter gate, rollback, replay-from-run
+- [Determinism guide](https://tj-smith47.github.io/anodizer/docs/advanced/determinism/) - byte-stability contract, `anodizer check determinism` harness, runtime allow-list
 
 ## License
 
