@@ -984,7 +984,9 @@ fn hash_artifacts(
 /// shells to a child process), so it infers from filename extension and
 /// path conventions. Falls back to `"unknown"` when nothing matches.
 fn infer_stage_from_path(rel: &str) -> String {
-    let lower = rel.to_lowercase();
+    // Normalize Windows backslashes so the contains/starts_with checks
+    // below match regardless of host platform.
+    let lower = rel.replace('\\', "/").to_lowercase();
     // Raw cargo build output under `<worktree>/.det-tmp/target/...` —
     // attribute to `build` so the report makes the source-of-drift
     // chain explicit (build → archive → checksum → sign).
@@ -1235,6 +1237,12 @@ mod tests {
         assert_eq!(infer_stage_from_path("dist/checksums.txt"), "checksum");
         assert_eq!(infer_stage_from_path("dist/SHA256SUMS"), "checksum");
         assert_eq!(infer_stage_from_path("dist/mystery.bin"), "unknown");
+        // Windows-native separators must still classify correctly.
+        assert_eq!(
+            infer_stage_from_path(".det-tmp\\target\\x86_64-pc-windows-msvc\\release\\anodize.exe"),
+            "build"
+        );
+        assert_eq!(infer_stage_from_path("dist\\foo.tar.gz"), "archive");
     }
 
     #[test]
