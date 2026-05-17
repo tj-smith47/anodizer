@@ -795,13 +795,37 @@ fn allow_listed_path() -> String {
 
 /// Walk `<worktree>/dist` and collect every regular file. Sorted by path
 /// for deterministic iteration order in tests.
+///
+/// Also surfaces the **raw cargo build outputs** at
+/// `<worktree>/.det-tmp/target/<triple>/release/<bin>` (or
+/// `<worktree>/.det-tmp/target/release/<bin>` when the build wasn't
+/// `--target`-pinned). These are the SOURCE of any RUSTFLAGS / mtime /
+/// build-script drift that later propagates into every wrapped archive
+/// (`.tar.gz`, `.tar.xz`, `.zip`, ...). Hashing them directly lets the
+/// report point a finger at the raw binary instead of the operator
+/// having to peel six layers of containers to find that the underlying
+/// `target/release/anodize` was nondeterministic. Path-remapping
+/// (`--remap-path-prefix`) is already applied via the env block, so on
+/// a healthy run these hashes will match; if they ever drift, we want
+/// the diagnostic chain to start here.
+///
+/// The function only walks the immediate `release/` directory (not
+/// `deps/`, `build/`, `.fingerprint/`, etc.) and filters to files
+/// without an extension or with `.exe` — anodize ships single-binary
+/// crates, so this surfaces the actual `anodize` / `anodize.exe`
+/// without dragging in cargo's incremental-build scratch.
 fn discover_artifacts(worktree_path: &Path) -> Result<Vec<PathBuf>> {
-    let dist = worktree_path.join("dist");
     let mut out = Vec::new();
-    if !dist.exists() {
-        return Ok(out);
+    let dist = worktree_path.join("dist");
+    if dist.exists() {
+        visit_dir(&dist, &mut out)?;
     }
-    visit_dir(&dist, &mut out)?;
+
+    let target_root = worktree_path.join(".det-tmp").join("target");
+    if target_root.exists() {
+        collect_raw_binaries(&target_root, &mut out)?;
+    }
+
     out.sort();
     Ok(out)
 }
@@ -821,31 +845,126 @@ fn visit_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// SHA256 every artifact and return `{basename -> info}`. Map keyed on
-/// basename matches the spec's allow-list pattern semantics (glob/exact
-/// matches operate on the file name, not the full path).
+/// Collect raw cargo release binaries from `<cargo_target>/[<triple>/]release/`.
+///
+/// Two layouts to support:
+///
+/// - `<cargo_target>/release/<bin>` — host build, no `--target` flag.
+/// - `<cargo_target>/<triple>/release/<bin>` — cross-target build.
+///
+/// We only emit the top-level files inside each `release/` directory.
+/// `release/deps`, `release/build`, `release/.fingerprint`, etc. are
+/// cargo's internal scratch and not what we want to fingerprint for
+/// drift detection.
+///
+/// File filter: regular files whose extension is empty (`anodize`) or
+/// `.exe` (`anodize.exe`). Excludes `.d` (depfiles), `.pdb` (debug
+/// symbols), `.rlib`, etc. — those are tooling byproducts, not the
+/// shippable binary that lands in archives.
+fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    // Top-level entries under <cargo_target>/. Each is either a triple
+    // directory (cross build) OR `release` / `debug` (host build).
+    let entries = match std::fs::read_dir(target_root) {
+        Ok(e) => e,
+        // Race / cleanup raced us — treat as empty.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", target_root.display())),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_s = name.to_string_lossy();
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if name_s == "release" {
+            // Host build, no --target.
+            push_release_dir_files(&entry.path(), out)?;
+        } else if name_s == "debug"
+            || name_s == ".rustc_info.json"
+            || name_s == "CACHEDIR.TAG"
+            || name_s.starts_with('.')
+        {
+            // Skip debug builds and cargo metadata.
+            continue;
+        } else {
+            // Treat as a target triple — look for <triple>/release/.
+            let release_dir = entry.path().join("release");
+            if release_dir.is_dir() {
+                push_release_dir_files(&release_dir, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn push_release_dir_files(release_dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in std::fs::read_dir(release_dir)
+        .with_context(|| format!("reading {}", release_dir.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            // deps/, build/, .fingerprint/, examples/ — cargo scratch,
+            // not the shippable binary.
+            continue;
+        }
+        let path = entry.path();
+        match path.extension().and_then(|s| s.to_str()) {
+            // anodize binary (Unix: no extension) — include.
+            None => out.push(path),
+            // anodize.exe (Windows) — include.
+            Some("exe") => out.push(path),
+            // .d depfiles, .pdb debug symbols, .rlib, .rmeta, etc. —
+            // cargo build byproducts, not what gets shipped.
+            _ => continue,
+        }
+    }
+    Ok(())
+}
+
+/// SHA256 every artifact and return `{name -> info}`.
+///
+/// Map keys are usually the artifact basename (matching the spec's
+/// allow-list pattern semantics — glob/exact matches operate on the
+/// file name). Raw cargo binaries under `<worktree>/.det-tmp/target`
+/// get a `target/<triple>/<bin>` (or `target/release/<bin>` for host
+/// builds) prefix so the report unambiguously distinguishes
+/// `dist/anodize` (the shipped binary inside an archive) from
+/// `target/<triple>/anodize` (the raw cargo output that flows INTO
+/// the archive). Without the prefix, a reader of the report can't
+/// tell which file's hash they're looking at when both kinds exist.
 fn hash_artifacts(
     worktree_path: &Path,
     paths: &[PathBuf],
 ) -> Result<BTreeMap<String, ArtifactInfo>> {
     use sha2::{Digest, Sha256};
     let mut out = BTreeMap::new();
+    let target_root = worktree_path.join(".det-tmp").join("target");
     for p in paths {
         let bytes =
             std::fs::read(p).with_context(|| format!("reading artifact {}", p.display()))?;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
         let digest = format!("sha256:{:x}", hasher.finalize());
-        let name = p
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
         let relative = p
             .strip_prefix(worktree_path)
             .unwrap_or(p)
             .to_string_lossy()
             .into_owned();
+        let name = if let Ok(under_target) = p.strip_prefix(&target_root) {
+            // Raw cargo binary: prefix with `target/` and the
+            // <triple>/release/ (or release/) segments so the report
+            // surfaces it distinctly from any `dist/` artifact of the
+            // same basename. Forward slashes regardless of platform
+            // (matches `Artifact::to_artifacts_json` normalization).
+            let suffix = under_target.to_string_lossy().replace('\\', "/");
+            format!("target/{}", suffix)
+        } else {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        };
         let stage = infer_stage_from_path(&relative);
         out.insert(
             name,
@@ -866,6 +985,12 @@ fn hash_artifacts(
 /// path conventions. Falls back to `"unknown"` when nothing matches.
 fn infer_stage_from_path(rel: &str) -> String {
     let lower = rel.to_lowercase();
+    // Raw cargo build output under `<worktree>/.det-tmp/target/...` —
+    // attribute to `build` so the report makes the source-of-drift
+    // chain explicit (build → archive → checksum → sign).
+    if lower.contains("/.det-tmp/target/") || lower.starts_with(".det-tmp/target/") {
+        return "build".into();
+    }
     if lower.ends_with(".sig") || lower.ends_with(".pem") || lower.ends_with(".cert") {
         "sign".into()
     } else if lower.contains("checksums")
@@ -1310,6 +1435,135 @@ mod tests {
             b"hello world".len() + 1,
             "exactly one byte must be appended"
         );
+    }
+
+    /// `discover_artifacts` MUST surface raw cargo binaries from
+    /// `<worktree>/.det-tmp/target/<triple>/release/<bin>` AND
+    /// `<worktree>/.det-tmp/target/release/<bin>`, alongside `dist/`
+    /// artifacts, with the raw binaries getting a `target/...` map key
+    /// prefix so the report distinguishes them from any same-basename
+    /// `dist/` files. Closes the diagnostic gap where binary-level
+    /// RUSTFLAGS / mtime drift was only observable through six layers
+    /// of wrapper archives.
+    #[test]
+    fn discover_artifacts_includes_raw_cargo_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path();
+
+        // dist artifact (existing surface)
+        let dist = wt.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("anodize_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();
+
+        // Cross-target build outputs
+        let triple_release = wt
+            .join(".det-tmp")
+            .join("target")
+            .join("x86_64-unknown-linux-gnu")
+            .join("release");
+        std::fs::create_dir_all(&triple_release).unwrap();
+        std::fs::write(triple_release.join("anodize"), b"raw-bin-linux").unwrap();
+        // depfile must NOT be surfaced (cargo scratch).
+        std::fs::write(triple_release.join("anodize.d"), b"depfile").unwrap();
+        // `deps/` subdirectory must NOT be recursed (cargo scratch).
+        std::fs::create_dir_all(triple_release.join("deps")).unwrap();
+        std::fs::write(triple_release.join("deps").join("libfoo.rlib"), b"rlib").unwrap();
+
+        // Windows-style triple with .exe
+        let win_release = wt
+            .join(".det-tmp")
+            .join("target")
+            .join("x86_64-pc-windows-msvc")
+            .join("release");
+        std::fs::create_dir_all(&win_release).unwrap();
+        std::fs::write(win_release.join("anodize.exe"), b"raw-bin-windows").unwrap();
+        // .pdb debug symbols must NOT be surfaced.
+        std::fs::write(win_release.join("anodize.pdb"), b"pdb").unwrap();
+
+        // Host build (no triple): target/release/anodize.
+        let host_release = wt.join(".det-tmp").join("target").join("release");
+        std::fs::create_dir_all(&host_release).unwrap();
+        std::fs::write(host_release.join("anodize"), b"raw-bin-host").unwrap();
+
+        let artifacts = discover_artifacts(wt).expect("discover");
+        let names: Vec<String> = artifacts
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "anodize_0.3.0_linux_amd64.tar.gz"),
+            "dist artifact missing: {names:?}"
+        );
+        // Three raw binaries: linux triple, windows triple, host release.
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "anodize").count(),
+            2,
+            "expected 2 `anodize` raw binaries (linux + host), got: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "anodize.exe"),
+            "windows raw binary missing: {names:?}"
+        );
+
+        // Scratch files must NOT be surfaced.
+        for forbidden in ["anodize.d", "anodize.pdb", "libfoo.rlib"] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "cargo scratch `{forbidden}` leaked into discovery: {names:?}"
+            );
+        }
+
+        // hash_artifacts must label the raw binaries with a `target/...`
+        // map key so the report distinguishes them from `dist/`.
+        let map = hash_artifacts(wt, &artifacts).expect("hash");
+        let target_keys: Vec<&String> = map.keys().filter(|k| k.starts_with("target/")).collect();
+        assert_eq!(
+            target_keys.len(),
+            3,
+            "expected 3 `target/...`-prefixed map keys, got: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        // Forward slashes regardless of host platform.
+        for k in &target_keys {
+            assert!(
+                !k.contains('\\'),
+                "raw-binary map key contains backslash: {k}"
+            );
+        }
+        // Spot-check one key shape.
+        assert!(
+            target_keys
+                .iter()
+                .any(|k| { k.as_str() == "target/x86_64-unknown-linux-gnu/release/anodize" }),
+            "expected `target/x86_64-unknown-linux-gnu/release/anodize` key, got: {target_keys:?}"
+        );
+        // Raw binaries get `build` stage attribution so the diagnostic
+        // chain reads build → archive → checksum → sign.
+        for k in &target_keys {
+            assert_eq!(
+                map.get(k.as_str()).map(|i| i.stage.as_str()),
+                Some("build"),
+                "raw binary `{k}` must be attributed to `build` stage"
+            );
+        }
+    }
+
+    /// `discover_artifacts` must tolerate a missing `.det-tmp/target`
+    /// (e.g. the harness has only just spawned and the child hasn't
+    /// produced anything yet) — it shouldn't error out.
+    #[test]
+    fn discover_artifacts_tolerates_missing_target_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path();
+        // Just dist/, no .det-tmp/.
+        let dist = wt.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("foo.tar.gz"), b"x").unwrap();
+        let out = discover_artifacts(wt).expect("must not error on missing target dir");
+        assert_eq!(out.len(), 1);
     }
 
     // ── I7 — build_subprocess_env env allow-list ─────────────────────────

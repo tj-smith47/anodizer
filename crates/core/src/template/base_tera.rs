@@ -379,6 +379,10 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // time(format="%Y-%m-%d") — current UTC time formatted
     // Also accepts Go time format layout (e.g. "2006-01-02") and translates
     // to chrono strftime before formatting.
+    //
+    // SDE-aware: honors `SOURCE_DATE_EPOCH` so user templates that embed
+    // `{{ time(format="2006-01-02") }}` in artifact names or metadata
+    // produce byte-stable output under the determinism harness.
     tera.register_function(
         "time",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -387,7 +391,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .and_then(|v| v.as_str())
                 .unwrap_or("%Y-%m-%dT%H:%M:%SZ");
             let chrono_fmt = translate_go_time_format(fmt);
-            let now = chrono::Utc::now();
+            let now = crate::sde::resolve_now();
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );
@@ -1113,6 +1117,10 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // Accepts both Go time layout (e.g. "2006-01-02") and chrono strftime
     // (e.g. "%Y-%m-%d"). The piped value (Now) is ignored — the filter always
     // uses the current UTC time, matching GoReleaser's `.Now.Format` behavior.
+    //
+    // SDE-aware: honors `SOURCE_DATE_EPOCH` so the harness's two from-clean
+    // rebuilds produce identical output for templates like
+    // `{{ Now | now_format(format="2006-01-02") }}`.
     tera.register_filter(
         "now_format",
         |_value: &Value, args: &HashMap<String, Value>| {
@@ -1121,7 +1129,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("now_format requires a `format` argument"))?;
             let chrono_fmt = translate_go_time_format(fmt);
-            let now = chrono::Utc::now();
+            let now = crate::sde::resolve_now();
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
         },
     );

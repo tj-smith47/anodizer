@@ -11,7 +11,6 @@ use anodizer_core::git;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template;
 use anyhow::{Context as _, Result};
-use chrono::Utc;
 use std::path::PathBuf;
 
 pub struct ReleaseOpts {
@@ -596,7 +595,14 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // Apply nightly overrides after git vars are populated.
     if ctx.is_nightly() {
         let nightly_cfg = config.nightly.as_ref();
-        let date_str = Utc::now().format("%Y%m%d").to_string();
+        // SDE-aware: the nightly date stamp ends up in artifact filenames
+        // (e.g. `anodize-nightly.20260517.tar.gz`), so it must honor
+        // `SOURCE_DATE_EPOCH` to keep the harness's two from-clean rebuilds
+        // byte-stable. `Utc::now()` would re-roll the suffix on the second
+        // run and surface as cross-the-board archive drift.
+        let date_str = anodizer_core::sde::resolve_now()
+            .format("%Y%m%d")
+            .to_string();
 
         // Build the nightly version: take existing Version (major.minor.patch) and append
         // the nightly prerelease suffix.

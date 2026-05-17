@@ -28,6 +28,7 @@ pub mod publisher;
 pub mod redact;
 pub mod retry;
 pub mod scm;
+pub mod sde;
 pub mod signing;
 pub mod stage;
 pub mod target;

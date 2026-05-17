@@ -397,7 +397,10 @@ Source0:        {source_name}
 * {date} {maintainer} - {version_field}-1
 - Release {version_field}
 "#,
-        date = chrono::Utc::now().format("%a %b %d %Y"),
+        // SDE-aware: honor SOURCE_DATE_EPOCH so the spec's %changelog
+        // header is byte-stable across reproducible-build runs. Wall-
+        // clock fallback when SDE is unset matches the legacy behavior.
+        date = anodizer_core::sde::resolve_now().format("%a %b %d %Y"),
     )
 }
 
@@ -477,6 +480,37 @@ mod tests {
     // build_host/pretrans/posttrans/import_path/bins) must be folded into
     // the auto-generated default spec, not only into the user-supplied
     // `spec_file:` template surface.
+    /// `generate_default_spec` must honor `SOURCE_DATE_EPOCH` for the
+    /// `%changelog` header date — without this, two from-clean
+    /// determinism-harness rebuilds emit `*.spec` files with different
+    /// `* <date> ...` lines, drifting the SRPM and every downstream
+    /// archive that bundles it.
+    #[test]
+    fn test_generate_default_spec_honors_sde_for_changelog_date() {
+        // Serialize env mutation; cargo test runs tests in parallel
+        // within a single binary, and SOURCE_DATE_EPOCH is read by other
+        // code paths (e.g. populate_time_vars in core).
+        let _g = sde_env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: single-threaded section, guarded by the mutex above.
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
+
+        let cfg = SrpmConfig::default();
+        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        // 1715000000 → 2024-05-06 Mon (UTC).
+        assert!(
+            spec.contains("* Mon May 06 2024"),
+            "spec %changelog must use SDE-derived date; got:\n{spec}"
+        );
+
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+    }
+
+    fn sde_env_mutex() -> &'static std::sync::Mutex<()> {
+        use std::sync::{Mutex, OnceLock};
+        static M: OnceLock<Mutex<()>> = OnceLock::new();
+        M.get_or_init(|| Mutex::new(()))
+    }
+
     #[test]
     fn test_generate_default_spec_emits_new_rpm_fields() {
         let cfg = SrpmConfig {

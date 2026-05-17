@@ -1933,6 +1933,42 @@ fn test_time_chrono_format_still_works() {
     );
 }
 
+/// SDE-aware Tera helpers: when `SOURCE_DATE_EPOCH` is set, both the
+/// `time(...)` function AND the `now_format` filter must derive their
+/// timestamp from it instead of reading wall-clock `Utc::now()`. The
+/// determinism harness sets SDE on every child build subprocess, so user
+/// templates like `{{ time(format="2006-01-02") }}` flowing into artifact
+/// names must produce byte-stable output across reruns.
+#[test]
+#[serial_test::serial(env)]
+fn test_time_function_honors_source_date_epoch() {
+    let vars = test_vars();
+    // 1715000000 → 2024-05-06 (UTC).
+    // SAFETY: serialized via the env_source_date_epoch group.
+    unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
+    let result = render("{{ time(format=\"%Y-%m-%d\") }}", &vars).unwrap();
+    assert_eq!(
+        result, "2024-05-06",
+        "time() must honor SOURCE_DATE_EPOCH; got: {result}"
+    );
+    unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+}
+
+#[test]
+#[serial_test::serial(env)]
+fn test_now_format_filter_honors_source_date_epoch() {
+    let mut vars = test_vars();
+    vars.set("Now", "ignored");
+    // SAFETY: serialized via the env_source_date_epoch group.
+    unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
+    let result = render("{{ Now | now_format(format=\"%Y-%m-%d\") }}", &vars).unwrap();
+    assert_eq!(
+        result, "2024-05-06",
+        "now_format must honor SOURCE_DATE_EPOCH; got: {result}"
+    );
+    unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+}
+
 // --- now_format filter tests ---
 
 #[test]
