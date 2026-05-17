@@ -144,3 +144,19 @@ base64 = "0.22"
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "rustls-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"] }
+
+# Determinism: strip the embedded debug-info section from release
+# binaries. On Windows+MSVC, rustc emits a CodeView entry that records
+# (a) the absolute path to the `.pdb` next to the linker output and
+# (b) a random per-build GUID. Both vary across hermetic worktree runs
+# even with `/Brepro` (which only stabilizes the PE TimeDateStamp), so
+# the raw `target/<triple>/release/anodizer.exe` differs by ~16-20
+# bytes between runs and propagates drift into every archive/SBOM/zip
+# wrapper. `strip = "debuginfo"` removes the entire CodeView section
+# at link time — deterministic output AND a smaller distribution
+# binary. Linux/macOS distribution builds don't need this for
+# determinism (DWARF/dSYM paths are already path-remapped via
+# `--remap-path-prefix` in the harness) but benefit from the smaller
+# binary size too.
+[profile.release]
+strip = "debuginfo"
