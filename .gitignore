@@ -3,6 +3,7 @@
 **/dist/
 .task/
 .worktrees/
+.det-worktrees/
 .worktreeinclude
 .superpowers/
 .zig-cache/

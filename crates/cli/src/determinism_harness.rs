@@ -229,7 +229,18 @@ impl Harness {
             Vec::with_capacity(self.runs as usize);
 
         for run_idx in 0..self.runs {
-            let worktree_path = std::env::temp_dir().join(format!(
+            // Default to <repo_root>/.det-worktrees/ — keeps the harness
+            // off `/tmp` (which is tmpfs on many distros and exhausts
+            // fast when the cargo target dir lives inside the worktree).
+            // CI (GitHub Actions) sets RUNNER_TEMP to a disk-backed path
+            // outside the repo, so honor that when present.
+            let worktree_root = std::env::var_os("RUNNER_TEMP")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| self.repo_root.join(".det-worktrees"));
+            // Ensure the parent exists; `git worktree add` won't create
+            // intermediate directories.
+            let _ = std::fs::create_dir_all(&worktree_root);
+            let worktree_path = worktree_root.join(format!(
                 "anodize-determinism-{}-{}",
                 std::process::id(),
                 run_idx
