@@ -238,6 +238,160 @@ pub fn deterministic_uuid_from(seed: &str) -> String {
     )
 }
 
+/// If `s` ends with a 36-char `8-4-4-4-12` lowercase-hex UUID (RFC 4122
+/// shape), return everything BEFORE the UUID with the trailing `-`
+/// separator dropped. Otherwise return `None`.
+///
+/// Lifted out of `normalize_external_sbom` so the SPDX
+/// `documentNamespace` rewrite can find the right truncation boundary —
+/// splitting on `-` doesn't work because the UUID itself contains four
+/// dashes. We accept lowercase hex only (matching syft's output); a
+/// mixed-case namespace from a non-syft tool round-trips unchanged.
+fn strip_trailing_uuid(s: &str) -> Option<&str> {
+    if s.len() < 37 {
+        return None;
+    }
+    let (head, tail) = s.split_at(s.len() - 36);
+    // Tail shape: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+    let groups = [8usize, 4, 4, 4, 12];
+    let mut idx = 0;
+    for (i, g) in groups.iter().enumerate() {
+        for _ in 0..*g {
+            let c = tail.as_bytes().get(idx).copied()?;
+            if !c.is_ascii_hexdigit() || c.is_ascii_uppercase() {
+                return None;
+            }
+            idx += 1;
+        }
+        if i + 1 < groups.len() {
+            if tail.as_bytes().get(idx).copied()? != b'-' {
+                return None;
+            }
+            idx += 1;
+        }
+    }
+    // Drop the trailing `-` separator before the UUID if present.
+    Some(head.strip_suffix('-').unwrap_or(head))
+}
+
+/// Normalize a syft-emitted CycloneDX or SPDX JSON document so two runs of
+/// the same input produce byte-identical output under the SOURCE_DATE_EPOCH
+/// contract.
+///
+/// `syft` does NOT honor `SOURCE_DATE_EPOCH` (tracked upstream as
+/// anchore/syft#3931); every invocation emits a wall-clock
+/// `metadata.timestamp` / `creationInfo.created` plus a random `serialNumber`
+/// UUID. Two runs of the determinism harness against the same input archive
+/// therefore produce different SBOM bytes, drifting the .cdx.json /
+/// .spdx.json artifact AND its `.sha256` sidecar.
+///
+/// Strategy (matches the upstream issue's recommended interim path):
+///
+/// - **CycloneDX**: rewrite `metadata.timestamp` to the SDE-derived RFC 3339
+///   timestamp; rewrite `serialNumber` to a deterministic UUID derived from
+///   `project_name` + `version` + the input artifact basename (so each
+///   SBOM document still has a stable, unique URN across the run).
+/// - **SPDX**: rewrite `creationInfo.created`; rewrite the trailing
+///   UUID segment of `documentNamespace` to the deterministic value.
+///
+/// No-op for any field already absent. Operates on the raw JSON tree so we
+/// don't have to reconstruct the (large, evolving) syft schema by hand.
+///
+/// `seed` is the per-artifact uniqueness input — typically the input
+/// archive's basename joined with the project name and version. Two SBOMs
+/// for two different archives in the same run must produce different
+/// serialNumbers, so the seed must include the artifact identity, not
+/// just the project.
+fn normalize_external_sbom(path: &Path, timestamp: &str, seed: &str) -> Result<()> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("sbom: read external SBOM at {}", path.display()))?;
+    let mut value: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => {
+            // Non-JSON output (e.g. `--output table`): nothing to normalize.
+            // Don't fail the stage — the operator chose a non-JSON format.
+            return Ok(());
+        }
+    };
+    let serial_uuid = deterministic_uuid_from(seed);
+
+    if let Some(obj) = value.as_object_mut() {
+        // CycloneDX shape: top-level `bomFormat == "CycloneDX"`, fields
+        // `metadata.timestamp` + `serialNumber`. SPDX shape: top-level
+        // `spdxVersion` field, `creationInfo.created` +
+        // `documentNamespace`. Sniff by which discriminator key is present.
+        let is_cyclonedx = obj
+            .get("bomFormat")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|s| s.eq_ignore_ascii_case("CycloneDX"));
+        let is_spdx = obj.contains_key("spdxVersion") || obj.contains_key("SPDXID");
+
+        if is_cyclonedx {
+            if let Some(metadata) = obj.get_mut("metadata").and_then(|m| m.as_object_mut())
+                && metadata.contains_key("timestamp")
+            {
+                metadata.insert(
+                    "timestamp".into(),
+                    serde_json::Value::String(timestamp.into()),
+                );
+            }
+            if obj.contains_key("serialNumber") {
+                obj.insert(
+                    "serialNumber".into(),
+                    serde_json::Value::String(format!("urn:uuid:{}", serial_uuid)),
+                );
+            }
+        } else if is_spdx {
+            if let Some(ci) = obj.get_mut("creationInfo").and_then(|m| m.as_object_mut())
+                && ci.contains_key("created")
+            {
+                ci.insert(
+                    "created".into(),
+                    serde_json::Value::String(timestamp.into()),
+                );
+            }
+            // SPDX `documentNamespace` ends with `-<uuid>` where the
+            // UUID is a 36-char `8-4-4-4-12` hex form (per RFC 4122).
+            // Splitting on `-` doesn't work — the UUID itself contains
+            // four dashes — so we strip the trailing 36 chars (plus the
+            // leading separator) when the suffix matches the UUID shape,
+            // and replace them with the deterministic serial. syft emits
+            // `https://anchore.com/syft/file/<doc>-<uuid>`; the regex-
+            // free match keeps stage-sbom free of an extra dependency.
+            if let Some(ns) = obj.get_mut("documentNamespace")
+                && let Some(s) = ns.as_str()
+            {
+                let prefix = strip_trailing_uuid(s).unwrap_or(s);
+                let sep = if prefix.ends_with('-') || prefix.is_empty() {
+                    ""
+                } else {
+                    "-"
+                };
+                *ns = serde_json::Value::String(format!("{}{}{}", prefix, sep, serial_uuid));
+            }
+        } else {
+            // Unknown shape (syft-json, table, etc.); nothing safe to
+            // rewrite. Drift will surface as a real failure in the
+            // harness, which is the right call — the operator picked a
+            // non-canonical SBOM format and reproducibility for it isn't
+            // a contract we can uphold without a per-format rewriter.
+            return Ok(());
+        }
+    }
+
+    // Re-serialize with `to_string_pretty` to preserve the human-readable
+    // shape syft emits. Trailing newline matches what syft writes so the
+    // file size doesn't shift cosmetically.
+    let mut serialized = serde_json::to_string_pretty(&value)
+        .with_context(|| format!("sbom: re-serialize normalized SBOM for {}", path.display()))?;
+    if !serialized.ends_with('\n') {
+        serialized.push('\n');
+    }
+    std::fs::write(path, serialized)
+        .with_context(|| format!("sbom: write normalized SBOM to {}", path.display()))?;
+    Ok(())
+}
+
 /// Search for Cargo.lock starting from `start_dir` and walking up parent directories.
 pub fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
     let mut dir = start_dir.to_path_buf();
@@ -348,6 +502,19 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     // --- External command (subprocess) model ---
     let cmd = sbom_cfg.resolved_cmd();
     let artifacts_type = sbom_cfg.resolved_artifacts();
+
+    // Resolve the SDE-derived RFC 3339 timestamp once for the whole external
+    // run. Used by `normalize_external_sbom` to rewrite syft's wall-clock
+    // `metadata.timestamp` / `creationInfo.created` into a byte-stable
+    // value. `None` here means we have no canonical epoch to project onto;
+    // the post-processor is skipped and drift is surfaced honestly by the
+    // determinism harness.
+    let sde_timestamp: Option<String> = ctx
+        .determinism
+        .as_ref()
+        .and_then(|s| chrono::DateTime::<chrono::Utc>::from_timestamp(s.sde, 0))
+        .map(|dt| dt.to_rfc3339())
+        .or_else(|| ctx.template_vars().get("CommitDate").cloned());
 
     let documents = sbom_cfg.resolved_documents(artifacts_type);
 
@@ -603,6 +770,36 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     );
                 }
                 any_doc_found = true;
+
+                // Post-process syft's CycloneDX / SPDX output: rewrite the
+                // wall-clock `metadata.timestamp` (or `creationInfo.created`)
+                // and the random `serialNumber` UUID with byte-stable values
+                // derived from SDE + project + artifact identity. syft does
+                // NOT honor SOURCE_DATE_EPOCH itself (upstream
+                // anchore/syft#3931), so two harness runs would otherwise
+                // emit different SBOM bytes for the same input archive,
+                // drifting the .cdx.json artifact AND its `.sha256` sidecar.
+                // Skip the post-processor when no SDE is resolvable — the
+                // harness will surface the drift honestly rather than us
+                // pretending we can stabilize it.
+                if let Some(ts) = sde_timestamp.as_deref() {
+                    let seed = format!(
+                        "{}|{}|{}|{}",
+                        project_name,
+                        version,
+                        artifact_rel,
+                        match_path
+                            .file_name()
+                            .map_or("", |n| n.to_str().unwrap_or(""))
+                    );
+                    normalize_external_sbom(&match_path, ts, &seed).with_context(|| {
+                        format!(
+                            "sbom[{}]: normalize external SBOM output {}",
+                            id,
+                            match_path.display()
+                        )
+                    })?;
+                }
 
                 let mut metadata = HashMap::new();
                 metadata.insert("sbom_id".to_string(), id.to_string());
@@ -951,5 +1148,147 @@ mod tests {
             serde_json::to_vec(&s2).unwrap(),
             "different SDEs must produce different SBOM bytes"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // External-SBOM normalization (CI run 25975073213 — DRIFT 27 artifacts)
+    // -----------------------------------------------------------------------
+    //
+    // syft (the default external SBOM tool) does NOT honor
+    // SOURCE_DATE_EPOCH; every invocation emits a wall-clock
+    // `metadata.timestamp` and a random `serialNumber` UUID
+    // (anchore/syft#3931). `normalize_external_sbom` rewrites those two
+    // fields to byte-stable values so two determinism-harness runs of
+    // the same input archive produce identical SBOM bytes.
+
+    /// CycloneDX: rewrite `metadata.timestamp` + `serialNumber`,
+    /// preserve everything else; two normalizations with the same
+    /// (timestamp, seed) inputs must produce byte-identical output.
+    #[test]
+    fn normalize_external_sbom_cyclonedx_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.cdx.json");
+        // Two runs: each writes a distinct syft-shaped CycloneDX document
+        // differing only in the timestamp + serialNumber fields (mirroring
+        // what syft emits across consecutive invocations).
+        let run = |ts: &str, urn: &str| {
+            let raw = serde_json::json!({
+                "bomFormat": "CycloneDX",
+                "specVersion": "1.5",
+                "serialNumber": urn,
+                "version": 1,
+                "metadata": {
+                    "timestamp": ts,
+                    "component": { "name": "anodizer-0.3.0-linux-amd64.tar.gz", "type": "file" }
+                },
+                "components": []
+            });
+            std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+            normalize_external_sbom(
+                &path,
+                "2024-05-06T12:53:20+00:00",
+                "myproj|1.2.3|anodizer-0.3.0-linux-amd64.tar.gz|a.cdx.json",
+            )
+            .unwrap();
+            std::fs::read(&path).unwrap()
+        };
+        let a = run(
+            "2026-05-16T22:51:00Z",
+            "urn:uuid:11111111-2222-3333-4444-555555555555",
+        );
+        let b = run(
+            "2026-05-16T23:26:00Z",
+            "urn:uuid:99999999-8888-7777-6666-555555555555",
+        );
+        assert_eq!(
+            a, b,
+            "normalize_external_sbom must produce byte-identical bytes for the same (timestamp, seed) regardless of syft-emitted timestamp/UUID drift"
+        );
+
+        // And the normalized timestamp is the SDE-derived one, not the
+        // wall-clock string syft emitted.
+        let parsed: serde_json::Value = serde_json::from_slice(&a).unwrap();
+        assert_eq!(
+            parsed["metadata"]["timestamp"].as_str(),
+            Some("2024-05-06T12:53:20+00:00")
+        );
+        assert!(
+            parsed["serialNumber"]
+                .as_str()
+                .unwrap()
+                .starts_with("urn:uuid:")
+        );
+    }
+
+    /// SPDX: rewrite `creationInfo.created` + trailing UUID of
+    /// `documentNamespace`. Mirrors the CycloneDX stability assertion.
+    #[test]
+    fn normalize_external_sbom_spdx_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.spdx.json");
+        let run = |created: &str, ns_uuid: &str| {
+            let raw = serde_json::json!({
+                "spdxVersion": "SPDX-2.3",
+                "dataLicense": "CC0-1.0",
+                "SPDXID": "SPDXRef-DOCUMENT",
+                "name": "anodizer-0.3.0",
+                "documentNamespace": format!("https://anchore.com/syft/file/anodizer-0.3.0-{}", ns_uuid),
+                "creationInfo": { "created": created, "creators": ["Tool: syft"] }
+            });
+            std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+            normalize_external_sbom(&path, "2024-05-06T12:53:20+00:00", "seed").unwrap();
+            std::fs::read(&path).unwrap()
+        };
+        let a = run(
+            "2026-05-16T22:51:00Z",
+            "11111111-2222-3333-4444-555555555555",
+        );
+        let b = run(
+            "2026-05-16T23:26:00Z",
+            "99999999-8888-7777-6666-555555555555",
+        );
+        assert_eq!(a, b, "SPDX normalization must be byte-stable");
+    }
+
+    /// Different seeds must produce different serialNumbers — otherwise
+    /// two SBOMs in the same run (one per archive format) would alias
+    /// onto the same URN, hiding a real config bug.
+    #[test]
+    fn normalize_external_sbom_seed_separates_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let write_template = |p: &Path| {
+            let raw = serde_json::json!({
+                "bomFormat": "CycloneDX",
+                "serialNumber": "urn:uuid:00000000-0000-0000-0000-000000000000",
+                "metadata": { "timestamp": "2026-05-16T22:51:00Z" }
+            });
+            std::fs::write(p, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+        };
+        let p1 = dir.path().join("tar.gz.cdx.json");
+        let p2 = dir.path().join("tar.xz.cdx.json");
+        write_template(&p1);
+        write_template(&p2);
+        normalize_external_sbom(&p1, "2024-05-06T12:53:20+00:00", "seed-tar.gz").unwrap();
+        normalize_external_sbom(&p2, "2024-05-06T12:53:20+00:00", "seed-tar.xz").unwrap();
+        let v1: serde_json::Value = serde_json::from_slice(&std::fs::read(&p1).unwrap()).unwrap();
+        let v2: serde_json::Value = serde_json::from_slice(&std::fs::read(&p2).unwrap()).unwrap();
+        assert_ne!(
+            v1["serialNumber"], v2["serialNumber"],
+            "distinct artifacts must get distinct serialNumbers"
+        );
+    }
+
+    /// Non-JSON content is a no-op (syft `--output table`). Drift on a
+    /// table-formatted SBOM is the operator's call to opt-in to; we
+    /// don't pretend to stabilize a format we can't parse.
+    #[test]
+    fn normalize_external_sbom_passthrough_non_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, b"NAME VERSION TYPE\nanodizer 0.3.0 binary").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        normalize_external_sbom(&path, "2024-05-06T12:53:20+00:00", "seed").unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(before, after, "non-JSON SBOM must be left untouched");
     }
 }

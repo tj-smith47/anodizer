@@ -282,6 +282,7 @@ impl Harness {
             tmpdir: &tmpdir,
             home_dir: &home_dir,
             sde: self.sde,
+            worktree: worktree.path(),
         }))
     }
 
@@ -617,6 +618,14 @@ pub(crate) struct BuildSubprocessEnv<'a> {
     pub tmpdir: &'a Path,
     pub home_dir: &'a Path,
     pub sde: i64,
+    /// Absolute path to the per-run worktree root. Used to inject
+    /// `RUSTFLAGS=--remap-path-prefix=<worktree>=/anodize` into the child
+    /// build subprocess so two harness runs (at different worktree paths)
+    /// produce a byte-identical anodizer binary. Without this remap,
+    /// rustc embeds the absolute worktree path into `panic!()` location
+    /// strings (`file!()`, `Location::caller()`), driving binary drift
+    /// that then propagates into every archive that wraps the binary.
+    pub worktree: &'a Path,
 }
 
 /// Pure constructor for the child env map. Factored out of
@@ -648,6 +657,56 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
     );
     env.insert("SOURCE_DATE_EPOCH".into(), inputs.sde.to_string());
     env.insert("PATH".into(), allow_listed_path());
+
+    // Inject `--remap-path-prefix` so the absolute worktree path doesn't
+    // leak into the compiled binary. Each run uses a different worktree
+    // (`/tmp/anodize-determinism-<pid>-<idx>`), and rustc embeds the
+    // absolute workspace path into every `file!()` / `Location::caller()`
+    // expansion (panic location strings, `#[track_caller]` slots,
+    // line-tables-only debug info). Two runs at different paths therefore
+    // produce binaries that differ at the byte locations where those
+    // strings live — even though the source code is identical. The
+    // archive stage then wraps the (drifted) binary into tar.gz /
+    // tar.xz / tar.zst, propagating the drift into every archive
+    // format with identical total size (the path string length is
+    // constant). Remapping the worktree to a stable sentinel
+    // (`/anodize`) collapses both runs onto the same byte sequence.
+    //
+    // Also remap CARGO_HOME (the child's per-run cargo home, which lives
+    // under tmpdir) and CARGO_TARGET_DIR for the same reason: registry
+    // dependency paths and incremental compilation artifacts can
+    // surface in panic strings via inlined helpers from std / proc
+    // macros. Cargo auto-applies a similar remap for CARGO_HOME on
+    // recent stable, but mirroring it explicitly is defense-in-depth
+    // against version skew.
+    //
+    // We append our remap entries to any host-supplied RUSTFLAGS rather
+    // than overwriting them: cargo otherwise reads the env var verbatim,
+    // and an operator who set RUSTFLAGS for cross-compile linker flags
+    // (e.g. `-C linker=<wrapper>`) would silently lose them. Append
+    // semantics also match how `stage-build` layers its own remap when
+    // `reproducible: true`.
+    let mut rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
+    let worktree_str = inputs.worktree.to_string_lossy();
+    let cargo_home_str = inputs.cargo_home.to_string_lossy();
+    let cargo_target_str = inputs.cargo_target.to_string_lossy();
+    for (from, to) in [
+        (worktree_str.as_ref(), "/anodize"),
+        (cargo_home_str.as_ref(), "/cargo"),
+        (cargo_target_str.as_ref(), "/target"),
+    ] {
+        if from.is_empty() {
+            continue;
+        }
+        let flag = format!("--remap-path-prefix={}={}", from, to);
+        if !rustflags.is_empty() {
+            rustflags.push(' ');
+        }
+        rustflags.push_str(&flag);
+    }
+    if !rustflags.is_empty() {
+        env.insert("RUSTFLAGS".into(), rustflags);
+    }
 
     // Inherit only the explicit allow-list of identity-only host env so
     // build scripts that conditionally embed git/CI info still work, and
@@ -1276,6 +1335,7 @@ mod tests {
                 tmpdir: scratch,
                 home_dir: scratch,
                 sde: 1_715_000_000,
+                worktree: scratch,
             }
         }
 
@@ -1666,6 +1726,68 @@ mod tests {
                 assert!(
                     !env.contains_key("GITHUB_WORKSPACE"),
                     "GITHUB_WORKSPACE must NOT propagate on Windows — points at the GH-runner-owned checkout, not the hermetic worktree"
+                );
+            });
+        }
+
+        /// Regression: the harness MUST inject
+        /// `--remap-path-prefix=<worktree>=/anodize` so two from-clean
+        /// runs at different worktree paths produce a byte-identical
+        /// anodizer binary. Without this, rustc embeds the absolute
+        /// worktree path into every `file!()` / `Location::caller()`
+        /// expansion, drifting the binary and every archive that wraps
+        /// it. CI run 25975073213 surfaced this drift on every platform
+        /// shard before this knob landed.
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_injects_remap_path_prefix_for_worktree() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUSTFLAGS"], || {
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                let rf = env.get("RUSTFLAGS").expect(
+                    "RUSTFLAGS must be injected so worktree paths don't leak into the binary",
+                );
+                let needle = format!(
+                    "--remap-path-prefix={}=/anodize",
+                    tmp.path().to_string_lossy()
+                );
+                assert!(
+                    rf.contains(&needle),
+                    "RUSTFLAGS must remap the worktree path. got={rf}, expected substring={needle}"
+                );
+                // The cargo_home / cargo_target prefixes (which `inputs`
+                // points at the same scratch dir) are also remapped.
+                assert!(
+                    rf.contains("=/cargo"),
+                    "CARGO_HOME must be remapped to /cargo (defense-in-depth against std/proc-macro path leakage)"
+                );
+                assert!(
+                    rf.contains("=/target"),
+                    "CARGO_TARGET_DIR must be remapped to /target"
+                );
+            });
+        }
+
+        /// Pre-existing RUSTFLAGS (e.g. operator-supplied `-C linker=...`
+        /// for cross-compile) MUST be preserved — we append, not
+        /// overwrite. Otherwise a Windows MSVC link-flag would silently
+        /// disappear under the harness path.
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_preserves_host_rustflags() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUSTFLAGS"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("RUSTFLAGS", "-C linker=link.exe -C link-arg=/DEBUG") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                let rf = env.get("RUSTFLAGS").unwrap();
+                assert!(
+                    rf.contains("-C linker=link.exe"),
+                    "host RUSTFLAGS must survive the harness append. got={rf}"
+                );
+                assert!(
+                    rf.contains("--remap-path-prefix="),
+                    "remap-path-prefix must be appended even when host RUSTFLAGS is set. got={rf}"
                 );
             });
         }

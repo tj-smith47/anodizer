@@ -739,19 +739,42 @@ impl Context {
         );
     }
 
-    /// Populate time-related template variables using the current UTC time.
+    /// Populate time-related template variables.
     ///
     /// Sets:
-    /// - `Date` — current UTC time as RFC 3339
-    /// - `Timestamp` — current unix timestamp as string
-    /// - `Now` — current UTC time as RFC 3339
+    /// - `Date` — UTC time as RFC 3339
+    /// - `Timestamp` — unix timestamp as string
+    /// - `Now` — UTC time as RFC 3339
     /// - `Year` — four-digit year (e.g. "2026")
     /// - `Month` — zero-padded month (e.g. "03")
     /// - `Day` — zero-padded day (e.g. "30")
     /// - `Hour` — zero-padded hour (e.g. "14")
     /// - `Minute` — zero-padded minute (e.g. "05")
+    ///
+    /// Time source resolution (first match wins):
+    ///
+    /// 1. `SOURCE_DATE_EPOCH` env var — the standard reproducibility contract
+    ///    (set by the determinism harness on every child release subprocess,
+    ///    and the conventional way external CI / packagers signal a fixed
+    ///    epoch). This is load-bearing for byte-stability of `metadata.json`
+    ///    (which embeds `Date`) and any user template that consumes `Date` /
+    ///    `Timestamp` / `Now`. Without this branch, two from-clean runs of
+    ///    the same commit emit metadata.json files that differ in the `date`
+    ///    field, defeating release-asset idempotency.
+    /// 2. `chrono::Utc::now()` — wall-clock fallback. Matches GoReleaser's
+    ///    legacy semantics for runs without SDE wired in. Note that the
+    ///    GoReleaser template docs explicitly call `.Now` "not deterministic"
+    ///    — under SDE-aware reproducible builds we deviate from that
+    ///    behavior intentionally.
     pub fn populate_time_vars(&mut self) {
-        let now = Utc::now();
+        let now = match std::env::var("SOURCE_DATE_EPOCH")
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .and_then(|secs| chrono::DateTime::<Utc>::from_timestamp(secs, 0))
+        {
+            Some(dt) => dt,
+            None => Utc::now(),
+        };
         self.template_vars.set("Date", &now.to_rfc3339());
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());
@@ -1275,8 +1298,63 @@ mod tests {
         );
     }
 
+    /// Regression: `populate_time_vars` MUST derive `Date` / `Timestamp` /
+    /// `Now` (and the calendar fields) from `SOURCE_DATE_EPOCH` when the
+    /// env var is set — the standard reproducible-build contract the
+    /// determinism harness depends on. Two from-clean runs of the same
+    /// commit otherwise emit `dist/metadata.json` files that differ in
+    /// the embedded `date` field, drifting `metadata.json` AND its
+    /// `.sha256` sidecar across runs. CI run 25975073213 surfaced this
+    /// drift on every platform shard before the fix landed.
     #[test]
+    #[serial_test::serial(env)]
+    fn populate_time_vars_uses_source_date_epoch_when_set() {
+        let key = "SOURCE_DATE_EPOCH";
+        let prev = std::env::var(key).ok();
+        // 1_715_000_000 = 2024-05-06T12:53:20+00:00 — picked to be safely
+        // earlier than wall-clock so a wall-clock-derived assertion would
+        // visibly fail.
+        // SAFETY: serialized on the `env` lock group.
+        unsafe { std::env::set_var(key, "1715000000") };
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_time_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(
+            v.get("Timestamp"),
+            Some(&"1715000000".to_string()),
+            "Timestamp must equal SOURCE_DATE_EPOCH seconds"
+        );
+        assert_eq!(
+            v.get("Date"),
+            Some(&"2024-05-06T12:53:20+00:00".to_string()),
+            "Date must be RFC 3339 derived from SDE"
+        );
+        assert_eq!(v.get("Year"), Some(&"2024".to_string()));
+        assert_eq!(v.get("Month"), Some(&"05".to_string()));
+        assert_eq!(v.get("Day"), Some(&"06".to_string()));
+
+        // SAFETY: serialized.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
     fn test_populate_time_vars() {
+        // Wall-clock fallback path: clear SDE so we exercise the
+        // chrono::Utc::now() branch.
+        let key = "SOURCE_DATE_EPOCH";
+        let prev = std::env::var(key).ok();
+        // SAFETY: serialized.
+        unsafe { std::env::remove_var(key) };
+
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.populate_time_vars();
@@ -1304,6 +1382,13 @@ mod tests {
         // Now should be ISO 8601
         let now = v.get("Now").unwrap_or_else(|| panic!("Now should be set"));
         assert!(now.contains('T'), "Now should be ISO 8601, got: {now}");
+
+        // SAFETY: serialized.
+        unsafe {
+            if let Some(v) = prev {
+                std::env::set_var(key, v);
+            }
+        }
     }
 
     #[test]
