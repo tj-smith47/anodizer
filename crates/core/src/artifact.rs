@@ -190,16 +190,32 @@ pub struct Artifact {
     pub size: Option<u64>,
 }
 
-/// Serialize the metadata map as a sorted-key JSON object so two runs
-/// of the same release pipeline produce byte-identical artifact
-/// entries — HashMap iteration order is otherwise unspecified and
-/// drives `artifacts.json` drift.
+/// Keys whose values are CONTENT hashes — derived from artifact bytes
+/// and therefore non-deterministic when the artifact itself is
+/// non-deterministic (e.g. `.deb` / `.rpm` whose packagers embed
+/// their own timestamps). Stage-checksum writes these into each
+/// artifact's metadata for in-process consumers (chocolatey, scoop,
+/// winget — which read `ctx.artifacts` directly, not `artifacts.json`),
+/// but emitting them in `artifacts.json` makes the manifest's bytes
+/// shadow whatever non-determinism the underlying artifact has.
+/// The `.sha256` sidecar files on disk remain the canonical hash
+/// surface for external tooling.
+const METADATA_HASH_KEYS: &[&str] = &[
+    "Checksum", "sha256", "sha512", "sha384", "sha224", "sha1", "md5", "blake2b", "blake3", "crc32",
+];
+
+/// Serialize the metadata map as a sorted-key JSON object, dropping
+/// content-hash keys. Sorted order kills HashMap iteration drift;
+/// dropping hashes kills the non-deterministic-content shadow.
 fn serialize_metadata_sorted<S>(map: &HashMap<String, String>, ser: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use serde::ser::SerializeMap as _;
-    let sorted: std::collections::BTreeMap<&String, &String> = map.iter().collect();
+    let sorted: std::collections::BTreeMap<&String, &String> = map
+        .iter()
+        .filter(|(k, _)| !METADATA_HASH_KEYS.contains(&k.as_str()))
+        .collect();
     let mut m = ser.serialize_map(Some(sorted.len()))?;
     for (k, v) in sorted {
         m.serialize_entry(k, v)?;
@@ -937,6 +953,41 @@ mod tests {
             arr[0]["path"], "/myorg/myimage:v1.2.3",
             "docker image refs are pass-through and must not be relativized"
         );
+    }
+
+    #[test]
+    fn to_artifacts_json_drops_content_hash_keys() {
+        let mut metadata = HashMap::new();
+        metadata.insert("format".into(), "deb".into());
+        metadata.insert("id".into(), "default".into());
+        // Content hashes vary between runs for non-deterministic
+        // artifacts (.deb / .rpm / .msi ...); they belong in the
+        // `.sha256` sidecar, not in this manifest.
+        metadata.insert("Checksum".into(), "sha256:abc".into());
+        metadata.insert("sha256".into(), "abc".into());
+        metadata.insert("blake3".into(), "xyz".into());
+
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            name: "pkg.deb".to_string(),
+            path: PathBuf::from("dist/pkg.deb"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        });
+
+        let json = registry.to_artifacts_json().unwrap();
+        let meta = &json.as_array().unwrap()[0]["metadata"];
+        assert_eq!(meta["format"], "deb");
+        assert_eq!(meta["id"], "default");
+        assert!(
+            meta.get("Checksum").is_none(),
+            "Checksum (content-hash) must be filtered from artifacts.json: {meta:?}"
+        );
+        assert!(meta.get("sha256").is_none(), "sha256 must be filtered");
+        assert!(meta.get("blake3").is_none(), "blake3 must be filtered");
     }
 
     #[test]

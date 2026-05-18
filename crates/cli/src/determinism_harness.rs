@@ -951,7 +951,7 @@ struct ArtifactInfo {
 ///     Catches `mod_time` / `mod_date` drift.
 ///   - CycloneDX SBOM JSON: top-level keys including
 ///     `serialNumber` (per-run UUID — a known drift source).
-const HEAD_SAMPLE_BYTES: usize = 1024;
+const HEAD_SAMPLE_BYTES: usize = 16 * 1024;
 
 /// How many trailing bytes of each artifact to retain alongside the
 /// head sample. Catches trailing-section drift that the head misses:
@@ -963,7 +963,7 @@ const HEAD_SAMPLE_BYTES: usize = 1024;
 ///     address table, resource section drift.
 ///   - Detached signatures (`.sig`): cosign/gpg signature blob lives
 ///     entirely past the head window.
-const TAIL_SAMPLE_BYTES: usize = 1024;
+const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 
 /// PATH for harness children — inherits the host's PATH verbatim on
 /// every platform.
