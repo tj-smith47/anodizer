@@ -1412,12 +1412,17 @@ fn pick_first_artifact_for_stage<'a>(
 /// Append one byte to `path` to force the artifact to differ across
 /// runs. Used by the `--inject-drift=<stage>` test-harness flag.
 ///
-/// Source byte: `/dev/urandom` on platforms that expose it; constant
-/// `0xAB` fallback otherwise. The fallback is acceptable because the
-/// test harness only needs the appended byte to differ from the
-/// original file's last byte (or to extend the file at all) — the goal
-/// is to break the hash, not to inject true entropy. Reading a single
-/// byte from `/dev/urandom` on Unix is the path actually used in CI.
+/// Source byte: `/dev/urandom` on platforms that expose it;
+/// `SystemTime::now().subsec_nanos()` fallback otherwise. The fallback
+/// MUST vary between successive runs — when the underlying archive is
+/// fully deterministic (the goal of this harness), appending a
+/// CONSTANT byte to two byte-identical archives yields two
+/// byte-identical archives and the harness reports no drift. The
+/// nanos fallback varies on every call (successive harness runs are
+/// at least milliseconds apart), so the appended byte differs across
+/// runs and the hash diverges as intended. Reading from
+/// `/dev/urandom` on Unix is the path actually used in CI for that
+/// platform.
 fn inject_drift_byte(path: &Path) -> Result<()> {
     use std::io::{Read, Write};
     let byte: u8 = match std::fs::OpenOptions::new().read(true).open("/dev/urandom") {
@@ -1426,7 +1431,10 @@ fn inject_drift_byte(path: &Path) -> Result<()> {
             f.read_exact(&mut buf).ok();
             buf[0]
         }
-        Err(_) => 0xAB,
+        Err(_) => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u8)
+            .unwrap_or(0xAB),
     };
     let mut f = std::fs::OpenOptions::new()
         .append(true)
