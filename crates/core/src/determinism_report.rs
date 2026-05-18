@@ -142,6 +142,12 @@ pub struct DriftRow {
     /// harness emits `None` when it cannot localize the drift.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub differing_bytes_summary: Option<String>,
+    /// Base64-encoded head-sample bytes per run. Each entry pairs with
+    /// the corresponding `hashes[i]`. Populated only when drift is
+    /// detected, so operators can decode and diff the raw bytes around
+    /// the divergence point without needing to re-run the harness.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub head_samples_b64: Vec<String>,
 }
 
 #[cfg(test)]
@@ -286,6 +292,7 @@ mod tests {
             artifact: "foo.tar.gz".into(),
             hashes: vec!["sha256:1".into(), "sha256:2".into()],
             differing_bytes_summary: Some("tar mtime offset 0x100".into()),
+            head_samples_b64: vec![],
         };
         let s = serde_json::to_string(&d).unwrap();
         assert!(s.contains("differing_bytes_summary"));
@@ -299,6 +306,7 @@ mod tests {
             artifact: "foo.tar.gz".into(),
             hashes: vec!["sha256:1".into(), "sha256:2".into()],
             differing_bytes_summary: None,
+            head_samples_b64: vec![],
         };
         let s = serde_json::to_string(&d).unwrap();
         assert!(!s.contains("differing_bytes_summary"));

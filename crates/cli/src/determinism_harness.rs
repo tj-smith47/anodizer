@@ -474,10 +474,19 @@ impl Harness {
                     // the right region in O(N) compute (vs an external
                     // hex-dump diff round-trip).
                     let summary = summarize_drift(name, &per_run_hashes);
+                    let head_samples_b64 = per_run_hashes
+                        .iter()
+                        .filter_map(|run_hashes| run_hashes.get(name))
+                        .map(|info| {
+                            use base64::Engine as _;
+                            base64::engine::general_purpose::STANDARD.encode(&info.head_sample)
+                        })
+                        .collect();
                     drift.push(DriftRow {
                         artifact: name.clone(),
                         hashes,
                         differing_bytes_summary: summary,
+                        head_samples_b64,
                     });
                     drift_count += 1;
                 }
@@ -837,6 +846,7 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
         "-C link-arg=/INCREMENTAL:NO",
         "-C link-arg=/PDBALTPATH:%_PDB%",
         "-C link-arg=/DEBUG:NONE",
+        "-C strip=symbols",
     ];
     for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
         let mut per_target = rustflags.clone();

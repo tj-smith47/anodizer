@@ -35,6 +35,7 @@ rustflags = [
     "-C", "link-arg=/INCREMENTAL:NO",
     "-C", "link-arg=/PDBALTPATH:%_PDB%",
     "-C", "link-arg=/DEBUG:NONE",
+    "-C", "strip=symbols",
 ]
 
 [target.aarch64-pc-windows-msvc]
@@ -45,4 +46,5 @@ rustflags = [
     "-C", "link-arg=/INCREMENTAL:NO",
     "-C", "link-arg=/PDBALTPATH:%_PDB%",
     "-C", "link-arg=/DEBUG:NONE",
+    "-C", "strip=symbols",
 ]

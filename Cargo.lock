@@ -57,6 +57,7 @@ dependencies = [
  "anodizer-stage-templatefiles",
  "anodizer-stage-upx",
  "anyhow",
+ "base64",
  "brontes",
  "chrono",
  "clap",
