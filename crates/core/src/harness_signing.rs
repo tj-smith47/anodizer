@@ -102,18 +102,53 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
     })
 }
 
-/// Render `path` as the string we pass to subprocess env vars. On
-/// Windows the runner's gpg is the MSYS2 build (Git for Windows) which
-/// treats a leading `C:` as a filename and prepends its current
-/// working directory — backslash separators trigger the same
-/// misparse. Forward slashes are accepted as-is by both MSYS gpg and
-/// native Windows tools.
+/// Render `path` as the string we pass to subprocess env vars. The
+/// runner's gpg on Windows is Git-for-Windows' MSYS2 build, which
+/// treats a leading drive-letter colon (`C:`) as a filename — it does
+/// not anchor an absolute path — so gpg prepends its CWD and the
+/// resulting path doesn't exist. MSYS expects `/c/...` instead. The
+/// backslash-separator misparse is the same root cause.
 pub fn path_for_subprocess_env(path: &Path) -> String {
     let raw = path.to_string_lossy().into_owned();
-    if cfg!(windows) {
-        raw.replace('\\', "/")
-    } else {
-        raw
+    if !cfg!(windows) {
+        return raw;
+    }
+    let forward = raw.replace('\\', "/");
+    let mut chars = forward.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(drive), Some(':'), Some('/')) if drive.is_ascii_alphabetic() => {
+            format!("/{}/{}", drive.to_ascii_lowercase(), chars.as_str())
+        }
+        _ => forward,
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::path_for_subprocess_env;
+    use std::path::Path;
+
+    #[test]
+    fn unix_path_passes_through() {
+        // Even compiled on Windows host, /tmp-style input has no drive
+        // letter to transform and returns unchanged content.
+        let out = path_for_subprocess_env(Path::new("/tmp/foo/bar"));
+        assert_eq!(out, "/tmp/foo/bar");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_colon_becomes_msys_root() {
+        let out =
+            path_for_subprocess_env(Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\agpg-x"));
+        assert_eq!(out, "/c/Users/RUNNER~1/AppData/Local/Temp/agpg-x");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_lowercases_drive_letter() {
+        let out = path_for_subprocess_env(Path::new(r"D:\foo"));
+        assert_eq!(out, "/d/foo");
     }
 }
 

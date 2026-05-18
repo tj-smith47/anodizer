@@ -78,34 +78,44 @@ impl DeterminismState {
         // Per spec contract table: these are the artifacts whose
         // deeper reproducibility work is deferred. Listed up-front so
         // every stage that consumes them sees the same allow-list.
-        let compile_time_allowlist = vec![
+        // Allow-listed installer formats AND their `.sha256` sidecars —
+        // the sidecar hashes a non-deterministic source so the sidecar
+        // itself is non-deterministic, but it's not an independent
+        // determinism finding worth surfacing.
+        let installer_allow: &[(&str, &str)] = &[
             (
-                "*.crate".into(),
-                "cargo package non-determinism, tracked in determinism-followups".into(),
+                "*.crate",
+                "cargo package non-determinism, tracked in determinism-followups",
             ),
             (
-                "*.rpm".into(),
-                "rpmbuild reproducibility deferred to determinism-installers follow-up".into(),
+                "*.rpm",
+                "rpmbuild reproducibility deferred to determinism-installers follow-up",
             ),
             (
-                "*.msi".into(),
-                "wix/candle/light reproducibility deferred to determinism-installers follow-up"
-                    .into(),
+                "*.msi",
+                "wix/candle/light reproducibility deferred to determinism-installers follow-up",
             ),
             (
-                "*.dmg".into(),
-                "hdiutil reproducibility deferred to determinism-installers follow-up".into(),
+                "*.dmg",
+                "hdiutil reproducibility deferred to determinism-installers follow-up",
             ),
             (
-                "*.pkg".into(),
-                "pkgbuild reproducibility deferred to determinism-installers follow-up".into(),
+                "*.pkg",
+                "pkgbuild reproducibility deferred to determinism-installers follow-up",
             ),
             (
-                "*.deb".into(),
-                "dpkg-deb reproducibility varies by version; tracked in determinism-installers"
-                    .into(),
+                "*.deb",
+                "dpkg-deb reproducibility varies by version; tracked in determinism-installers",
             ),
         ];
+        let mut compile_time_allowlist: Vec<(String, String)> = Vec::new();
+        for (pattern, reason) in installer_allow {
+            compile_time_allowlist.push(((*pattern).into(), (*reason).into()));
+            compile_time_allowlist.push((
+                format!("{}.sha256", pattern),
+                format!("derivative of {pattern}: {reason}"),
+            ));
+        }
 
         Ok(Self {
             sde: commit_ts,

@@ -215,8 +215,23 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     .context("source: copy tar entry")?;
             }
 
+            // Iterate in archive-path order so two runs against the
+            // same input set produce byte-identical tars. The glob
+            // expansion that built `extra_files` walks the filesystem
+            // in inode order which differs between fresh worktrees.
+            let mut sorted_extras: Vec<&SourceFileEntry> = extra_files.iter().collect();
+            sorted_extras.sort_by(|a, b| a.src.cmp(&b.src));
+
+            // Default mtime: SOURCE_DATE_EPOCH when set (harness /
+            // debian-builder / nix path), else `None` to fall through to
+            // filesystem mtime (preserves prior behavior for ad-hoc
+            // local runs outside any reproducibility contract).
+            let sde_mtime: Option<u64> = std::env::var("SOURCE_DATE_EPOCH")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok());
+
             // Add extra files with metadata
-            for entry in extra_files {
+            for entry in sorted_extras {
                 let src = Path::new(&entry.src);
                 let do_strip = entry.strip_parent.unwrap_or(false);
 
@@ -282,15 +297,23 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     header.set_mode(0o644);
                 }
 
-                // Default mtime from filesystem
-                header.set_mtime(
+                // Mtime: SDE if pinned (reproducibility), else
+                // filesystem mtime (legacy).
+                let default_mtime: u64 = sde_mtime.unwrap_or_else(|| {
                     metadata
                         .modified()
                         .ok()
                         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs())
-                        .unwrap_or(0),
-                );
+                        .unwrap_or(0)
+                });
+                header.set_mtime(default_mtime);
+                if sde_mtime.is_some() {
+                    header.set_uid(0);
+                    header.set_gid(0);
+                    header.set_username("").ok();
+                    header.set_groupname("").ok();
+                }
 
                 // Apply info overrides if present
                 if let Some(ref info) = entry.info {
