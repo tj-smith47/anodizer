@@ -905,7 +905,12 @@ impl Stage for ArchiveStage {
                         }
                         // Store binary names in archive metadata for publisher
                         // consumption (e.g. Homebrew multi-binary install).
-                        let bin_names: Vec<String> = selected_bins
+                        // Sort the names so the joined string is byte-stable
+                        // across runs — selected_bins inherits its order from
+                        // the artifact registry, which can pick up HashMap
+                        // iteration order from earlier stages and surface as
+                        // mid-of-file drift in `artifacts.json`.
+                        let mut bin_names: Vec<String> = selected_bins
                             .iter()
                             .filter_map(|b| {
                                 b.metadata.get("binary").cloned().or_else(|| {
@@ -913,6 +918,7 @@ impl Stage for ArchiveStage {
                                 })
                             })
                             .collect();
+                        bin_names.sort();
                         if !bin_names.is_empty() {
                             metadata.insert("extra_binaries".to_string(), bin_names.join(","));
                         }
