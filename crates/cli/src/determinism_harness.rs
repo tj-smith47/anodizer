@@ -258,10 +258,22 @@ impl Harness {
             // Ensure the parent exists; `git worktree add` won't create
             // intermediate directories.
             let _ = std::fs::create_dir_all(&worktree_root);
-            // Path is keyed by `run_idx` only — `std::process::id()` would
-            // change between runs and defeat the `--remap-path-prefix`
-            // contract that produces byte-identical compiler output.
-            let worktree_path = worktree_root.join(format!("anodize-determinism-run-{}", run_idx));
+            // Worktree path MUST be identical across runs. Some
+            // dependencies embed their absolute cargo-registry path as
+            // UTF-16LE inside the compiled binary (commonly seen on
+            // Windows where Win32 APIs need wchar paths). Rust's
+            // `--remap-path-prefix` operates on UTF-8 source-path
+            // references only and does NOT touch UTF-16-encoded
+            // strings. If the worktree path differs between runs (e.g.
+            // `...-run-0` vs `...-run-1`), those 2 bytes propagate
+            // into the binary, /Brepro hashes the new content,
+            // produces a different COFF TimeDateStamp, and cascades
+            // into every artifact wrapping the binary.
+            //
+            // Using a constant path with `remove_dir_all` between
+            // runs collapses both runs onto identical absolute paths
+            // and eliminates the UTF-16 drift entirely.
+            let worktree_path = worktree_root.join("anodize-determinism");
             // Defensive: prior aborted runs may have left the dir behind;
             // `git worktree add` would reject a populated target.
             let _ = std::fs::remove_dir_all(&worktree_path);
