@@ -307,10 +307,33 @@ impl Harness {
                 }
             }
             per_run_hashes.push(hash_artifacts(worktree.path(), &artifacts)?);
+            // Copy every artifact to a per-run dump directory under the
+            // report's parent. This is the diagnostic escape hatch:
+            // when drift is detected, the full binaries are uploaded
+            // alongside the JSON report so root-causing residual
+            // non-determinism doesn't depend on re-running the harness.
+            // Non-drifted entries are pruned after the comparison
+            // below so the artifact zip stays compact.
+            if let Some(parent) = self.report_path.parent() {
+                let dump_root = parent.join("drift-bins").join(format!("run-{}", run_idx));
+                copy_artifacts_to_dump(worktree.path(), &artifacts, &dump_root).with_context(
+                    || {
+                        format!(
+                            "dumping artifacts to {} for determinism run {}",
+                            dump_root.display(),
+                            run_idx
+                        )
+                    },
+                )?;
+            }
             // Worktree dropped at end of scope → cleanup automatic.
         }
 
-        Ok(self.build_report(per_run_hashes))
+        let report = self.build_report(per_run_hashes);
+        if let Some(parent) = self.report_path.parent() {
+            prune_dump_to_drifted(&parent.join("drift-bins"), &report);
+        }
+        Ok(report)
     }
 
     /// Construct the env map handed to each child build process. See the
@@ -1229,6 +1252,88 @@ fn hash_artifacts(
         );
     }
     Ok(out)
+}
+
+/// Copy each artifact in `paths` to `dump_root/<artifact-name>`,
+/// preserving the relative directory structure under `worktree_path`.
+///
+/// Best-effort: copy failures are logged but not surfaced, so the
+/// harness's primary determinism check is never broken by a side
+/// channel diagnostic.
+fn copy_artifacts_to_dump(worktree_path: &Path, paths: &[PathBuf], dump_root: &Path) -> Result<()> {
+    let target_root = worktree_path.join(".det-tmp").join("target");
+    for p in paths {
+        let dest_rel = if let Ok(under_target) = p.strip_prefix(&target_root) {
+            PathBuf::from("target").join(under_target)
+        } else if let Ok(under_worktree) = p.strip_prefix(worktree_path) {
+            under_worktree.to_path_buf()
+        } else {
+            PathBuf::from(p.file_name().unwrap_or_default())
+        };
+        let dest = dump_root.join(dest_rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating dump parent {}", parent.display()))?;
+        }
+        if let Err(e) = std::fs::copy(p, &dest) {
+            eprintln!(
+                "warn: drift-bin dump failed for {} -> {}: {}",
+                p.display(),
+                dest.display(),
+                e
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Prune `<dump_root>/run-<N>/<artifact>` entries whose artifact name
+/// does NOT appear in `report.drift`. Keeps the artifact upload
+/// compact (drifted binaries only) without sacrificing the per-run
+/// dump that the harness captured pre-comparison.
+fn prune_dump_to_drifted(dump_root: &Path, report: &DeterminismReport) {
+    if !dump_root.exists() {
+        return;
+    }
+    let drift_names: std::collections::HashSet<&str> =
+        report.drift.iter().map(|d| d.artifact.as_str()).collect();
+    let Ok(run_dirs) = std::fs::read_dir(dump_root) else {
+        return;
+    };
+    for run_entry in run_dirs.flatten() {
+        let run_path = run_entry.path();
+        if !run_path.is_dir() {
+            continue;
+        }
+        prune_dump_subtree(&run_path, &run_path, &drift_names);
+    }
+}
+
+fn prune_dump_subtree(root: &Path, dir: &Path, drift_names: &std::collections::HashSet<&str>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            prune_dump_subtree(root, &path, drift_names);
+            // Empty post-prune → remove the parent dir too.
+            if std::fs::read_dir(&path)
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(false)
+            {
+                let _ = std::fs::remove_dir(&path);
+            }
+        } else if path.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if !drift_names.contains(rel.as_str()) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 }
 
 /// Produce a one-line human-readable summary of where two runs' head

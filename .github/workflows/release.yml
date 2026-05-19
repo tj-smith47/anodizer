@@ -45,7 +45,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: determinism-${{ matrix.os }}
-          path: dist/run-*/determinism.json
+          path: |
+            dist/run-*/determinism.json
+            dist/run-*/drift-bins/**
           if-no-files-found: warn
 
   build:
