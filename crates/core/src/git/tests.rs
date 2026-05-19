@@ -1058,3 +1058,27 @@ fn test_detect_github_repo_error_strips_url_credentials() {
     assert!(!scrubbed.contains("ghp_leakytoken"));
     assert_eq!(scrubbed, "https://gitlab.example.com/grp/proj.git");
 }
+
+// ── short_commit_str — canonical short-hash truncation ─────────────────────
+
+#[test]
+fn short_commit_str_truncates_to_seven_chars_to_match_git_short() {
+    use super::commits::{SHORT_COMMIT_LEN, short_commit_str};
+    // git's `--short` default is 7 chars; the helper must match.
+    assert_eq!(SHORT_COMMIT_LEN, 7);
+    let full = "deadbeef1234567890abcdef";
+    let short = short_commit_str(full);
+    assert_eq!(short.len(), 7);
+    assert_eq!(short, "deadbee");
+}
+
+#[test]
+fn short_commit_str_passes_short_inputs_through_unchanged() {
+    use super::commits::short_commit_str;
+    // Inputs already at or under SHORT_COMMIT_LEN are returned
+    // unchanged — saves an allocation in the common case where the
+    // caller is already passing a short hash from a template var.
+    assert_eq!(short_commit_str("abc"), "abc");
+    assert_eq!(short_commit_str("abc1234"), "abc1234");
+    assert_eq!(short_commit_str(""), "");
+}

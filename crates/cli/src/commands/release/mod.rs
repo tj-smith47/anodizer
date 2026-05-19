@@ -132,6 +132,12 @@ pub struct ReleaseOpts {
 ///
 /// - `--no-preflight` always wins → false.
 /// - `--snapshot` / `--dry-run` / `--split` skip → no upstream side effects.
+/// - `--publish-only` skips → the publish-only branch does its own
+///   credential preflight at the top of `publish_only::run`; running
+///   the publisher-state preflight here first would make network
+///   calls (chocolatey/winget/cargo/aur state probes) before the
+///   credential gate, defeating the "fail before any mutation"
+///   property the spec requires.
 /// - `publish` in `skip` → caller opted out of one-way doors.
 /// - otherwise → true.
 ///
@@ -143,9 +149,10 @@ pub(crate) fn should_run_preflight_auto(
     snapshot: bool,
     dry_run: bool,
     split: bool,
+    publish_only: bool,
     publish_skipped: bool,
 ) -> bool {
-    !no_preflight && !snapshot && !dry_run && !split && !publish_skipped
+    !no_preflight && !snapshot && !dry_run && !split && !publish_only && !publish_skipped
 }
 
 /// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
@@ -474,6 +481,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             .clone()
             .map(anodizer_core::partial::PartialTarget::Targets),
         merge: opts.merge,
+        publish_only: opts.publish_only,
         project_root: None,
         strict: opts.strict,
         resume_release: opts.resume_release,
@@ -572,7 +580,18 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     // Render --release-notes-tmpl now that template vars are populated.
     // This overrides --release-notes.
-    if let Some((_tmpl_path, raw_content)) = release_notes_path {
+    //
+    // Skip in `--publish-only` mode: the preserved dist already
+    // contains a `release-notes.md` written by the upstream
+    // determinism-harness run (the post-pipeline wrote it from the
+    // SAME template vars then). Re-rendering here from the current
+    // tree could clobber it with a divergent version (e.g. if the
+    // operator's local checkout has new commits since the harness
+    // ran). The harness-written file is the authoritative one for
+    // the preserved bytes; respect it.
+    if !opts.publish_only
+        && let Some((_tmpl_path, raw_content)) = release_notes_path
+    {
         let rendered = template::render(&raw_content, ctx.template_vars()).with_context(|| {
             format!(
                 "failed to render release notes template: {}",
@@ -716,6 +735,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         opts.snapshot,
         opts.dry_run,
         opts.split,
+        opts.publish_only,
         ctx.should_skip("publish"),
     );
     if opts.preflight || should_run_preflight {
@@ -778,7 +798,15 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // sign + publish pipeline. Composed before --split / --merge so the
     // clap-level conflicts_with chain stays a single source of truth.
     if opts.publish_only {
-        return publish_only::run(&mut ctx, &config, &log, opts.dry_run);
+        return publish_only::run(
+            &mut ctx,
+            &config,
+            &log,
+            publish_only::RunOpts {
+                dry_run: opts.dry_run,
+                no_preflight: opts.no_preflight,
+            },
+        );
     }
 
     // --split: run only the build stage, serialize artifacts to dist/, then exit
@@ -1454,32 +1482,55 @@ mod tests {
     #[test]
     fn should_run_preflight_auto_default_runs() {
         // No flag set → run.
-        assert!(should_run_preflight_auto(false, false, false, false, false));
+        assert!(should_run_preflight_auto(
+            false, false, false, false, false, false
+        ));
     }
 
     #[test]
     fn should_run_preflight_auto_no_preflight_skips() {
-        assert!(!should_run_preflight_auto(true, false, false, false, false));
+        assert!(!should_run_preflight_auto(
+            true, false, false, false, false, false
+        ));
     }
 
     #[test]
     fn should_run_preflight_auto_snapshot_skips() {
-        assert!(!should_run_preflight_auto(false, true, false, false, false));
+        assert!(!should_run_preflight_auto(
+            false, true, false, false, false, false
+        ));
     }
 
     #[test]
     fn should_run_preflight_auto_dry_run_skips() {
-        assert!(!should_run_preflight_auto(false, false, true, false, false));
+        assert!(!should_run_preflight_auto(
+            false, false, true, false, false, false
+        ));
     }
 
     #[test]
     fn should_run_preflight_auto_split_skips() {
-        assert!(!should_run_preflight_auto(false, false, false, true, false));
+        assert!(!should_run_preflight_auto(
+            false, false, false, true, false, false
+        ));
+    }
+
+    #[test]
+    fn should_run_preflight_auto_publish_only_skips() {
+        // `--publish-only` must skip the publisher-state preflight so
+        // the credential preflight (which lives inside
+        // `publish_only::run`) gets first crack at bailing before any
+        // network call. Audit ref: Phase-2 review I2.
+        assert!(!should_run_preflight_auto(
+            false, false, false, false, true, false
+        ));
     }
 
     #[test]
     fn should_run_preflight_auto_publish_skipped_skips() {
-        assert!(!should_run_preflight_auto(false, false, false, false, true));
+        assert!(!should_run_preflight_auto(
+            false, false, false, false, false, true
+        ));
     }
 
     /// `--strict-preflight` is folded into `--strict`: either flag (or both)

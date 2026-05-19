@@ -541,7 +541,20 @@ pub fn setup_env(
     // Missing token hard error (GoReleaser env.go:138-142 ErrMissingToken).
     // Error early if no SCM token and the pipeline needs one.
     // Snapshot mode, dry-run, and release.skip can proceed without a token.
-    if ctx.options.token.is_none() && !ctx.is_snapshot() && !ctx.is_dry_run() {
+    //
+    // `--publish-only` defers the token check to
+    // `publish_only::preflight_credentials`, which combines the token
+    // check with the production sign-key check (the spec wants both
+    // validated together at the top of the publish-only branch). If
+    // setup_env bailed here first, publish-only would never get a
+    // chance to emit its combined preflight error or honor
+    // `--no-preflight`. The publish-only branch enforces the same
+    // gate downstream so dropping it here doesn't widen the hole.
+    if ctx.options.token.is_none()
+        && !ctx.is_snapshot()
+        && !ctx.is_dry_run()
+        && !ctx.options.publish_only
+    {
         let release_skipped = match config
             .crates
             .first()

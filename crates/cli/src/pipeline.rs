@@ -924,7 +924,7 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// the upstream harness pipeline (per spec section A — those are
 /// added to the harness's stage list in CI). Filling the
 /// missing-stages gap is tracked for a follow-up phase.
-pub fn build_publish_only_pipeline() -> Pipeline {
+pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_publish::PublishStage;
     use anodizer_stage_release::ReleaseStage;
@@ -1758,6 +1758,41 @@ crates:
         let p = build_merge_pipeline();
         let names = p.stage_names();
         assert_blob_before_snapcraft(&names, "build_merge_pipeline");
+    }
+
+    #[test]
+    fn publish_only_pipeline_runs_blob_before_snapcraft_publish() {
+        // Phase-2 `--publish-only` pipeline must honor the same
+        // blob-before-snapcraft-publish ordering as every other
+        // variant so a required-blob failure can short-circuit the
+        // (irreversible) snapcraft upload via the
+        // `any_failed(Assets, required_only=true)` gate.
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        assert_blob_before_snapcraft(&names, "build_publish_only_pipeline");
+    }
+
+    #[test]
+    fn publish_only_pipeline_runs_sign_before_release() {
+        // Phase-2 contract: SignStage must be at the HEAD of the
+        // publish-only pipeline so production signatures land on the
+        // preserved archives BEFORE ReleaseStage uploads them. Spec:
+        // `.claude/specs/2026-05-19-determinism-produces-shippable.md`
+        // section D.1.
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        let sign_idx = names
+            .iter()
+            .position(|n| *n == "sign")
+            .expect("publish-only pipeline must include sign stage");
+        let release_idx = names
+            .iter()
+            .position(|n| *n == "release")
+            .expect("publish-only pipeline must include release stage");
+        assert!(
+            sign_idx < release_idx,
+            "sign (idx {sign_idx}) must precede release (idx {release_idx}); got {names:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

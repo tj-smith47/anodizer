@@ -375,6 +375,7 @@ impl TestContextBuilder {
             fail_fast: false,
             partial_target: None,
             merge: false,
+            publish_only: false,
             project_root: self.project_root,
             strict: false,
             resume_release: false,

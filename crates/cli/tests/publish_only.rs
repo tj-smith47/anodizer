@@ -19,7 +19,6 @@
 //! All tests skip cleanly on hosts without the required tools (cargo,
 //! git) — same convention as `preserve_dist.rs` / `check_determinism.rs`.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -136,8 +135,13 @@ fn bootstrap_preserved_dist(
 /// Commits the rewrite so `git describe` sees a tag pointing at HEAD.
 fn configure_tag_template(repo: &Path) {
     let host = common::host_triple();
+    // Include a `release:` block (with `disable_upload: true` so the
+    // dry-run release stage still emits its "would create GitHub
+    // Release ... tag=..." line in stdout — that's the substring
+    // the pipeline-composition test asserts against).
     let yaml = format!(
-        r#"crates:
+        r#"project_name: {crate_name}
+crates:
   - name: {crate_name}
     path: .
     tag_template: "v{{{{ .Version }}}}"
@@ -146,6 +150,10 @@ fn configure_tag_template(repo: &Path) {
         binary: {crate_name}
         targets:
           - {host}
+    release:
+      github:
+        owner: test-owner
+        name: test-repo
 "#,
         crate_name = FIXTURE_CRATE_NAME,
         host = host,
@@ -284,10 +292,17 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
          or `rehydrated 1 artifact`; output was:\n{merged}"
     );
 
-    // Tag presence (sanity): release stage's dry-run path mentions the
-    // resolved Git.Tag at some point. Soft assert — depends on stage
-    // verbosity formatting. Don't fail on absence.
-    let _ = &tag;
+    // Tag presence: release stage's dry-run path mentions the
+    // resolved Git.Tag (e.g. "would create GitHub Release ... tag=v0.1.0").
+    // A hard assertion pins that publish-only resolves the tag and
+    // surfaces it in the dry-run summary — silent absence would mask
+    // a regression where the tag resolver short-circuits before
+    // ReleaseStage.
+    assert!(
+        merged.contains(&tag),
+        "expected resolved tag {tag} in CLI output (release stage dry-run summary); \
+         output was:\n{merged}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -404,8 +419,15 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
     // Drop EVERY token + sign env var that would let the preflight
     // pass. `env_clear` is too aggressive (kills PATH on Windows); the
     // explicit removes are surgical.
+    //
+    // Deliberately do NOT pass `--no-preflight`: that flag now (per
+    // Phase-2 review I3) suppresses BOTH the publisher-state
+    // preflight AND the credential preflight, defeating this test.
+    // The publisher-state preflight auto-skips for `--publish-only`
+    // (per Phase-2 review I2 — see `should_run_preflight_auto`), so
+    // the credential preflight fires first and fails closed.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["release", "--publish-only", "--no-preflight"])
+        .args(["release", "--publish-only"])
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .env_remove("GITHUB_TOKEN")
@@ -423,6 +445,56 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
         stderr.contains("publish-only")
             && (stderr.contains("missing release token") || stderr.contains("GITHUB_TOKEN")),
         "expected credential preflight error citing the missing env var; got:\n{stderr}"
+    );
+}
+
+/// I3 coverage: `--no-preflight` must suppress the credential
+/// preflight (operator opt-out for the rare case where they want
+/// the mid-pipeline failure to surface instead). Without this,
+/// `--no-preflight` would only skip the publisher-state preflight,
+/// which is inconsistent operator-facing behavior.
+#[test]
+fn publish_only_no_preflight_suppresses_credential_check() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP publish_only_no_preflight_suppresses_credential_check: git missing");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+    configure_tag_template(repo);
+    let commit = head_commit(repo);
+    bootstrap_preserved_dist(repo, "0.1.0", &commit);
+    tag_head(repo, "0.1.0");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--publish-only", "--no-preflight"])
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodize release --publish-only --no-preflight");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let merged = format!("{stdout}\n{stderr}");
+
+    // The credential warn-line must fire (so the operator sees they
+    // dropped the safety net) and the run must proceed past the
+    // credential gate. Run will fail later when the actual sign /
+    // release stages try to use the missing creds — we only assert
+    // the bypass log line here.
+    assert!(
+        merged.contains("credential preflight skipped via --no-preflight"),
+        "expected --no-preflight warn line; output was:\n{merged}"
+    );
+    // And the run must NOT bail with the credential-preflight error.
+    assert!(
+        !merged.contains("publish-only: missing release token"),
+        "credential preflight should be suppressed by --no-preflight; output was:\n{merged}"
     );
 }
 
@@ -659,12 +731,18 @@ Expire-Date: 0
         String::from_utf8_lossy(&verify.stdout),
         String::from_utf8_lossy(&verify.stderr)
     );
-}
 
-// Silence dead_code on bootstrapped helpers consumed only by the
-// #[ignore]-gated test 4 path — cargo otherwise warns when building
-// the test binary without --ignored.
-#[allow(dead_code)]
-fn _unused_silencer() -> HashMap<String, String> {
-    HashMap::new()
+    // Tear down the gpg-agent daemon `gpg --gen-key` spawned. When
+    // tempdir drops, the daemon is left holding the (now-deleted)
+    // GNUPGHOME socket — over many runs this leaks processes /
+    // sockets in CI. `gpgconf --kill all` is the canonical shutdown
+    // path. Tolerate missing gpgconf: hosts where this `#[ignore]`d
+    // test runs all carry gpgconf alongside gpg, but if a future
+    // host doesn't, leaking a stale daemon is no worse than the
+    // pre-cleanup baseline.
+    let _ = Command::new("gpgconf")
+        .env("GNUPGHOME", &gnupghome)
+        .args(["--kill", "all"])
+        .status()
+        .ok();
 }

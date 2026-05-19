@@ -150,6 +150,31 @@ pub fn get_short_commit() -> Result<String> {
     git_output(&["rev-parse", "--short", "HEAD"])
 }
 
+/// Default short-commit length used across error messages, log
+/// output, and any place that needs to truncate a full SHA for
+/// human display. Matches git's `--short` default (7) — and the
+/// `ShortCommit` template var populated by [`git::detect_git_info`]
+/// (which delegates to `git rev-parse --short`).
+pub const SHORT_COMMIT_LEN: usize = 7;
+
+/// Truncate a full commit SHA string to [`SHORT_COMMIT_LEN`]
+/// characters. Returns the input unchanged when it's already shorter
+/// or equal in length. Use this any time the SHA arrives as a string
+/// (e.g. deserialized from a manifest or read from a template var)
+/// rather than running `git rev-parse --short` again — saves a
+/// subprocess and keeps the length convention in one place.
+///
+/// Empty input returns empty; callers needing fail-closed semantics
+/// (e.g. publish-only's commit cross-check) check `is_empty()`
+/// before calling.
+pub fn short_commit_str(commit: &str) -> String {
+    if commit.len() > SHORT_COMMIT_LEN {
+        commit[..SHORT_COMMIT_LEN].to_string()
+    } else {
+        commit.to_string()
+    }
+}
+
 /// Get the full commit hash of HEAD.
 ///
 /// Mirrors `ctx.Git.FullCommit` in GoReleaser (resolved at git-pipe time and

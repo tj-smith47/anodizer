@@ -123,6 +123,18 @@ pub struct ContextOptions {
     pub partial_target: Option<PartialTarget>,
     /// When true, running with `--merge` flag (merging artifacts from split builds).
     pub merge: bool,
+    /// `--publish-only`: load artifacts from a preserved dist (written
+    /// by `anodize check determinism --preserve-dist=...`) and run
+    /// only the sign + publish pipeline. The CLI dispatcher uses this
+    /// flag in `setup_env` to defer the GitHub-token check to
+    /// `publish_only::preflight_credentials`, which owns the
+    /// combined token + sign-key check and bails fail-closed on
+    /// missing values. Without this gate, `setup_env`'s token check
+    /// would fire FIRST and pre-empt publish-only's own preflight
+    /// (which validates BOTH token AND sign key in one shot). Spec:
+    /// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
+    /// section C.
+    pub publish_only: bool,
     /// Explicit project root directory. When set, stages use this instead of
     /// discovering the repo root via `git rev-parse --show-toplevel`.
     pub project_root: Option<PathBuf>,
@@ -222,6 +234,7 @@ impl Default for ContextOptions {
             fail_fast: false,
             partial_target: None,
             merge: false,
+            publish_only: false,
             project_root: None,
             strict: false,
             resume_release: false,

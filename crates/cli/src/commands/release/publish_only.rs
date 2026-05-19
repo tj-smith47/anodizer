@@ -32,7 +32,7 @@
 //! raw-binary input from `--split`. `--publish-only` deliberately
 //! bypasses that assumption: input is the FULL artifact set
 //! (binaries + archives + packages + checksums), so we run
-//! `build_publish_pipeline` with `SignStage` prepended, not
+//! `build_publish_only_pipeline` (see `crate::pipeline`), not
 //! `build_merge_pipeline`.
 
 use anyhow::{Context as _, Result};
@@ -40,6 +40,7 @@ use std::path::Path;
 
 use anodizer_core::config::Config;
 use anodizer_core::context::Context;
+use anodizer_core::git::short_commit_str;
 use anodizer_core::log::StageLogger;
 
 use super::helpers;
@@ -51,6 +52,19 @@ use crate::pipeline;
 const SIGN_ENV_VARS: &[&str] = &["COSIGN_KEY", "GPG_PRIVATE_KEY"];
 const GITHUB_TOKEN_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "ANODIZER_GITHUB_TOKEN"];
 
+/// Knobs the dispatcher hands to `publish_only::run`. Reduces the
+/// number of positional arguments and lets the dispatch site speak
+/// in terms of flag intent (`no_preflight`) rather than the threaded
+/// `--<flag>` boolean it came from.
+pub(super) struct RunOpts {
+    pub dry_run: bool,
+    /// `--no-preflight`: skip the credential preflight as well as the
+    /// publisher-state preflight. Operator opt-out for the case
+    /// where they know what they're doing and want the mid-pipeline
+    /// failure to surface instead.
+    pub no_preflight: bool,
+}
+
 /// `--publish-only` entry point. Wired from `commands/release/mod.rs::run`
 /// after `setup_context` / git context / preflight have already run on
 /// `ctx`.
@@ -58,7 +72,7 @@ pub(super) fn run(
     ctx: &mut Context,
     config: &Config,
     log: &StageLogger,
-    dry_run: bool,
+    opts: RunOpts,
 ) -> Result<()> {
     log.status("running in publish-only mode (load preserved dist + sign + publish)...");
 
@@ -67,11 +81,18 @@ pub(super) fn run(
     // ── Pre-flight credential check ────────────────────────────────────
     // Bail BEFORE any state mutation. Spec section C: "Pre-flight
     // credential check at top of publish-only". Dry-run skips so
-    // operators can preview the pipeline without secrets.
-    if !dry_run {
-        preflight_credentials()?;
-    } else {
+    // operators can preview the pipeline without secrets;
+    // `--no-preflight` is the explicit operator opt-out for the rare
+    // case where they want the mid-pipeline failure instead.
+    if opts.dry_run {
         log.verbose("(dry-run) skipping production-credential preflight");
+    } else if opts.no_preflight {
+        log.warn(
+            "credential preflight skipped via --no-preflight; \
+             missing credentials will fail mid-pipeline (no idempotent recovery)",
+        );
+    } else {
+        preflight_credentials(|k| std::env::var(k).ok())?;
     }
 
     // ── Load preserved-dist context ────────────────────────────────────
@@ -93,29 +114,46 @@ pub(super) fn run(
     log.status(&format!(
         "publish-only: loaded context.json (version={}, commit={}, targets=[{}], {} artifact(s))",
         preserved.version,
-        short_commit(&preserved.commit),
+        short_commit_str(&preserved.commit),
         preserved.targets.join(", "),
         preserved.artifacts.len(),
     ));
 
-    // Cross-check `commit`: if the harness rebuilt commit X but ctx
-    // resolved commit Y (e.g. the operator forgot to `git checkout`
-    // back to the tagged commit), we must NOT ship Y's signatures
-    // over X's bytes. This is the safety property the spec depends
-    // on: re-signing only swaps signature blobs, underlying
-    // archive bytes must match what the determinism check verified.
-    if let Some(ctx_commit) = ctx.template_vars().get("FullCommit").cloned()
-        && !ctx_commit.is_empty()
-        && ctx_commit != preserved.commit
-    {
+    // Cross-check `commit`: fail CLOSED, not open. If either side is
+    // empty we bail because we cannot prove the preserved bytes match
+    // the current release. Re-signing only swaps signature blobs;
+    // ever shipping a signature over bytes from a different commit
+    // breaks the spec's Safety Property invariant (artifacts shipped
+    // to GitHub Release MUST have passed the determinism check).
+    if preserved.commit.is_empty() {
+        anyhow::bail!(
+            "publish-only: context.json has no `commit` field. Cannot verify the \
+             preserved bytes match the current release; re-run \
+             `anodize check determinism --preserve-dist=...` with a producer that \
+             records the commit SHA."
+        );
+    }
+    let ctx_commit = ctx
+        .template_vars()
+        .get("FullCommit")
+        .cloned()
+        .unwrap_or_default();
+    if ctx_commit.is_empty() {
+        anyhow::bail!(
+            "publish-only: current release context has no resolved commit. \
+             Run from a tagged commit (`git checkout {}`) before --publish-only.",
+            short_commit_str(&preserved.commit),
+        );
+    }
+    if ctx_commit != preserved.commit {
         anyhow::bail!(
             "publish-only: context.json was preserved at commit {} but the current \
              release context resolved to commit {}. Re-signing the preserved bytes \
              under the current commit's tag would ship signatures that don't match \
              the determinism-verified state. `git checkout {}` then retry.",
-            short_commit(&preserved.commit),
-            short_commit(&ctx_commit),
-            short_commit(&preserved.commit),
+            short_commit_str(&preserved.commit),
+            short_commit_str(&ctx_commit),
+            short_commit_str(&preserved.commit),
         );
     }
 
@@ -159,7 +197,7 @@ pub(super) fn run(
     let result = p.run(ctx, log);
 
     if result.is_ok() {
-        super::run_post_pipeline(ctx, config, dry_run, log)?;
+        super::run_post_pipeline(ctx, config, opts.dry_run, log)?;
     }
 
     // Same gate as `release` / `--merge`: required-publisher failures
@@ -187,13 +225,20 @@ pub(super) fn run(
 /// publish-only from CI where the secrets are exported into env
 /// once. Re-deriving "which env vars matter per publisher" lives in
 /// each stage's own preflight — duplicating it here would diverge.
-fn preflight_credentials() -> Result<()> {
+///
+/// **Env injection** (`env`): callers pass a closure that resolves
+/// env-var names to values. The production caller delegates to
+/// `std::env::var`; unit tests pass a pure closure so test execution
+/// doesn't race with sibling tests on shared process env. This
+/// mirrors how `stage-sign::helpers::should_sign_artifact` is
+/// independently testable.
+fn preflight_credentials(env: impl Fn(&str) -> Option<String>) -> Result<()> {
     let token_present = GITHUB_TOKEN_ENV_VARS
         .iter()
-        .any(|v| std::env::var(v).map(|s| !s.is_empty()).unwrap_or(false));
+        .any(|v| env(v).map(|s| !s.is_empty()).unwrap_or(false));
     let sign_key_present = SIGN_ENV_VARS
         .iter()
-        .any(|v| std::env::var(v).map(|s| !s.is_empty()).unwrap_or(false));
+        .any(|v| env(v).map(|s| !s.is_empty()).unwrap_or(false));
 
     if !token_present {
         anyhow::bail!(
@@ -240,27 +285,39 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     if stale_paths.is_empty() {
         return;
     }
+    let count = stale_paths.len();
     log.status(&format!(
-        "publish-only: stripping {} ephemeral signature/certificate artifact(s) before re-sign",
-        stale_paths.len()
+        "publish-only: stripping {count} ephemeral signature/certificate artifact(s) before re-sign"
     ));
     // Also delete the on-disk files so the next sign-stage doesn't see
     // a leftover `.sig` next to its target and produce a `*.sig.sig`
     // through the user's own sign-args template (which typically reads
     // `{{ .Signature }} = {{ .Artifact }}.sig`).
+    let mut disk_removed = 0usize;
     for p in &stale_paths {
-        if let Err(e) = std::fs::remove_file(p)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            log.warn(&format!(
+        match std::fs::remove_file(p) {
+            Ok(()) => disk_removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => log.warn(&format!(
                 "publish-only: failed to delete stale signature {}: {} \
                  (continuing; SignStage will overwrite or fail loudly)",
                 p.display(),
                 e
-            ));
+            )),
         }
     }
     ctx.artifacts.remove_by_paths(&stale_paths);
+    // Positive success signal so the operator sees the strip happened
+    // (counter-balances the lone "stripping N..." line above which
+    // could otherwise look like the work stalled). Reports both the
+    // registry-side removal count (always equal to `count`) and the
+    // disk-side count (may be lower if a sig was already absent on
+    // disk — registry entries can outlive their files when the
+    // post-pipeline runs partial writes).
+    log.status(&format!(
+        "publish-only: stripped {count} ephemeral signature artifact(s) from registry \
+         ({disk_removed} also deleted from disk)"
+    ));
 }
 
 /// Minimal `PreservedDistContext` deserializer. We re-declare the
@@ -285,7 +342,14 @@ struct PreservedDistContext {
     commit: String,
 }
 
-#[allow(dead_code)] // fields retained for forward compat with hash-verify mode
+/// Per-artifact entry in `context.json`. The harness's writer always
+/// populates `sha256` + `size`, but the publish-only path doesn't yet
+/// consume them — they're reserved for a forthcoming "hash-verify"
+/// mode that cross-checks each preserved file's bytes against the
+/// determinism report before re-signing. Tracked in
+/// `.claude/known-bugs.md` under "publish-only hash-verify mode" so
+/// the fields aren't dropped mistakenly during a cleanup pass.
+#[allow(dead_code)] // `name`/`path`/`sha256`/`size` retained for hash-verify mode (see known-bugs.md)
 #[derive(serde::Deserialize, Debug, Default)]
 struct PreservedArtifact {
     #[serde(default)]
@@ -300,12 +364,16 @@ struct PreservedArtifact {
 
 fn load_preserved_context(path: &Path) -> Result<PreservedDistContext> {
     if !path.exists() {
+        // The recovery hint uses a literal `<dist-dir>` placeholder
+        // rather than interpolating `path.parent()` because the parent
+        // for a relative `dist/context.json` would be `.` (or empty),
+        // producing the misleading "--preserve-dist=." in the error.
+        // A literal placeholder is unambiguous.
         anyhow::bail!(
-            "publish-only: missing {}. Run `anodize check determinism --preserve-dist={}` \
-             on a green determinism check first, or use `anodize publish` (no sign step) \
-             if you only need the publisher pass.",
+            "publish-only: missing {}. Run `anodize check determinism \
+             --preserve-dist=<dist-dir>` on a green determinism check first, or use \
+             `anodize publish` (no sign step) if you only need the publisher pass.",
             path.display(),
-            path.parent().unwrap_or_else(|| Path::new(".")).display(),
         );
     }
     let bytes =
@@ -319,27 +387,20 @@ fn load_preserved_context(path: &Path) -> Result<PreservedDistContext> {
     Ok(ctx)
 }
 
-fn short_commit(commit: &str) -> String {
-    if commit.len() > 8 {
-        commit[..8].to_string()
-    } else {
-        commit.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
-    #[test]
-    fn short_commit_truncates_long_sha() {
-        assert_eq!(short_commit("abcdef1234567890"), "abcdef12");
-    }
-
-    #[test]
-    fn short_commit_passes_short_input_through() {
-        assert_eq!(short_commit("abc"), "abc");
-        assert_eq!(short_commit(""), "");
+    /// Build a closure-returning factory for an env map; tests pass it
+    /// to `preflight_credentials` to drive the credential check
+    /// deterministically without touching the process env.
+    fn env_from(map: HashMap<&str, &str>) -> impl Fn(&str) -> Option<String> {
+        let owned: HashMap<String, String> = map
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k| owned.get(k).cloned()
     }
 
     #[test]
@@ -354,6 +415,13 @@ mod tests {
         assert!(
             msg.contains("--preserve-dist"),
             "error should point at the preserve-dist flag; got: {msg}"
+        );
+        // M3 regression: the error must use the literal placeholder,
+        // not a path.parent() interpolation that would emit "." for
+        // relative paths.
+        assert!(
+            msg.contains("<dist-dir>"),
+            "error should use the literal <dist-dir> placeholder; got: {msg}"
         );
     }
 
@@ -387,51 +455,53 @@ mod tests {
     }
 
     #[test]
-    fn preflight_credentials_requires_token_and_sign_key() {
-        // Save + restore the process env vars so this test doesn't
-        // leak state into the rest of the suite. Setting them via
-        // `std::env::set_var` is unsafe in 2024 edition — capture
-        // current values then restore at the end.
-        // SAFETY: the test binary is single-threaded relative to its
-        // own env access; tests in this module don't run in parallel
-        // with each other thanks to cargo's per-test-module
-        // serialization for unsafe env mutation. The vars we touch
-        // are scoped to this function.
-        let saved: Vec<(&'static str, Option<String>)> = SIGN_ENV_VARS
-            .iter()
-            .chain(GITHUB_TOKEN_ENV_VARS.iter())
-            .map(|k| (*k, std::env::var(*k).ok()))
-            .collect();
-        unsafe {
-            for k in SIGN_ENV_VARS.iter().chain(GITHUB_TOKEN_ENV_VARS.iter()) {
-                std::env::remove_var(k);
-            }
-        }
-
-        let err = preflight_credentials().unwrap_err();
+    fn preflight_credentials_bails_when_token_missing() {
+        let err = preflight_credentials(|_| None).unwrap_err();
         assert!(
             format!("{err}").contains("missing release token"),
-            "expected missing-token error first; got: {err}"
+            "expected missing-token error; got: {err}"
         );
+    }
 
-        unsafe { std::env::set_var("GITHUB_TOKEN", "x") };
-        let err = preflight_credentials().unwrap_err();
+    #[test]
+    fn preflight_credentials_bails_when_sign_key_missing() {
+        let env = env_from(HashMap::from([("GITHUB_TOKEN", "x")]));
+        let err = preflight_credentials(env).unwrap_err();
         assert!(
             format!("{err}").contains("missing production signing key"),
             "expected missing-sign-key error after token set; got: {err}"
         );
+    }
 
-        unsafe { std::env::set_var("COSIGN_KEY", "y") };
-        preflight_credentials().expect("token + cosign should preflight clean");
+    #[test]
+    fn preflight_credentials_accepts_token_and_cosign_key() {
+        let env = env_from(HashMap::from([("GITHUB_TOKEN", "x"), ("COSIGN_KEY", "y")]));
+        preflight_credentials(env).expect("token + cosign should preflight clean");
+    }
 
-        // Restore.
-        unsafe {
-            for (k, v) in saved {
-                match v {
-                    Some(val) => std::env::set_var(k, val),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
+    #[test]
+    fn preflight_credentials_accepts_anodizer_github_token_alias() {
+        // The token gate honors both `GITHUB_TOKEN` and
+        // `ANODIZER_GITHUB_TOKEN` — verifying the alias avoids a
+        // silent regression if someone narrows the constant list.
+        let env = env_from(HashMap::from([
+            ("ANODIZER_GITHUB_TOKEN", "x"),
+            ("GPG_PRIVATE_KEY", "y"),
+        ]));
+        preflight_credentials(env).expect("anodizer github token + gpg key should preflight clean");
+    }
+
+    #[test]
+    fn preflight_credentials_rejects_empty_token_value() {
+        // Empty-string values count as "missing" (the env-var was
+        // exported but never populated). Guards against the case
+        // where CI declares the secret but the upstream provider
+        // returned nothing.
+        let env = env_from(HashMap::from([("GITHUB_TOKEN", ""), ("COSIGN_KEY", "y")]));
+        let err = preflight_credentials(env).unwrap_err();
+        assert!(
+            format!("{err}").contains("missing release token"),
+            "empty token must be treated as missing; got: {err}"
+        );
     }
 }
