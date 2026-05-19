@@ -2635,8 +2635,8 @@ fn test_build_release_json_body_exceeds_limit_is_truncated() {
         discussion_category: &None,
     });
     let result = json["body"].as_str().unwrap();
-    // GoReleaser parity (`internal/client/client.go:21`): the truncate suffix
-    // is the three-dot ellipsis, not `"\n\n...(truncated)"` (16 chars).
+    // The truncate suffix is the three-dot ellipsis, not
+    // `"\n\n...(truncated)"` (16 chars).
     let suffix = "...";
     assert_eq!(suffix.len(), 3);
     // Total length must not exceed the limit.

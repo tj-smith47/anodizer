@@ -20,9 +20,9 @@
 //! as a transport-layer failure (NOT an HTTP 503/401), and the
 //! surrounding retry loop exhausted itself on the drain-phase 503s. That
 //! manifested as intermittent test failures with `counter == 4` and an
-//! "attempt 4" error message — different tests in successive release
-//! cycles (cycle 5: `chocolatey::package::tests::push_nupkg_*`; cycle 6:
-//! `github::secondary_rate_limit::*`).
+//! "attempt 4" error message — observed in tests such as
+//! `chocolatey::package::tests::push_nupkg_*` and
+//! `github::secondary_rate_limit::*`.
 //!
 //! ## The fix
 //!

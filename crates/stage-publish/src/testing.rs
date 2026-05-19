@@ -110,10 +110,9 @@ pub fn fake_with_rollback(
 }
 
 /// Minimal [`Publisher`] that counts its `rollback()` invocations.
-/// Used by idempotency tests (audit finding C5 / Bundle B5) that need
-/// to assert "rollback() was NOT called a second time" across two
-/// `run_with_publishers` invocations — the standard [`FakePublisher`]
-/// exposes no such counter.
+/// Used by idempotency tests that need to assert "rollback() was NOT
+/// called a second time" across two `run_with_publishers` invocations
+/// — the standard [`FakePublisher`] exposes no such counter.
 pub struct FakeCountingPublisher {
     pub name: String,
     pub group: PublisherGroup,

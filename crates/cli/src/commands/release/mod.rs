@@ -1553,7 +1553,7 @@ mod tests {
         assert!(report.has_blockers(combine(true, true)));
     }
 
-    // ---- gate_required_failures (audit I14) -----------------------------
+    // ---- gate_required_failures -----------------------------------------
 
     /// Build a `Context` with a `publish_report` containing a single
     /// publisher result with the given outcome and `required` flag.

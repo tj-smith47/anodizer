@@ -389,8 +389,7 @@ fn build_snapcraft_evidence(targets: &[SnapcraftTarget]) -> PublishEvidence {
 /// Append a `PublisherResult` for the snapcraft stage to
 /// `ctx.publish_report`. Initializes the report when `None` (covers
 /// `--publish` runs where the regular `PublishStage` was skipped).
-/// Snapcraft is a Submitter-group publisher with `required = false`,
-/// matching the trait-based classification before Bundle B2.
+/// Snapcraft is a Submitter-group publisher with `required = false`.
 ///
 /// Similar role to `stage-blob::run::record_blob_result`; signature is
 /// slightly different — this recorder takes a pre-computed

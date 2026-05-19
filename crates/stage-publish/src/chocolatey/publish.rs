@@ -142,8 +142,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 
     let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
 
-    // GoReleaser parity (`internal/pipe/chocolatey/chocolatey.go:99-108`):
-    // chocolatey only ships amd64 + 386 install scripts; arm64 (and any
+    // Chocolatey only ships amd64 + 386 install scripts; arm64 (and any
     // other architecture) MUST be filtered out before the per-architecture
     // dispatcher runs. Otherwise the `is_32bit` boolean below routes
     // a non-amd64/non-386 binary into the 64-bit slot, producing an

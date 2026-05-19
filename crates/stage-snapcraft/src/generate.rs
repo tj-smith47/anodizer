@@ -44,8 +44,7 @@ pub fn generate_snap_yaml(
         .description
         .clone()
         .ok_or_else(|| anyhow::anyhow!("snapcraft: description is required for snap '{}'", name))?;
-    // GoReleaser parity (`internal/pipe/snapcraft/snapcraft.go::Default`):
-    // do NOT default `base:`; only emit it when the user supplied one.
+    // Do NOT default `base:`; only emit it when the user supplied one.
     // Forcing `base: core22` breaks classic-confinement snaps (which want
     // no base at all) and modern snaps that need `core24`.
     let base = config.base.clone().filter(|s| !s.is_empty());

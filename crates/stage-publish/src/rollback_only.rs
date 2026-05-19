@@ -671,7 +671,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Idempotency-on-replay tests (audit finding C5).
+    // Idempotency-on-replay tests.
     //
     // These exercise the rollback.json-preferred-over-report.json load path
     // that makes `--rollback-only --from-run=<id>` safe to re-invoke.
@@ -847,7 +847,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Scope-check parity with `rollback::run` (audit finding I3).
+    // Scope-check parity with `rollback::run`.
     //
     // The replay path must honor `rollback_scope_needed()` the same way
     // the live rollback dispatcher does — otherwise the replay invokes

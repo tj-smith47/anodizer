@@ -97,12 +97,11 @@ fn publish_aur_source_entry(
     let contributors = cfg.contributors.clone().unwrap_or_default();
     let depends = cfg.depends.clone().unwrap_or_default();
     let optdepends = cfg.optdepends.clone().unwrap_or_default();
-    // GoReleaser parity (`internal/pipe/aursources/aursources.go::Default`):
-    // an AUR *sources* package is the upstream-build flavor; the canonical
+    // An AUR *sources* package is the upstream-build flavor; the canonical
     // conflict is the *upstream* package name (the unsuffixed `<name>`),
     // because `<name>-bin` (the binary AUR variant) exists alongside it.
     // Defaulting to `[<name>-bin]` only conflicts with our own binary AUR
-    // package — useless. GR's `[ProjectName]` is the correct default.
+    // package — useless. `[ProjectName]` is the correct default.
     let conflicts = cfg
         .conflicts
         .clone()

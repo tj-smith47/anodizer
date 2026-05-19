@@ -4650,15 +4650,15 @@ crates:
     );
 }
 
-/// E2E regression for audit I14: a required-publisher failure in real-
-/// release mode (not snapshot, not dry-run) must surface as a non-zero
-/// exit even though the pipeline body returned `Ok`. Pinned at
+/// E2E regression: a required-publisher failure in real-release mode
+/// (not snapshot, not dry-run) must surface as a non-zero exit even
+/// though the pipeline body returned `Ok`. Pinned at
 /// `crates/cli/src/commands/release/mod.rs` (the
 /// `gate_required_failures(&ctx)?` call after the pipeline returns).
 /// If that call is dropped, the simulated cargo failure rides through
 /// to exit 0 and this test fails.
 ///
-/// The bail message under audit lives in `gate_required_failures` and
+/// The bail message lives in `gate_required_failures` and
 /// reads `"release pipeline finished but {N} required publisher(s)
 /// failed: {names}. ..."` — so this test asserts both `"required
 /// publisher"` and `"cargo"` appear in stderr. It also confirms

@@ -121,7 +121,6 @@ pub fn generate_manifest_with_opts(
                 serde_json::json!(pairs)
             }
             _ => {
-                // GoReleaser parity (`internal/pipe/scoop/scoop.go:378-388`):
                 // `bin` is always emitted as an array, even for a single
                 // binary. Manifest validators that pin the schema to
                 // `array of strings` reject the singleton-string form.
@@ -1501,8 +1500,8 @@ mod tests {
         )
         .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        // GoReleaser parity (`scoop.go:378-388`): without wrap_in_directory,
-        // single-binary `bin` is still a JSON array, not a bare string.
+        // Without wrap_in_directory, single-binary `bin` is still a
+        // JSON array, not a bare string.
         assert_eq!(
             json["architecture"]["64bit"]["bin"],
             serde_json::json!(["app.exe"]),

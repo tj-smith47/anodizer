@@ -1487,10 +1487,10 @@ fn make_ctx_with_snapshot() -> Context {
 // -----------------------------------------------------------------------
 
 /// Build a `BlobTarget` for the `s3://my-bucket/<key>` shape used by the
-/// `record_blob_result` test fixtures. Bundle B14 (audit I17) changed
-/// `record_blob_result` to take `&[BlobTarget]` instead of `&[String]`
-/// so the rollback DELETE path has the structured (provider, bucket,
-/// key, region, endpoint) tuple it needs to reconstruct the store.
+/// `record_blob_result` test fixtures. `record_blob_result` takes
+/// `&[BlobTarget]` instead of `&[String]` so the rollback DELETE path
+/// has the structured (provider, bucket, key, region, endpoint) tuple
+/// it needs to reconstruct the store.
 fn mk_target(key: &str) -> crate::publisher::BlobTarget {
     crate::publisher::BlobTarget {
         provider: "s3".to_string(),
@@ -1619,7 +1619,7 @@ fn blob_stage_does_not_touch_publish_report_when_no_work() {
 }
 
 // -----------------------------------------------------------------------
-// `BlobConfig.required` wire-up (audit I15 / Bundle B12)
+// `BlobConfig.required` wire-up
 //
 // `record_blob_result` now takes a `required: bool` parameter derived
 // from any blob config opting in via `required: true`. The tests pin

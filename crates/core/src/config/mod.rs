@@ -1159,9 +1159,8 @@ pub use string_or_bool::*;
 // MakeselfConfig + SrpmConfig — lifted to `crate::packagers`
 // ---------------------------------------------------------------------------
 //
-// Wave B carve completed. All packaging config types were lifted to
-// `crate::packagers` during the Wave 5 split. The re-exports below
-// preserve the historical
+// All packaging config types live in their own modules under
+// `crate::packagers`. The re-exports below preserve the historical
 // `anodizer_core::config::{MakeselfConfig, MakeselfFile, SrpmConfig}`
 // import paths used by stages and tests.
 

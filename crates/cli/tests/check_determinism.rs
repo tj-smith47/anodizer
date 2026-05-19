@@ -172,10 +172,9 @@ fn inject_drift_hidden_from_help() {
 
 // ── Drift-injection round-trip — fast (~1s with warm cache) ──────────────
 //
-// I12 (release-resilience audit 2026-05-15): the audit asked for a fast
-// integration test that synthesizes a tiny cargo workspace, runs the
-// harness with `--runs=2 --inject-drift=archive`, and asserts the report
-// shape + `drift_count > 0`. This test does that against a minimal
+// A fast integration test that synthesizes a tiny cargo workspace, runs
+// the harness with `--runs=2 --inject-drift=archive`, and asserts the
+// report shape + `drift_count > 0`. This test does that against a minimal
 // no-deps `hello-world` binary crate.
 //
 // Cost: dominated by the harness's per-run `cargo build --release` (×2).
@@ -183,7 +182,7 @@ fn inject_drift_hidden_from_help() {
 // measurements on this checkout: ~0.6s end-to-end (build + archive +
 // sbom + sign + checksum × 2 runs + worktree setup + JSON serdes). Cold
 // CI runs without a rustup toolchain cached will be slower but still
-// well under the 30s "fast" budget the audit allows.
+// well under a 30s "fast" budget.
 //
 // Skipped (with a `cargo test` warning line) when `cargo`/`git` aren't
 // on PATH so the suite stays green on minimal hosts.

@@ -2278,7 +2278,7 @@ fn test_templated_extra_files_written_to_staging_dir() {
 }
 
 // -----------------------------------------------------------------------
-// Session J: New Docker behavioral gap tests
+// Docker behavioral gap tests
 // -----------------------------------------------------------------------
 
 #[test]

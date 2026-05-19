@@ -272,11 +272,10 @@ impl Stage for ArchiveStage {
                 // register `linux-amd64` before `linux-arm64` in run #1 and
                 // the reverse in run #2 — same set, different order. That
                 // order then bakes into `dist/artifacts.json` as an
-                // observable per-run drift. The determinism harness caught
-                // exactly this: cycle 10's diff was archive entries in
-                // swapped positions. `BTreeMap` orders by key (the target
-                // triple), so iteration is identical across runs regardless
-                // of insertion order.
+                // observable per-run drift (archive entries appearing in
+                // swapped positions across runs). `BTreeMap` orders by key
+                // (the target triple), so iteration is identical across
+                // runs regardless of insertion order.
                 let mut by_target: BTreeMap<String, Vec<Artifact>> = BTreeMap::new();
                 for bin in &binaries {
                     let target = bin.target.clone().unwrap_or_else(|| "unknown".to_string());

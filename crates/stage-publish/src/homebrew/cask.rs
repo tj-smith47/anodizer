@@ -826,12 +826,10 @@ pub(super) fn generate_cask_from_context(
         .filter(|s| !s.is_empty())
         .collect();
 
-    // GoReleaser parity (`internal/pipe/cask/template.go:95-121`):
-    // each `uninstall` / `zap` sub-key (`launchctl`, `quit`, `login_item`,
-    // `delete`, `trash`) renders as its own keyed Ruby array. Anodizer's
-    // prior shape hard-coded `zap trash: [...]` and shoved every
-    // sub-directive into that array, producing broken Ruby for non-trash
-    // directives.
+    // Each `uninstall` / `zap` sub-key (`launchctl`, `quit`, `login_item`,
+    // `delete`, `trash`) renders as its own keyed Ruby array. The prior
+    // shape hard-coded `zap trash: [...]` and shoved every sub-directive
+    // into that array, producing broken Ruby for non-trash directives.
     let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
     let zap_block = render_zap_block(cask_cfg.zap.as_ref());
 

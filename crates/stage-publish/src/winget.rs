@@ -10,10 +10,10 @@ use serde::Serialize;
 
 use crate::util;
 
-// GoReleaser parity (`internal/pipe/winget/winget.go:37`):
+// winget PackageIdentifier regex:
 // `^[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}(\.[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}){1,7}$`
 //
-// Two delta points vs. the loose anodizer regex this replaced:
+// Two delta points vs. the loose regex this replaced:
 //   1. Each segment is bounded to 1..=32 chars (live winget validator
 //      enforces this; longer segments fail the upstream PR check).
 //   2. ASCII control chars `\x01..=\x1f` are excluded explicitly — winget
@@ -568,8 +568,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         .unwrap_or_else(|_| description_raw_cfg.to_string());
     let description = description_tmpl.replace('\t', "  ");
     let description = description.as_str();
-    // GoReleaser parity (`errNoShortDescription` in
-    // `internal/pipe/winget/winget.go`) — short_description is required.
+    // short_description is required.
     // Fall back to winget.description or meta.description (both semantically
     // valid descriptions), but NEVER silently substitute the crate_name —
     // that produces a meaningless winget manifest like "ShortDescription:

@@ -50,7 +50,7 @@ impl DeterminismState {
     /// resolve) — keep this list aligned with what stages actually drop
     /// into `dist/`.
     ///
-    /// Notably absent (and intentionally so, per audit M10):
+    /// Notably absent (and intentionally so):
     ///
     /// - `docker-manifest-descriptor` / `docker-image-blob`: the docker
     ///   stage is in [`crate::determinism_runner::SIDE_EFFECT_STAGES`]

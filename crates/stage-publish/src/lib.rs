@@ -737,8 +737,7 @@ impl Stage for PublishStage {
         // them against the same tag duplicates the PR with no
         // safeguard. Operators recovering from a partial failure
         // should use `--rollback-only --from-run=<id>` first (which
-        // has its own idempotency via `dist/run-<id>/rollback.json`,
-        // covered by Bundle B5).
+        // has its own idempotency via `dist/run-<id>/rollback.json`).
         //
         // Skip the check in:
         //   - snapshot / dry-run (no report.json gets written in

@@ -313,11 +313,11 @@ mod tests {
 
     #[test]
     fn side_effect_stages_covers_every_known_publish_side_effect() {
-        // Regression guard against I8 (audit 2026-05-15): if a future
-        // pipeline edit adds a side-effect stage and forgets to register
-        // it here, this test surfaces the omission. Add the new stage to
-        // SIDE_EFFECT_STAGES (and update this list) once the new entry is
-        // confirmed to belong in the skip set.
+        // Regression guard: if a future pipeline edit adds a side-effect
+        // stage and forgets to register it here, this test surfaces the
+        // omission. Add the new stage to SIDE_EFFECT_STAGES (and update
+        // this list) once the new entry is confirmed to belong in the
+        // skip set.
         let expected = [
             "release",
             "docker",
@@ -414,8 +414,8 @@ mod tests {
     }
 
     /// Every name the harness shovels into `--skip=...` MUST be accepted
-    /// by the release CLI's skip validator. Surfaced by the I12
-    /// drift-injection integration test (audit 2026-05-15) when `docker-sign`
+    /// by the release CLI's skip validator. Surfaced by the
+    /// drift-injection integration test when `docker-sign`
     /// was present in [`SIDE_EFFECT_STAGES`] but missing from
     /// [`crate::context::VALID_RELEASE_SKIPS`] — the harness's child
     /// subprocess bombed with `invalid --skip value(s): docker-sign`. This
