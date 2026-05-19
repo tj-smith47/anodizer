@@ -871,15 +871,29 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
 /// Used by `publish` and `announce` commands that run from a completed dist/.
 pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
     let artifacts_path = dist.join("artifacts.json");
-    if !artifacts_path.exists() {
+    load_artifacts_from_manifest(ctx, dist, &artifacts_path)
+}
+
+/// Load artifacts from an explicitly-named manifest path under `dist/`.
+/// `dist` is retained for the error message (caller-meaningful location),
+/// while `manifest_path` is the file actually parsed. Used by the
+/// publish-only flow to fold in per-shard manifests
+/// (`artifacts-<shard>.json`) emitted by the sharded determinism matrix.
+pub fn load_artifacts_from_manifest(
+    ctx: &mut Context,
+    dist: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    if !manifest_path.exists() {
         anyhow::bail!(
-            "no artifacts.json found in {}. Run a full release or merge first.",
+            "no artifacts manifest found at {} (under {}). Run a full release or merge first.",
+            manifest_path.display(),
             dist.display()
         );
     }
 
-    let content = std::fs::read_to_string(&artifacts_path)
-        .with_context(|| format!("read {}", artifacts_path.display()))?;
+    let content = std::fs::read_to_string(manifest_path)
+        .with_context(|| format!("read {}", manifest_path.display()))?;
 
     #[derive(serde::Deserialize)]
     struct MetadataArtifact {
@@ -896,7 +910,7 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
     }
 
     let artifacts: Vec<MetadataArtifact> = serde_json::from_str(&content)
-        .with_context(|| format!("parse {}", artifacts_path.display()))?;
+        .with_context(|| format!("parse {}", manifest_path.display()))?;
 
     for a in artifacts {
         let kind = ArtifactKind::parse(&a.kind)
@@ -1251,7 +1265,7 @@ list:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("no artifacts.json found"),
+            msg.contains("no artifacts manifest found"),
             "error should mention missing file: {msg}"
         );
     }

@@ -2,14 +2,12 @@
 //! `anodize check determinism --preserve-dist=<path>` and run only the
 //! sign + publish pipeline.
 //!
-//! Phase 2 of `.claude/specs/2026-05-19-determinism-produces-shippable.md`.
-//! The harness Phase-1 work writes:
-//!   - `<preserved-dist>/**` — the byte-stable artifacts the determinism
-//!     check just verified (archives, packages, sboms, checksums,
-//!     `artifacts.json`, `metadata.json`).
-//!   - `<preserved-dist>/context.json` — the Phase-1
-//!     [`PreservedDistContext`] manifest pinning `(artifacts, targets,
-//!     version, commit)`.
+//! The harness writes:
+//! - `<preserved-dist>/**` — the byte-stable artifacts the determinism
+//!   check just verified (archives, packages, sboms, checksums,
+//!   `artifacts.json`, `metadata.json`).
+//! - `<preserved-dist>/context.json` — a [`PreservedDistContext`]
+//!   manifest pinning `(artifacts, targets, version, commit)`.
 //!
 //! This mode loads both, rehydrates `ctx.artifacts` from
 //! `dist/artifacts.json` (the in-process registry shape — the manifest
@@ -19,24 +17,22 @@
 //! prepends `SignStage` (production-keys sign pass) ahead of the usual
 //! release / publish / blob / snapcraft-publish chain.
 //!
-//! **Idempotence invariant for the harness side** (per spec D.2): the
-//! harness skips its in-loop `SignStage` when production keys are
-//! exported on the runner (`COSIGN_KEY` / `GPG_PRIVATE_KEY`), so
-//! preserved-dist usually has no `.sig` / `.asc` files. This module's
-//! defensive strip exists for the case where that gate didn't fire
-//! (legacy harness build, harness ran without prod keys then operator
-//! brought them in later, etc.) — re-signing on top of an existing
-//! signature chain would produce `*.sig.sig` chaos.
+//! Idempotence: the harness skips its in-loop `SignStage` when
+//! production keys are exported on the runner (`COSIGN_KEY` /
+//! `GPG_PRIVATE_KEY`), so preserved-dist usually has no `.sig` /
+//! `.asc` files. This module's defensive strip exists for the case
+//! where that gate didn't fire (harness ran without prod keys then
+//! operator brought them in later, etc.) — re-signing on top of an
+//! existing signature chain would produce `*.sig.sig` chaos.
 //!
-//! **Architecture note** (spec Risks #2): the merge pipeline assumes
-//! raw-binary input from `--split`. `--publish-only` deliberately
-//! bypasses that assumption: input is the FULL artifact set
-//! (binaries + archives + packages + checksums), so we run
-//! `build_publish_only_pipeline` (see `crate::pipeline`), not
-//! `build_merge_pipeline`.
+//! Pipeline choice: the merge pipeline assumes raw-binary input from
+//! `--split`. `--publish-only` deliberately bypasses that assumption:
+//! input is the FULL artifact set (binaries + archives + packages +
+//! checksums), so we run `build_publish_only_pipeline` (see
+//! `crate::pipeline`), not `build_merge_pipeline`.
 
 use anyhow::{Context as _, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anodizer_core::config::Config;
 use anodizer_core::context::Context;
@@ -96,23 +92,29 @@ pub(super) fn run(
     }
 
     // ── Load preserved-dist context ────────────────────────────────────
-    // Two manifests live in `<dist>/`:
-    //   - `artifacts.json` (the post-pipeline writes it): the canonical
-    //     in-process registry shape with `kind` / `target` / `metadata`,
-    //     same as `anodize publish` consumes.
-    //   - `context.json` (Phase-1 preserve.rs writes it): the
-    //     harness's `PreservedDistContext` summary with the per-artifact
-    //     `sha256` + `size` recorded at preserve time.
+    // Two manifest families live in `<dist>/`:
+    //   - `artifacts.json` / `artifacts-<shard>.json`: the canonical
+    //     in-process registry shape (`kind` / `target` / `metadata`),
+    //     same as `anodize publish` consumes. Each shard emits its own.
+    //   - `context.json` / `context-<shard>.json`: the harness's
+    //     `PreservedDistContext` summary with per-artifact `sha256` +
+    //     `size` recorded at preserve time. Each shard emits its own.
     //
-    // `artifacts.json` is the load-bearing input — it's the only file
-    // that carries `ArtifactKind`. `context.json` provides the
-    // cross-check: assert its `commit` field matches `ctx`'s resolved
-    // commit so we don't accidentally publish bytes from a prior tag.
-    let context_path = dist.join("context.json");
-    let preserved = load_preserved_context(&context_path)?;
+    // The sharded release workflow uploads each shard's dist tree under
+    // `dist-<shard>` and the action renames the per-shard manifests so
+    // download-artifact's `merge-multiple: true` doesn't collide on
+    // identically-named files. Discovery here folds them all back in.
+    //
+    // The legacy single-`context.json` layout (operator running locally
+    // without sharding) keeps working — `discover_preserved_contexts`
+    // matches both the un-suffixed and the suffixed forms.
+    let preserved_contexts = discover_preserved_contexts(&dist)?;
+    let preserved = merge_preserved_contexts(&preserved_contexts);
+    let shard_count = preserved_contexts.len();
 
     log.status(&format!(
-        "publish-only: loaded context.json (version={}, commit={}, targets=[{}], {} artifact(s))",
+        "publish-only: loaded {} context manifest(s) (version={}, commit={}, targets=[{}], {} artifact(s))",
+        shard_count,
         preserved.version,
         short_commit_str(&preserved.commit),
         preserved.targets.join(", "),
@@ -123,15 +125,33 @@ pub(super) fn run(
     // empty we bail because we cannot prove the preserved bytes match
     // the current release. Re-signing only swaps signature blobs;
     // ever shipping a signature over bytes from a different commit
-    // breaks the spec's Safety Property invariant (artifacts shipped
-    // to GitHub Release MUST have passed the determinism check).
+    // breaks the Safety Property invariant (artifacts shipped to
+    // GitHub Release MUST have passed the determinism check).
     if preserved.commit.is_empty() {
         anyhow::bail!(
-            "publish-only: context.json has no `commit` field. Cannot verify the \
+            "publish-only: no context manifest carried a `commit` field. Cannot verify the \
              preserved bytes match the current release; re-run \
              `anodize check determinism --preserve-dist=...` with a producer that \
              records the commit SHA."
         );
+    }
+    // Sharded layouts: every shard's `commit` MUST agree with the
+    // merged value. A mismatch means two shards were preserved from
+    // two different release attempts — re-signing across that mix
+    // would publish bytes whose determinism guarantee is split across
+    // commits.
+    for (path, ctx_entry) in &preserved_contexts {
+        if !ctx_entry.commit.is_empty() && ctx_entry.commit != preserved.commit {
+            anyhow::bail!(
+                "publish-only: shard manifest {} records commit {} but the merged set is \
+                 anchored at {}. A multi-shard preserved dist must come from a single \
+                 release attempt; mixing bytes from different commits would publish \
+                 signatures whose determinism-verified state is split.",
+                path.display(),
+                short_commit_str(&ctx_entry.commit),
+                short_commit_str(&preserved.commit),
+            );
+        }
     }
     let ctx_commit = ctx
         .template_vars()
@@ -147,7 +167,7 @@ pub(super) fn run(
     }
     if ctx_commit != preserved.commit {
         anyhow::bail!(
-            "publish-only: context.json was preserved at commit {} but the current \
+            "publish-only: context manifest was preserved at commit {} but the current \
              release context resolved to commit {}. Re-signing the preserved bytes \
              under the current commit's tag would ship signatures that don't match \
              the determinism-verified state. `git checkout {}` then retry.",
@@ -159,19 +179,29 @@ pub(super) fn run(
 
     // ── Rehydrate ctx.artifacts ────────────────────────────────────────
     // Delegates to the same loader `anodize publish` uses so the two
-    // entry points stay in lockstep (one parser to maintain).
-    helpers::load_artifacts_from_dist(ctx, &dist).with_context(|| {
-        format!(
-            "publish-only: failed to load artifacts.json from {}. The preserve-dist \
-             flow normally copies it from the harness's worktree post-pipeline; if \
-             it's missing the preserved dist is incomplete.",
-            dist.display()
-        )
-    })?;
+    // entry points stay in lockstep (one parser to maintain). Each
+    // discovered manifest contributes its artifacts to the registry;
+    // duplicate paths land in the registry as duplicates, which the
+    // downstream stages tolerate (sharded matrices never overlap their
+    // target sets, so duplicates would indicate a workflow bug worth
+    // surfacing rather than silently de-duping).
+    let artifact_manifests = discover_artifacts_manifests(&dist)?;
+    for manifest_path in &artifact_manifests {
+        helpers::load_artifacts_from_manifest(ctx, &dist, manifest_path).with_context(|| {
+            format!(
+                "publish-only: failed to load {} from {}. The preserve-dist \
+                 flow normally copies these from the harness's worktree post-pipeline; \
+                 if any is missing the preserved dist is incomplete.",
+                manifest_path.display(),
+                dist.display()
+            )
+        })?;
+    }
 
     log.status(&format!(
-        "publish-only: rehydrated {} artifact(s) from dist/artifacts.json",
-        ctx.artifacts.all().len()
+        "publish-only: rehydrated {} artifact(s) from {} artifacts manifest(s)",
+        ctx.artifacts.all().len(),
+        artifact_manifests.len(),
     ));
 
     // ── Strip ephemeral signatures / certificates ──────────────────────
@@ -330,7 +360,7 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
 /// `context.json` from a buggy producer doesn't kill the load — the
 /// downstream artifact-load step is the real gate. Missing fields
 /// degrade gracefully (empty targets / version / commit).
-#[derive(serde::Deserialize, Debug, Default)]
+#[derive(serde::Deserialize, Debug, Default, Clone)]
 struct PreservedDistContext {
     #[serde(default)]
     artifacts: Vec<PreservedArtifact>,
@@ -346,11 +376,9 @@ struct PreservedDistContext {
 /// populates `sha256` + `size`, but the publish-only path doesn't yet
 /// consume them — they're reserved for a forthcoming "hash-verify"
 /// mode that cross-checks each preserved file's bytes against the
-/// determinism report before re-signing. Tracked in
-/// `.claude/known-bugs.md` under "publish-only hash-verify mode" so
-/// the fields aren't dropped mistakenly during a cleanup pass.
-#[allow(dead_code)] // `name`/`path`/`sha256`/`size` retained for hash-verify mode (see known-bugs.md)
-#[derive(serde::Deserialize, Debug, Default)]
+/// determinism report before re-signing.
+#[allow(dead_code)] // `name`/`path`/`sha256`/`size` retained for hash-verify mode
+#[derive(serde::Deserialize, Debug, Default, Clone)]
 struct PreservedArtifact {
     #[serde(default)]
     name: String,
@@ -360,6 +388,134 @@ struct PreservedArtifact {
     sha256: String,
     #[serde(default)]
     size: u64,
+}
+
+/// Walk `dist/` for every `context.json` and `context-*.json` entry at
+/// the dist root (non-recursive). Returns the parsed contexts paired
+/// with their source paths, sorted by filename for reproducible output.
+/// Empty result is an error — `publish-only` cannot proceed without at
+/// least one manifest pinning the preserved commit.
+fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDistContext)>> {
+    let entries = std::fs::read_dir(dist).with_context(|| {
+        format!(
+            "publish-only: reading dist directory {} to discover context manifest(s)",
+            dist.display()
+        )
+    })?;
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "publish-only: reading directory entry under {}",
+                dist.display()
+            )
+        })?;
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = match name.to_str() {
+            Some(n) => n,
+            None => continue,
+        };
+        // Skip the .tmp file the harness's atomic-rename writer may
+        // have left behind on a crash mid-write — never represents a
+        // committed manifest.
+        if name.ends_with(".tmp") {
+            continue;
+        }
+        if name == "context.json" || (name.starts_with("context-") && name.ends_with(".json")) {
+            found.push(entry.path());
+        }
+    }
+    if found.is_empty() {
+        anyhow::bail!(
+            "publish-only: no context.json (or context-<shard>.json) found at {}. \
+             Run `anodize check determinism --preserve-dist=<dist-dir>` on a green \
+             determinism check first, or use `anodize publish` (no sign step) if \
+             you only need the publisher pass.",
+            dist.display()
+        );
+    }
+    found.sort();
+    let mut out: Vec<(PathBuf, PreservedDistContext)> = Vec::with_capacity(found.len());
+    for path in found {
+        let parsed = load_preserved_context(&path)?;
+        out.push((path, parsed));
+    }
+    Ok(out)
+}
+
+/// Walk `dist/` for every `artifacts.json` and `artifacts-*.json` entry
+/// at the dist root (non-recursive). Returns paths sorted by filename
+/// for reproducible output. May return an empty vec when neither the
+/// legacy nor any sharded manifest is present — callers decide whether
+/// that's fatal.
+fn discover_artifacts_manifests(dist: &Path) -> Result<Vec<PathBuf>> {
+    let entries = std::fs::read_dir(dist).with_context(|| {
+        format!(
+            "publish-only: reading dist directory {} to discover artifacts manifest(s)",
+            dist.display()
+        )
+    })?;
+    let mut found: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "publish-only: reading directory entry under {}",
+                dist.display()
+            )
+        })?;
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = match name.to_str() {
+            Some(n) => n,
+            None => continue,
+        };
+        if name == "artifacts.json" || (name.starts_with("artifacts-") && name.ends_with(".json")) {
+            found.push(entry.path());
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+/// Fold N per-shard `PreservedDistContext` entries into a single view.
+/// Semantics:
+/// - `artifacts` — concatenated in shard-name (path) order; duplicates
+///   are preserved (a duplicate path across shards is a workflow bug
+///   worth surfacing downstream rather than silently collapsing).
+/// - `targets` — deduped + sorted; the union across all shards.
+/// - `version` / `commit` — taken from the first non-empty entry. The
+///   later cross-check step verifies every shard's `commit` agrees with
+///   the merged value.
+fn merge_preserved_contexts(contexts: &[(PathBuf, PreservedDistContext)]) -> PreservedDistContext {
+    use std::collections::BTreeSet;
+    let mut merged = PreservedDistContext::default();
+    let mut targets: BTreeSet<String> = BTreeSet::new();
+    for (_, c) in contexts {
+        if merged.version.is_empty() && !c.version.is_empty() {
+            merged.version = c.version.clone();
+        }
+        if merged.commit.is_empty() && !c.commit.is_empty() {
+            merged.commit = c.commit.clone();
+        }
+        for t in &c.targets {
+            targets.insert(t.clone());
+        }
+        for a in &c.artifacts {
+            merged.artifacts.push(PreservedArtifact {
+                name: a.name.clone(),
+                path: a.path.clone(),
+                sha256: a.sha256.clone(),
+                size: a.size,
+            });
+        }
+    }
+    merged.targets = targets.into_iter().collect();
+    merged
 }
 
 fn load_preserved_context(path: &Path) -> Result<PreservedDistContext> {

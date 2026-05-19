@@ -1,24 +1,19 @@
 //! Integration tests for `anodize check determinism --preserve-dist=<path>`.
 //!
-//! Phase 1 of `.claude/specs/2026-05-19-determinism-produces-shippable.md`:
-//! the harness must, on a green run, copy `<worktree>/dist/**` from
+//! The harness must, on a green run, copy `<worktree>/dist/**` from
 //! run-0 to the operator-supplied destination and emit a `context.json`
-//! manifest describing the artifact set.
+//! manifest describing the artifact set. These tests synthesize a
+//! minimal cargo workspace, drive the harness end-to-end with
+//! `--preserve-dist=<tmp>`, and assert:
 //!
-//! These tests synthesize a minimal cargo workspace (matching the
-//! existing `check_determinism.rs` fixture pattern), drive the harness
-//! end-to-end with `--preserve-dist=<tmp>`, and assert:
-//!
-//!   1. The dist tree was copied to <tmp>.
-//!   2. `<tmp>/context.json` is present and round-trips through serde.
-//!   3. Each file in `<tmp>/` has a SHA256 that matches the
-//!      corresponding entry in `determinism.json:artifacts[].hash` (the
-//!      load-bearing "preserved bytes match the determinism check"
-//!      property the spec's Safety Property depends on).
+//! 1. The dist tree was copied to <tmp>.
+//! 2. `<tmp>/context.json` is present and round-trips through serde.
+//! 3. Each file in `<tmp>/` has a SHA256 that matches the corresponding
+//!    entry in `determinism.json:artifacts[].hash` — the load-bearing
+//!    "preserved bytes match the determinism check" safety property.
 //!
 //! On hosts without `cargo` or `git` on PATH, these tests print a SKIP
-//! marker and return early — same convention as the existing harness
-//! integration test in `check_determinism.rs`.
+//! marker and return early — same convention as `check_determinism.rs`.
 
 use anodizer_core::DeterminismReport;
 use std::fs;
@@ -33,7 +28,6 @@ use common::{bootstrap_minimal_cargo_repo, sha256_file, tool_on_path, walk_files
 /// don't share lock state.
 const FIXTURE_CRATE_NAME: &str = "anodize-det-fixture-preserve";
 
-/// Test #1 from the spec's Test Plan section (Phase 1, item 1):
 /// `--preserve-dist=<tmp>` copies the dist tree AND emits a
 /// `context.json` that round-trips through serde.
 #[test]
@@ -172,8 +166,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
     );
 }
 
-/// Test #2 from the spec's Test Plan section (Phase 1, item 2):
-/// each file in `<preserved-dist>/` has a SHA256 that matches the
+/// Each file in `<preserved-dist>/` has a SHA256 that matches the
 /// corresponding `determinism.json:artifacts[].hash` entry.
 ///
 /// This pins the load-bearing safety property: the bytes the publish-

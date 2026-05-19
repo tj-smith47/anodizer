@@ -54,9 +54,7 @@ pub struct ReleaseOpts {
     /// `--publish-only`: load `dist/context.json` (preserved by
     /// `anodize check determinism --preserve-dist=...`) and run only
     /// the sign + publish pipeline. Mutually exclusive with `split` /
-    /// `merge` at the clap level. Spec:
-    /// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-    /// section C.
+    /// `merge` at the clap level.
     pub publish_only: bool,
     pub strict: bool,
     /// `--prepare` (GoReleaser Pro parity): run local build/archive/sign/checksum/sbom
@@ -101,10 +99,9 @@ pub struct ReleaseOpts {
     /// translation site so production releases cannot trip it.
     pub simulate_failure: Vec<String>,
     /// `--rollback-only`: skip publish; re-attempt rollback from a
-    /// prior run report. The replay logic lands in a follow-up task
-    /// (tracked in `.claude/known-bugs.md`); `run()` bails with a
-    /// clear "not yet implemented" error in this revision so the
-    /// flag is discoverable via `--help`.
+    /// prior run report. The replay logic lands in a follow-up; `run()`
+    /// bails with a clear "not yet implemented" error in this revision
+    /// so the flag is discoverable via `--help`.
     pub rollback_only: bool,
     /// `--from-run=<id>`: prior run id whose `report.json` to load
     /// when running with `--rollback-only`.
@@ -832,8 +829,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // the stage layer (rollback / announce-gating / summary all depend
     // on the pipeline running to completion). The final exit code, in
     // contrast, MUST reflect required-publisher failure so CI / shell
-    // callers see the right signal. See
-    // `.claude/audits/2026-05-15-release-resilience-review.md#I14`.
+    // callers see the right signal.
     if result.is_ok() {
         gate_required_failures(&ctx)?;
     }
@@ -856,8 +852,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 /// is defense-in-depth in case a future stage starts recording
 /// publisher results in those modes (e.g. for `--snapshot` evidence
 /// preview).
-///
-/// See `.claude/audits/2026-05-15-release-resilience-review.md#I14`.
 pub(crate) fn gate_required_failures(ctx: &Context) -> Result<()> {
     if ctx.is_snapshot() || ctx.is_dry_run() {
         return Ok(());

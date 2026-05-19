@@ -1,11 +1,10 @@
 //! Subprocess runner for the determinism harness.
 //!
-//! Allow-listed entry-point for `Command::new` in core (see
-//! `.claude/rules/module-boundaries.md`). The determinism harness in
-//! `crates/cli/src/determinism_harness.rs` is forbidden from spawning
-//! processes directly per the same rule, so this module owns the
-//! `anodize release --snapshot --skip=...` invocation that drives each
-//! from-clean rebuild.
+//! Allow-listed entry-point for `Command::new` in core. The determinism
+//! harness in `crates/cli/src/determinism_harness.rs` is forbidden
+//! from spawning processes directly per the module-boundary rule, so
+//! this module owns the `anodize release --snapshot --skip=...`
+//! invocation that drives each from-clean rebuild.
 //!
 //! Why a separate module: `Command::new` is an authorization boundary
 //! (write-to-disk, network, env exfiltration); concentrating the
@@ -30,8 +29,6 @@ use std::process::Command;
 /// rebuild. Adding a future side-effect stage to the release pipeline
 /// MUST add its stage name here too — otherwise the harness will fire it
 /// from inside the supposedly-hermetic build.
-///
-/// Audit reference: `.claude/audits/2026-05-15-release-resilience-review.md#i8`.
 ///
 /// Order mirrors the position in `build_release_pipeline` so reviewers
 /// scanning both files can pattern-match. Listed exhaustively (no
@@ -83,8 +80,11 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 ///
 /// Pinning args:
 /// - `release` — drives the full build-side pipeline.
-/// - `--snapshot` — disables tag-cutting and tells stages to use the
-///   pre-resolved SDE.
+/// - `--snapshot` (when `snapshot` is `true`) — disables tag-cutting and
+///   tells stages to use the pre-resolved SDE. The release workflow
+///   passes `false` on tag-push runs so produce-stages emit artifacts
+///   named with the actual release version (no `-SNAPSHOT-<sha>` suffix)
+///   that the publish-only path can ship directly.
 /// - `--skip=<SIDE_EFFECT_STAGES + extra_skip>` — strips every
 ///   side-effect-producing stage AND every non-requested produce-stage
 ///   (the harness's complement set). Doubling N is safe in any env
@@ -112,8 +112,16 @@ pub fn run_build_pipeline_subprocess(
     env: &HashMap<String, String>,
     targets: Option<&[String]>,
     extra_skip: &[String],
+    snapshot: bool,
 ) -> Result<()> {
-    let mut cmd = build_subprocess_command(anodize_binary, worktree_path, env, targets, extra_skip);
+    let mut cmd = build_subprocess_command(
+        anodize_binary,
+        worktree_path,
+        env,
+        targets,
+        extra_skip,
+        snapshot,
+    );
     let status = cmd
         .status()
         .context("spawning anodize release for determinism harness")?;
@@ -136,10 +144,15 @@ fn build_subprocess_command(
     env: &HashMap<String, String>,
     targets: Option<&[String]>,
     extra_skip: &[String],
+    snapshot: bool,
 ) -> Command {
     let mut cmd = Command::new(anodize_binary);
     let extra_refs: Vec<&str> = extra_skip.iter().map(String::as_str).collect();
-    cmd.args(["release", "--snapshot", &compute_skip_arg(&extra_refs)]);
+    cmd.arg("release");
+    if snapshot {
+        cmd.arg("--snapshot");
+    }
+    cmd.arg(compute_skip_arg(&extra_refs));
     if let Some(list) = targets
         && !list.is_empty()
     {
@@ -177,7 +190,7 @@ mod tests {
         let env = HashMap::new();
         let worktree = std::env::temp_dir();
         let bogus = PathBuf::from("/nonexistent/anodize-binary-for-tests");
-        let res = run_build_pipeline_subprocess(&bogus, &worktree, &env, None, &[]);
+        let res = run_build_pipeline_subprocess(&bogus, &worktree, &env, None, &[], true);
         assert!(
             res.is_err(),
             "missing binary should surface as an error, not a panic"
@@ -196,6 +209,7 @@ mod tests {
             &env,
             None,
             &[],
+            true,
         );
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
         assert!(
@@ -230,6 +244,7 @@ mod tests {
             &env,
             Some(&triples),
             &[],
+            true,
         );
         let args: Vec<String> = cmd
             .get_args()
@@ -257,6 +272,7 @@ mod tests {
             &env,
             Some(&empty),
             &[],
+            true,
         );
         let args: Vec<String> = cmd
             .get_args()
@@ -266,6 +282,33 @@ mod tests {
             args.iter().all(|a| !a.starts_with("--targets")),
             "empty target slice should omit --targets entirely; got {args:?}"
         );
+    }
+
+    /// `snapshot=false` MUST drop `--snapshot` from the argv so the
+    /// child release subprocess uses the real release version instead
+    /// of a `-SNAPSHOT-<sha>` suffix. The release workflow relies on
+    /// this for tag-push runs.
+    #[test]
+    fn subprocess_command_drops_snapshot_when_disabled() {
+        let env = HashMap::new();
+        let cmd = build_subprocess_command(
+            &PathBuf::from("/usr/bin/anodize"),
+            &std::env::temp_dir(),
+            &env,
+            None,
+            &[],
+            false,
+        );
+        let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
+        assert!(
+            !args.contains(&"--snapshot"),
+            "snapshot=false should drop --snapshot; got {args:?}"
+        );
+        assert!(
+            args.iter().any(|a| a.starts_with("--skip=")),
+            "argv still needs --skip=...: {args:?}"
+        );
+        assert_eq!(args[0], "release", "argv must lead with `release`");
     }
 
     #[test]

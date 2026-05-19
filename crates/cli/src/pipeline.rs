@@ -126,14 +126,14 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     // Validate defaults.crates / defaults.workspaces axis matches top-level (DEC-4).
     anodizer_core::config::validate_defaults_axis(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
-    // Validate homebrew_cask does not set both url_template and url.template (WAVE 4).
+    // Validate homebrew_cask does not set both url_template and url.template.
     anodizer_core::config::validate_homebrew_cask_url_template(&config)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    // Validate archives[].id and universal_binaries[].id uniqueness (Q-arch2).
+    // Validate archives[].id and universal_binaries[].id uniqueness.
     anodizer_core::config::validate_id_uniqueness(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    // Q-src3: source.prefix_template defaults to source.name_template when
-    // unset (matches the long-documented behavior — see SourceConfig docs).
+    // source.prefix_template defaults to source.name_template when unset
+    // (matches the long-documented behavior — see SourceConfig docs).
     // Applied at config-load so every downstream stage reading prefix_template
     // sees the resolved value.
     if let Some(ref mut src) = config.source {
@@ -152,7 +152,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
     // Fold workspace-level `defaults` into every per-crate config so
     // downstream stages can read from `crate_cfg.<field>` regardless of
-    // whether the value was set per-crate or hoisted to defaults (WAVE 2).
+    // whether the value was set per-crate or hoisted to defaults.
     anodizer_core::defaults_merge::apply_defaults(&mut config);
 
     Ok(config)
@@ -846,8 +846,7 @@ pub fn build_release_pipeline() -> Pipeline {
     // BlobStage runs before SnapcraftPublishStage so a required-blob
     // failure can short-circuit the snapcraft upload via the same
     // `any_failed(Assets, required_only=true)` check that already gates
-    // every other Submitter publisher. See
-    // `.claude/specs/2026-05-14-release-resilience.md#stage-order-decided`.
+    // every other Submitter publisher.
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(AnnounceStage));
@@ -871,7 +870,7 @@ pub fn build_split_pipeline() -> Pipeline {
 /// publish` subcommand, which assumes the input dist was produced by
 /// a full `anodize release` whose own SignStage already fired. Adding
 /// a head SignStage here would silently introduce a new credential
-/// requirement to the existing surface. The Phase-2
+/// requirement to the existing surface. The
 /// `anodize release --publish-only` path uses
 /// [`build_publish_only_pipeline`] instead, which DOES prepend
 /// SignStage for the determinism-preserved-dist re-sign pass.
@@ -885,8 +884,7 @@ pub fn build_publish_pipeline() -> Pipeline {
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
     // BlobStage before SnapcraftPublishStage so the snapcraft submitter
-    // gate sees blob's outcome via `ctx.publish_report`. See
-    // `build_release_pipeline` for the spec link.
+    // gate sees blob's outcome via `ctx.publish_report`.
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
     p
@@ -895,14 +893,11 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// Build the pipeline for `anodize release --publish-only`:
 /// `[SignStage, ReleaseStage, PublishStage, BlobStage,
 /// SnapcraftPublishStage]`. The head `SignStage` is the production-keys
-/// re-sign pass that the spec section D.1 requires — the preserved
-/// dist's archive bytes are byte-stable (the determinism check
-/// verified that) but their `.sig`/`.asc` signatures are either
-/// missing entirely (harness's Phase-1 work skips Sign when prod
-/// keys are exported on the runner) or ephemeral (harness ran
-/// without prod keys). Spec:
-/// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-/// section D.
+/// re-sign pass — the preserved dist's archive bytes are byte-stable
+/// (the determinism check verified that) but their `.sig`/`.asc`
+/// signatures are either missing entirely (harness skips Sign when
+/// prod keys are exported on the runner) or ephemeral (harness ran
+/// without prod keys).
 ///
 /// **Idempotence requirement on SignStage**: must be safe to re-run
 /// on a dist whose existing `.sig`/`.asc` files are already
@@ -915,15 +910,13 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// `commands/release/publish_only::strip_ephemeral_signatures` so
 /// the head SignStage only sees the underlying archives.
 ///
-/// **Deferred**: spec Risks #3 calls for an "auto-fill missing
-/// stages" mode (archive/nfpm/sbom/checksum stages run only if
-/// their outputs aren't already in `dist/`). Phase 2 implements the
-/// SignStage prepend only; cross-platform packagers like
+/// **Deferred**: an "auto-fill missing stages" mode (archive/nfpm/
+/// sbom/checksum stages run only if their outputs aren't already in
+/// `dist/`) is not yet implemented. Cross-platform packagers like
 /// msi/nsis/dmg/pkg/appbundle/flatpak that the harness's default
-/// stage list doesn't cover are still expected to have run in
-/// the upstream harness pipeline (per spec section A — those are
-/// added to the harness's stage list in CI). Filling the
-/// missing-stages gap is tracked for a follow-up phase.
+/// stage list doesn't cover are expected to have run in the upstream
+/// harness pipeline (those stages are added to the harness's stage
+/// list in CI). Filling the missing-stages gap is a follow-up.
 pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_publish::PublishStage;
@@ -1308,7 +1301,7 @@ mod tests {
 
     #[test]
     fn test_load_config_with_ignore_and_overrides() {
-        // After WAVE 2, defaults.ignore / defaults.overrides moved under
+        // defaults.ignore / defaults.overrides live under
         // defaults.builds (path-mirror BuildConfig).
         let tmp = TempDir::new().unwrap();
         let cfg_path = tmp.path().join("anodizer.yaml");
@@ -1720,8 +1713,7 @@ crates:
     // variant so a required-blob failure can short-circuit the
     // (irreversible) snapcraft upload via the same
     // `any_failed(Assets, required_only=true)` gate that already
-    // protects every other Submitter publisher. Spec:
-    // `.claude/specs/2026-05-14-release-resilience.md#stage-order-decided`.
+    // protects every other Submitter publisher.
     // -----------------------------------------------------------------------
 
     fn assert_blob_before_snapcraft(names: &[&str], pipeline: &str) {
@@ -1776,9 +1768,7 @@ crates:
     fn publish_only_pipeline_runs_sign_before_release() {
         // Phase-2 contract: SignStage must be at the HEAD of the
         // publish-only pipeline so production signatures land on the
-        // preserved archives BEFORE ReleaseStage uploads them. Spec:
-        // `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-        // section D.1.
+        // preserved archives BEFORE ReleaseStage uploads them.
         let p = build_publish_only_pipeline();
         let names = p.stage_names();
         let sign_idx = names

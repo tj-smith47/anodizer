@@ -1,8 +1,6 @@
 //! Determinism harness — drives N from-clean rebuilds in hermetic
 //! worktrees and diffs the emitted artifacts.
 //!
-//! Spec: `.claude/specs/2026-05-14-release-resilience.md#verification-harness-cli`.
-//!
 //! ## Shape
 //!
 //! ```ignore
@@ -206,12 +204,9 @@ pub struct Harness {
     /// `--preserve-dist=<path>`: when set AND `drift_count == 0`, copy
     /// `<worktree>/dist/**` from the first run to this path before the
     /// worktree is destroyed, then emit a `context.json` manifest
-    /// describing the preserved artifact set. Used by the release
-    /// workflow's Phase 2/3 publish-only flow so the determinism step's
-    /// output can be shipped directly (eliminates the redundant `build:`
-    /// job that recompiled the same targets).
-    ///
-    /// Spec: `.claude/specs/2026-05-19-determinism-produces-shippable.md`.
+    /// describing the preserved artifact set. Consumed by the release
+    /// workflow's publish-only flow so the determinism step's output
+    /// can be shipped directly without a redundant rebuild.
     ///
     /// The copy happens at the end of run 0 (run-0 and run-N are
     /// byte-identical by construction once the harness passes; run-0 is
@@ -229,6 +224,15 @@ pub struct Harness {
     ///
     /// Unused when `preserve_dist` is `None`.
     pub version_hint: String,
+    /// Whether to pass `--snapshot` to the child `anodize release ...`
+    /// subprocess. `true` (the default / legacy behaviour) emits
+    /// artifacts named with the snapshot version suffix
+    /// (`-SNAPSHOT-<sha>`); `false` drops the flag so produce-stages
+    /// emit artifacts named with the actual release version. The
+    /// release workflow flips this off on tag-push runs so the bytes
+    /// preserved by `--preserve-dist` are immediately shippable via
+    /// `anodize release --publish-only`.
+    pub child_snapshot: bool,
 }
 
 impl Harness {
@@ -256,8 +260,6 @@ impl Harness {
         // SDE-based key derivation (cosign-keygen + GPG `--faked-system-
         // time`) so the deterministic-keys property has direct coverage,
         // and the production sign stage is exercised by every release.
-        // Spec: `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-        // section A.4 + Risks #4.
         let skip_sign_for_preserve = self.preserve_dist.is_some()
             && (std::env::var_os("COSIGN_KEY").is_some()
                 || std::env::var_os("GPG_PRIVATE_KEY").is_some());
@@ -473,9 +475,8 @@ impl Harness {
     /// Shell to the running `anodize` binary inside the worktree.
     ///
     /// Delegates to [`anodizer_core::determinism_runner`] — `crates/cli/**`
-    /// is on the forbid-list in `.claude/rules/module-boundaries.md`, so
-    /// the actual `Command::new` lives in core where subprocess spawn is
-    /// allow-listed.
+    /// is on the forbid-list for direct subprocess spawn, so the actual
+    /// `Command::new` lives in core where it's allow-listed.
     ///
     /// `effective_stages` is what the harness actually ran the child
     /// pipeline against — usually equal to `self.stages`, but with
@@ -497,6 +498,7 @@ impl Harness {
             env,
             self.targets.as_deref(),
             &extra_skip,
+            self.child_snapshot,
         )
     }
 
@@ -645,6 +647,7 @@ mod tests {
             targets: None,
             preserve_dist: None,
             version_hint: String::new(),
+            child_snapshot: true,
         }
     }
 

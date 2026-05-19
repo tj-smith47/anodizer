@@ -8,10 +8,9 @@
 //!    `<dest>/context.json` describing the preserved artifact set
 //!    ([`write_preserved_dist_context`]).
 //!
-//! The Phase-2 publish-only pipeline (spec
-//! `.claude/specs/2026-05-19-determinism-produces-shippable.md`)
-//! consumes the resulting tree directly — eliminating the redundant
-//! `build:` job that currently recompiles every target ~3× per release.
+//! The publish-only pipeline consumes the resulting tree directly,
+//! eliminating the need to recompile every target after the harness
+//! has already verified byte-stable output.
 //!
 //! ## Why a separate module
 //!
@@ -20,7 +19,7 @@
 //! with a different lifecycle (one-shot, runs only on the
 //! green-with-flag-set path). Keeping the two concerns split keeps
 //! `artifacts.rs` focused and makes the preserve-dist surface easier to
-//! reason about as an integration boundary with Phase 2.
+//! reason about as an integration boundary with the publish-only path.
 
 use anodizer_core::DeterminismReport;
 use anyhow::{Context, Result};
@@ -52,9 +51,6 @@ use std::path::Path;
 /// / `crate_name` / `metadata` to populate. Replicating just the fields
 /// we can populate keeps `context.json` honest about what the harness
 /// observed.
-///
-/// Spec: `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-/// section A.3.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PreservedArtifact {
     /// Artifact filename (basename). Field name matches
@@ -82,13 +78,9 @@ pub struct PreservedArtifact {
 ///
 /// Schema mirrors the load-bearing subset of
 /// [`crate::commands::release::split::SplitContext`]: `artifacts`,
-/// `targets`, `version`, `commit`. The publish-only pipeline
-/// (Phase 2 of the spec) reads this file to rehydrate
-/// `ctx.artifacts` + the per-target matrix before running the sign +
-/// publish stages.
-///
-/// Spec: `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-/// section A.3.
+/// `targets`, `version`, `commit`. The publish-only pipeline reads
+/// this file to rehydrate `ctx.artifacts` + the per-target matrix
+/// before running the sign + publish stages.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct PreservedDistContext {
     /// Artifact set the harness preserved. Sorted by `name` so the

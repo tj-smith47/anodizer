@@ -309,8 +309,8 @@ pub enum Commands {
     },
     /// Emit the configured build targets as a GitHub Actions matrix.
     ///
-    /// Derives `{os, target, artifact}` entries from `.anodizer.yaml`. Used by
-    /// `tj-smith47/anodizer-action`'s `split-matrix` output to feed a
+    /// Derives `{os, target, artifact}` entries from `.anodizer.yaml`.
+    /// Consumed by `anodizer-action`'s `split-matrix` output to feed a
     /// `strategy.matrix` dynamically (via `fromJson`).
     Targets {
         #[arg(long, help = "Output as JSON (include-form matrix)")]
@@ -492,6 +492,11 @@ pub struct CheckDeterminismArgs {
     pub report: Option<PathBuf>,
     #[arg(long, help = "Seed SDE from snapshot rules instead of HEAD commit")]
     pub snapshot: bool,
+    #[arg(
+        long = "no-snapshot",
+        help = "Drop `--snapshot` from the child `anodize release ...` subprocess so produce-stages emit artifacts named with the actual release version. Used by the release workflow on tag-push runs."
+    )]
+    pub no_snapshot: bool,
     #[arg(
         long = "inject-drift",
         value_name = "stage",

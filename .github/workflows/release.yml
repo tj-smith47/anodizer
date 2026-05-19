@@ -19,11 +19,15 @@ env:
 jobs:
   determinism-check:
     name: Determinism Harness (${{ matrix.shard }})
-    # Windows is the slowest determinism shard (~80min for two msvc
-    # targets); splitting it per-target into two shards halves wall-
-    # clock without adding job-slot pressure. Linux + macOS stay as
-    # single shards: their two targets together complete in <40min
-    # each, well inside the Windows critical path.
+    # The harness is also the build step on a tag-push run. With
+    # `preserve-dist: true` and the action's `--no-snapshot` shim on
+    # tag refs, run-0 of each shard's worktree produces byte-stable
+    # artifacts named with the actual release version. Those bytes are
+    # uploaded under `dist-<shard>` and consumed downstream by the
+    # `release:` job's `--publish-only` step — eliminating a separate
+    # recompile job. Shard the matrix per-target when a runner's
+    # cross-compile combo is the critical path; otherwise group the
+    # targets that a runner can natively build into one shard.
     strategy:
       fail-fast: false
       matrix:
@@ -49,15 +53,26 @@ jobs:
         with:
           determinism: true
           determinism-targets: ${{ matrix.targets }}
+          preserve-dist: 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      # Preserve the harness report even when this job fails. The
-      # downstream `release:` job's `Upload run summary` step only
-      # fires if determinism passes (gated by `needs: [build]` which
-      # is `needs: [determinism-check]`); without this step, a drift
-      # failure loses the `differing_bytes_summary` and `drift-bins`
-      # diagnostic the moment the run's artifacts expire.
+      # Upload the byte-stable dist tree on green so the `release:`
+      # job can ship it via `--publish-only`. `if: success()` is the
+      # load-bearing invariant: a drift-failed shard MUST NOT upload
+      # preserved bytes — shippable artifacts may only ever originate
+      # from a green determinism run.
+      - name: Upload dist artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.shard }}
+          path: preserved-dist/
+          if-no-files-found: error
+
+      # Preserve the harness report even when this job fails. Without
+      # this, a drift failure loses the `differing_bytes_summary` and
+      # `drift-bins` diagnostic the moment the run's artifacts expire.
       - name: Upload determinism report
         if: always()
         uses: actions/upload-artifact@v4
@@ -68,68 +83,9 @@ jobs:
             dist/run-*/drift-bins/**
           if-no-files-found: warn
 
-  build:
-    name: Build (${{ matrix.os }})
-    needs: [determinism-check]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-          - os: macos-latest
-            targets: x86_64-apple-darwin,aarch64-apple-darwin
-          - os: windows-latest
-            targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.targets }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.os }}
-
-      # Linux reuses the CI-built anodizer binary; macOS/Windows must build
-      # anodizer from source (no per-platform CI artifact). Both paths flow
-      # through the action so the release workflow has a single entry point.
-      - name: Install anodizer + build dependencies (Linux)
-        if: runner.os == 'Linux'
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          from-artifact: anodizer-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          install: zig,cargo-zigbuild,upx
-          args: release --split --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Install anodizer + build dependencies (macOS/Windows)
-        if: runner.os != 'Linux'
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          from-source: true
-          install-rust: false  # already installed above via rust-toolchain
-          install: zig,cargo-zigbuild,upx
-          args: release --split --clean
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Upload split artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ runner.os }}
-          path: dist/
-
   release:
     name: Publish Release
-    needs: build
+    needs: determinism-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -138,27 +94,29 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      # Download all split artifacts into dist/ before running the action
-      # (the action's `args: release --merge` step will operate on them).
-      - name: Download split artifacts
+      # Download every shard's preserved dist into dist/. `merge-multiple:
+      # true` flattens them on top of each other; the action renames each
+      # shard's `context.json` / `artifacts.json` with a `-<shard>` suffix
+      # at upload time so no two files collide.
+      - name: Download preserved dist artifacts
         uses: actions/download-artifact@v4
         with:
           path: dist/
           pattern: dist-*
           merge-multiple: true
 
-      - name: Verify split artifacts
+      - name: Verify preserved dist
         run: |
-          echo "Split contexts found:"
-          find dist -name context.json -type f
-          COUNT=$(find dist -name context.json -type f | wc -l)
+          echo "Context manifests found:"
+          find dist -maxdepth 1 \( -name 'context.json' -o -name 'context-*.json' \) -type f
+          COUNT=$(find dist -maxdepth 1 \( -name 'context.json' -o -name 'context-*.json' \) -type f | wc -l)
           if [ "$COUNT" -eq 0 ]; then
-            echo "::error::No split context files found in dist/"
+            echo "::error::No preserved-dist context manifests found in dist/"
             exit 1
           fi
-          echo "Found $COUNT split context(s)"
+          echo "Found $COUNT preserved-dist context manifest(s)"
 
-      - name: Run anodizer release --merge
+      - name: Run anodizer release --publish-only
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
@@ -167,7 +125,7 @@ jobs:
           install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: release --merge
+          args: release --publish-only
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

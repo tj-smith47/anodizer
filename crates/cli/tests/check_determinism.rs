@@ -61,6 +61,7 @@ fn check_determinism_help_lists_every_flag() {
         "--stages",
         "--report",
         "--snapshot",
+        "--no-snapshot",
         "--preserve-dist",
     ] {
         assert!(

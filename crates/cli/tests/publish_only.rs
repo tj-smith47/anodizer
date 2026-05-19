@@ -1,20 +1,17 @@
 //! Integration tests for `anodize release --publish-only`.
 //!
-//! Phase 2 of `.claude/specs/2026-05-19-determinism-produces-shippable.md`.
-//! Spec Test Plan items 3 + 4:
+//! - **Dry-run** — `--publish-only` loads context.json + artifacts.json
+//!   from a pre-populated dist, then runs the publish pipeline
+//!   (`SignStage` head + `ReleaseStage` + `PublishStage` + ...) in
+//!   dry-run mode. Asserts the publish pipeline starts and that the
+//!   build/archive/nfpm stages are NOT exercised (no recompile).
 //!
-//!   - **Test 3** — `--publish-only` loads context.json + artifacts.json
-//!     from a pre-populated dist, then runs the publish pipeline
-//!     (`SignStage` head + `ReleaseStage` + `PublishStage` + ...) in
-//!     dry-run mode. Asserts the publish pipeline starts and that the
-//!     build/archive/nfpm stages are NOT exercised (no recompile).
-//!
-//!   - **Test 4** — re-sign over preserved dist. Provides a production
-//!     cosign/GPG keypair via env, runs `--publish-only`, and verifies
-//!     the resulting signatures against the production public key.
-//!     `#[ignore]`d by default because cosign + gpg aren't reliably
-//!     available in every CI shard; an opt-in run validates the
-//!     idempotence + ephemeral-strip path end-to-end.
+//! - **Re-sign** — provides a production cosign/GPG keypair via env,
+//!   runs `--publish-only`, and verifies the resulting signatures
+//!   against the production public key. `#[ignore]`d by default because
+//!   cosign + gpg aren't reliably available in every CI shard; an opt-
+//!   in run validates the idempotence + ephemeral-strip path end-to-
+//!   end.
 //!
 //! All tests skip cleanly on hosts without the required tools (cargo,
 //! git) — same convention as `preserve_dist.rs` / `check_determinism.rs`.

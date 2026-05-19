@@ -10,8 +10,6 @@
 //! 3. Choosing the report path (CLI override → `dist/run-<commit_short>/determinism.json`).
 //! 4. Invoking [`crate::determinism_harness::Harness::run`].
 //! 5. Writing the report JSON and exiting non-zero on drift.
-//!
-//! Spec: `.claude/specs/2026-05-14-release-resilience.md#verification-harness-cli`.
 
 use crate::determinism_harness::{Harness, StageId};
 use anodizer_cli::CheckDeterminismArgs;
@@ -117,6 +115,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         targets,
         preserve_dist,
         version_hint,
+        child_snapshot: !args.no_snapshot,
     };
 
     let report = harness.run()?;
@@ -421,6 +420,7 @@ mod tests {
             targets: None,
             report: None,
             snapshot: false,
+            no_snapshot: false,
             inject_drift: None,
             preserve_dist: None,
         };
