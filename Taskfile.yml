@@ -6,8 +6,16 @@ tasks:
     cmds:
       - task --list
 
+  _check:tmp-headroom:
+    internal: true
+    desc: "Precondition: /tmp under 50% full — tmpfs pressure here OOMs the cargo linker."
+    preconditions:
+      - sh: '[ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
+        msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
+
   build:
     desc: Build all default workspace members in release mode
+    deps: [_check:tmp-headroom]
     sources:
       - "crates/**/src/**/*.rs"
       - "Cargo.toml"
@@ -19,21 +27,25 @@ tasks:
 
   check:
     desc: Run cargo check on default workspace members
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo check --all-targets
 
   check:determinism:
     desc: "Run the determinism harness with default args (--runs=2)."
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo run -p anodizer --release -- check determinism --runs=2
 
   check:config:
     desc: "Validate the workspace's anodize config (post-restructure form)."
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo run -p anodizer --release -- check config --workspace=.
 
   release:snapshot:
     desc: "Dry-run a release in snapshot mode; exercises new flags end-to-end."
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo run -p anodizer --release -- release --snapshot --dry-run --summary-json=dist/snapshot-summary.json
 
@@ -54,16 +66,19 @@ tasks:
 
   clippy:
     desc: Run clippy with warnings as errors (default members)
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo clippy --all-targets -- -D warnings
 
   test:
     desc: Run all tests (default members)
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo test
 
   test:lib:
     desc: Run unit tests only (no integration/doc tests)
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo test --lib
 
@@ -81,6 +96,7 @@ tasks:
 
   package:
     desc: Dry-run package all publishable crates
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo package --workspace --no-verify --allow-dirty --exclude xtask
 
