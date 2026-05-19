@@ -866,6 +866,15 @@ pub fn build_split_pipeline() -> Pipeline {
 }
 
 /// Build a publish-only pipeline: release, publish, blob, snapcraft-publish stages.
+///
+/// **Note**: this is the pipeline consumed by the LEGACY `anodize
+/// publish` subcommand, which assumes the input dist was produced by
+/// a full `anodize release` whose own SignStage already fired. Adding
+/// a head SignStage here would silently introduce a new credential
+/// requirement to the existing surface. The Phase-2
+/// `anodize release --publish-only` path uses
+/// [`build_publish_only_pipeline`] instead, which DOES prepend
+/// SignStage for the determinism-preserved-dist re-sign pass.
 pub fn build_publish_pipeline() -> Pipeline {
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_publish::PublishStage;
@@ -878,6 +887,54 @@ pub fn build_publish_pipeline() -> Pipeline {
     // BlobStage before SnapcraftPublishStage so the snapcraft submitter
     // gate sees blob's outcome via `ctx.publish_report`. See
     // `build_release_pipeline` for the spec link.
+    p.add(Box::new(BlobStage));
+    p.add(Box::new(SnapcraftPublishStage));
+    p
+}
+
+/// Build the pipeline for `anodize release --publish-only`:
+/// `[SignStage, ReleaseStage, PublishStage, BlobStage,
+/// SnapcraftPublishStage]`. The head `SignStage` is the production-keys
+/// re-sign pass that the spec section D.1 requires — the preserved
+/// dist's archive bytes are byte-stable (the determinism check
+/// verified that) but their `.sig`/`.asc` signatures are either
+/// missing entirely (harness's Phase-1 work skips Sign when prod
+/// keys are exported on the runner) or ephemeral (harness ran
+/// without prod keys). Spec:
+/// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
+/// section D.
+///
+/// **Idempotence requirement on SignStage**: must be safe to re-run
+/// on a dist whose existing `.sig`/`.asc` files are already
+/// production signatures (gpg/cosign `--output` semantics overwrite
+/// in place; `helpers::should_sign_artifact` excludes
+/// `Signature`/`Certificate` artifact kinds from the `all`/`any`
+/// filters so re-running can't produce `*.sig.sig` chains). The
+/// publish-only entry point ALSO strips any *ephemeral* harness
+/// signature/certificate artifacts up-front in
+/// `commands/release/publish_only::strip_ephemeral_signatures` so
+/// the head SignStage only sees the underlying archives.
+///
+/// **Deferred**: spec Risks #3 calls for an "auto-fill missing
+/// stages" mode (archive/nfpm/sbom/checksum stages run only if
+/// their outputs aren't already in `dist/`). Phase 2 implements the
+/// SignStage prepend only; cross-platform packagers like
+/// msi/nsis/dmg/pkg/appbundle/flatpak that the harness's default
+/// stage list doesn't cover are still expected to have run in
+/// the upstream harness pipeline (per spec section A — those are
+/// added to the harness's stage list in CI). Filling the
+/// missing-stages gap is tracked for a follow-up phase.
+pub fn build_publish_only_pipeline() -> Pipeline {
+    use anodizer_stage_blob::BlobStage;
+    use anodizer_stage_publish::PublishStage;
+    use anodizer_stage_release::ReleaseStage;
+    use anodizer_stage_sign::SignStage;
+    use anodizer_stage_snapcraft::SnapcraftPublishStage;
+
+    let mut p = Pipeline::new();
+    p.add(Box::new(SignStage));
+    p.add(Box::new(ReleaseStage));
+    p.add(Box::new(PublishStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
     p

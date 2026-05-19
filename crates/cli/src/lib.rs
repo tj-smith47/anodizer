@@ -214,6 +214,12 @@ pub enum Commands {
         )]
         merge: bool,
         #[arg(
+            long = "publish-only",
+            conflicts_with_all = ["split", "merge"],
+            help = "Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/."
+        )]
+        publish_only: bool,
+        #[arg(
             long,
             help = "Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection."
         )]

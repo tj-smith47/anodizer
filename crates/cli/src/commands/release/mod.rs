@@ -1,4 +1,5 @@
 mod milestones;
+mod publish_only;
 mod split;
 
 pub use split::run_merge;
@@ -50,6 +51,13 @@ pub struct ReleaseOpts {
     pub fail_fast: bool,
     pub split: bool,
     pub merge: bool,
+    /// `--publish-only`: load `dist/context.json` (preserved by
+    /// `anodize check determinism --preserve-dist=...`) and run only
+    /// the sign + publish pipeline. Mutually exclusive with `split` /
+    /// `merge` at the clap level. Spec:
+    /// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
+    /// section C.
+    pub publish_only: bool,
     pub strict: bool,
     /// `--prepare` (GoReleaser Pro parity): run local build/archive/sign/checksum/sbom
     /// stages but NOT release/publish/announce. Implemented by augmenting `skip` with
@@ -293,9 +301,11 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // Error if dist directory is non-empty and --clean was not passed
     // (like GoReleaser's ErrDirtyDist).
     // Skip in --merge mode: dist must contain split artifacts.
+    // Skip in --publish-only mode: dist must contain the preserved
+    // artifacts + context.json copied from the determinism harness.
     // Skip in --rollback-only mode: the whole point of the flag is to
     // read `<dist>/run-<id>/report.json` from a prior populated run.
-    if !opts.clean && !opts.merge && !opts.rollback_only {
+    if !opts.clean && !opts.merge && !opts.publish_only && !opts.rollback_only {
         let dist = &config.dist;
         if dist.exists()
             && let Ok(mut entries) = dist.read_dir()
@@ -546,6 +556,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // hook compilation can dirty the working tree.
     if !opts.merge
         && !opts.split
+        && !opts.publish_only
         && !ctx.should_skip("before")
         && let Some(before) = &config.before
         && let Some(ref hooks) = before.hooks
@@ -761,6 +772,13 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         if opts.preflight {
             return Ok(());
         }
+    }
+
+    // --publish-only: load preserved dist + context.json, run only the
+    // sign + publish pipeline. Composed before --split / --merge so the
+    // clap-level conflicts_with chain stays a single source of truth.
+    if opts.publish_only {
+        return publish_only::run(&mut ctx, &config, &log, opts.dry_run);
     }
 
     // --split: run only the build stage, serialize artifacts to dist/, then exit
