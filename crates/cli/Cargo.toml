@@ -46,7 +46,6 @@ anodizer-stage-srpm.workspace = true
 anodizer-stage-sbom.workspace = true
 brontes.workspace = true
 anyhow.workspace = true
-base64.workspace = true
 toml_edit.workspace = true
 chrono.workspace = true
 clap_mangen = "0.2"

@@ -20,20 +20,15 @@ xtask = "run --package xtask --"
 #   - `/INCREMENTAL:NO` — release-profile default, but explicit because
 #     `/Brepro` is incompatible with incremental linking and a future
 #     profile edit shouldn't silently re-enable it.
-#   - `/PDBALTPATH:%_PDB%` — embed only the PDB filename (no absolute
-#     path) in the debug directory so the worktree path doesn't leak
-#     into the binary.
-#   - `/DEBUG:NONE` — do not emit a PDB or CodeView debug record. Even
-#     under `/Brepro` the CV_INFO_PDB70 GUID is derived from the build
-#     session, not strictly from content; eliminating the debug entry
-#     is the reliable cure for offset-0x108 drift on PE TimeDateStamp.
+#   - `/DEBUG:NONE` — do not emit a PDB or CodeView debug record.
+#     Eliminates the debug directory entry whose GUID would otherwise
+#     have to be carefully content-hashed for reproducibility.
 [target.x86_64-pc-windows-msvc]
 rustflags = [
     "-C", "codegen-units=1",
     "-C", "link-arg=/Brepro",
     "-C", "link-arg=/OPT:NOICF",
     "-C", "link-arg=/INCREMENTAL:NO",
-    "-C", "link-arg=/PDBALTPATH:%_PDB%",
     "-C", "link-arg=/DEBUG:NONE",
     "-C", "strip=symbols",
 ]
@@ -44,7 +39,6 @@ rustflags = [
     "-C", "link-arg=/Brepro",
     "-C", "link-arg=/OPT:NOICF",
     "-C", "link-arg=/INCREMENTAL:NO",
-    "-C", "link-arg=/PDBALTPATH:%_PDB%",
     "-C", "link-arg=/DEBUG:NONE",
     "-C", "strip=symbols",
 ]
