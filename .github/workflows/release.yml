@@ -10,7 +10,7 @@ permissions:
   actions: read  # needed for cross-workflow artifact download
 
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
