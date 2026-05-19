@@ -109,13 +109,16 @@ Each run executes inside a freshly-constructed environment:
 
 | Variable | Behavior |
 |---|---|
-| `CARGO_HOME` | Per-run tmpdir, prepopulated from a vendor archive committed to the workspace. |
-| `CARGO_TARGET_DIR` | Per-run tmpdir; never shared across runs. |
-| `RUSTUP_HOME` | Inherited from host (toolchain pinned via `rust-toolchain.toml`). |
+| `CARGO_HOME` | Per-run tmpdir under the worktree (`.det-tmp/cargo/`); never shared across runs. |
+| `CARGO_TARGET_DIR` | Per-run tmpdir under the worktree (`.det-tmp/target/`); never shared. |
+| `RUSTUP_HOME` | Inherited from host when set; otherwise synthesized as `<host HOME>/.rustup` so rustup can dispatch a toolchain in the sealed env. |
 | `SOURCE_DATE_EPOCH` | Computed once per harness invocation; exported into every run. |
-| `TMPDIR`, `HOME` | Per-run tmpdirs to neutralize dot-file influence on build scripts. |
-| `PATH` | Trimmed to an explicit allow-list (`/usr/bin:/bin:<toolchain-bin>`) plus anodize's tool-detect paths. |
-| Everything else | Stripped except an explicit allow-list (`CI`, `RUNNER_*`, `GITHUB_*`). |
+| `TMPDIR`, `HOME` | Per-run tmpdirs under the worktree to neutralize dot-file influence on build scripts. |
+| `PATH` | Inherited from host verbatim. Two harness runs from the same host process see identical PATH, so determinism is preserved without per-platform allow-list maintenance. |
+| `RUSTFLAGS` | `--remap-path-prefix=<worktree>=/anodize` is appended (plus `<cargo_home>=/cargo` and `<cargo_target>=/target`) so absolute paths don't leak into the binary. Host-supplied RUSTFLAGS are preserved. |
+| `CARGO_TARGET_<MSVC_TRIPLE>_RUSTFLAGS` | Injects MSVC determinism flags (`/Brepro`, `/OPT:NOICF`, `/INCREMENTAL:NO`, `/DEBUG:NONE`, `-C strip=symbols`, `-C codegen-units=1`) for the two `*-pc-windows-msvc` targets. On Windows, also appended to global `RUSTFLAGS` so the host build (e.g. a `before:` hook's `cargo run`) is reproducible too. |
+| Linux / macOS env | Everything else stripped except an identity-only allow-list: `CI`, `RUSTUP_HOME`, plus the named identity vars `GITHUB_REPOSITORY`, `GITHUB_SHA`, `GITHUB_REF`, `GITHUB_REF_NAME`, `GITHUB_RUN_ID`, `GITHUB_RUN_NUMBER`, `GITHUB_WORKFLOW`, `GITHUB_ACTOR`, `RUNNER_OS`, `RUNNER_ARCH`, `RUNNER_NAME`. |
+| Windows env | Inverse: inherits the full host env (MSVC's `VC*` / `VS*` / `INCLUDE` / `LIB` / `LIBPATH` / `WindowsSdk*` / `UCRT*` plus `PROGRAMFILES*` / `WINDIR` / `SystemRoot` / `USERPROFILE` / `APPDATA` / `LOCALAPPDATA` / `TEMP` / `TMP` / `PATHEXT`) then drops a credential deny-list (`GITHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`, `AWS_*`, `COSIGN_*`, `GPG_*`, ...), a suffix sweep (`_TOKEN` / `_KEY` / `_SECRET` / `_PASSWORD` / `_PASSPHRASE` / `_CREDENTIALS`), `ACTIONS_*`, and any `GITHUB_*` / `RUNNER_*` not on the identity allow-list (e.g. `RUNNER_TEMP`, `GITHUB_WORKSPACE` — host workflow state, not identity). |
 
 The workspace under test is obtained via `git worktree add` rooted at the
 release commit, so gitignored files (notably `target/`, `dist/`,
@@ -123,10 +126,16 @@ release commit, so gitignored files (notably `target/`, `dist/`,
 
 For each emitted artifact, the harness computes SHA256 and diffs across
 runs. Artifacts whose `PublishEvidence.nondeterministic = Some(_)` are
-excluded from the diff. The harness exits non-zero on any drift and prints a
-report enumerating each offending artifact with structured drift context
-(timestamp fields, tar entry ordering, embedded GUIDs) where the heuristic
-can locate the differing bytes, raw hex diff otherwise.
+excluded from the diff. The harness exits non-zero on any drift and prints
+a report enumerating each offending artifact with a `differing_bytes_summary`
+heuristic that names the first offset where the head sample diverges
+(e.g. `"first diff at offset 0x108 (run0=0xd6, run1=0x51)"`).
+
+When drift is detected, the harness also dumps the full drifted binaries
+from both runs to `dist/run-<id>/drift-bins/run-<N>/<artifact>`. In CI,
+the release workflow uploads this tree alongside the JSON report so
+operators can `gh run download` the actual bytes and run external diff
+tools (`cmp -l`, `xxd`, etc.) without re-running the harness.
 
 The Taskfile target `task check:determinism` invokes the harness with
 default args.
@@ -285,25 +294,55 @@ A non-zero `drift_count` (or any `deterministic: false` without a matching
 `--stages=<offending-stage>` to bisect, then fix the underlying source of
 drift (timestamp embed, file-order non-determinism, embedded GUID).
 
-In CI, the determinism check runs before the release job:
+In CI, the determinism check runs as a fan-out matrix that gates the
+release job. Each shard validates one platform's targets; the release
+proceeds only when every shard passes. Anodizer's own release workflow
+uses this shape:
 
 ```yaml
 jobs:
   determinism-check:
-    runs-on: ubuntu-latest
+    name: Determinism Harness (${{ matrix.shard }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  shard: ubuntu-latest,    targets: '' }
+          - { os: macos-latest,   shard: macos-latest,     targets: '' }
+          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc' }
+          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
-      - run: cargo build --release -p anodizer-cli
-      - run: ./target/release/anodizer check determinism --runs=2
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          determinism: true
+          determinism-targets: ${{ matrix.targets }}
+      - name: Upload determinism report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: determinism-${{ matrix.shard }}
+          path: |
+            dist/run-*/determinism.json
+            dist/run-*/drift-bins/**
 
   release:
-    needs: determinism-check
+    needs: [determinism-check]
     runs-on: ubuntu-latest
     steps:
       - # existing release steps
 ```
 
-The release job is blocked when the determinism check fails. PR builds run
-the same harness with a fast subset (`--stages=archive,sbom,sign,checksum`)
-as an advisory check.
+Windows is split per-target because it's the slowest platform; pinning
+each shard to a single MSVC triple halves wall-clock on the critical
+path. Linux and macOS run their full target list in a single shard
+because both complete inside the Windows envelope.
+
+`determinism-targets: ''` lets the action pick the targets matching
+`RUNNER_OS` from `.anodizer.yaml`'s configured target list. An explicit
+value overrides that selection for the shard.
+
+PR builds run the same harness with a fast advisory subset
+(`--stages=archive,sbom,sign,checksum`) on a single Linux shard via the
+action's `determinism-stages` input.

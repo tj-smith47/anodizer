@@ -18,33 +18,51 @@ env:
 
 jobs:
   determinism-check:
-    name: Determinism Harness (${{ matrix.os }})
+    name: Determinism Harness (${{ matrix.shard }})
+    # Windows is the slowest determinism shard (~80min for two msvc
+    # targets); splitting it per-target into two shards halves wall-
+    # clock without adding job-slot pressure. Linux + macOS stay as
+    # single shards: their two targets together complete in <40min
+    # each, well inside the Windows critical path.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-latest
+            shard: ubuntu-latest
+            targets: ''
+          - os: macos-latest
+            shard: macos-latest
+            targets: ''
+          - os: windows-latest
+            shard: windows-x86_64
+            targets: 'x86_64-pc-windows-msvc'
+          - os: windows-latest
+            shard: windows-aarch64
+            targets: 'aarch64-pc-windows-msvc'
     runs-on: ${{ matrix.os }}
     steps:
+      # Shallow clone is sufficient: the harness only reads HEAD's
+      # commit hash + timestamp.
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
         with:
           determinism: true
+          determinism-targets: ${{ matrix.targets }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       # Preserve the harness report even when this job fails. The
-      # downstream `release:` job's `Upload run summary` step (lines
-      # below) only fires if determinism passes (gated by `needs:
-      # [build]` which is `needs: [determinism-check]`); without this
-      # step, a drift failure loses the `differing_bytes_summary` and
-      # `head_sample` diagnostic the moment the run's artifacts expire.
+      # downstream `release:` job's `Upload run summary` step only
+      # fires if determinism passes (gated by `needs: [build]` which
+      # is `needs: [determinism-check]`); without this step, a drift
+      # failure loses the `differing_bytes_summary` and `drift-bins`
+      # diagnostic the moment the run's artifacts expire.
       - name: Upload determinism report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: determinism-${{ matrix.os }}
+          name: determinism-${{ matrix.shard }}
           path: |
             dist/run-*/determinism.json
             dist/run-*/drift-bins/**

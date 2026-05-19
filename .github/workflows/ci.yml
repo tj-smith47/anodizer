@@ -104,8 +104,6 @@ jobs:
     continue-on-error: true   # advisory while per-stage determinism fixes shake out
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
         with:
           determinism: true
