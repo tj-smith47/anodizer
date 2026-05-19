@@ -43,7 +43,7 @@ impl Stage for super::BuildStage {
 
         let parallelism = ctx.options.parallelism.max(1);
 
-        // Collect global defaults. After WAVE 2 the per-build settings
+        // Collect global defaults. After the per-build settings
         // (`flags`, `ignore`, `overrides`) live under `defaults.builds.*`
         // rather than flat on `defaults`, mirroring `BuildConfig`'s shape.
         let defaults = ctx.config.defaults.as_ref();
@@ -113,7 +113,7 @@ impl Stage for super::BuildStage {
         }
 
         // -----------------------------------------------------------------
-        // Phase 1: Flatten the nested (crate, build, target) loops into a
+        // Step 1: Flatten the nested (crate, build, target) loops into a
         // list of BuildJob descriptors. No compilation happens here.
         // -----------------------------------------------------------------
 
@@ -772,7 +772,7 @@ impl Stage for super::BuildStage {
         }
 
         // -----------------------------------------------------------------
-        // Phase 1.5: Ensure cross-compilation targets are installed via rustup.
+        // Step 1.5: Ensure cross-compilation targets are installed via rustup.
         // -----------------------------------------------------------------
 
         {
@@ -793,7 +793,7 @@ impl Stage for super::BuildStage {
         }
 
         // -----------------------------------------------------------------
-        // Phase 2: Execute build jobs (with parallelism) then copy_from jobs.
+        // Step 2: Execute build jobs (with parallelism) then copy_from jobs.
         // -----------------------------------------------------------------
 
         // Rust builds sharing the same workspace target/ directory can deadlock
@@ -947,7 +947,7 @@ impl Stage for super::BuildStage {
                 let cmd = job
                     .cmd
                     .as_ref()
-                    .context("build job has no cmd (programmer bug: Phase 1 should populate)")?;
+                    .context("build job has no cmd (programmer bug: Step 1 should populate)")?;
                 log.status(&format!("running: {} {}", cmd.program, cmd.args.join(" ")));
                 let output = Command::new(&cmd.program)
                     .args(&cmd.args)
@@ -1058,7 +1058,7 @@ impl Stage for super::BuildStage {
                     let handles: Vec<_> = chunk
                         .iter()
                         .map(|job| {
-                            // Phase 1 populates `job.cmd` for every build job (copy-from-only
+                            // Step 1 populates `job.cmd` for every build job (copy-from-only
                             // jobs take a separate code path). If it's absent here, that's a
                             // pipeline invariant violation — surface as an error, not a panic,
                             // so the worker thread unwinds through the Result channel instead
@@ -1091,7 +1091,7 @@ impl Stage for super::BuildStage {
 
                             s.spawn(move || -> Result<BuildResult> {
                                 let program = program.ok_or_else(|| anyhow::anyhow!(
-                                    "build: Phase 1 invariant violation — job for crate {} reached Phase 2 without a cmd",
+                                    "build: Step 1 invariant violation — job for crate {} reached Step 2 without a cmd",
                                     crate_name_for_err
                                 ))?;
                                 let args = args.unwrap_or_default();

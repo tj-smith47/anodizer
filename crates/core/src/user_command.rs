@@ -2,8 +2,7 @@
 //! whitelisted environment.
 //!
 //! Centralised here so the `Command::new(<arbitrary>)` shell-out lives
-//! inside the module-boundaries allow-list
-//! (`.claude/rules/module-boundaries.md`). Inlining this in the CLI
+//! inside the module-boundaries allow-list. Inlining this in the CLI
 //! crate would put `Command::new` outside the allow-list and counts
 //! as a boundary violation.
 

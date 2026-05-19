@@ -390,7 +390,7 @@ fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
 }
 
 pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogger) -> Result<()> {
-    // Defensive guard: the `--skip=cargo` gate (FOLL-1) lives in the
+    // Defensive guard: the `--skip=cargo` gate lives in the
     // dispatcher in `lib.rs::PublishStage::run` so every publisher emits its
     // skip log uniformly. Re-checking here protects future direct callers
     // (tests, CLI sub-commands) from accidentally bypassing the gate. No log
@@ -435,7 +435,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
             let Some(ref cargo_cfg) = publish.cargo else {
                 continue;
             };
-            // Honor the peer-publisher `skip:` field (DEC-6).
+            // Honor the peer-publisher `skip:` field.
             if let Some(ref d) = cargo_cfg.skip {
                 let off = d
                     .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))

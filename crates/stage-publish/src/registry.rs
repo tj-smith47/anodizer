@@ -29,8 +29,7 @@ use anodizer_core::{Publisher, PublisherGroup};
 /// for snapcraft) a second time per release. See
 /// `crates/stage-blob/src/run.rs::record_blob_result` and
 /// `crates/stage-snapcraft/src/publish_stage.rs::record_snapcraft_result`
-/// for the precedent. Audit reference:
-/// `.claude/audits/2026-05-15-release-resilience-review.md` finding C3.
+/// for the precedent.
 ///
 /// The `BlobPublisher` trait impl in `stage-blob` stays for forward-compat
 /// (and as a vocabulary entry the dispatch path can consult once the

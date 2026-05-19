@@ -53,7 +53,7 @@ pub struct ChocolateyConfig {
     pub bug_tracker_url: Option<String>,
     /// Tags for the Chocolatey gallery (joined with single spaces in the
     /// emitted nuspec). Always a typed list — the legacy
-    /// space-separated-string form was dropped in WAVE 5.1 (DEC-11) for
+    /// space-separated-string form was dropped now for
     /// IDE-completion friendliness and to remove whitespace ambiguity.
     pub tags: Option<Vec<String>>,
     /// Short summary of the package.
@@ -68,7 +68,7 @@ pub struct ChocolateyConfig {
     pub source_repo: Option<String>,
     /// Skip pushing to the Chocolatey community repository. Bool, string, or
     /// template expression (e.g. `"{{ .IsSnapshot }}"`). Accepts the legacy
-    /// `skip_publish:` spelling for back-compat with pre-DEC-12 configs;
+    /// `skip_publish:` spelling for back-compat with configs;
     /// canonical name is `skip:` to align with every other publisher.
     #[serde(
         default,

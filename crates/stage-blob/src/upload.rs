@@ -190,8 +190,8 @@ pub(crate) fn collect_artifacts<'a>(
 // ---------------------------------------------------------------------------
 
 /// Upload a per-config batch of files with intra-config parallelism via
-/// tokio, given fully owned data. Phase 2 of `BlobStage::run` calls this
-/// on worker threads so `ctx` is never touched after Phase 1. `runtime`
+/// tokio, given fully owned data. Step 2 of `BlobStage::run` calls this
+/// on worker threads so `ctx` is never touched after Step 1. `runtime`
 /// is shared across every blob job so we don't spin up one tokio
 /// thread pool per job.
 ///

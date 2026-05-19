@@ -111,8 +111,8 @@ pub(super) struct NfpmYamlFileInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) group: Option<String>,
     /// File permission mode as a YAML integer so nfpm unmarshals into Go's
-    /// `fs.FileMode`. Source `FileInfo.mode` is already a `u32` post-WAVE 5.1
-    /// (SCH-3), so this maps straight through.
+    /// `fs.FileMode`. Source `FileInfo.mode` is already a `u32` so this
+    /// maps straight through.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) mode: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

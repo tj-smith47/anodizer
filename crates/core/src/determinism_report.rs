@@ -15,9 +15,6 @@
 //! These types live in `anodizer-core` (not the CLI crate) so future CI
 //! parsers can deserialize the report without pulling in the entire CLI
 //! dependency tree.
-//!
-//! [determinism harness report]:
-//!   ../../../.claude/specs/2026-05-14-release-resilience.md#verification-harness-report
 
 use serde::{Deserialize, Serialize};
 

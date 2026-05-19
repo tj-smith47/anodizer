@@ -679,9 +679,8 @@ mod tests {
 
     #[test]
     fn rollback_only_second_invocation_is_noop_for_already_rolled_back_entries() {
-        // Audit ref: .claude/audits/2026-05-15-release-resilience-review.md
-        // finding C5 — re-invoking --rollback-only must not re-roll
-        // entries that already reached RolledBack on a prior replay.
+        // Re-invoking --rollback-only must not re-roll entries that
+        // already reached RolledBack on a prior replay.
         let (mut ctx, _tmp) = ctx_with_dist();
         let mut report = PublishReport::default();
         report

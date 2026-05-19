@@ -242,8 +242,8 @@ fn test_parse_defaults_cross_case_sensitive() {
 }
 
 // ---- defaults.builds.flags tests ----
-// (After WAVE 2, per-build settings live under defaults.builds.* rather than
-// flat on defaults — this mirrors BuildConfig's shape.)
+// (Per-build settings live under defaults.builds.* rather than flat on
+// defaults — this mirrors BuildConfig's shape.)
 
 #[test]
 fn test_parse_defaults_flags_valid() {
@@ -273,8 +273,8 @@ fn test_parse_defaults_flags_omitted() {
 #[test]
 fn test_parse_defaults_flags_empty_list() {
     // Explicit `flags: []` is the canonical way to override a default to a
-    // debug build; per WAVE 5.1 (SCH-1) the legacy `flags: ""` string form
-    // is rejected in favour of typed lists.
+    // debug build; the legacy `flags: ""` string form is rejected in
+    // favour of typed lists.
     let yaml =
         "project_name: test\ndefaults:\n  builds:\n    binary: \"\"\n    flags: []\ncrates: []";
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -337,7 +337,7 @@ fn test_parse_defaults_archives_omitted() {
     assert!(config.defaults.unwrap().archives.is_none());
 }
 
-/// `archives[].ids` accepts the canonical key (DEC-5 dropped the `builds:` alias).
+/// `archives[].ids` accepts the canonical key (the `builds:` alias).
 #[test]
 fn test_parse_archives_ids_canonical() {
     use anodizer_core::config::ArchivesConfig;
@@ -1732,11 +1732,11 @@ crates:
     assert!(config.crates[0].publish.as_ref().unwrap().scoop.is_none());
 }
 
-// ---- publish.cargo edge cases (WAVE 3 — DEC-10 / ITEM-3) ----
+// ---- publish.cargo edge cases ----
 
 #[test]
 fn test_parse_publish_cargo_skip_true() {
-    // Opt-out via the peer-publisher `skip` field (DEC-6).
+    // Opt-out via the peer-publisher `skip` field.
     let yaml = r#"
 project_name: test
 crates:
@@ -1809,7 +1809,7 @@ crates:
 
 #[test]
 fn test_parse_publish_cargo_bool_form_rejected() {
-    // The bool shorthand `cargo: true` was removed in WAVE 3 (ITEM-3).
+    // The bool shorthand `cargo: true` was removed now.
     // The only valid forms are `cargo: {}` (opt-in) or `cargo: { skip: true }` (opt-out).
     let yaml = r#"
 project_name: test
@@ -1821,13 +1821,13 @@ crates:
     let result = serde_yaml_ng::from_str::<Config>(yaml);
     assert!(
         result.is_err(),
-        "publish.cargo: true must be rejected (bool shorthand removed in WAVE 3, ITEM-3)"
+        "publish.cargo: true must be rejected (bool shorthand removed)"
     );
 }
 
 #[test]
 fn test_parse_publish_crates_key_rejected_after_rename() {
-    // The `crates:` publish key was renamed to `cargo:` in WAVE 3 (DEC-1).
+    // The `crates:` publish key was renamed to `cargo:` now.
     // Using the old name must fail with an unknown-field error.
     let yaml = r#"
 project_name: test
@@ -1839,7 +1839,7 @@ crates:
     let result = serde_yaml_ng::from_str::<Config>(yaml);
     assert!(
         result.is_err(),
-        "publish.crates is renamed to publish.cargo (DEC-1, WAVE 3)"
+        "publish.crates is renamed to publish.cargo"
     );
 }
 
@@ -2603,7 +2603,7 @@ crates:
 
 #[test]
 fn test_parse_toml_full_defaults() {
-    // After WAVE 2, flags moved to defaults.builds.flags (path-mirror BuildConfig).
+    // flags live under defaults.builds.flags (path-mirror BuildConfig).
     let toml_str = r#"
 project_name = "test"
 dist = "./output"
@@ -3238,7 +3238,7 @@ crates: []
 #[test]
 fn test_cargo_publish_config_default() {
     // Default-constructed config has every flag unset; presence in the
-    // parent `publish.cargo:` is what opts the crate in (DEC-6 / ITEM-3).
+    // parent `publish.cargo:` is what opts the crate in.
     let cfg = CargoPublishConfig::default();
     assert_eq!(cfg.index_timeout, None);
     assert_eq!(cfg.no_verify, None);
@@ -3527,11 +3527,11 @@ monorepo: {}
 
 #[test]
 fn test_parse_comprehensive_config() {
-    // End-to-end happy-path test that exercises every top-level surface
-    // touched by WAVE 5: typed fields (BuildConfig.flags as Vec<String>,
-    // ChangelogConfig.{header,footer} as ContentSource), the unified
-    // RepositoryConfig form (replacing legacy {tap,bucket,...} variants),
-    // structured commit_author, and post-DEC-5 hard-break shapes.
+    // End-to-end happy-path test that exercises every top-level surface:
+    // typed fields (BuildConfig.flags as Vec<String>, ChangelogConfig.
+    // {header,footer} as ContentSource), the unified RepositoryConfig form
+    // (replacing legacy {tap,bucket,...} variants), structured
+    // commit_author, and the current hard-break shapes.
     let yaml = r###"
 project_name: comprehensive-test
 dist: ./custom-dist
@@ -3697,7 +3697,7 @@ crates:
         &["--release".to_string(), "--locked".to_string()]
     );
 
-    // Changelog (post-SCH-25: ContentSource for header/footer)
+    // Changelog ( : ContentSource for header/footer)
     let cl = config.changelog.as_ref().unwrap();
     assert_eq!(cl.sort, Some("desc".to_string()));
     assert_eq!(cl.abbrev, Some(8));
@@ -3743,7 +3743,7 @@ crates:
     assert_eq!(release.prerelease, Some(PrereleaseConfig::Auto));
     assert_eq!(release.make_latest, Some(MakeLatestConfig::Auto));
 
-    // App publish — uses the unified `repository:` form (post-SCH-21)
+    // App publish — uses the unified `repository:` form ( )
     let publish = app.publish.as_ref().unwrap();
     let hb = publish.homebrew.as_ref().expect("homebrew publisher");
     let repo = hb.repository.as_ref().expect("homebrew.repository");
@@ -3754,7 +3754,7 @@ crates:
     assert_eq!(scoop_repo.name.as_deref(), Some("scoop-bucket"));
     assert_eq!(publish.cargo.as_ref().unwrap().index_timeout, Some(60));
 
-    // App docker_v2 (post-SCH-4: legacy `docker:` field dropped)
+    // App docker_v2 ( : legacy `docker:` field dropped)
     let docker = &app.docker_v2.as_ref().unwrap()[0];
     assert_eq!(docker.platforms.as_ref().unwrap().len(), 2);
     assert_eq!(docker.images, vec!["ghcr.io/org/app".to_string()]);

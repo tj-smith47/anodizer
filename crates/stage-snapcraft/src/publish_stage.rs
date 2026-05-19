@@ -27,10 +27,9 @@ use crate::targets::{SnapcraftTarget, collect_snapcraft_targets};
 // `PublisherResult` directly into `ctx.publish_report` so the Submitter gate
 // (and any downstream consumers, e.g. announce-gating, `--rollback-only
 // --from-run`) observes outcomes uniformly. A parallel trait-based
-// `SnapcraftPublisher` registration would fire `snapcraft upload` a second
-// time per release — see
-// `.claude/audits/2026-05-15-release-resilience-review.md` finding C3 and
-// the doc comment on `stage-publish::registry::configured_publishers`.
+// `SnapcraftPublisher` registration would fire `snapcraft upload` a
+// second time per release — see the doc comment on
+// `stage-publish::registry::configured_publishers`.
 
 pub struct SnapcraftPublishStage;
 

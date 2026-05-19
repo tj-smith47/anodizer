@@ -55,7 +55,7 @@ fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core::log::Stage
 
 /// Returns `true` when the notarize entry should run, i.e. `skip:` is absent
 /// or evaluates to false. Per-config notarize gating uses the canonical
-/// `skip:` field (DEC-6), shared with every other publisher / pipe.
+/// `skip:` field, shared with every other publisher / pipe.
 ///
 /// - `None` → run (default opt-in once a notarize block is present)
 /// - `Some(Bool(false))` → run
@@ -474,14 +474,14 @@ impl Stage for NotarizeStage {
             );
         }
 
-        // Phase 1: Cross-platform signing/notarization (rcodesign)
+        // Step 1: Cross-platform signing/notarization (rcodesign)
         if let Some(ref macos_configs) = notarize_config.macos {
             for (idx, cfg) in macos_configs.iter().enumerate() {
                 run_cross_platform(ctx, cfg, idx, dry_run, &log)?;
             }
         }
 
-        // Phase 2: Native signing/notarization (codesign + xcrun notarytool)
+        // Step 2: Native signing/notarization (codesign + xcrun notarytool)
         if let Some(ref native_configs) = notarize_config.macos_native {
             for (idx, cfg) in native_configs.iter().enumerate() {
                 run_native(ctx, cfg, idx, dry_run, &log)?;
@@ -499,7 +499,7 @@ impl Stage for NotarizeStage {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 1: Cross-platform (rcodesign)
+// Step 1: Cross-platform (rcodesign)
 // ---------------------------------------------------------------------------
 
 fn run_cross_platform(
@@ -712,7 +712,7 @@ fn run_cross_platform(
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2: Native (codesign + xcrun notarytool)
+// Step 2: Native (codesign + xcrun notarytool)
 // ---------------------------------------------------------------------------
 
 /// Parameters for native signing/notarization, extracted from config before
@@ -1295,7 +1295,7 @@ notarize:
 
     #[test]
     fn test_skip_string_template_deserializes() {
-        // The template form of `skip:` (DEC-6) still parses on per-config
+        // The template form of `skip:` still parses on per-config
         // notarize blocks.
         let yaml = r#"
 notarize:
@@ -2203,7 +2203,7 @@ crates: []
     }
 
     // -----------------------------------------------------------------------
-    // is_active helper tests (SCH-30 / WAVE 5.5: was is_enabled, inverted)
+    // is_active helper tests (historical: was is_enabled, inverted)
     // -----------------------------------------------------------------------
 
     #[test]

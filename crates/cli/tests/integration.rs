@@ -1636,10 +1636,10 @@ crates:
 }
 
 // ============================================================================
-// Publisher skip-name acceptance / rejection tests (FOLL-1, DEC-5)
+// Publisher skip-name acceptance / rejection tests
 // ============================================================================
 
-/// `--skip=brew` is accepted (short canonical name per FOLL-1).
+/// `--skip=brew` is accepted (short canonical name).
 #[test]
 fn test_skip_brew_accepted() {
     let tmp = TempDir::new().unwrap();
@@ -1684,7 +1684,7 @@ crates:
     );
 }
 
-/// `--skip=choco` is accepted (short canonical name per FOLL-1).
+/// `--skip=choco` is accepted (short canonical name).
 #[test]
 fn test_skip_choco_accepted() {
     let tmp = TempDir::new().unwrap();
@@ -1726,7 +1726,7 @@ crates:
     );
 }
 
-/// `--skip=cargo` is accepted (crates.io publisher skip per FOLL-1).
+/// `--skip=cargo` is accepted (crates.io publisher skip).
 #[test]
 fn test_skip_cargo_accepted() {
     let tmp = TempDir::new().unwrap();
@@ -1768,7 +1768,7 @@ crates:
     );
 }
 
-/// `--skip=krew` is accepted (krew publisher skip per FOLL-1).
+/// `--skip=krew` is accepted (krew publisher skip).
 #[test]
 fn test_skip_krew_accepted() {
     let tmp = TempDir::new().unwrap();
@@ -1810,7 +1810,7 @@ crates:
     );
 }
 
-/// `--skip=homebrew` is REJECTED — the long alias is not valid (DEC-5).
+/// `--skip=homebrew` is REJECTED — the long alias is not valid.
 #[test]
 fn test_skip_homebrew_alias_rejected() {
     let tmp = TempDir::new().unwrap();
@@ -1857,7 +1857,7 @@ crates:
     );
 }
 
-/// `--skip=chocolatey` is REJECTED — the long alias is not valid (DEC-5).
+/// `--skip=chocolatey` is REJECTED — the long alias is not valid.
 #[test]
 fn test_skip_chocolatey_alias_rejected() {
     let tmp = TempDir::new().unwrap();
@@ -1903,7 +1903,7 @@ crates:
     );
 }
 
-/// `--skip=crates` is REJECTED — `crates` was renamed to `cargo` in WAVE 3 (DEC-1).
+/// `--skip=crates` is REJECTED — the canonical skip stage is `cargo`.
 #[test]
 fn test_skip_crates_alias_rejected() {
     let tmp = TempDir::new().unwrap();
@@ -1937,7 +1937,7 @@ crates:
 
     assert!(
         !output.status.success(),
-        "--skip=crates should be rejected (use --skip=cargo, DEC-1); command unexpectedly succeeded"
+        "--skip=crates should be rejected (use --skip=cargo); command unexpectedly succeeded"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Match the validator's exact phrase (see note on
@@ -4274,9 +4274,7 @@ crates:
 /// GoReleaser's `BuildCmdPipeline`: before-hook marker file,
 /// effective `dist/config.yaml`, `dist/metadata.json`,
 /// `dist/artifacts.json`, and a size-report line when
-/// `report_sizes: true`. Before this test, the build command was
-/// missing several of these outputs and the known-bugs entry asked
-/// for parity with GoReleaser's BuildCmdPipeline.
+/// `report_sizes: true`.
 #[test]
 fn test_e2e_build_command_matches_goreleaser_pipeline_outputs() {
     let tmp = TempDir::new().unwrap();

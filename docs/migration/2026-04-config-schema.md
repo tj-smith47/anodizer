@@ -1,25 +1,20 @@
-# Session B config-schema migration (2026-04-27)
+# Config schema migration (2026-04-27)
 
-Anodizer's only consumers are `/opt/repos/anodizer/.anodizer.yaml` and
-`/opt/repos/cfgd/.anodizer.yaml`. Per **DEC-5 hard-break**, this wave makes
-the schema renames listed below without deprecation aliases or shim warnings.
-Both YAMLs were rewritten in a single landing per repo; rebase any in-flight
-config edits on top of the new schema.
-
-Audience: future-me (and any new consumer onboarding the schema). The
-authoritative spec lives in
-`.claude/audits/2026-04-config-gaps/_session-b-plan.md`.
+The 2026-04-27 schema rewrite applied the renames below as hard breaks —
+no deprecation aliases, no shim warnings. Configs using the old spellings
+will fail to parse with serde `unknown field` errors; rewrite them to the
+new spellings before upgrading.
 
 ---
 
-## Hard-break renames (WAVE 1)
+## Hard-break renames
 
 | Before | After | Notes |
 |---|---|---|
-| `disable: true` (24 sites) | `skip: true` | Per DEC-6. Affects every block carrying a `disable` field: flatpaks, app_bundles, dmgs, pkgs, nfpms, snapcrafts, dockers_v2, homebrews, scoops, chocolateys, wingets, aurs, nix, krews, notarize, sbom, signs, binary_signs, docker_signs, changelog, cloudsmiths, uploads, srpms, makeselves. |
-| `env: { KEY: VAL }` (8 sites) | `env: ["KEY=VAL"]` | Per DEC-7. The HashMap form parsed two-way before; only the list-of-strings form parses now. Per-target nested maps (`overrides[].env`) are unchanged — different shape, different concept. |
+| `disable: true` (24 sites) | `skip: true` | Affects every block carrying a `disable` field: flatpaks, app_bundles, dmgs, pkgs, nfpms, snapcrafts, dockers_v2, homebrews, scoops, chocolateys, wingets, aurs, nix, krews, notarize, sbom, signs, binary_signs, docker_signs, changelog, cloudsmiths, uploads, srpms, makeselves. |
+| `env: { KEY: VAL }` (8 sites) | `env: ["KEY=VAL"]` | The HashMap form parsed two-way before; only the list-of-strings form parses now. Per-target nested maps (`overrides[].env`) are unchanged — different shape, different concept. |
 
-## Cargo publisher rename (WAVE 3)
+## Cargo publisher rename
 
 | Before | After |
 |---|---|
@@ -36,7 +31,7 @@ keep_going, manifest_path, locked, offline, frozen, index_timeout, skip).
 
 CLI flag rename: `--skip=crates` → `--skip=cargo`.
 
-## Publisher repository unification (WAVE 5.5)
+## Publisher repository unification
 
 | Before | After |
 |---|---|
@@ -46,20 +41,20 @@ CLI flag rename: `--skip=crates` → `--skip=cargo`.
 | `homebrew: { commit_author_name, commit_author_email }` | `homebrew: { commit_author: { name, email } }` |
 | `scoop: { commit_author_name, commit_author_email }` | `scoop: { commit_author: { name, email } }` |
 
-## Docker rename (WAVE 5.5)
+## Docker rename
 
 | Before | After |
 |---|---|
 | top-level `docker:` | `docker_v2:` |
 | `docker_v2[].skip_push: true` | `docker_v2[].skip: true` |
 
-## Snapcraft (WAVE 5.5)
+## Snapcraft
 
 | Before | After |
 |---|---|
 | top-level `snapcrafts[].slots` | `snapcrafts[].apps.<name>.slots` |
 
-## DEC-9 inheritance (the new defaults block)
+## Inheritance (the new defaults block)
 
 Both YAMLs now hoist shared publisher / archive / sign config to a top-level
 `defaults:` block. Per-crate entries inherit the defaults via three rules:
@@ -86,10 +81,10 @@ are appended.
 
 ---
 
-## Hard-break alias removal (post-WAVE 6 cleanup)
+## Hard-break alias removal
 
-DEC-5 says "no aliases, no deprecation shims." Below is the full set of
-serde aliases removed in this batch. Configs that still use the left-hand
+The rewrite removes all serde aliases — no deprecation shims. Below is
+the full set of aliases dropped. Configs that still use the left-hand
 spelling will fail to parse with `unknown field` from serde — rewrite them
 to the right-hand spelling before upgrading.
 
@@ -113,7 +108,7 @@ to the right-hand spelling before upgrading.
 | `FormatOverride` | `goos: windows` | `os: windows` |
 | `FormatOverride` | `format: zip` | `formats: [zip]` (singular `format` field deleted) |
 | `ExtraFileSpec::Detailed` | `name: "..."` | `name_template: "..."` |
-| `MakeselfConfig` | `name_template: "..."` | `filename: "..."` (per SCH-11; field renamed) |
+| `MakeselfConfig` | `name_template: "..."` | `filename: "..."` |
 | `MakeselfFile` | `src:` / `dst:` | `source:` / `destination:` |
 | `SnapshotConfig` | `name_template: "..."` | `version_template: "..."` |
 | `EmailAnnounce` | `body_template:` | `message_template:` |
@@ -131,7 +126,7 @@ to the right-hand spelling before upgrading.
 
 | Alias | Canonical | Rationale |
 |---|---|---|
-| `announce.smtp:` | `announce.email:` | GoReleaser keeps both — anodizer mirrors so configs copied from GR docs parse without rewrites (SCH-34). |
+| `announce.smtp:` | `announce.email:` | GoReleaser keeps both — anodizer mirrors so configs copied from GR docs parse without rewrites. |
 | Snapcraft hyphen-aliases (`stop-mode`, `restart-condition`, `bus-name`, …) | underscore-form Rust field names | The hyphen form is snap.yaml's canonical spelling; the underscore form is needed because Rust identifiers can't contain hyphens. Both keep parsing because users write hyphens in snap.yaml. |
 
 ### Naming hazards (look near-identical, are not interchangeable)
@@ -178,8 +173,8 @@ spellings (no migration hint).
   surface — every call site already passed `None, None` for the legacy
   pair. The `publisher: &str` param survived the first cleanup but was
   also dead (every call site passed a string-literal that never reached
-  any branch); dropped in the post-DEC-5 cleanup along with the
-  `Result<>` wrapper (the function never returned `Err`).
+  any branch); dropped along with the `Result<>` wrapper (the function
+  never returned `Err`).
 - `resolve_commit_opts(commit_author, legacy_name, legacy_email)` →
   `resolve_commit_opts(commit_author)`. Same story — every call site
   passed `None, None` for the legacy pair.

@@ -205,8 +205,7 @@ pub fn build_plan(workspace_root: &Path, opts: &BumpOpts) -> Result<Vec<PlanRow>
     }
 
     // Populate edited_files with the manifest of each non-skip crate.
-    // Propagation + workspace-inheritance handling is layered in later phases;
-    // this keeps Phase 1 self-contained.
+    // Propagation + workspace-inheritance handling is layered separately.
     for row in rows.iter_mut() {
         if row.level == BumpLevel::Skip {
             continue;

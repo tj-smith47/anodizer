@@ -175,13 +175,13 @@ pub struct PublishConfig {
     pub nix: Option<NixConfig>,
 }
 
-/// `cargo publish` flag surface (DEC-10 — WAVE 3).
+/// `cargo publish` flag surface.
 ///
 /// Presence under `publish:` opts the crate in; use `skip: true` (or a
 /// truthy template) to opt out. There is no `enabled` field — presence is
-/// the on-switch (DEC-6 / ITEM-3 hard-break).
+/// the on-switch.
 ///
-/// Fields intentionally omitted because anodizer owns them (DEC-10):
+/// Fields intentionally omitted because anodizer owns them:
 /// - `--package` / `--workspace` / `--exclude`: the top-level `crates[]`
 ///   axis owns crate selection.
 /// - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`).

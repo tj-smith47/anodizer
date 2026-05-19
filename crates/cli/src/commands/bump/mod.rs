@@ -1,6 +1,4 @@
 //! `anodizer bump` — bump crate versions with Conventional-Commit inference.
-//!
-//! Scope (v1): see `.claude/plans/2026-04-18-bump-command.md`.
 
 pub(crate) mod cargo_edit;
 mod inference;
@@ -49,7 +47,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
         bail!("--output json requires --dry-run");
     }
 
-    // Dirty-tree guard (Phase 7 will flesh out the prompt; guard is cheap here).
+    // Dirty-tree guard.
     if !opts.allow_dirty && !opts.dry_run && anodizer_core::git::is_git_dirty() {
         bail!("working tree has uncommitted changes — commit them or pass --allow-dirty");
     }

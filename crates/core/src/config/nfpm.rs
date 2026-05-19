@@ -140,7 +140,7 @@ pub struct NfpmScripts {
 pub type NfpmFileInfo = FileInfo;
 
 /// A single file/directory entry in an nFPM (or SRPM) package's `contents`
-/// list. SCH-8 (WAVE 5.4) merged the formerly-separate `NfpmContentConfig`
+/// list. Merged the formerly-separate `NfpmContentConfig`
 /// (used for SRPM) into this struct — `source` / `destination` / `type` are
 /// accepted as aliases for `src` / `dst` / the renamed `type` so srpm-style
 /// keys still parse.

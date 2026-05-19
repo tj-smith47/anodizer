@@ -102,7 +102,7 @@ pub struct Defaults {
     /// Mirrors `CrateConfig.checksum` so checksum config can be hoisted to defaults.
     pub checksum: Option<ChecksumConfig>,
 
-    // --- Crate-axis vs workspace-axis (mutually exclusive — DEC-4) ---
+    // --- Crate-axis vs workspace-axis (mutually exclusive) ---
     /// Crate-axis defaults marker. Only valid when top-level `crates:` is set.
     /// Reserved for per-crate overrides keyed by crate id (future waves).
     pub crates: Option<DefaultsCrateBlock>,
@@ -111,7 +111,7 @@ pub struct Defaults {
     pub workspaces: Option<DefaultsWorkspaceBlock>,
 }
 
-/// Workspace-default publishers (DEC-3). Each publisher is single-struct in
+/// Workspace-default publishers. Each publisher is single-struct in
 /// defaults; per-crate `publish.*` may be either a single struct or a list,
 /// reconciled by the merge engine.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -121,11 +121,11 @@ pub struct PublishDefaults {
     pub homebrew: Option<HomebrewConfig>,
     /// Default Homebrew Cask settings, merged into per-crate `publish.homebrew_cask`.
     ///
-    /// Single-struct per DEC-3.
+    /// Single-struct.
     pub homebrew_cask: Option<HomebrewCaskConfig>,
     /// Default crates.io publish settings, merged into per-crate `publish.cargo`.
     ///
-    /// Single-struct per DEC-3.
+    /// Single-struct.
     pub cargo: Option<CargoPublishConfig>,
     /// Default Scoop manifest settings.
     pub scoop: Option<ScoopConfig>,
@@ -144,7 +144,7 @@ pub struct PublishDefaults {
 }
 
 /// Marker block under `defaults.crates:` that signals crate-axis defaults
-/// scope. Required to drive the DEC-4 axis-mismatch validator. Currently
+/// scope. Required to drive the axis-mismatch validator. Currently
 /// empty; future per-crate-id overrides will live here.
 ///
 /// `deny_unknown_fields` so that typing `defaults.crates: { foo: bar }`
@@ -155,7 +155,7 @@ pub struct PublishDefaults {
 pub struct DefaultsCrateBlock {}
 
 /// Marker block under `defaults.workspaces:` that signals workspace-axis
-/// defaults scope. Required to drive the DEC-4 axis-mismatch validator.
+/// defaults scope. Required to drive the axis-mismatch validator.
 /// Currently empty; future per-workspace-name overrides will live here.
 ///
 /// `deny_unknown_fields` per the same rationale as `DefaultsCrateBlock`.

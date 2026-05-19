@@ -180,15 +180,15 @@ fn render_groups(
 /// - `AuthorEmail` — commit author email
 /// - `Login` — per-commit GitHub username (populated only with `github` backend)
 /// - `Authors` — comma-separated names for this commit (primary author +
-///   `Co-Authored-By:` trailers). SCH-24 (WAVE 5.3) — matches GR's per-entry
+///   `Co-Authored-By:` trailers). matches GR's per-entry
 ///   Authors template var.
 /// - `Logins` — comma-separated logins for this commit (primary author's
-///   login + parsed co-author logins, where the trailer carries one). SCH-24
-///   (WAVE 5.3) — matches GR's per-entry Logins template var.
+///   login + parsed co-author logins, where the trailer carries one).
+///   Matches GR's per-entry Logins template var.
 /// - `AllLogins` — comma-separated list of *all* GitHub logins seen in the
-///   release. Was the previous `Logins` semantic (release-wide) before SCH-24
-///   reclaimed `Logins` for per-entry data; renamed to keep both available
-///   without ambiguity.
+///   release. Was the previous `Logins` semantic (release-wide) before
+///   `Logins` was reclaimed for per-entry data; renamed to keep both
+///   available without ambiguity.
 fn render_commit_line(
     out: &mut String,
     commit: &CommitInfo,

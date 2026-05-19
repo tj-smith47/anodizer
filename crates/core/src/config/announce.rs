@@ -56,7 +56,7 @@ pub struct AnnounceConfig {
     pub teams: Option<TeamsAnnounce>,
     /// Mattermost announcement configuration.
     pub mattermost: Option<MattermostAnnounce>,
-    /// Email announcement configuration. SCH-34 (WAVE 5.6) — accepts the
+    /// Email announcement configuration. accepts the
     /// historical `smtp:` key as an alias because GR itself renamed
     /// `smtp:` -> `email:` in v1.21+ and kept the alias for migration.
     /// Mirroring GR's own alias keeps "use what GR uses today" consistent

@@ -79,9 +79,9 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()))
 }
 
-/// A fully-staged flatpak job. Phase 1 (serial, `&mut ctx`) stages the
+/// A fully-staged flatpak job. Step 1 (serial, `&mut ctx`) stages the
 /// work directory, writes the manifest, and applies mod_timestamp to the
-/// work dir; Phase 2 (parallel, `std::thread::scope`) runs the two
+/// work dir; Step 2 (parallel, `std::thread::scope`) runs the two
 /// `flatpak-builder` / `flatpak build-bundle` subprocesses and applies
 /// mod_timestamp to the output file.
 struct FlatpakJob {
@@ -91,10 +91,10 @@ struct FlatpakJob {
     builder_args: Vec<String>,
     bundle_args: Vec<String>,
     /// Pre-parsed mtime to stamp the output `.flatpak` with; when set,
-    /// Phase 2 also calls `set_file_mtime`. Phase 1 already stamped the
+    /// Step 2 also calls `set_file_mtime`. Step 1 already stamped the
     /// work dir.
     output_mtime: Option<std::time::SystemTime>,
-    /// Rendered mod_timestamp string for logging (Phase 2).
+    /// Rendered mod_timestamp string for logging (Step 2).
     output_mtime_repr: Option<String>,
     target: Option<String>,
     crate_name: String,
@@ -541,8 +541,8 @@ impl Stage for FlatpakStage {
                         format!("flatpak: write manifest to {}", manifest_path.display())
                     })?;
 
-                    // Render mod_timestamp once in Phase 1 and pre-parse the
-                    // mtime so Phase 2 (parallel) doesn't touch ctx.
+                    // Render mod_timestamp once in Step 1 and pre-parse the
+                    // mtime so Step 2 (parallel) doesn't touch ctx.
                     let (output_mtime, output_mtime_repr) =
                         if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp {
                             let ts = ctx
@@ -555,7 +555,7 @@ impl Stage for FlatpakStage {
                             (None, None)
                         };
 
-                    // Pre-compute the two subprocess arg vectors so Phase 2
+                    // Pre-compute the two subprocess arg vectors so Step 2
                     // can just run them without re-deriving from cfg.
                     let builder_args = vec![
                         "flatpak-builder".to_string(),
@@ -578,7 +578,7 @@ impl Stage for FlatpakStage {
 
                     // If replace is set, mark archives for this crate+target
                     // for removal — do it now while ctx.artifacts is
-                    // accessible. Phase 2 workers never touch ctx.
+                    // accessible. Step 2 workers never touch ctx.
                     archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                         flatpak_cfg.replace,
                         &ctx.artifacts,
@@ -605,7 +605,7 @@ impl Stage for FlatpakStage {
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // ----------------------------------------------------------------
-        // Phase 2 (parallel): run flatpak-builder + flatpak build-bundle
+        // Step 2 (parallel): run flatpak-builder + flatpak build-bundle
         // for each job. Bounded concurrency via chunks(parallelism).
         // ----------------------------------------------------------------
         if !jobs.is_empty() {

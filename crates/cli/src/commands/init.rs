@@ -318,8 +318,7 @@ fn render_yaml(project_name: &str, crates: &[&CrateInfo]) -> Result<String> {
             out.push_str("      prerelease: auto\n");
         } else {
             // Library crates opt in to crates.io publishing via `cargo: {}`.
-            // Presence is the on-switch (DEC-6 / ITEM-3 — no `enabled` field,
-            // no bool shorthand).
+            // Presence is the on-switch (no `enabled` field, no bool shorthand).
             out.push_str("    publish:\n");
             out.push_str("      cargo: {}\n");
         }

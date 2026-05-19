@@ -197,7 +197,7 @@ fn consume_request(stream: &mut TcpStream) {
     let mut accum: Vec<u8> = Vec::with_capacity(8 * 1024);
     let mut chunk = [0u8; 8 * 1024];
 
-    // Phase 1: read until we've seen \r\n\r\n (end of headers) or hit
+    // Step 1: read until we've seen \r\n\r\n (end of headers) or hit
     // the deadline / EOF / I/O error.
     let header_end = loop {
         if Instant::now() >= deadline {
@@ -219,7 +219,7 @@ fn consume_request(stream: &mut TcpStream) {
         }
     };
 
-    // Phase 2: parse Content-Length and drain that many bytes of body.
+    // Step 2: parse Content-Length and drain that many bytes of body.
     let content_length = parse_content_length(&accum[..header_end]);
     let already_have = accum.len() - header_end;
     let Some(total_body) = content_length else {

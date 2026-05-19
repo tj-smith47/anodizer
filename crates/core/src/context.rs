@@ -34,8 +34,8 @@ pub enum RollbackMode {
 ///
 /// Publisher skip names use the short canonical form (matching the CLI binary
 /// name and GoReleaser convention): `brew`, `choco`, `krew`, `cargo`, etc.
-/// Long aliases (e.g. `homebrew`, `chocolatey`) are NOT accepted — DEC-5 forbids
-/// aliases; use the short name everywhere (FOLL-1).
+/// Long aliases (e.g. `homebrew`, `chocolatey`) are NOT accepted forbids
+/// aliases; use the short name everywhere.
 pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "publish",
     "announce",
@@ -131,9 +131,7 @@ pub struct ContextOptions {
     /// combined token + sign-key check and bails fail-closed on
     /// missing values. Without this gate, `setup_env`'s token check
     /// would fire FIRST and pre-empt publish-only's own preflight
-    /// (which validates BOTH token AND sign key in one shot). Spec:
-    /// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-    /// section C.
+    /// (which validates BOTH token AND sign key in one shot).
     pub publish_only: bool,
     /// Explicit project root directory. When set, stages use this instead of
     /// discovering the repo root via `git rev-parse --show-toplevel`.
@@ -254,9 +252,8 @@ impl Default for ContextOptions {
 
 /// Stage→stage handoff state produced by stages and consumed by later
 /// stages (as opposed to `config` / `options` which are pipeline inputs,
-/// or `artifacts` which has its own registry). Closes the F·3 deferral
-/// (see `.claude/plans/archive/...`): the changelog stage writes here,
-/// the release stage reads here.
+/// or `artifacts` which has its own registry). The changelog stage
+/// writes here, the release stage reads here.
 #[derive(Debug, Default)]
 pub struct StageOutputs {
     /// Set by the changelog stage when `use: github-native` is configured.

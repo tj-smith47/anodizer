@@ -125,7 +125,7 @@ impl HomebrewConflict {
     }
 }
 
-/// Unified Homebrew Cask configuration (WAVE 4).
+/// Unified Homebrew Cask configuration.
 ///
 /// Used at both call-sites:
 /// - `homebrew_casks:` — top-level array; carries `repository`,

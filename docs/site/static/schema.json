@@ -578,7 +578,7 @@
           ]
         },
         "email": {
-          "description": "Email announcement configuration. SCH-34 (WAVE 5.6) — accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps \"use what GR uses today\" consistent without forcing a re-yaml of legacy GR configs.",
+          "description": "Email announcement configuration. accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps \"use what GR uses today\" consistent without forcing a re-yaml of legacy GR configs.",
           "default": null,
           "anyOf": [
             {
@@ -2282,7 +2282,7 @@
       }
     },
     "CargoPublishConfig": {
-      "description": "`cargo publish` flag surface (DEC-10 — WAVE 3).\n\nPresence under `publish:` opts the crate in; use `skip: true` (or a truthy template) to opt out. There is no `enabled` field — presence is the on-switch (DEC-6 / ITEM-3 hard-break).\n\nFields intentionally omitted because anodizer owns them (DEC-10): - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.",
+      "description": "`cargo publish` flag surface.\n\nPresence under `publish:` opts the crate in; use `skip: true` (or a truthy template) to opt out. There is no `enabled` field — presence is the on-switch.\n\nFields intentionally omitted because anodizer owns them: - `--package` / `--workspace` / `--exclude`: the top-level `crates[]` axis owns crate selection. - `--dry-run`: pipeline-level CLI ergonomics (`anodizer release --dry-run`). - `-v` / `-q` / `--color`: CLI ergonomics, not config. - `--config` / `-Z`: cargo CLI escape hatches; out of scope.",
       "type": "object",
       "properties": {
         "all_features": {
@@ -2985,7 +2985,7 @@
           ]
         },
         "skip": {
-          "description": "Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `\"{{ .IsSnapshot }}\"`). Accepts the legacy `skip_publish:` spelling for back-compat with pre-DEC-12 configs; canonical name is `skip:` to align with every other publisher.",
+          "description": "Skip pushing to the Chocolatey community repository. Bool, string, or template expression (e.g. `\"{{ .IsSnapshot }}\"`). Accepts the legacy `skip_publish:` spelling for back-compat with configs; canonical name is `skip:` to align with every other publisher.",
           "default": null,
           "anyOf": [
             {
@@ -3013,7 +3013,7 @@
           ]
         },
         "tags": {
-          "description": "Tags for the Chocolatey gallery (joined with single spaces in the emitted nuspec). Always a typed list — the legacy space-separated-string form was dropped in WAVE 5.1 (DEC-11) for IDE-completion friendliness and to remove whitespace ambiguity.",
+          "description": "Tags for the Chocolatey gallery (joined with single spaces in the emitted nuspec). Always a typed list — the legacy space-separated-string form was dropped now for IDE-completion friendliness and to remove whitespace ambiguity.",
           "default": null,
           "type": [
             "array",
@@ -3945,12 +3945,12 @@
       }
     },
     "DefaultsCrateBlock": {
-      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-crate-id overrides will live here.\n\n`deny_unknown_fields` so that typing `defaults.crates: { foo: bar }` surfaces as a parse error rather than silently being accepted — without it, the empty struct is a sink that swallows arbitrary keys.",
+      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the axis-mismatch validator. Currently empty; future per-crate-id overrides will live here.\n\n`deny_unknown_fields` so that typing `defaults.crates: { foo: bar }` surfaces as a parse error rather than silently being accepted — without it, the empty struct is a sink that swallows arbitrary keys.",
       "type": "object",
       "additionalProperties": false
     },
     "DefaultsWorkspaceBlock": {
-      "description": "Marker block under `defaults.workspaces:` that signals workspace-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-workspace-name overrides will live here.\n\n`deny_unknown_fields` per the same rationale as `DefaultsCrateBlock`.",
+      "description": "Marker block under `defaults.workspaces:` that signals workspace-axis defaults scope. Required to drive the axis-mismatch validator. Currently empty; future per-workspace-name overrides will live here.\n\n`deny_unknown_fields` per the same rationale as `DefaultsCrateBlock`.",
       "type": "object",
       "additionalProperties": false
     },
@@ -5383,7 +5383,7 @@
       }
     },
     "HomebrewCaskConfig": {
-      "description": "Unified Homebrew Cask configuration (WAVE 4).\n\nUsed at both call-sites: - `homebrew_casks:` — top-level array; carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.\n\nFields from both original types are present; any field may be `None` at either call-site. The union avoids a two-type bifurcation while keeping both axes.",
+      "description": "Unified Homebrew Cask configuration.\n\nUsed at both call-sites: - `homebrew_casks:` — top-level array; carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.\n\nFields from both original types are present; any field may be `None` at either call-site. The union avoids a two-type bifurcation while keeping both axes.",
       "type": "object",
       "properties": {
         "alternative_names": {
@@ -6648,7 +6648,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this configuration. Accepts bool or template string. SCH-30 (WAVE 5.5) replaced `enabled:` with the canonical `skip:` (DEC-6).",
+          "description": "Skip this configuration. Accepts bool or template string. Replaces `enabled:` with the canonical `skip:`.",
           "default": null,
           "anyOf": [
             {
@@ -6802,7 +6802,7 @@
           ]
         },
         "skip": {
-          "description": "Skip this configuration. Accepts bool or template string. SCH-30 (WAVE 5.5) replaced the previous `enabled:` toggle with the canonical `skip:` (inverted semantic) to align with every other publisher / pipe in anodizer (DEC-6).",
+          "description": "Skip this configuration. Accepts bool or template string. Replaces the previous `enabled:` toggle with the canonical `skip:` (inverted semantic) to align with every other publisher / pipe in anodizer.",
           "default": null,
           "anyOf": [
             {
@@ -8159,7 +8159,7 @@
       }
     },
     "NfpmContent": {
-      "description": "A single file/directory entry in an nFPM (or SRPM) package's `contents` list. SCH-8 (WAVE 5.4) merged the formerly-separate `NfpmContentConfig` (used for SRPM) into this struct — `source` / `destination` / `type` are accepted as aliases for `src` / `dst` / the renamed `type` so srpm-style keys still parse.\n\n`Default` is intentionally **not** derived because `src` and `dst` are required fields with no meaningful defaults — forcing callers to provide them explicitly prevents accidentally packaging empty paths.",
+      "description": "A single file/directory entry in an nFPM (or SRPM) package's `contents` list. Merged the formerly-separate `NfpmContentConfig` (used for SRPM) into this struct — `source` / `destination` / `type` are accepted as aliases for `src` / `dst` / the renamed `type` so srpm-style keys still parse.\n\n`Default` is intentionally **not** derived because `src` and `dst` are required fields with no meaningful defaults — forcing callers to provide them explicitly prevents accidentally packaging empty paths.",
       "type": "object",
       "required": [
         "dst",
@@ -9263,7 +9263,7 @@
       }
     },
     "PostPublishPollConfig": {
-      "description": "Per-publisher post-publish polling config block.\n\nSee module-level docs for the polling lifecycle. Default values (`enabled: true`, `interval: 30s`, `timeout: 30m`) match the spec text in `.claude/known-bugs.md`.",
+      "description": "Per-publisher post-publish polling config block.\n\nSee module-level docs for the polling lifecycle. Default values: `enabled: true`, `interval: 30s`, `timeout: 30m`.",
       "type": "object",
       "properties": {
         "enabled": {
@@ -9419,7 +9419,7 @@
       "additionalProperties": false
     },
     "PublishDefaults": {
-      "description": "Workspace-default publishers (DEC-3). Each publisher is single-struct in defaults; per-crate `publish.*` may be either a single struct or a list, reconciled by the merge engine.",
+      "description": "Workspace-default publishers. Each publisher is single-struct in defaults; per-crate `publish.*` may be either a single struct or a list, reconciled by the merge engine.",
       "type": "object",
       "properties": {
         "aur": {
@@ -9447,7 +9447,7 @@
           ]
         },
         "cargo": {
-          "description": "Default crates.io publish settings, merged into per-crate `publish.cargo`.\n\nSingle-struct per DEC-3.",
+          "description": "Default crates.io publish settings, merged into per-crate `publish.cargo`.\n\nSingle-struct.",
           "default": null,
           "anyOf": [
             {
@@ -9483,7 +9483,7 @@
           ]
         },
         "homebrew_cask": {
-          "description": "Default Homebrew Cask settings, merged into per-crate `publish.homebrew_cask`.\n\nSingle-struct per DEC-3.",
+          "description": "Default Homebrew Cask settings, merged into per-crate `publish.homebrew_cask`.\n\nSingle-struct.",
           "default": null,
           "anyOf": [
             {

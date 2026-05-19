@@ -146,8 +146,7 @@ crates:
 
 #[test]
 fn test_publish_cargo_present_and_with_options() {
-    // Presence of `cargo:` opts the crate in (DEC-6 / ITEM-3 — no
-    // `enabled` field, no bool shorthand).
+    // Presence of `cargo:` opts the crate in (no `enabled` field, no bool shorthand).
     let yaml_present = r#"
 project_name: test
 crates:
@@ -192,7 +191,7 @@ crates:
 
 #[test]
 fn test_publish_cargo_bool_shorthand_rejected() {
-    // ITEM-3 hard-break: `cargo: true` is no longer a valid shorthand.
+    // `cargo: true` is no longer a valid shorthand.
     let yaml = r#"
 project_name: test
 crates:
@@ -211,8 +210,8 @@ crates:
 
 #[test]
 fn test_publish_cargo_legacy_crates_key_rejected() {
-    // ITEM-3 hard-break: the old `publish.crates:` key was renamed to
-    // `publish.cargo:` with no alias (DEC-5).
+    // the old `publish.crates:` key was renamed to
+    // `publish.cargo:` with no alias.
     let yaml = r#"
 project_name: test
 crates:
@@ -1789,7 +1788,7 @@ fn test_signs_default_config_has_empty_signs() {
     assert!(config.signs.is_empty());
 }
 
-// ---- binary_signs artifacts constraint (SCH-27) ----
+// ---- binary_signs artifacts constraint ----
 
 #[test]
 fn test_binary_signs_artifacts_binary_accepted() {
@@ -2751,7 +2750,7 @@ name = "tool"
     assert_eq!(repo.owner.as_deref(), Some("org"));
 }
 
-// ---- WAVE 5.7 behavior-toggle test (SCH-26) ----
+// ---- Behavior-toggle test ----
 
 #[test]
 fn test_changelog_snapshot_field_parses() {
@@ -2812,7 +2811,7 @@ crates: []
 
 #[test]
 fn test_makeself_filename_field() {
-    // SCH-11 (DEC-5 hard-break): `filename:` is the canonical field name.
+    // `filename:` is the canonical field name.
     let yaml = r#"
 project_name: test
 makeselfs:
@@ -2873,7 +2872,7 @@ crates: []
     assert!(config.announce.unwrap().email.is_some());
 }
 
-// ---- Legacy-field rejection tests (post-DEC-5 hard-break shape) ----
+// ---- Legacy-field rejection tests ( hard-break shape) ----
 
 #[test]
 fn test_legacy_docker_field_rejected() {
@@ -3075,7 +3074,7 @@ crates:
 
 #[test]
 fn test_notarize_macos_skip_roundtrip() {
-    // `skip:` is the canonical per-config gating field (DEC-6); known-good
+    // `skip:` is the canonical per-config gating field; known-good
     // YAML with `skip: false` parses cleanly.
     let yaml = r#"
 notarize:
@@ -3149,7 +3148,7 @@ crates: []
 #[test]
 fn test_nfpm_content_canonical_keys_in_srpm_full() {
     // SRPM contents share [`NfpmContent`]; canonical `src`/`dst` keys
-    // are required (DEC-5 dropped the `source`/`destination` aliases).
+    // are required (the `source`/`destination` aliases).
     let yaml = r#"
 project_name: test
 srpm:
@@ -3194,7 +3193,7 @@ crates:
 #[test]
 fn test_nfpm_signature_canonical_passphrase() {
     // SRPM signatures share [`NfpmSignatureConfig`]; canonical
-    // `key_passphrase:` is the only accepted spelling (DEC-5 dropped
+    // `key_passphrase:` is the only accepted spelling (
     // the `passphrase:` alias).
     let yaml = r#"
 project_name: test
@@ -3860,7 +3859,7 @@ fn test_env_files_token_config_toml_rejects_unknown_fields() {
 
 #[test]
 fn test_build_ignore_parses() {
-    // After WAVE 2, defaults.ignore moved to defaults.builds.ignore
+    // defaults.ignore moved to defaults.builds.ignore
     // (path-mirror of BuildConfig).
     let yaml = r#"
 project_name: test
@@ -3904,7 +3903,7 @@ crates: []
 
 #[test]
 fn test_build_override_parses() {
-    // After WAVE 2, defaults.overrides moved to defaults.builds.overrides
+    // defaults.overrides moved to defaults.builds.overrides
     // (path-mirror of BuildConfig).
     let yaml = r#"
 project_name: test
@@ -4132,7 +4131,7 @@ fn test_validate_tag_sort_invalid_rejected() {
     );
 }
 
-// ---- defaults axis-mismatch validation tests (DEC-4) ----
+// ---- defaults axis-mismatch validation tests ----
 
 #[test]
 fn test_validate_defaults_axis_no_defaults_is_ok() {
@@ -4520,7 +4519,7 @@ crates:
 
 // `docker_v2[].skip_push` is not a recognized field; `deny_unknown_fields`
 // on `DockerV2Config` must reject it at parse time instead of silently
-// dropping. Use the canonical `skip:` (DEC-6) to suppress the publish step.
+// dropping. Use the canonical `skip:` to suppress the publish step.
 #[test]
 fn test_docker_v2_skip_push_rejected() {
     let yaml = r#"
@@ -5544,7 +5543,7 @@ env:
 
 #[test]
 fn test_build_override_env_map_form_rejected() {
-    // After WAVE 2, defaults.overrides moved under defaults.builds.overrides.
+    // defaults.overrides moved under defaults.builds.overrides.
     let yaml = r#"
 project_name: test
 crates:
@@ -5812,7 +5811,7 @@ fn test_try_evaluates_to_true_bool_variant_skips_render() {
 // ---- F2: `disable` → `skip` serde aliases (GR import compat) ----
 //
 // GoReleaser's docker_v2/snapcraft/nsis/msi/release configs use `disable:`;
-// anodizer renamed to `skip:` per DEC-6. With `deny_unknown_fields` on the
+// anodizer renamed to `skip:`. With `deny_unknown_fields` on the
 // strictly-validated structs, an imported GR YAML carrying `disable:`
 // would fail to parse. The `#[serde(alias = "disable")]` attribute lets
 // both spellings deserialize into the same field.

@@ -4113,7 +4113,7 @@ fn test_archive_binary_format_linux_keeps_no_extension() {
     );
 }
 
-/// WAVE 6 regression: in a multi-crate config with no explicit
+/// regression: in a multi-crate config with no explicit
 /// `archive.name_template:`, every crate's archive must resolve to a
 /// distinct filename. Pre-fix the canonical default
 /// `{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}` produced
@@ -4190,7 +4190,7 @@ fn test_archive_multi_crate_default_template_uses_crate_name() {
     );
 }
 
-/// WAVE 6: a single-crate config keeps the GoReleaser-canonical
+/// a single-crate config keeps the GoReleaser-canonical
 /// `{{ .ProjectName }}_..` default — the multi-crate template change
 /// is opt-in via crate count, not unconditional.
 #[test]

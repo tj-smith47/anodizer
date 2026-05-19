@@ -113,7 +113,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
         )
     });
 
-    // Schema fields (spec section A.3): artifacts, targets, version, commit.
+    // Schema fields: artifacts, targets, version, commit.
     let artifacts = context
         .get("artifacts")
         .and_then(|v| v.as_array())

@@ -1,10 +1,9 @@
 //! `cargo` invocations needed by the CLI's `tag` command.
 //!
 //! Centralised here so all `Command::new("cargo")` shell-outs live inside
-//! the module-boundaries allow-list (`.claude/rules/module-boundaries.md`).
-//! `tag.rs` previously called `Command::new("cargo")` from inside the CLI
-//! crate — that was outside the allow-list and counted as a boundary
-//! violation.
+//! the module-boundaries allow-list. `tag.rs` previously called
+//! `Command::new("cargo")` from inside the CLI crate — that was outside
+//! the allow-list and counted as a boundary violation.
 
 use std::io;
 use std::path::Path;

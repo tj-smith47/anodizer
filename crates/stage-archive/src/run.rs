@@ -169,7 +169,7 @@ impl Stage for ArchiveStage {
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
 
-        // WAVE 6: pick the default `archive.name_template` based on whether
+        // pick the default `archive.name_template` based on whether
         // the run produces archives for more than one crate. In a single-crate
         // config the GoReleaser-canonical `{{ .ProjectName }}_..._{{ .Os }}_..`
         // template is unambiguous; in a monorepo every crate would resolve to

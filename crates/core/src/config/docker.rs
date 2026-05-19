@@ -92,7 +92,7 @@ pub struct DockerV2Config {
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
-    // No `skip_push` field — use the canonical `skip:` (DEC-6) to suppress
+    // No `skip_push` field — use the canonical `skip:` to suppress
     // the publish step (matches every other publisher / pipe in anodizer).
 }
 

@@ -1260,7 +1260,7 @@ mod tests {
         );
     }
 
-    /// WAVE 3: a workspace-only crate that carries a non-cargo publisher block
+    /// A workspace-only crate that carries a non-cargo publisher block
     /// (homebrew/scoop/aur/...) must be visible to `crates_with_publisher`,
     /// matching the universe `cargo.rs::publish_to_cargo` walks. Before the
     /// shared `util::all_crates` lift, this crate would silently disappear
@@ -1288,7 +1288,7 @@ mod tests {
         assert_eq!(names, vec!["ws-only".to_string()]);
     }
 
-    /// WAVE 3 dedup rule: top-level `crates` wins on name collision with a
+    /// Dedup rule: top-level `crates` wins on name collision with a
     /// workspace entry. Both walkers (cargo + non-cargo) must see exactly
     /// one entry per name so `expand_with_transitive_deps` and the
     /// publisher loops never double-publish.

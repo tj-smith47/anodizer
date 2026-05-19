@@ -9,12 +9,9 @@ generate_feeds = false
 theme = "dracula"
 
 [link_checker]
-# Skip prefixes for hosts that block HEAD probes (they work in browsers) and for
-# in-repo paths that resolve on GitHub once the evidence files are pushed. All
-# prefixes here have been manually verified to exist; they are not dismissals.
+# Skip prefixes for hosts that block HEAD probes (they work in browsers).
+# All prefixes here have been manually verified to exist; they are not dismissals.
 skip_prefixes = [
-    "https://github.com/tj-smith47/anodizer/blob/master/.claude/",
-    "https://github.com/tj-smith47/anodizer/tree/master/.claude/",
     "https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml",
     "https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml",
     "https://aur.archlinux.org/",

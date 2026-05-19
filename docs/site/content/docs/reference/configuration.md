@@ -76,7 +76,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `bluesky` | BlueskyAnnounce | — | Bluesky announcement configuration. |
 | `discord` | DiscordAnnounce | — | Discord announcement configuration. |
 | `discourse` | DiscourseAnnounce | — | Discourse announcement configuration. |
-| `email` | EmailAnnounce | — | Email announcement configuration. SCH-34 — accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps "use what GR uses today" consistent without forcing a re-yaml of legacy GR configs. |
+| `email` | EmailAnnounce | — | Email announcement configuration. accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps "use what GR uses today" consistent without forcing a re-yaml of legacy GR configs. |
 | `gate_on` | AnnounceGate | `required_publishers` | Selects when AnnounceStage runs vs. skips based on the `PublishReport` written by PublishStage/BlobStage. Default is `required_publishers` (announce only if every required publisher succeeded). See [`AnnounceGate`] for the other variants. |
 | `linkedin` | LinkedInAnnounce | — | LinkedIn announcement configuration. |
 | `mastodon` | MastodonAnnounce | — | Mastodon announcement configuration. |

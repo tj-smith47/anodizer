@@ -1389,7 +1389,7 @@ fn test_sign_config_output_defaults_to_none() {
 
 #[test]
 fn test_binary_signs_config_parsing() {
-    // `artifacts: binary` is the canonical value post-SCH-27 — broader
+    // `artifacts: binary` is the canonical value — broader
     // filters like `all` would silently match nothing.
     let yaml = r#"
 project_name: test

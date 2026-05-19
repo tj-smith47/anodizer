@@ -1,12 +1,12 @@
 //! Defaults inheritance merge engine (path-mirror).
 //!
-//! After WAVE 2 the workspace `defaults:` block path-mirrors the per-crate
+//! The workspace `defaults:` block path-mirrors the per-crate
 //! `CrateConfig` (and a small subset of top-level `Config`) shape. The merge
 //! engine in this module folds those defaults into every resolved crate so
 //! the build pipeline can keep reading from `crate_cfg.<field>` without
 //! caring whether a value was hoisted to defaults.
 //!
-//! ## Semantics (DEC-9)
+//! ## Semantics
 //!
 //! - **Struct-typed fields (deep-merge)**: defaults fill any field the crate
 //!   left unset; on conflict, the crate value wins. Implemented via a JSON
@@ -40,10 +40,10 @@ use crate::config::{
 };
 
 // ---------------------------------------------------------------------------
-// Skip-block suppression (DEC-9)
+// Skip-block suppression
 // ---------------------------------------------------------------------------
 //
-// Per DEC-9, any per-crate config block carrying `skip: true` (a `StringOrBool`
+// Any per-crate config block carrying `skip: true` (a `StringOrBool`
 // that evaluates to a truthy value) suppresses inheritance from the matching
 // `defaults.*` block entirely — the merge engine treats defaults as if they
 // were `None` for that block.
@@ -124,9 +124,9 @@ pub fn apply_defaults(config: &mut Config) {
         }
     }
 
-    // Top-level `Config` fold (WAVE 2 — separate from the per-crate fold so
+    // Top-level `Config` fold — separate from the per-crate fold so
     // stages reading `ctx.config.<field>` see the resolved value without
-    // needing to consult `defaults.<field>` on every access).
+    // needing to consult `defaults.<field>` on every access.
     apply_top_level_defaults(config, &defaults);
 }
 
@@ -177,7 +177,7 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
 /// Apply defaults to a single crate. Exposed for tests; production code
 /// should call [`apply_defaults`] which iterates all crates.
 ///
-/// ## Coverage map (current as of WAVE 5)
+/// ## Coverage map
 ///
 /// What this function actually folds defaults into per-crate, by call-site:
 ///
@@ -202,9 +202,8 @@ fn apply_top_level_defaults(config: &mut Config, defaults: &Defaults) {
 /// What this function does **not** fold (top-level `Config` fields that
 /// path-mirror in `Defaults` but live on `Config`, not `CrateConfig`):
 /// `source`, `upx`, `sign`, `binary_signs`, `docker_signs`, `notarize`,
-/// `sbom`, `makeselves`, `srpms`. Tracked in `.claude/known-bugs.md`
-/// under the WAVE 2 deferred entry: "`apply_defaults` does not yet fold
-/// top-level `Config` fields ...". See the `apply_defaults` rustdoc above.
+/// `sbom`, `makeselves`, `srpms`. Not yet folded — see the
+/// `apply_defaults` rustdoc above.
 pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     // ---- Scalar / Option<T> fields: fill if None ----
     if crate_cfg.cross.is_none() && defaults.cross.is_some() {
@@ -280,7 +279,7 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
 /// On collision the per-crate value wins; defaults fill any field that the
 /// per-crate value left unset (`null` after JSON serialisation).
 ///
-/// **Skip-suppression (DEC-9):** when the per-crate value's serialised form
+/// **Skip-suppression:** when the per-crate value's serialised form
 /// has a truthy `skip` field, defaults are not merged in — the user's intent
 /// is to disable the block, so inheriting fields would be wrong.
 fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
@@ -426,7 +425,7 @@ where
 
 /// Core "merge one defaults entry into a list" routine.
 ///
-/// Behaviour (DEC-9):
+/// Behaviour:
 /// - **Empty list**: append the defaults entry.
 /// - **Identity match (`Some(x) == Some(x)`)**: deep-merge defaults into the
 ///   FIRST matching per-crate entry only; subsequent matches are left
@@ -1064,7 +1063,7 @@ mod tests {
         }
     }
 
-    // --------------- HomebrewCask publisher defaults (WAVE 4) ---------------
+    // --------------- HomebrewCask publisher defaults ---------------
 
     #[test]
     fn homebrew_cask_top_level_yaml_parses_with_unified_type() {
@@ -1248,7 +1247,7 @@ crates:
         );
     }
 
-    // ---- New-type round-trip coverage for the WAVE 5 typed fields ----
+    // ---- New-type round-trip coverage for the typed fields ----
 
     #[test]
     fn nfpm_umask_string_or_u32_inherits_from_defaults() {
@@ -1285,12 +1284,10 @@ crates:
     #[test]
     fn notarize_timeout_duration_does_not_inherit_today() {
         // `NotarizeConfig.macos[].notarize.timeout` is `Option<HumanDuration>`.
-        // The merge engine does NOT yet fold top-level `Config.notarize` into
-        // per-crate state because notarize lives on `Config`, not
-        // `CrateConfig` (tracked in `.claude/known-bugs.md` under the
-        // WAVE 2 deferred entry: "`apply_defaults` does not yet fold
-        // top-level `Config` fields ..."). This test pins that gap so any
-        // future wiring change surfaces explicitly.
+        // The merge engine does NOT yet fold top-level `Config.notarize`
+        // into per-crate state because notarize lives on `Config`, not
+        // `CrateConfig`. This test pins that gap so any future wiring
+        // change surfaces explicitly.
         use crate::config::{
             HumanDuration, MacOSNotarizeApiConfig, MacOSSignNotarizeConfig, NotarizeConfig,
         };
@@ -1325,8 +1322,7 @@ crates:
         // `ChangelogConfig.header` is `Option<ContentSource>`. ChangelogConfig
         // lives on `Config` (not on `CrateConfig` and not on `Defaults`), so
         // the merge engine has no path to fold a default header into per-crate
-        // state today. Test pins the gap; same WAVE 2 deferred known-bug
-        // entry applies if a future field-add brings changelog into Defaults.
+        // state today. Test pins the gap.
         use crate::config::{ChangelogConfig, ContentSource};
         let _defaults_changelog = ChangelogConfig {
             header: Some(ContentSource::Inline("## Notes".to_string())),
@@ -1342,7 +1338,7 @@ crates:
         let _ = crate_cfg; // explicit no-op assertion: there is no field to check.
     }
 
-    // --------------- WAVE 2 — top-level Config field fold ---------------
+    // --------------- Top-level Config field fold ---------------
 
     /// `defaults.source` fills `Config.source` when the user did not set it.
     #[test]

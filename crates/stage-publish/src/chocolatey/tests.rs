@@ -367,9 +367,6 @@ fn test_publish_to_chocolatey_missing_repository_is_now_optional() {
     // feed-push publisher, only api_key + source_repo are required.
     // anodizer's `repository.owner/name` is only a fallback source for
     // <projectUrl>; it must not block valid GR-shape configs.
-    //
-    // Q-brew1 from .claude/audits/2026-05-08-second-opinion/publishers.md
-    // section 1.2 — F4 fix.
     use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
     use anodizer_core::context::{Context, ContextOptions};
     use anodizer_core::log::{StageLogger, Verbosity};
@@ -509,9 +506,9 @@ crates:
 
 #[test]
 fn test_chocolatey_skip_publish_legacy_alias_still_accepted() {
-    // DEC-12 (post-WAVE 5+) renamed `skip_publish:` -> `skip:` for project-wide
-    // canonicalization, but old configs in the wild still spell it `skip_publish:`.
-    // The serde alias keeps them parsing.
+    // `skip_publish:` was renamed to `skip:` for project-wide
+    // canonicalization, but old configs in the wild still spell it
+    // `skip_publish:`. The serde alias keeps them parsing.
     let yaml = r#"
 project_name: test
 crates:

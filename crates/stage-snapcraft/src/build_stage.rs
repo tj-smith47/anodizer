@@ -37,9 +37,9 @@ fn clear_snapcraft_cache() {
 pub struct SnapcraftStage;
 
 /// A fully-staged snapcraft job ready for parallel `snapcraft pack`
-/// invocation. Phase 1 (serial, `&mut ctx`) stages the prime dir and
-/// renders templates; Phase 2 (parallel) runs the subprocess. `_tmp_dir`
-/// keeps the staging dir alive through Phase 2 — its `Drop` deletes the
+/// invocation. Step 1 (serial, `&mut ctx`) stages the prime dir and
+/// renders templates; Step 2 (parallel) runs the subprocess. `_tmp_dir`
+/// keeps the staging dir alive through Step 2 — its `Drop` deletes the
 /// directory when the job's worker thread finishes.
 struct SnapcraftJob {
     _tmp_dir: tempfile::TempDir,
@@ -484,7 +484,7 @@ impl Stage for SnapcraftStage {
                         anodizer_core::util::apply_mod_timestamp(&prime_dir, ts, &log)?;
                     }
 
-                    // Phase 1 done: compose subprocess args and hand the
+                    // Step 1 done: compose subprocess args and hand the
                     // staged work to the parallel worker pool.
                     let cmd_args = snapcraft_command(
                         &prime_dir.to_string_lossy(),
@@ -515,9 +515,9 @@ impl Stage for SnapcraftStage {
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // ----------------------------------------------------------------
-        // Phase 2 (parallel): run `snapcraft pack` per job. Bounded
+        // Step 2 (parallel): run `snapcraft pack` per job. Bounded
         // concurrency via chunks(parallelism). Each worker returns the
-        // populated Artifact; Phase 3 registers them serially.
+        // populated Artifact; Step 3 registers them serially.
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &SnapcraftJob| -> Result<Artifact> {

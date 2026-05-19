@@ -544,8 +544,7 @@ impl ChecksumConfig {
     /// Resolve the hash algorithm, falling back to the project default
     /// when the user did not specify one. Stages MUST call this rather
     /// than reading `self.algorithm` directly, so a future default change
-    /// (or user-facing override resolution) lands in one place. See the
-    /// lazy-vs-eager defaults policy in `.claude/audits/2026-04-config-gaps/`.
+    /// (or user-facing override resolution) lands in one place.
     pub fn resolved_algorithm(&self) -> &str {
         self.algorithm.as_deref().unwrap_or(Self::DEFAULT_ALGORITHM)
     }

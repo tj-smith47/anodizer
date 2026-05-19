@@ -20,9 +20,8 @@ use super::HumanDuration;
 
 /// Per-publisher post-publish polling config block.
 ///
-/// See module-level docs for the polling lifecycle. Default values
-/// (`enabled: true`, `interval: 30s`, `timeout: 30m`) match the spec text
-/// in `.claude/known-bugs.md`.
+/// See module-level docs for the polling lifecycle. Default values:
+/// `enabled: true`, `interval: 30s`, `timeout: 30m`.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PostPublishPollConfig {

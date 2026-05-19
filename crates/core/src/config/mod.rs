@@ -536,7 +536,7 @@ pub fn validate_release_backends(config: &Config) -> Result<(), String> {
 pub const ERR_DEFAULTS_AXIS_MISMATCH: &str = "DefaultsAxisMismatch";
 
 /// Validate that `defaults.crates:` and `defaults.workspaces:` match the
-/// top-level axis (DEC-4).
+/// top-level axis.
 ///
 /// Rules:
 /// - `defaults.crates:` is set → top-level `crates:` MUST be present.
@@ -732,8 +732,6 @@ pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String
 /// - `defaults.archives:` is a single `ArchiveConfig`, so uniqueness within
 ///   itself is vacuously true; not walked here.
 ///
-/// Q-arch2 from `.claude/audits/2026-05-08-second-opinion/build-archive.md`
-/// sections 1.1 + 1.2.
 pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
     fn check_unique<F>(
         location: &str,
@@ -818,8 +816,6 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
 /// `<FormatOverride as Deserialize>::deserialize`. Emits no warning of its
 /// own — every alias hit was already announced at deserialize time.
 ///
-/// F3 from `.claude/audits/2026-05-08-second-opinion/build-archive.md`
-/// sections 1.9 + 1.10.
 pub fn apply_archive_legacy_aliases(_config: &mut Config) {
     // Intentionally empty — see Deserialize impls.
 }
@@ -827,7 +823,7 @@ pub fn apply_archive_legacy_aliases(_config: &mut Config) {
 /// Reject the GoReleaser V1 `dockers:` block at config-load time with a
 /// clear migration error.
 ///
-/// anodizer is V2-only by design (DEC-7): it implements `docker_v2:` and the
+/// anodizer is V2-only by design: it implements `docker_v2:` and the
 /// associated multi-arch buildx flow, but does not ship the V1
 /// `dockers: -> dockerfile + image_templates` pipe. Without this check the
 /// top-level `Config` struct's `deny_unknown_fields` would emit a generic
@@ -835,8 +831,6 @@ pub fn apply_archive_legacy_aliases(_config: &mut Config) {
 /// migrate. This explicit error names the field, points at `docker_v2:`,
 /// and references the rationale.
 ///
-/// M3 from `.claude/audits/2026-05-08-second-opinion/docker-pro.md`
-/// section 2.1.
 pub fn validate_no_docker_v1(raw_yaml: &serde_yaml_ng::Value) -> Result<(), String> {
     if raw_yaml.get("dockers").is_some() {
         return Err(
@@ -1044,7 +1038,7 @@ pub use changelog::*;
 // SignConfig / DockerSignConfig — lifted to `crate::signing`
 // ---------------------------------------------------------------------------
 //
-// WAVE 5 split: see `crate::signing` for the type definitions. The
+// see `crate::signing` for the type definitions. The
 // re-exports below preserve the historical
 // `anodizer_core::config::{SignConfig, DockerSignConfig}` import paths
 // used by every stage that consumes a sign config.

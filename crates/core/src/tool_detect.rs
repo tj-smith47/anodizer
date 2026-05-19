@@ -5,11 +5,10 @@
 //! [`tool_runs_with_args`]).
 //!
 //! Centralised here so the `Command::new(<tool>)` probe shell-outs live
-//! inside the module-boundaries allow-list
-//! (`.claude/rules/module-boundaries.md`). The CLI used to do these probes
-//! inline; that put `Command::new` outside the allow-list and counted as a
-//! boundary violation. Capability probes in other core modules
-//! (signing, etc.) delegate here for the same reason.
+//! inside the module-boundaries allow-list. The CLI used to do these
+//! probes inline; that put `Command::new` outside the allow-list and
+//! counted as a boundary violation. Capability probes in other core
+//! modules (signing, etc.) delegate here for the same reason.
 
 use std::io;
 use std::process::Command;

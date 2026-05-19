@@ -1,7 +1,7 @@
 //! `NfpmStage` — `Stage` implementation that drives `nfpm pkg` per crate / format.
 //!
-//! Phase 1 (serial, `&mut ctx`) renders all templates and writes the YAML into
-//! `_tmp_dir`; Phase 2 (parallel) runs `nfpm pkg --packager <format>`.
+//! Step 1 (serial, `&mut ctx`) renders all templates and writes the YAML into
+//! `_tmp_dir`; Step 2 (parallel) runs `nfpm pkg --packager <format>`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -21,8 +21,8 @@ use crate::generate::{NfpmLibraryPaths, generate_nfpm_yaml_with_env};
 pub struct NfpmStage;
 
 /// A fully-staged nfpm job: config YAML written, filename decided,
-/// subprocess args composed. Phase 1 (serial, `&mut ctx`) renders all
-/// templates and writes the YAML into `_tmp_dir`; Phase 2 (parallel)
+/// subprocess args composed. Step 1 (serial, `&mut ctx`) renders all
+/// templates and writes the YAML into `_tmp_dir`; Step 2 (parallel)
 /// runs `nfpm pkg --packager <format>`. `_tmp_dir` keeps the config
 /// file alive until the worker thread finishes.
 struct NfpmJob {
@@ -777,7 +777,7 @@ impl Stage for NfpmStage {
                             &pkg_path.to_string_lossy(),
                         );
 
-                        // Render mtime once in Phase 1 so Phase 2 doesn't touch
+                        // Render mtime once in Step 1 so Step 2 doesn't touch
                         // ctx; pre-parse into SystemTime so workers can call
                         // set_file_mtime directly.
                         let (mtime, mtime_repr) = if let Some(ref raw_mtime) = nfpm_cfg.mtime {
@@ -829,9 +829,9 @@ impl Stage for NfpmStage {
         }
 
         // ----------------------------------------------------------------
-        // Phase 2 (parallel): run `nfpm pkg --packager <format>` per job.
+        // Step 2 (parallel): run `nfpm pkg --packager <format>` per job.
         // Bounded concurrency via chunks(parallelism). Each worker returns
-        // the populated Artifact; Phase 3 registers them serially.
+        // the populated Artifact; Step 3 registers them serially.
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &NfpmJob| -> Result<Artifact> {
@@ -850,7 +850,7 @@ impl Stage for NfpmStage {
                     })?;
                 thread_log.check_output(output, "nfpm")?;
 
-                // Reproducible-build mtime — pre-parsed in Phase 1.
+                // Reproducible-build mtime — pre-parsed in Step 1.
                 if let Some(mt) = job.mtime {
                     if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
                         thread_log.warn(&format!(

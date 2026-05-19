@@ -1,6 +1,6 @@
 //! Conventional-Commit → semver-level inference for `anodizer bump`.
 //!
-//! Rules (matches the spec in `.claude/plans/2026-04-18-bump-command.md`):
+//! Rules:
 //!   - `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer, or `!` after the type → major
 //!   - `feat(...)` → minor
 //!   - `fix(...)`, `perf(...)` → patch

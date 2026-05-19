@@ -862,13 +862,13 @@ mod tests {
         std::env::set_current_dir(original_cwd).unwrap();
     }
 
-    /// Regression for the determinism harness drift on `dist/artifacts.json`
-    /// surfaced by CI run 25980818371 (cycle 10 → 11):
-    /// two runs produced byte-different `artifacts.json` even though the set
-    /// of artifacts was identical — the upstream `stage-archive` registered
-    /// per-target archives in `HashMap` iteration order, which is randomised
-    /// per process. The diff was archive entries in opposite positions
-    /// (`linux-arm64` before `linux-amd64` vs. the reverse).
+    /// Regression for determinism drift on `dist/artifacts.json`: two
+    /// runs produced byte-different `artifacts.json` even though the set
+    /// of artifacts was identical — the upstream `stage-archive`
+    /// registered per-target archives in `HashMap` iteration order, which
+    /// is randomised per process. The diff was archive entries in
+    /// opposite positions (`linux-arm64` before `linux-amd64` vs. the
+    /// reverse).
     ///
     /// `to_artifacts_json` now sorts on (kind, target, crate_name, name,
     /// path) before emitting, so even if a future stage registers artifacts

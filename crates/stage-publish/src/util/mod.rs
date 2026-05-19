@@ -1,7 +1,6 @@
 //! Shared helpers for the per-publisher modules in `stage-publish`.
 //!
-//! Carved out of the previously-flat `util.rs` (see plan
-//! `.claude/plans/2026-05-03-file-decomposition.md`, step 6b).
+//! Carved out of the previously-flat `util.rs`.
 //!
 //! Each submodule is a banner-delimited section from the original file:
 //!

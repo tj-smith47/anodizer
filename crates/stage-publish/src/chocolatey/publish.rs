@@ -31,8 +31,6 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     // GitHub release). Make the lookup optional and fall back to an empty
     // string when both project_url and repository are unset.
     //
-    // Q-brew1 from `.claude/audits/2026-05-08-second-opinion/publishers.md`
-    // section 1.2 — F4 fix.
     let (repo_owner, repo_name) = match choco_cfg.repository.as_ref() {
         Some(r) => (
             r.owner.as_deref().unwrap_or(""),

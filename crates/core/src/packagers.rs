@@ -1,6 +1,5 @@
 //! Packaging-axis config types lifted out of the monolithic
-//! `crate::config` module per the WAVE 5 split (see
-//! `.claude/known-bugs.md`'s "WAVE 5 deferred" entry).
+//! `crate::config` module.
 //!
 //! Currently houses [`MakeselfConfig`] + helpers and [`SrpmConfig`].
 //! The remaining packaging types (`NfpmConfig`, `SnapcraftConfig`,

@@ -15,12 +15,11 @@
 //!
 //! # Why a shared helper
 //!
-//! Audit ref: `.claude/audits/2026-05-15-release-resilience-review.md`
-//! finding M12 — `rollback::scope_available` and
-//! `preflight::scope_label_is_available` were character-for-character
-//! identical (the latter had an unused `_ctx` parameter that gave the
-//! illusion of a difference). Two definitions of the same env-lookup
-//! is one too many: a future scope-label scheme change has to be
+//! `rollback::scope_available` and `preflight::scope_label_is_available`
+//! were character-for-character identical (the latter had an unused
+//! `_ctx` parameter that gave the illusion of a difference). Two
+//! definitions of the same env-lookup is one too many: a future
+//! scope-label scheme change has to be
 //! mirrored across both call sites or the rollback path silently
 //! diverges from preflight.
 //!

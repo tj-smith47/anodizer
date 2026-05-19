@@ -124,7 +124,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate release block does not configure multiple SCM backends.
     anodizer_core::config::validate_release_backends(&config)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
-    // Validate defaults.crates / defaults.workspaces axis matches top-level (DEC-4).
+    // Validate defaults.crates / defaults.workspaces axis matches top-level.
     anodizer_core::config::validate_defaults_axis(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
     // Validate homebrew_cask does not set both url_template and url.template.
     anodizer_core::config::validate_homebrew_cask_url_template(&config)

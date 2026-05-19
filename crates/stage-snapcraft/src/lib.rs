@@ -5,9 +5,8 @@
 //! - [`SnapcraftPublishStage`]: uploads built `.snap` artifacts via
 //!   `snapcraft upload --release=...` and records its own
 //!   `PublisherResult` directly into `ctx.publish_report` (mirrors the
-//!   BlobStage pattern; see
-//!   `.claude/audits/2026-05-15-release-resilience-review.md` finding
-//!   C3 for why a trait-based `SnapcraftPublisher` would double-publish).
+//!   BlobStage pattern; a trait-based `SnapcraftPublisher` would
+//!   double-publish through the generic dispatch path).
 
 mod arch;
 mod build_stage;

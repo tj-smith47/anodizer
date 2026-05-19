@@ -115,9 +115,9 @@ fn group_by_platform(artifacts: &[Artifact]) -> BTreeMap<String, Vec<&Artifact>>
 
 pub struct MakeselfStage;
 
-/// A fully-prepared makeself job ready for parallel execution. Phase 1
+/// A fully-prepared makeself job ready for parallel execution. Step 1
 /// (serial, requires `&mut ctx` for template rendering) populates this;
-/// Phase 2 (parallel, `std::thread::scope`) consumes it — filesystem
+/// Step 2 (parallel, `std::thread::scope`) consumes it — filesystem
 /// preparation + `makeself` subprocess only. Struct carries only owned data
 /// so worker threads never touch `ctx`.
 struct MakeselfJob {
@@ -175,7 +175,7 @@ impl Stage for MakeselfStage {
         let project_name = ctx.config.project_name.clone();
 
         // ----------------------------------------------------------------
-        // Phase 1 (serial): render every template, collect MakeselfJob
+        // Step 1 (serial): render every template, collect MakeselfJob
         // structs containing fully-owned data ready for parallel exec.
         // ----------------------------------------------------------------
         let mut jobs: Vec<MakeselfJob> = Vec::new();
@@ -422,7 +422,7 @@ impl Stage for MakeselfStage {
                     continue;
                 }
 
-                // Collect binary (src, name_in_archive) pairs so Phase 2 can
+                // Collect binary (src, name_in_archive) pairs so Step 2 can
                 // copy them without borrowing ctx.artifacts.
                 let job_binaries: Vec<(std::path::PathBuf, String)> = binaries
                     .iter()
@@ -490,9 +490,9 @@ impl Stage for MakeselfStage {
         }
 
         // ----------------------------------------------------------------
-        // Phase 2 (parallel): each job = one `makeself` subprocess invocation
+        // Step 2 (parallel): each job = one `makeself` subprocess invocation
         // with its own work dir. Bounded concurrency via chunks(parallelism).
-        // Workers return the fully-populated `Artifact` so Phase 3 can
+        // Workers return the fully-populated `Artifact` so Step 3 can
         // register them serially in ctx.artifacts.
         // ----------------------------------------------------------------
         let run_job = |job: &MakeselfJob| -> Result<Artifact> {
@@ -602,7 +602,7 @@ impl Stage for MakeselfStage {
             anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, "makeself", run_job)?;
 
         // ----------------------------------------------------------------
-        // Phase 3 (serial): register artifacts in ctx. Serial because
+        // Step 3 (serial): register artifacts in ctx. Serial because
         // ArtifactRegistry takes &mut self.
         // ----------------------------------------------------------------
         for artifact in built_artifacts {

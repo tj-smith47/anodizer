@@ -16,11 +16,9 @@ use std::path::{Path, PathBuf};
 /// `--preserve-dist` flag emits a sibling
 /// [`crate::determinism_harness::preserve::PreservedArtifact`] with
 /// the same field names + types. Adding `Option`-typed fields here
-/// means a Phase-2 publish-only consumer that reads `context.json`
-/// can deserialize either shape via this single type — without
-/// requiring a separate parser per producer. Spec:
-/// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
-/// section A.3.
+/// means a publish-only consumer that reads `context.json` can
+/// deserialize either shape via this single type — without requiring
+/// a separate parser per producer.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SplitArtifact {
     /// Artifact filename (basename).

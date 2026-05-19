@@ -300,7 +300,7 @@ impl Stage for SrpmStage {
 
 /// Generate a minimal RPM spec file when no user template is provided.
 ///
-/// Folds in every WAVE 5.3 SrpmConfig field (the SCH-12 add-batch) so that
+/// Folds in every SrpmConfig field so that
 /// `spec_file:` and the auto-generated path produce semantically equivalent
 /// output for the new fields:
 ///

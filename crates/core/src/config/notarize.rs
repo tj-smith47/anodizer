@@ -27,10 +27,10 @@ pub struct NotarizeConfig {
 pub struct MacOSSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
-    /// Skip this configuration. Accepts bool or template string. SCH-30
-    /// (WAVE 5.5) replaced the previous `enabled:` toggle with the canonical
+    /// Skip this configuration. Accepts bool or template string.
+    /// Replaces the previous `enabled:` toggle with the canonical
     /// `skip:` (inverted semantic) to align with every other publisher /
-    /// pipe in anodizer (DEC-6).
+    /// pipe in anodizer.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Signing configuration (P12 certificate).
@@ -128,8 +128,8 @@ pub enum MacOSNativeArtifactKind {
 pub struct MacOSNativeSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
-    /// Skip this configuration. Accepts bool or template string. SCH-30
-    /// (WAVE 5.5) replaced `enabled:` with the canonical `skip:` (DEC-6).
+    /// Skip this configuration. Accepts bool or template string.
+    /// Replaces `enabled:` with the canonical `skip:`.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Artifact type to sign and notarize: `dmg` (default) or `pkg`.

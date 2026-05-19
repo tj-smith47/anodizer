@@ -1,9 +1,8 @@
 //! Sign / docker-sign config types.
 //!
-//! Lifted out of the monolithic `crate::config` module per the WAVE 5
-//! split (see `.claude/known-bugs.md`'s "WAVE 5 deferred" entry). The
-//! historical `anodizer_core::config::{SignConfig, DockerSignConfig}`
-//! import path is preserved by re-exports at the bottom of `config.rs`.
+//! Lifted out of the monolithic `crate::config` module. The historical
+//! `anodizer_core::config::{SignConfig, DockerSignConfig}` import path
+//! is preserved by re-exports at the bottom of `config.rs`.
 //!
 //! ## Default-resolution policy
 //!
@@ -51,10 +50,10 @@ pub(crate) const GPG_PROBE_ARGS: &[&str] = &["--faked-system-time", "0!", "--ver
 /// `gpg-signature.asc` so the determinism harness excludes gpg
 /// signatures from drift detection, and emits a warning.
 pub fn gpg_supports_faked_system_time() -> bool {
-    // Delegates to the allow-listed `tool_detect` module
-    // (`.claude/rules/module-boundaries.md`) so the `Command::new`
-    // shell-out lives at an approved boundary. The `_with` seam below
-    // is *not* on this path — it exists solely for unit-test mocking.
+    // Delegates to the allow-listed `tool_detect` module so the
+    // `Command::new` shell-out lives at an approved boundary. The
+    // `_with` seam below is *not* on this path — it exists solely
+    // for unit-test mocking.
     crate::tool_detect::tool_runs_with_args("gpg", GPG_PROBE_ARGS)
 }
 

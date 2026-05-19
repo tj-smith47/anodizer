@@ -1,7 +1,7 @@
 //! `docker` invocations needed by the CLI's `check` command.
 //!
 //! Centralised here so all `Command::new("docker")` shell-outs live inside
-//! the module-boundaries allow-list (`.claude/rules/module-boundaries.md`).
+//! the module-boundaries allow-list.
 
 use std::io;
 use std::process::Command;

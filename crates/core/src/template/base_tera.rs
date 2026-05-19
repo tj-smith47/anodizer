@@ -106,9 +106,7 @@ enum VersionPart {
 /// Mirrors GoReleaser's `internal/tmpl/tmpl.go:440-449` behavior, which calls
 /// `semver.MustParse(v)` and surfaces a hard template error on non-semver
 /// input. Previously every component was best-effort `unwrap_or(0)`, so
-/// `{{ "garbage" | incpatch }}` silently returned `"0.0.1"` — see Q-bump1
-/// in `.claude/audits/2026-05-08-second-opinion/release-templates-cli.md`
-/// section 2.5.
+/// `{{ "garbage" | incpatch }}` silently returned `"0.0.1"`.
 fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> {
     let stripped = v.strip_prefix('v').unwrap_or(v);
     let parts: Vec<&str> = stripped.splitn(3, '.').collect();

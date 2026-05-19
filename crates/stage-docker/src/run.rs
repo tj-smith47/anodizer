@@ -95,7 +95,7 @@ impl Stage for super::DockerStage {
         let mut v2_multiplatform_tags: HashSet<String> = HashSet::new();
 
         // ==================================================================
-        // Phase 1: Prepare all docker build jobs sequentially
+        // Step 1: Prepare all docker build jobs sequentially
         //
         // This phase needs &mut Context for template rendering and artifact
         // lookups.  Each job is fully self-contained after preparation.
@@ -344,7 +344,7 @@ impl Stage for super::DockerStage {
                     let staging_str = staging_dir.to_string_lossy().into_owned();
 
                     // Snapshot builds never push (GoReleaser uses --load per-platform).
-                    // The canonical `skip:` field (DEC-6) suppresses publish via
+                    // The canonical `skip:` field suppresses publish via
                     // `is_active`-style gating earlier in the pipeline.
                     let should_push = if ctx.is_snapshot() { false } else { !dry_run };
 
@@ -466,7 +466,7 @@ impl Stage for super::DockerStage {
         }
 
         // ==================================================================
-        // Phase 2: Execute docker build jobs in parallel
+        // Step 2: Execute docker build jobs in parallel
         //
         // Uses std::thread::scope with a simple semaphore pattern (channel-
         // based) bounded by ctx.parallelism, matching GoReleaser's
@@ -529,7 +529,7 @@ impl Stage for super::DockerStage {
             });
 
             // ==================================================================
-            // Phase 3: Collect results and register artifacts
+            // Step 3: Collect results and register artifacts
             // ==================================================================
             for (job, result) in build_jobs.iter().zip(results) {
                 let build_result = result?;

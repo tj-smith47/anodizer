@@ -76,10 +76,6 @@ sentinel. The Docker stage's only `dist/` output is a `.digest` text
 file (content-addressable sha256), which is byte-stable without
 allow-listing.
 
-The canonical follow-up list lives at
-[`.claude/specs/2026-05-14-determinism-followups.md`](https://github.com/tj-smith47/anodizer/blob/master/.claude/specs/2026-05-14-determinism-followups.md).
-Each entry is its own future workstream.
-
 ## `anodize check determinism`
 
 The verification harness is a leaf of `anodize check`:

@@ -14,9 +14,7 @@
 //! API author-lookup removal (commit
 //! `17315a556ef69444cf54ad27f623abf728472bc6` / parity item P3 — full sha
 //! preserved so future rebases can't drift the reference). Re-introduce
-//! it only if a future feature actually queries `/search/users` — otherwise
-//! `#[allow(dead_code)]` would creep back in violation of
-//! `.claude/rules/anti-patterns.md`.
+//! it only if a future feature actually queries `/search/users`.
 
 use crate::release_log;
 

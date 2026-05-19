@@ -457,7 +457,7 @@ format_overrides:
 
 ### `crates[].publish`
 
-> **WAVE 3 (2026-04-27):** the legacy `crates: true` / `crates: { enabled: ... }` shorthand was removed (DEC-1, ITEM-3). Use `cargo: {}` to opt in (presence is the trigger; no `enabled` field). Use `cargo: { skip: true }` to opt out without removing the block.
+> **Migration note:** the legacy `crates: true` / `crates: { enabled: ... }` shorthand was removed. Use `cargo: {}` to opt in (presence is the trigger; no `enabled` field). Use `cargo: { skip: true }` to opt out without removing the block.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

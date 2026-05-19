@@ -1,15 +1,15 @@
 //! Shared bounded-parallelism helper used by stages that run one subprocess
 //! per sub-config (makeself, nfpm, snapcraft, flatpak, upx, …).
 //!
-//! The stages share the same Phase 1 / Phase 2 / Phase 3 shape:
+//! The stages share the same Step 1 / Step 2 / Step 3 shape:
 //!
-//! 1. **Phase 1** (serial, `&mut ctx`): render templates, stage files,
+//! 1. **Step 1** (serial, `&mut ctx`): render templates, stage files,
 //!    collect a `Vec<Job>` of fully-owned work units.
-//! 2. **Phase 2** (parallel, bounded by `ctx.options.parallelism`): run one
+//! 2. **Step 2** (parallel, bounded by `ctx.options.parallelism`): run one
 //!    subprocess per job in `std::thread::scope`.
-//! 3. **Phase 3** (serial, `&mut ctx`): register the returned artifacts.
+//! 3. **Step 3** (serial, `&mut ctx`): register the returned artifacts.
 //!
-//! Before this helper every stage hand-rolled the Phase 2 loop —
+//! Before this helper every stage hand-rolled the Step 2 loop —
 //! `for chunk in jobs.chunks(n) { thread::scope(|s| …) }` with its own
 //! join-unwrap-or-panic handling. The pattern is now shared here so new
 //! parallelized stages just write `run_job`.
