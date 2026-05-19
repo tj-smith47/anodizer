@@ -108,8 +108,15 @@ pub(super) fn run(
     // The legacy single-`context.json` layout (operator running locally
     // without sharding) keeps working — `discover_preserved_contexts`
     // matches both the un-suffixed and the suffixed forms.
+    //
+    // Detect the upload-artifact merge-collision symptom BEFORE
+    // loading anything: both un-suffixed AND suffixed manifests
+    // present is a workflow bug we should never silently paper over.
+    check_no_unsuffixed_suffixed_collision(&dist, "context")?;
+    check_no_unsuffixed_suffixed_collision(&dist, "artifacts")?;
+
     let preserved_contexts = discover_preserved_contexts(&dist)?;
-    let preserved = merge_preserved_contexts(&preserved_contexts);
+    let preserved = merge_preserved_contexts(&preserved_contexts)?;
     let shard_count = preserved_contexts.len();
 
     log.status(&format!(
@@ -121,38 +128,9 @@ pub(super) fn run(
         preserved.artifacts.len(),
     ));
 
-    // Cross-check `commit`: fail CLOSED, not open. If either side is
-    // empty we bail because we cannot prove the preserved bytes match
-    // the current release. Re-signing only swaps signature blobs;
-    // ever shipping a signature over bytes from a different commit
-    // breaks the Safety Property invariant (artifacts shipped to
-    // GitHub Release MUST have passed the determinism check).
-    if preserved.commit.is_empty() {
-        anyhow::bail!(
-            "publish-only: no context manifest carried a `commit` field. Cannot verify the \
-             preserved bytes match the current release; re-run \
-             `anodize check determinism --preserve-dist=...` with a producer that \
-             records the commit SHA."
-        );
-    }
-    // Sharded layouts: every shard's `commit` MUST agree with the
-    // merged value. A mismatch means two shards were preserved from
-    // two different release attempts — re-signing across that mix
-    // would publish bytes whose determinism guarantee is split across
-    // commits.
-    for (path, ctx_entry) in &preserved_contexts {
-        if !ctx_entry.commit.is_empty() && ctx_entry.commit != preserved.commit {
-            anyhow::bail!(
-                "publish-only: shard manifest {} records commit {} but the merged set is \
-                 anchored at {}. A multi-shard preserved dist must come from a single \
-                 release attempt; mixing bytes from different commits would publish \
-                 signatures whose determinism-verified state is split.",
-                path.display(),
-                short_commit_str(&ctx_entry.commit),
-                short_commit_str(&preserved.commit),
-            );
-        }
-    }
+    // Commit / version cross-checks across shards now live inside
+    // `merge_preserved_contexts` — they're part of the merge contract,
+    // not a separate post-processing step.
     let ctx_commit = ctx
         .template_vars()
         .get("FullCommit")
@@ -181,10 +159,8 @@ pub(super) fn run(
     // Delegates to the same loader `anodize publish` uses so the two
     // entry points stay in lockstep (one parser to maintain). Each
     // discovered manifest contributes its artifacts to the registry;
-    // duplicate paths land in the registry as duplicates, which the
-    // downstream stages tolerate (sharded matrices never overlap their
-    // target sets, so duplicates would indicate a workflow bug worth
-    // surfacing rather than silently de-duping).
+    // duplicate paths across shards indicate the matrix overlapped on
+    // a target — surface as a hard error rather than silently de-dupe.
     let artifact_manifests = discover_artifacts_manifests(&dist)?;
     for manifest_path in &artifact_manifests {
         helpers::load_artifacts_from_manifest(ctx, &dist, manifest_path).with_context(|| {
@@ -203,6 +179,26 @@ pub(super) fn run(
         ctx.artifacts.all().len(),
         artifact_manifests.len(),
     ));
+
+    // Fail closed on duplicate artifact paths across the merged
+    // manifests. Sharded determinism matrices partition the target
+    // set across shards, so a duplicate `path` after the union means
+    // two shards both claimed the same artifact — either the matrix
+    // overlapped or someone hand-edited a manifest. Re-signing
+    // duplicate entries would produce double-emit confusion in
+    // SignStage / ReleaseStage (the same file uploaded twice, or
+    // worse, the same sidecar overwritten in race).
+    detect_duplicate_artifact_paths(ctx)?;
+
+    // Filesystem vs manifest cross-check: every artifact path the
+    // manifest references must actually exist on disk. Missing files
+    // means the preserved dist is incomplete — running through to
+    // SignStage would fail with a less actionable error from
+    // cosign/gpg, so we surface it here with a manifest-shaped
+    // diagnostic instead. We do NOT flag unreferenced files (the
+    // dist tree carries metadata.json, harness logs, etc. that aren't
+    // in the artifacts manifest).
+    detect_missing_artifact_files(ctx, &dist)?;
 
     // ── Strip ephemeral signatures / certificates ──────────────────────
     // Defensive: the harness Phase-1 work skips SignStage when
@@ -319,7 +315,15 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     log.status(&format!(
         "publish-only: stripping {count} ephemeral signature/certificate artifact(s) before re-sign"
     ));
-    // Also delete the on-disk files so the next sign-stage doesn't see
+    // Registry FIRST, then disk. If the process is signaled between
+    // the two steps, a retry sees a consistent state: the registry
+    // has no dangling entries that point at files the next run is
+    // about to find on disk anyway (SignStage will overwrite them
+    // cleanly). The reverse order leaves a window where the file is
+    // gone but the registry still references it — a follow-up
+    // ArtifactKind::Signature lookup would then find a phantom.
+    ctx.artifacts.remove_by_paths(&stale_paths);
+    // Now delete on-disk files so the next sign-stage doesn't see
     // a leftover `.sig` next to its target and produce a `*.sig.sig`
     // through the user's own sign-args template (which typically reads
     // `{{ .Signature }} = {{ .Artifact }}.sig`).
@@ -336,7 +340,6 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
             )),
         }
     }
-    ctx.artifacts.remove_by_paths(&stale_paths);
     // Positive success signal so the operator sees the strip happened
     // (counter-balances the lone "stripping N..." line above which
     // could otherwise look like the work stalled). Reports both the
@@ -348,6 +351,95 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
         "publish-only: stripped {count} ephemeral signature artifact(s) from registry \
          ({disk_removed} also deleted from disk)"
     ));
+}
+
+/// Walk `ctx.artifacts` grouped by `path` and fail if any path appears
+/// more than once. Called post-rehydration so a sharded matrix that
+/// accidentally overlapped on a target surfaces as a hard error rather
+/// than a double-publish downstream.
+fn detect_duplicate_artifact_paths(ctx: &Context) -> Result<()> {
+    detect_duplicate_paths_in(ctx.artifacts.all().iter().map(|a| a.path.as_path()))
+}
+
+/// Inner form decoupled from `Context` for testability — accepts any
+/// iterator over `&Path`. The Context-facing wrapper above is what
+/// production code calls; tests construct a synthetic path list and
+/// hand it directly to this form.
+fn detect_duplicate_paths_in<'a, I>(paths: I) -> Result<()>
+where
+    I: IntoIterator<Item = &'a Path>,
+{
+    use std::collections::BTreeMap;
+    let mut counts: BTreeMap<PathBuf, usize> = BTreeMap::new();
+    for p in paths {
+        *counts.entry(p.to_path_buf()).or_insert(0) += 1;
+    }
+    let duplicates: Vec<(PathBuf, usize)> = counts.into_iter().filter(|(_, n)| *n > 1).collect();
+    if duplicates.is_empty() {
+        return Ok(());
+    }
+    let summary = duplicates
+        .iter()
+        .map(|(p, n)| format!("{} ({}×)", p.display(), n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "publish-only: duplicate artifact path(s) after merging per-shard manifests: {summary}. \
+         Hypothesis: two determinism shards overlapped on the same target, so both \
+         emitted an artifact for the same path. Inspect the matrix in \
+         `.github/workflows/release.yml` to confirm the shards partition the target set."
+    );
+}
+
+/// Walk every artifact in `ctx.artifacts` and verify its `path` exists
+/// on disk under `dist/`. The manifest may reference paths either as
+/// absolute (the loader records them as written) or relative to `dist`
+/// (the determinism harness writes a relative shape in some flows) —
+/// we try the literal path first, then `dist.join(<path>)`. Missing
+/// files are fatal: SignStage would otherwise fail with cosign/gpg's
+/// less actionable "file not found" rather than the operator-friendly
+/// manifest-shaped diagnostic this emits.
+///
+/// We do NOT flag files in `dist/` that are absent from the manifest —
+/// dist trees carry metadata.json, harness logs, etc. that aren't part
+/// of the artifact registry.
+fn detect_missing_artifact_files(ctx: &Context, dist: &Path) -> Result<()> {
+    detect_missing_files_in(ctx.artifacts.all().iter().map(|a| a.path.as_path()), dist)
+}
+
+/// Inner form decoupled from `Context` for testability — accepts any
+/// iterator over `&Path` plus the dist root for resolving relative
+/// entries. Production code calls `detect_missing_artifact_files`.
+fn detect_missing_files_in<'a, I>(paths: I, dist: &Path) -> Result<()>
+where
+    I: IntoIterator<Item = &'a Path>,
+{
+    let mut missing: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        if p.is_absolute() {
+            if !p.is_file() {
+                missing.push(p.to_path_buf());
+            }
+        } else if !p.is_file() && !dist.join(p).is_file() {
+            missing.push(p.to_path_buf());
+        }
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    missing.sort();
+    let summary = missing
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!(
+        "publish-only: artifacts manifest references file(s) not present under {}: {summary}. \
+         The preserved dist is incomplete; re-run \
+         `anodize check determinism --preserve-dist=<dist>` to repopulate, or \
+         remove the stale manifest entries before retrying.",
+        dist.display(),
+    );
 }
 
 /// Minimal `PreservedDistContext` deserializer. We re-declare the
@@ -390,18 +482,25 @@ struct PreservedArtifact {
     size: u64,
 }
 
-/// Walk `dist/` for every `context.json` and `context-*.json` entry at
-/// the dist root (non-recursive). Returns the parsed contexts paired
-/// with their source paths, sorted by filename for reproducible output.
-/// Empty result is an error — `publish-only` cannot proceed without at
-/// least one manifest pinning the preserved commit.
-fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDistContext)>> {
+/// Find every `<base>.json` and `<base>-*.json` entry at the dist root
+/// (non-recursive). `*.tmp` siblings are skipped — those are leftover
+/// atomic-write scratch files from the harness's rename-into-place
+/// writer and never represent a committed manifest. Returns the
+/// matching paths sorted by filename for reproducible output.
+///
+/// Single source of truth for the two sharded-manifest families
+/// (`context.json` / `context-<shard>.json` and `artifacts.json` /
+/// `artifacts-<shard>.json`).
+fn discover_sharded_manifests(dist: &Path, base: &str) -> Result<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dist).with_context(|| {
         format!(
-            "publish-only: reading dist directory {} to discover context manifest(s)",
-            dist.display()
+            "publish-only: reading dist directory {} to discover {} manifest(s)",
+            dist.display(),
+            base,
         )
     })?;
+    let exact = format!("{base}.json");
+    let prefix = format!("{base}-");
     let mut found: Vec<PathBuf> = Vec::new();
     for entry in entries {
         let entry = entry.with_context(|| {
@@ -420,14 +519,26 @@ fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDis
         };
         // Skip the .tmp file the harness's atomic-rename writer may
         // have left behind on a crash mid-write — never represents a
-        // committed manifest.
+        // committed manifest. Applies uniformly to both manifest
+        // families.
         if name.ends_with(".tmp") {
             continue;
         }
-        if name == "context.json" || (name.starts_with("context-") && name.ends_with(".json")) {
+        if name == exact || (name.starts_with(&prefix) && name.ends_with(".json")) {
             found.push(entry.path());
         }
     }
+    found.sort();
+    Ok(found)
+}
+
+/// Walk `dist/` for every `context.json` and `context-*.json` entry at
+/// the dist root (non-recursive). Returns the parsed contexts paired
+/// with their source paths, sorted by filename for reproducible output.
+/// Empty result is an error — `publish-only` cannot proceed without at
+/// least one manifest pinning the preserved commit.
+fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDistContext)>> {
+    let found = discover_sharded_manifests(dist, "context")?;
     if found.is_empty() {
         anyhow::bail!(
             "publish-only: no context.json (or context-<shard>.json) found at {}. \
@@ -437,7 +548,6 @@ fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDis
             dist.display()
         );
     }
-    found.sort();
     let mut out: Vec<(PathBuf, PreservedDistContext)> = Vec::with_capacity(found.len());
     for path in found {
         let parsed = load_preserved_context(&path)?;
@@ -452,20 +562,37 @@ fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDis
 /// legacy nor any sharded manifest is present — callers decide whether
 /// that's fatal.
 fn discover_artifacts_manifests(dist: &Path) -> Result<Vec<PathBuf>> {
+    discover_sharded_manifests(dist, "artifacts")
+}
+
+/// Detect the upload-artifact merge-collision symptom: both
+/// `<base>.json` AND any `<base>-*.json` exist side-by-side at dist
+/// root. That shouldn't happen under either layout — the legacy
+/// single-shard mode emits ONLY `<base>.json`, the sharded mode
+/// renames into `<base>-<shard>.json` so `merge-multiple: true`
+/// won't collide. Both present means an upstream workflow change
+/// (or a hand-edited dist) merged shards' un-suffixed manifests
+/// over each other and one shard "won" — the surviving file is
+/// silently a single shard's view, not the union.
+fn check_no_unsuffixed_suffixed_collision(dist: &Path, base: &str) -> Result<()> {
+    let unsuffixed = dist.join(format!("{base}.json"));
+    if !unsuffixed.is_file() {
+        return Ok(());
+    }
     let entries = std::fs::read_dir(dist).with_context(|| {
         format!(
-            "publish-only: reading dist directory {} to discover artifacts manifest(s)",
-            dist.display()
+            "publish-only: scanning {} for sharded {} manifests",
+            dist.display(),
+            base,
         )
     })?;
-    let mut found: Vec<PathBuf> = Vec::new();
+    let prefix = format!("{base}-");
+    let mut sharded: Vec<PathBuf> = Vec::new();
     for entry in entries {
-        let entry = entry.with_context(|| {
-            format!(
-                "publish-only: reading directory entry under {}",
-                dist.display()
-            )
-        })?;
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
@@ -474,12 +601,38 @@ fn discover_artifacts_manifests(dist: &Path) -> Result<Vec<PathBuf>> {
             Some(n) => n,
             None => continue,
         };
-        if name == "artifacts.json" || (name.starts_with("artifacts-") && name.ends_with(".json")) {
-            found.push(entry.path());
+        if name.ends_with(".tmp") {
+            continue;
+        }
+        if name.starts_with(&prefix) && name.ends_with(".json") {
+            sharded.push(entry.path());
         }
     }
-    found.sort();
-    Ok(found)
+    if !sharded.is_empty() {
+        sharded.sort();
+        let sharded_display = sharded
+            .iter()
+            .map(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("<?>")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "publish-only: both {base}.json AND sharded {base}-*.json ({sharded_display}) \
+             exist at {dist}. This indicates upload-artifact merged shards' \
+             un-suffixed {base}.json files over each other before they were \
+             properly suffixed — the surviving {base}.json is only one shard's view. \
+             Either delete the un-suffixed {base}.json (if the sharded files are \
+             authoritative) or delete the sharded files (legacy single-shard mode).",
+            base = base,
+            sharded_display = sharded_display,
+            dist = dist.display(),
+        );
+    }
+    Ok(())
 }
 
 /// Fold N per-shard `PreservedDistContext` entries into a single view.
@@ -488,10 +641,18 @@ fn discover_artifacts_manifests(dist: &Path) -> Result<Vec<PathBuf>> {
 ///   are preserved (a duplicate path across shards is a workflow bug
 ///   worth surfacing downstream rather than silently collapsing).
 /// - `targets` — deduped + sorted; the union across all shards.
-/// - `version` / `commit` — taken from the first non-empty entry. The
-///   later cross-check step verifies every shard's `commit` agrees with
-///   the merged value.
-fn merge_preserved_contexts(contexts: &[(PathBuf, PreservedDistContext)]) -> PreservedDistContext {
+/// - `version` / `commit` — taken from the first non-empty entry; ALL
+///   non-empty values across shards must agree, else this fails closed.
+///   An empty `commit` on the merged view is also fatal — without it
+///   we cannot prove the preserved bytes match the current release.
+///
+/// Cross-checks live inside this fold so the merge contract has one
+/// home: any caller of `merge_preserved_contexts` receives a view that
+/// has already been validated end-to-end. Splitting "merge" and
+/// "validate" across two call sites is the bug magnet this prevents.
+fn merge_preserved_contexts(
+    contexts: &[(PathBuf, PreservedDistContext)],
+) -> Result<PreservedDistContext> {
     use std::collections::BTreeSet;
     let mut merged = PreservedDistContext::default();
     let mut targets: BTreeSet<String> = BTreeSet::new();
@@ -515,7 +676,53 @@ fn merge_preserved_contexts(contexts: &[(PathBuf, PreservedDistContext)]) -> Pre
         }
     }
     merged.targets = targets.into_iter().collect();
-    merged
+
+    // ── Cross-checks (fail closed) ────────────────────────────────────
+    // Empty merged `commit` means NO shard recorded one. Re-signing
+    // without a commit anchor breaks the determinism guarantee: we
+    // can't prove the preserved bytes match the current release.
+    if merged.commit.is_empty() {
+        anyhow::bail!(
+            "publish-only: no context manifest carried a `commit` field. Cannot verify the \
+             preserved bytes match the current release; re-run \
+             `anodize check determinism --preserve-dist=...` with a producer that \
+             records the commit SHA."
+        );
+    }
+    // Every shard's `commit` MUST agree with the merged value. A
+    // mismatch means two shards were preserved from two different
+    // release attempts — re-signing across that mix would publish
+    // bytes whose determinism guarantee is split across commits.
+    for (path, ctx_entry) in contexts {
+        if !ctx_entry.commit.is_empty() && ctx_entry.commit != merged.commit {
+            anyhow::bail!(
+                "publish-only: shard manifest {} records commit {} but the merged set is \
+                 anchored at {}. A multi-shard preserved dist must come from a single \
+                 release attempt; mixing bytes from different commits would publish \
+                 signatures whose determinism-verified state is split.",
+                path.display(),
+                short_commit_str(&ctx_entry.commit),
+                short_commit_str(&merged.commit),
+            );
+        }
+    }
+    // Same gate for `version`: a shard mismatch means two different
+    // release attempts' contexts were folded together.
+    for (path, ctx_entry) in contexts {
+        if !ctx_entry.version.is_empty() && ctx_entry.version != merged.version {
+            anyhow::bail!(
+                "publish-only: shard manifest {} records version {} but the merged set is \
+                 anchored at {}. A multi-shard preserved dist must come from a single \
+                 release attempt; mixing bytes across versions would publish \
+                 signatures whose determinism-verified state is split.",
+                path.display(),
+                ctx_entry.version,
+                merged.version,
+            );
+        }
+    }
+
+    Ok(merged)
 }
 
 fn load_preserved_context(path: &Path) -> Result<PreservedDistContext> {
@@ -659,5 +866,296 @@ mod tests {
             format!("{err}").contains("missing release token"),
             "empty token must be treated as missing; got: {err}"
         );
+    }
+
+    // ── discover_sharded_manifests / .tmp skip ────────────────────────
+
+    #[test]
+    fn discover_sharded_manifests_skips_tmp_siblings_uniformly() {
+        // Both manifest families (`context`, `artifacts`) must skip a
+        // `*.tmp` file the harness's atomic-rename writer may have
+        // left mid-crash. Regression guard for WARN A2.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("context.json"), "{}").unwrap();
+        std::fs::write(tmp.path().join("context.json.tmp"), "garbage").unwrap();
+        std::fs::write(tmp.path().join("artifacts.json"), "[]").unwrap();
+        std::fs::write(tmp.path().join("artifacts.json.tmp"), "garbage").unwrap();
+        std::fs::write(tmp.path().join("artifacts-linux.json"), "[]").unwrap();
+        std::fs::write(tmp.path().join("artifacts-linux.json.tmp"), "garbage").unwrap();
+
+        let ctx = discover_sharded_manifests(tmp.path(), "context").unwrap();
+        let names: Vec<String> = ctx
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["context.json"], "tmp siblings must be skipped");
+
+        let arts = discover_sharded_manifests(tmp.path(), "artifacts").unwrap();
+        let names: Vec<String> = arts
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["artifacts-linux.json", "artifacts.json"],
+            "artifacts family must also skip .tmp; got {names:?}"
+        );
+    }
+
+    // ── un-suffixed + suffixed coexistence ────────────────────────────
+
+    #[test]
+    fn collision_check_errors_when_unsuffixed_and_suffixed_both_present_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("context.json"), "{}").unwrap();
+        std::fs::write(tmp.path().join("context-linux.json"), "{}").unwrap();
+        let err = check_no_unsuffixed_suffixed_collision(tmp.path(), "context").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("context.json") && msg.contains("context-linux.json"),
+            "error should name both colliding manifests; got: {msg}"
+        );
+        assert!(
+            msg.contains("upload-artifact merged"),
+            "error should name the symptom hypothesis; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn collision_check_errors_when_unsuffixed_and_suffixed_both_present_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("artifacts.json"), "[]").unwrap();
+        std::fs::write(tmp.path().join("artifacts-darwin.json"), "[]").unwrap();
+        let err = check_no_unsuffixed_suffixed_collision(tmp.path(), "artifacts").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("artifacts.json") && msg.contains("artifacts-darwin.json"),
+            "error should name both colliding manifests; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn collision_check_ok_for_unsuffixed_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("context.json"), "{}").unwrap();
+        check_no_unsuffixed_suffixed_collision(tmp.path(), "context")
+            .expect("unsuffixed-only must be fine");
+    }
+
+    #[test]
+    fn collision_check_ok_for_suffixed_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("context-a.json"), "{}").unwrap();
+        std::fs::write(tmp.path().join("context-b.json"), "{}").unwrap();
+        check_no_unsuffixed_suffixed_collision(tmp.path(), "context")
+            .expect("suffixed-only must be fine");
+    }
+
+    #[test]
+    fn collision_check_ignores_tmp_sibling_of_suffixed() {
+        // A leftover `*.tmp` next to a single un-suffixed manifest
+        // must NOT trip the collision check (the tmp file is harness
+        // crash debris, not a real shard manifest).
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("context.json"), "{}").unwrap();
+        std::fs::write(tmp.path().join("context-linux.json.tmp"), "garbage").unwrap();
+        check_no_unsuffixed_suffixed_collision(tmp.path(), "context")
+            .expect(".tmp sibling must not trigger collision");
+    }
+
+    // ── merge_preserved_contexts cross-checks ─────────────────────────
+
+    fn ctx_entry(version: &str, commit: &str) -> PreservedDistContext {
+        PreservedDistContext {
+            artifacts: vec![],
+            targets: vec![],
+            version: version.to_string(),
+            commit: commit.to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_preserved_contexts_bails_when_commit_empty_everywhere() {
+        let contexts = vec![
+            (PathBuf::from("context-a.json"), ctx_entry("0.1.0", "")),
+            (PathBuf::from("context-b.json"), ctx_entry("0.1.0", "")),
+        ];
+        let err = merge_preserved_contexts(&contexts).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no context manifest carried a `commit`"),
+            "expected commit-missing diagnostic; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn merge_preserved_contexts_bails_on_commit_mismatch_across_shards() {
+        let contexts = vec![
+            (
+                PathBuf::from("context-a.json"),
+                ctx_entry("0.1.0", "deadbeefcafe"),
+            ),
+            (
+                PathBuf::from("context-b.json"),
+                ctx_entry("0.1.0", "ba5eba11feed"),
+            ),
+        ];
+        let err = merge_preserved_contexts(&contexts).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("records commit") && msg.contains("merged set is"),
+            "expected per-shard commit-mismatch diagnostic; got: {msg}"
+        );
+        assert!(
+            msg.contains("context-b.json"),
+            "diagnostic must name the dissenting shard; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn merge_preserved_contexts_bails_on_version_mismatch_across_shards() {
+        let contexts = vec![
+            (
+                PathBuf::from("context-a.json"),
+                ctx_entry("0.1.0", "deadbeefcafe"),
+            ),
+            (
+                PathBuf::from("context-b.json"),
+                ctx_entry("0.2.0", "deadbeefcafe"),
+            ),
+        ];
+        let err = merge_preserved_contexts(&contexts).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("records version") && msg.contains("merged set is"),
+            "expected per-shard version-mismatch diagnostic; got: {msg}"
+        );
+        assert!(
+            msg.contains("context-b.json"),
+            "diagnostic must name the dissenting shard; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn merge_preserved_contexts_accepts_consistent_shards() {
+        let contexts = vec![
+            (
+                PathBuf::from("context-a.json"),
+                ctx_entry("0.1.0", "deadbeefcafe"),
+            ),
+            (
+                PathBuf::from("context-b.json"),
+                ctx_entry("0.1.0", "deadbeefcafe"),
+            ),
+        ];
+        let merged = merge_preserved_contexts(&contexts).expect("consistent shards must merge");
+        assert_eq!(merged.commit, "deadbeefcafe");
+        assert_eq!(merged.version, "0.1.0");
+    }
+
+    #[test]
+    fn merge_preserved_contexts_tolerates_one_shard_with_empty_commit() {
+        // Half-populated shards (some carry commit, others empty) are
+        // fine: the empty entries simply don't anchor the merged
+        // value. The cross-check only fires when a non-empty entry
+        // disagrees.
+        let contexts = vec![
+            (PathBuf::from("context-a.json"), ctx_entry("0.1.0", "")),
+            (
+                PathBuf::from("context-b.json"),
+                ctx_entry("0.1.0", "deadbeefcafe"),
+            ),
+        ];
+        let merged = merge_preserved_contexts(&contexts).expect("mixed-empty shards must merge");
+        assert_eq!(merged.commit, "deadbeefcafe");
+    }
+
+    // ── detect_duplicate_paths_in ──────────────────────────────────────
+
+    #[test]
+    fn detect_duplicate_paths_in_passes_on_unique_set() {
+        let paths = [Path::new("a.tar.gz"), Path::new("b.tar.gz")];
+        detect_duplicate_paths_in(paths).expect("unique paths must pass");
+    }
+
+    #[test]
+    fn detect_duplicate_paths_in_flags_repeated_path() {
+        let paths = [
+            Path::new("a.tar.gz"),
+            Path::new("b.tar.gz"),
+            Path::new("a.tar.gz"),
+        ];
+        let err = detect_duplicate_paths_in(paths).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("a.tar.gz"),
+            "error must name the duplicated path; got: {msg}"
+        );
+        assert!(
+            msg.contains("(2×)"),
+            "error must show the duplicate count; got: {msg}"
+        );
+        assert!(
+            msg.contains("shards overlapped"),
+            "error must name the matrix-overlap hypothesis; got: {msg}"
+        );
+    }
+
+    // ── detect_missing_files_in ────────────────────────────────────────
+
+    #[test]
+    fn detect_missing_files_in_passes_when_all_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.tar.gz");
+        std::fs::write(&a, b"x").unwrap();
+        // Mix absolute (the loader's default shape) and relative paths
+        // to ensure both code paths are exercised.
+        std::fs::write(tmp.path().join("rel.tar.gz"), b"x").unwrap();
+        let paths = [a.as_path(), Path::new("rel.tar.gz")];
+        detect_missing_files_in(paths, tmp.path()).expect("all present must pass");
+    }
+
+    #[test]
+    fn detect_missing_files_in_errors_on_absent_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist.tar.gz");
+        let paths = [missing.as_path()];
+        let err = detect_missing_files_in(paths, tmp.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("does-not-exist.tar.gz"),
+            "error must name the missing file; got: {msg}"
+        );
+        assert!(
+            msg.contains("preserved dist is incomplete"),
+            "error must surface the incomplete-dist hypothesis; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn detect_missing_files_in_errors_on_absent_relative_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = [Path::new("rel-missing.tar.gz")];
+        let err = detect_missing_files_in(paths, tmp.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("rel-missing.tar.gz"),
+            "error must name the missing relative file; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn detect_missing_files_in_ignores_files_not_in_manifest() {
+        // Files that exist in dist/ but are NOT in the manifest are
+        // fine — the cross-check only flags MISSING references, not
+        // unreferenced files (metadata.json, harness logs, etc.).
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.tar.gz");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(tmp.path().join("metadata.json"), b"{}").unwrap();
+        std::fs::write(tmp.path().join("orphan.tar.gz"), b"x").unwrap();
+        let paths = [a.as_path()];
+        detect_missing_files_in(paths, tmp.path())
+            .expect("unreferenced dist files must not trigger the check");
     }
 }
