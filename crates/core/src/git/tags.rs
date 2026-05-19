@@ -442,6 +442,31 @@ pub fn tag_points_at_head(tag: &str) -> Result<bool> {
     Ok(tag_sha == head_sha)
 }
 
+/// Return `true` when HEAD coincides with at least one tag.
+///
+/// Implemented as `git -C <repo> describe --tags --exact-match HEAD`:
+/// git exits non-zero (no output) when HEAD is not at a tag, and prints
+/// the tag name when it is. We treat any successful exit as "HEAD is at
+/// a tag" regardless of the printed name — the determinism harness only
+/// needs the binary signal so it can decide whether the child
+/// `anodize release ...` subprocess should run in snapshot mode.
+///
+/// Failure to invoke `git` at all bubbles up; a successful non-zero exit
+/// from git (HEAD has no annotated/lightweight tag) is mapped to `false`
+/// — this is the common case for `master`/`main` and must not panic the
+/// caller.
+pub fn head_is_at_tag(repo: &std::path::Path) -> Result<bool> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["describe", "--tags", "--exact-match", "HEAD"])
+        .output()
+        .map_err(|e| {
+            anyhow::anyhow!("failed to invoke git describe --tags --exact-match HEAD: {e}")
+        })?;
+    Ok(out.status.success())
+}
+
 /// `git -C <workspace_root> tag --list --sort=-v:refname '<prefix>*'` —
 /// return the list of refs whose name starts with `prefix`, ordered by
 /// reverse semver. Returns `Ok(Vec::new())` when git fails (no repo,

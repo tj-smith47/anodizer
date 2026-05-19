@@ -37,7 +37,8 @@ pub use tags::{
     create_and_push_tag, extract_tag_prefix, find_latest_tag_matching,
     find_latest_tag_matching_with_prefix, find_previous_tag, find_previous_tag_with_prefix,
     get_all_semver_tags, get_branch_semver_tags, get_first_commit, has_version_placeholder,
-    list_tags_with_prefix, render_ignore_patterns, strip_monorepo_prefix, tag_points_at_head,
+    head_is_at_tag, list_tags_with_prefix, render_ignore_patterns, strip_monorepo_prefix,
+    tag_points_at_head,
 };
 pub use worktree::Worktree;
 

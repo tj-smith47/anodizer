@@ -490,11 +490,16 @@ pub struct CheckDeterminismArgs {
         help = "JSON report path; default dist/run-<id>/determinism.json"
     )]
     pub report: Option<PathBuf>,
-    #[arg(long, help = "Seed SDE from snapshot rules instead of HEAD commit")]
+    #[arg(
+        long,
+        conflicts_with = "no_snapshot",
+        help = "Seed SDE from snapshot rules instead of HEAD commit. Implicitly forces the child `anodize release ...` subprocess into snapshot mode (the artifacts get a `-SNAPSHOT-<sha>` suffix). Use this to override the default auto-detect when working on a tagged commit but you still want snapshot-style artifacts."
+    )]
     pub snapshot: bool,
     #[arg(
         long = "no-snapshot",
-        help = "Drop `--snapshot` from the child `anodize release ...` subprocess so produce-stages emit artifacts named with the actual release version. Used by the release workflow on tag-push runs."
+        conflicts_with = "snapshot",
+        help = "Drop `--snapshot` from the child `anodize release ...` subprocess so produce-stages emit artifacts named with the actual release version. By default the harness auto-detects this from HEAD: a tagged HEAD turns snapshot off; a non-tagged HEAD leaves it on. Pass this flag to force snapshot-off explicitly."
     )]
     pub no_snapshot: bool,
     #[arg(

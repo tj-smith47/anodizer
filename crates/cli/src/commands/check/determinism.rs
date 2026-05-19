@@ -15,7 +15,7 @@ use crate::determinism_harness::{Harness, StageId};
 use anodizer_cli::CheckDeterminismArgs;
 use anodizer_core::{
     AllowList, AllowListEntry, DeterminismState,
-    git::{head_commit_hash_in, head_commit_timestamp_in, resolve_snapshot_sde},
+    git::{head_commit_hash_in, head_commit_timestamp_in, head_is_at_tag, resolve_snapshot_sde},
 };
 use anyhow::{Context, Result};
 
@@ -95,13 +95,22 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // gets corrupted between write and consume. Unused when
     // `preserve_dist` is `None`.
     //
-    // We seed from the running anodizer's `CARGO_PKG_VERSION` rather
-    // than re-running snapshot version resolution: the dispatcher
-    // doesn't have access to the rendered template `Version` without
-    // recreating the release pipeline's context bootstrap, and the
-    // production path's metadata.json will always win the fallback
-    // race.
-    let version_hint = env!("CARGO_PKG_VERSION").to_string();
+    // Resolve from the TARGET project's `Cargo.toml` (the project the
+    // harness is being run against), not the running anodizer's
+    // `CARGO_PKG_VERSION`. Third-party consumers of `anodize check
+    // determinism` would otherwise see anodizer's own version in their
+    // dist manifests — load-bearing for downstream `--publish-only`
+    // consumers that read `context.json:version`. Falls back to the
+    // running binary's version only when the target project can't be
+    // read (e.g. non-Cargo project), so the field stays non-empty.
+    let version_hint =
+        read_project_version(&repo_root).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+
+    // Resolve child_snapshot: `--snapshot` / `--no-snapshot` override
+    // the default; otherwise auto-detect from `git describe --tags
+    // --exact-match HEAD`.
+    let child_snapshot =
+        resolve_child_snapshot(args.snapshot, args.no_snapshot, head_is_at_tag(&repo_root)?);
 
     let harness = Harness {
         repo_root: repo_root.clone(),
@@ -115,7 +124,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         targets,
         preserve_dist,
         version_hint,
-        child_snapshot: !args.no_snapshot,
+        child_snapshot,
     };
 
     let report = harness.run()?;
@@ -259,6 +268,69 @@ fn commit_short(commit: &str) -> String {
     } else {
         commit.to_string()
     }
+}
+
+/// Resolve the harness's `child_snapshot` flag.
+///
+/// Truth table (the clap surface enforces `--snapshot` /
+/// `--no-snapshot` are mutually exclusive, so the explicit-both case
+/// is dead at the CLI parsing layer):
+///
+/// ```text
+/// snapshot | no_snapshot | head_at_tag | child_snapshot | reason
+/// ---------+-------------+-------------+----------------+--------
+///  true    | -           | -           | true           | explicit --snapshot
+///  -       | true        | -           | false          | explicit --no-snapshot
+///  false   | false       | true        | false          | auto: tagged → release artifacts
+///  false   | false       | false       | true           | auto: untagged → snapshot artifacts
+/// ```
+///
+/// Pulled out as a free function so the matrix can be unit-tested
+/// without forking a git subprocess.
+fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) -> bool {
+    if snapshot {
+        true
+    } else if no_snapshot {
+        false
+    } else {
+        // Auto: a tagged HEAD means we're cutting a release —
+        // produce-stages should emit artifacts named with the actual
+        // release version. An untagged HEAD (master/main) means we're
+        // rehearsing — produce-stages should emit `-SNAPSHOT-<sha>`-
+        // suffixed artifacts so a local run doesn't pretend to be a
+        // release build.
+        !head_at_tag
+    }
+}
+
+/// Read the target project's release version from `<repo>/Cargo.toml`.
+///
+/// Resolution order:
+/// 1. `[workspace.package].version` (workspace inheritance — what `cfgd`
+///    et al use to share a single version across crates).
+/// 2. `[package].version` (single-crate or monorepo-leaf).
+///
+/// Returns `None` if `Cargo.toml` is missing (non-Cargo project), can't
+/// be parsed, or has neither key. Used to seed the harness's
+/// `version_hint` so `context.json:version` reflects the project being
+/// released, not the anodizer binary's own version — a load-bearing
+/// distinction for third-party consumers whose
+/// `--publish-only` downstream reads `context.json:version`.
+fn read_project_version(repo_root: &std::path::Path) -> Option<String> {
+    let manifest = repo_root.join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest).ok()?;
+    let doc: toml::Value = toml::from_str(&text).ok()?;
+    doc.get("workspace")
+        .and_then(|w| w.get("package"))
+        .and_then(|p| p.get("version"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .or_else(|| {
+            doc.get("package")
+                .and_then(|p| p.get("version"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
 }
 
 #[cfg(test)]
@@ -424,5 +496,115 @@ mod tests {
             inject_drift: None,
             preserve_dist: None,
         };
+    }
+
+    // ── resolve_child_snapshot ────────────────────────────────────────────
+
+    #[test]
+    fn resolve_child_snapshot_auto_off_when_head_at_tag() {
+        // Tagged HEAD = cutting a release → produce-stages emit
+        // release-named artifacts (no `-SNAPSHOT-<sha>` suffix). The
+        // workflow's preserved-dist payload must be immediately
+        // shippable via `--publish-only`.
+        assert!(!resolve_child_snapshot(false, false, true));
+    }
+
+    #[test]
+    fn resolve_child_snapshot_auto_on_when_head_not_at_tag() {
+        // Untagged HEAD = local rehearsal → produce-stages emit
+        // `-SNAPSHOT-<sha>`-suffixed artifacts so the bytes can't be
+        // mistaken for a release build.
+        assert!(resolve_child_snapshot(false, false, false));
+    }
+
+    #[test]
+    fn resolve_child_snapshot_explicit_snapshot_beats_auto() {
+        // `--snapshot` on a tagged HEAD: operator deliberately wants
+        // snapshot-style artifacts even though HEAD is tagged. Auto
+        // would say off; explicit must beat auto.
+        assert!(resolve_child_snapshot(true, false, true));
+        assert!(resolve_child_snapshot(true, false, false));
+    }
+
+    #[test]
+    fn resolve_child_snapshot_explicit_no_snapshot_beats_auto() {
+        // `--no-snapshot` on an untagged HEAD: legacy workflow override
+        // — operator forces release-style artifact names even though
+        // we're not at a tag. Auto would say on; explicit must beat
+        // auto.
+        assert!(!resolve_child_snapshot(false, true, false));
+        assert!(!resolve_child_snapshot(false, true, true));
+    }
+
+    // ── read_project_version ──────────────────────────────────────────────
+
+    #[test]
+    fn read_project_version_returns_none_when_cargo_toml_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_project_version(tmp.path()), None);
+    }
+
+    #[test]
+    fn read_project_version_reads_workspace_package_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.2.3-test"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_project_version(tmp.path()),
+            Some("1.2.3-test".to_string())
+        );
+    }
+
+    #[test]
+    fn read_project_version_reads_package_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            r#"[package]
+name = "demo"
+version = "0.4.2"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        assert_eq!(read_project_version(tmp.path()), Some("0.4.2".to_string()));
+    }
+
+    #[test]
+    fn read_project_version_prefers_workspace_when_both_present() {
+        // Workspace inheritance: the root `[workspace.package].version`
+        // is the authoritative version and `[package].version` is
+        // usually `version.workspace = true`. When both literal values
+        // are present we still prefer the workspace key because that's
+        // what `cargo` itself would propagate via inheritance.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            r#"[workspace.package]
+version = "9.9.9"
+
+[package]
+name = "root-crate"
+version = "0.0.1"
+"#,
+        )
+        .unwrap();
+        assert_eq!(read_project_version(tmp.path()), Some("9.9.9".to_string()));
+    }
+
+    #[test]
+    fn read_project_version_returns_none_on_malformed_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Cargo.toml"), "not valid \x00 toml ===").unwrap();
+        assert_eq!(read_project_version(tmp.path()), None);
     }
 }

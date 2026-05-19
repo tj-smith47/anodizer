@@ -1082,3 +1082,51 @@ fn short_commit_str_passes_short_inputs_through_unchanged() {
     assert_eq!(short_commit_str("abc1234"), "abc1234");
     assert_eq!(short_commit_str(""), "");
 }
+
+// ── head_is_at_tag — auto-detect tag commits ───────────────────────────────
+
+#[test]
+fn head_is_at_tag_returns_true_when_head_has_tag() {
+    use super::tags::head_is_at_tag;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["v1.0.0"]);
+    // HEAD is at v1.0.0's commit; describe --exact-match should succeed.
+    assert!(
+        head_is_at_tag(dir).unwrap(),
+        "HEAD has tag v1.0.0 attached; head_is_at_tag should return true"
+    );
+}
+
+#[test]
+fn head_is_at_tag_returns_false_when_head_has_no_tag() {
+    use super::tags::head_is_at_tag;
+    use std::process::Command;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    init_repo_with_tagged_commits(dir, &["v1.0.0"]);
+    // Advance HEAD past the tagged commit so describe --exact-match fails.
+    std::fs::write(dir.join("untagged.txt"), "no tag here").unwrap();
+    Command::new("git")
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .args(["add", "."])
+        .output()
+        .unwrap();
+    Command::new("git")
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test.com")
+        .args(["commit", "-m", "post-tag commit"])
+        .output()
+        .unwrap();
+    assert!(
+        !head_is_at_tag(dir).unwrap(),
+        "HEAD is one commit past v1.0.0; head_is_at_tag should return false"
+    );
+}

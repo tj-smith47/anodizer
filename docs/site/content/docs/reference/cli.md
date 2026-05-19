@@ -114,8 +114,8 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 | `--stages` | — | — | Optional stage subset (build,archive,sbom,sign,checksum) |
 | `--targets` | — | — | Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess. |
 | `--report` | — | — | JSON report path; default dist/run-<id>/determinism.json |
-| `--snapshot` | — | — | Seed SDE from snapshot rules instead of HEAD commit |
-| `--no-snapshot` | — | — | Drop `--snapshot` from the child `anodize release ...` subprocess so produce-stages emit artifacts named with the actual release version. Used by the release workflow on tag-push runs. |
+| `--snapshot` | — | — | Seed SDE from snapshot rules instead of HEAD commit. Implicitly forces the child `anodize release ...` subprocess into snapshot mode (the artifacts get a `-SNAPSHOT-<sha>` suffix). Use this to override the default auto-detect when working on a tagged commit but you still want snapshot-style artifacts. |
+| `--no-snapshot` | — | — | Drop `--snapshot` from the child `anodize release ...` subprocess so produce-stages emit artifacts named with the actual release version. By default the harness auto-detects this from HEAD: a tagged HEAD turns snapshot off; a non-tagged HEAD leaves it on. Pass this flag to force snapshot-off explicitly. |
 | `--preserve-dist` | — | — | When the harness greens, copy run-0's `<worktree>/dist/**` to <path> and emit `<path>/context.json` describing the artifact set. The release workflow's publish-only path consumes this to ship the determinism step's output directly (eliminates the redundant `build:` recompilation). Local operators can pass this too — useful for inspecting a hermetic dist tree without re-running the release pipeline. |
 
 
