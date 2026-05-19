@@ -57,7 +57,13 @@ fn check_determinism_help_lists_every_flag() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for flag in &["--runs", "--stages", "--report", "--snapshot"] {
+    for flag in &[
+        "--runs",
+        "--stages",
+        "--report",
+        "--snapshot",
+        "--preserve-dist",
+    ] {
         assert!(
             stdout.contains(flag),
             "--help missing flag {}; full output: {}",

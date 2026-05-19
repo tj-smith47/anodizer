@@ -199,6 +199,22 @@ pub struct Harness {
     /// touches buildable targets on this runner. `None` validates every
     /// configured target.
     pub targets: Option<Vec<String>>,
+    /// `--preserve-dist=<path>`: when set AND `drift_count == 0`, copy
+    /// `<worktree>/dist/**` from the first run to this path before the
+    /// worktree is destroyed, then emit a `context.json` manifest
+    /// describing the preserved artifact set. Used by the release
+    /// workflow's Phase 2/3 publish-only flow so the determinism step's
+    /// output can be shipped directly (eliminates the redundant `build:`
+    /// job that recompiled the same targets).
+    ///
+    /// Spec: `.claude/specs/2026-05-19-determinism-produces-shippable.md`.
+    ///
+    /// The copy happens at the end of run 0 (run-0 and run-N are
+    /// byte-identical by construction once the harness passes; run-0 is
+    /// picked deterministically). If the harness later detects drift
+    /// across runs, the preserved directory is removed so shippable
+    /// bytes never escape a failed determinism check.
+    pub preserve_dist: Option<PathBuf>,
 }
 
 impl Harness {
@@ -211,16 +227,54 @@ impl Harness {
         let mut per_run_hashes: Vec<BTreeMap<String, ArtifactInfo>> =
             Vec::with_capacity(self.runs as usize);
 
+        // Preserve-dist + production-keys → skip Sign in the harness.
+        //
+        // When the workflow plans to ship the harness's output via the
+        // publish-only path (`--preserve-dist=<path>` set on the harness;
+        // `COSIGN_KEY` / `GPG_PRIVATE_KEY` exported on the runner), the
+        // harness's ephemeral signatures would land in the preserved dist
+        // and have to be stripped before re-signing with production keys.
+        // Cleaner to never write them: skip the Sign stage entirely.
+        //
+        // KNOWN COVERAGE GAP: byte-stability of the Sign stage is no
+        // longer exercised in CI when this branch fires. Acceptable
+        // tradeoff — the `harness_signing` unit tests already pin the
+        // SDE-based key derivation (cosign-keygen + GPG `--faked-system-
+        // time`) so the deterministic-keys property has direct coverage,
+        // and the production sign stage is exercised by every release.
+        // Spec: `.claude/specs/2026-05-19-determinism-produces-shippable.md`
+        // section A.4 + Risks #4.
+        let skip_sign_for_preserve = self.preserve_dist.is_some()
+            && (std::env::var_os("COSIGN_KEY").is_some()
+                || std::env::var_os("GPG_PRIVATE_KEY").is_some());
+        let effective_stages: Vec<StageId> = if skip_sign_for_preserve {
+            self.stages
+                .iter()
+                .copied()
+                .filter(|s| *s != StageId::Sign)
+                .collect()
+        } else {
+            self.stages.clone()
+        };
+
         // Provision once: both runs must sign with identical key
         // material, otherwise even byte-deterministic GPG signatures
-        // would diverge.
-        let signing_keys: Option<EphemeralSigningKeys> = if self.stages.contains(&StageId::Sign) {
-            Some(anodizer_core::harness_signing::provision_ephemeral_keys(
-                self.sde,
-            )?)
-        } else {
-            None
-        };
+        // would diverge. Skipped when `skip_sign_for_preserve` is set
+        // (no Sign stage → no keys needed).
+        let signing_keys: Option<EphemeralSigningKeys> =
+            if effective_stages.contains(&StageId::Sign) {
+                Some(anodizer_core::harness_signing::provision_ephemeral_keys(
+                    self.sde,
+                )?)
+            } else {
+                None
+            };
+
+        // `preserve_dist` is filled lazily — only run-0 populates it,
+        // and only when copying succeeds. On drift detection (post-loop)
+        // the directory is removed so failed determinism checks never
+        // produce shippable bytes.
+        let mut preserved_dist_filled = false;
 
         for run_idx in 0..self.runs {
             // Default to <repo_root>/.det-worktrees/ — keeps the harness
@@ -254,7 +308,7 @@ impl Harness {
             let worktree = Worktree::add(&self.repo_root, &worktree_path, &self.commit)
                 .with_context(|| format!("creating worktree for determinism run {}", run_idx))?;
             let env = self.build_isolated_env(&worktree, signing_keys.as_ref())?;
-            self.run_build_pipeline(worktree.path(), &env)
+            self.run_build_pipeline(worktree.path(), &env, &effective_stages)
                 .with_context(|| format!("building pipeline for determinism run {}", run_idx))?;
             let artifacts = discover_artifacts(worktree.path())?;
             // `--inject-drift=<stage>` (test-harness gated): mutate the
@@ -316,12 +370,62 @@ impl Harness {
                     },
                 )?;
             }
+            // Preserve run-0's dist tree to the operator-supplied path
+            // BEFORE the next iteration's `remove_dir_all` (or this
+            // iteration's `Worktree::drop`) wipes it. run-0 is the
+            // earliest deterministic pick — runs 1..N are byte-identical
+            // to run-0 once the harness passes, but the next run's
+            // `remove_dir_all` at the top of the loop deletes the
+            // worktree wholesale, so we copy from run-0 specifically.
+            //
+            // The drift gate happens POST-loop: if drift is detected
+            // after all runs finish, we delete the preserved dir below
+            // so shippable bytes never escape a failed determinism run.
+            if run_idx == 0
+                && let Some(dest) = self.preserve_dist.as_ref()
+            {
+                artifacts::preserve_dist_tree(worktree.path(), dest).with_context(|| {
+                    format!(
+                        "preserving run-0 dist tree from {} to {}",
+                        worktree.path().join("dist").display(),
+                        dest.display()
+                    )
+                })?;
+                preserved_dist_filled = true;
+            }
             // Worktree dropped at end of scope → cleanup automatic.
         }
 
         let report = self.build_report(per_run_hashes);
         if let Some(parent) = self.report_path.parent() {
             prune_dump_to_drifted(&parent.join("drift-bins"), &report);
+        }
+        // Preserve-dist drift gate: if any drift was detected, remove
+        // the preserved tree we copied from run-0. This is the safety
+        // property the spec calls out — shippable bytes must come from
+        // a green determinism run, never a drifted one.
+        if let Some(dest) = self.preserve_dist.as_ref()
+            && preserved_dist_filled
+            && report.drift_count > 0
+        {
+            if let Err(e) = std::fs::remove_dir_all(dest) {
+                eprintln!(
+                    "warn: failed to remove preserved-dist `{}` after drift detection: {}",
+                    dest.display(),
+                    e
+                );
+            }
+        } else if let Some(dest) = self.preserve_dist.as_ref()
+            && preserved_dist_filled
+        {
+            // Green run — write the manifest the publish-only path will
+            // rehydrate from.
+            artifacts::write_preserved_dist_context(dest, &report).with_context(|| {
+                format!(
+                    "writing context.json under preserved dist {}",
+                    dest.display()
+                )
+            })?;
         }
         Ok(report)
     }
@@ -357,13 +461,21 @@ impl Harness {
     /// is on the forbid-list in `.claude/rules/module-boundaries.md`, so
     /// the actual `Command::new` lives in core where subprocess spawn is
     /// allow-listed.
+    ///
+    /// `effective_stages` is what the harness actually ran the child
+    /// pipeline against — usually equal to `self.stages`, but with
+    /// `Sign` filtered out when [`Harness::preserve_dist`] is set AND
+    /// production signing keys are present on the runner (so the harness
+    /// doesn't leave ephemeral sigs in the preserved dist; they would
+    /// only get stripped + re-signed later anyway).
     fn run_build_pipeline(
         &self,
         worktree_path: &Path,
         env: &HashMap<String, String>,
+        effective_stages: &[StageId],
     ) -> Result<()> {
         let exe = anodizer_core::determinism_runner::current_anodize_binary()?;
-        let extra_skip = compute_extra_skip(&self.stages);
+        let extra_skip = compute_extra_skip(effective_stages);
         anodizer_core::determinism_runner::run_build_pipeline_subprocess(
             &exe,
             worktree_path,
@@ -516,6 +628,7 @@ mod tests {
             report_path: PathBuf::from("/tmp/unused/report.json"),
             inject_drift: None,
             targets: None,
+            preserve_dist: None,
         }
     }
 

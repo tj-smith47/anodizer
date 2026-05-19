@@ -75,6 +75,19 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         runtime: Vec::new(),
     };
 
+    // `--preserve-dist=<path>` may be relative; resolve against the
+    // repo root so the harness has an absolute target. The repo_root
+    // is `current_dir`, so a relative `--preserve-dist=./preserved-dist`
+    // lands at `<cwd>/preserved-dist` — what a CI step expects when
+    // passing the flag verbatim.
+    let preserve_dist = args.preserve_dist.as_ref().map(|p| {
+        if p.is_absolute() {
+            p.clone()
+        } else {
+            repo_root.join(p)
+        }
+    });
+
     let harness = Harness {
         repo_root: repo_root.clone(),
         commit: commit.clone(),
@@ -85,6 +98,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         report_path: report_path.clone(),
         inject_drift,
         targets,
+        preserve_dist,
     };
 
     let report = harness.run()?;
@@ -390,6 +404,7 @@ mod tests {
             report: None,
             snapshot: false,
             inject_drift: None,
+            preserve_dist: None,
         };
     }
 }

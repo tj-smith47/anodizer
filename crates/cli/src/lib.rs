@@ -493,6 +493,12 @@ pub struct CheckDeterminismArgs {
         help = "(TEST HARNESS) Append 1 random byte to the first artifact emitted by <stage>. Gated by ANODIZE_TEST_HARNESS=1."
     )]
     pub inject_drift: Option<String>,
+    #[arg(
+        long = "preserve-dist",
+        value_name = "path",
+        help = "When the harness greens, copy run-0's `<worktree>/dist/**` to <path> and emit `<path>/context.json` describing the artifact set. The release workflow's publish-only path consumes this to ship the determinism step's output directly (eliminates the redundant `build:` recompilation). Local operators can pass this too — useful for inspecting a hermetic dist tree without re-running the release pipeline."
+    )]
+    pub preserve_dist: Option<PathBuf>,
 }
 
 /// Clap `value_parser` for `--from-run=<id>`.

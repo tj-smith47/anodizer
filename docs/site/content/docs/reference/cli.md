@@ -114,6 +114,7 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 | `--targets` | — | — | Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess. |
 | `--report` | — | — | JSON report path; default dist/run-<id>/determinism.json |
 | `--snapshot` | — | — | Seed SDE from snapshot rules instead of HEAD commit |
+| `--preserve-dist` | — | — | When the harness greens, copy run-0's `<worktree>/dist/**` to <path> and emit `<path>/context.json` describing the artifact set. The release workflow's publish-only path consumes this to ship the determinism step's output directly (eliminates the redundant `build:` recompilation). Local operators can pass this too — useful for inspecting a hermetic dist tree without re-running the release pipeline. |
 
 
 ### `anodizer init`
