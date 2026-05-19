@@ -37,7 +37,6 @@
 
 use anodizer_core::DeterminismReport;
 use std::fs;
-use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -188,103 +187,8 @@ fn inject_drift_hidden_from_help() {
 // Skipped (with a `cargo test` warning line) when `cargo`/`git` aren't
 // on PATH so the suite stays green on minimal hosts.
 
-fn tool_on_path(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
-    assert!(
-        out.status.success(),
-        "git {:?} failed: stdout={} stderr={}",
-        args,
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-/// Detect the host's target triple via `rustc -vV`. Used to populate the
-/// fixture `.anodizer.yaml` so the build stage targets the same triple
-/// the harness's rustup proxy will actually compile for — without this,
-/// macOS / Windows hosts crash trying to link an x86_64-unknown-linux-gnu
-/// binary they have no toolchain for.
-fn host_triple() -> String {
-    let out = Command::new("rustc")
-        .args(["-vV"])
-        .output()
-        .expect("rustc -vV must succeed (cargo is on PATH; rustc is sibling)");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    for line in stdout.lines() {
-        if let Some(host) = line.strip_prefix("host: ") {
-            return host.trim().to_string();
-        }
-    }
-    panic!("no `host:` line in `rustc -vV` output:\n{}", stdout);
-}
-
-/// Bootstrap a minimal cargo workspace (no deps) at `dir`, init it as a
-/// git repo, and commit. Returns the populated fixture root.
-fn bootstrap_minimal_cargo_repo(dir: &Path) {
-    fs::write(
-        dir.join("Cargo.toml"),
-        r#"[package]
-name = "anodize-det-fixture"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "anodize-det-fixture"
-path = "src/main.rs"
-"#,
-    )
-    .unwrap();
-    fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
-
-    // Minimal `.anodizer.yaml` — without a configured crate the snapshot
-    // path skips git resolution and the `{{ Version }}` template render
-    // bombs. A single-crate block is enough to populate Version/Tag/etc.
-    // from the synthetic v0.0.0 fallback the snapshot resolver applies
-    // when no git tags are present.
-    //
-    // `path: .` is load-bearing: without it the default CrateConfig.path
-    // is empty, and the build stage's `Command::new("cargo")
-    // .current_dir("")` fails to spawn (cwd resolution treats empty as
-    // a nonexistent dir on some kernels).
-    //
-    // `targets:` is populated with the host triple at runtime so the
-    // build stage compiles for a target the host toolchain actually
-    // supports — macOS Apple Silicon → aarch64-apple-darwin, Windows →
-    // x86_64-pc-windows-msvc, Linux → x86_64-unknown-linux-gnu, etc.
-    let host = host_triple();
-    let yaml = format!(
-        r#"crates:
-  - name: anodize-det-fixture
-    path: .
-    builds:
-      - id: anodize-det-fixture
-        binary: anodize-det-fixture
-        targets:
-          - {host}
-"#,
-    );
-    fs::write(dir.join(".anodizer.yaml"), yaml).unwrap();
-
-    run_git(dir, &["init", "-q", "-b", "master"]);
-    run_git(dir, &["config", "user.email", "test@test.com"]);
-    run_git(dir, &["config", "user.name", "Test"]);
-    run_git(dir, &["config", "commit.gpgsign", "false"]);
-    run_git(dir, &["add", "-A"]);
-    run_git(dir, &["commit", "-q", "-m", "init"]);
-}
+mod common;
+use common::{bootstrap_minimal_cargo_repo, tool_on_path};
 
 /// End-to-end drift-injection integration test (I12). Synthesizes a
 /// minimal cargo workspace, drives the harness with `--runs=2
@@ -304,7 +208,7 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo);
+    bootstrap_minimal_cargo_repo(repo, "anodize-det-fixture");
 
     // RUSTUP_HOME / PATH propagation is the harness's responsibility —
     // `build_subprocess_env` defaults RUSTUP_HOME from the host's

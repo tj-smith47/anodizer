@@ -53,6 +53,7 @@
 mod artifacts;
 mod drift;
 mod env;
+mod preserve;
 
 use anodizer_core::git::worktree::Worktree;
 use anodizer_core::harness_signing::EphemeralSigningKeys;
@@ -66,6 +67,9 @@ use artifacts::{
 };
 use drift::{inject_drift_byte, pick_first_artifact_for_stage, summarize_drift};
 use env::{BuildSubprocessEnv, build_subprocess_env};
+use preserve::{
+    ContextInputs, preserve_dist_tree, remove_preserved_on_drift, write_preserved_dist_context,
+};
 
 /// Stage subset selector for `--stages=<subset>`.
 ///
@@ -215,6 +219,16 @@ pub struct Harness {
     /// across runs, the preserved directory is removed so shippable
     /// bytes never escape a failed determinism check.
     pub preserve_dist: Option<PathBuf>,
+    /// Fallback version string used in `context.json` when the
+    /// preserved-dist's `metadata.json` is missing or malformed.
+    /// Dispatcher resolves this from the snapshot template variables
+    /// (or `Cargo.toml` for non-snapshot runs) so the manifest's
+    /// `version` field is non-empty even when the sibling JSON
+    /// vanishes. Pass an empty string to keep the prior behaviour
+    /// (manifest `version` empty when JSON missing).
+    ///
+    /// Unused when `preserve_dist` is `None`.
+    pub version_hint: String,
 }
 
 impl Harness {
@@ -269,12 +283,6 @@ impl Harness {
             } else {
                 None
             };
-
-        // `preserve_dist` is filled lazily — only run-0 populates it,
-        // and only when copying succeeds. On drift detection (post-loop)
-        // the directory is removed so failed determinism checks never
-        // produce shippable bytes.
-        let mut preserved_dist_filled = false;
 
         for run_idx in 0..self.runs {
             // Default to <repo_root>/.det-worktrees/ — keeps the harness
@@ -384,14 +392,18 @@ impl Harness {
             if run_idx == 0
                 && let Some(dest) = self.preserve_dist.as_ref()
             {
-                artifacts::preserve_dist_tree(worktree.path(), dest).with_context(|| {
+                preserve_dist_tree(worktree.path(), dest).with_context(|| {
                     format!(
                         "preserving run-0 dist tree from {} to {}",
                         worktree.path().join("dist").display(),
                         dest.display()
                     )
                 })?;
-                preserved_dist_filled = true;
+                // No `preserved_dist_filled` flag needed: any error in
+                // preserve_dist_tree propagates via `?` and aborts the
+                // harness before the post-loop block runs. Reaching
+                // post-loop with `self.preserve_dist == Some(_)` is
+                // sufficient proof the copy succeeded.
             }
             // Worktree dropped at end of scope → cleanup automatic.
         }
@@ -400,32 +412,35 @@ impl Harness {
         if let Some(parent) = self.report_path.parent() {
             prune_dump_to_drifted(&parent.join("drift-bins"), &report);
         }
-        // Preserve-dist drift gate: if any drift was detected, remove
-        // the preserved tree we copied from run-0. This is the safety
-        // property the spec calls out — shippable bytes must come from
-        // a green determinism run, never a drifted one.
-        if let Some(dest) = self.preserve_dist.as_ref()
-            && preserved_dist_filled
-            && report.drift_count > 0
-        {
-            if let Err(e) = std::fs::remove_dir_all(dest) {
-                eprintln!(
-                    "warn: failed to remove preserved-dist `{}` after drift detection: {}",
-                    dest.display(),
-                    e
-                );
-            }
-        } else if let Some(dest) = self.preserve_dist.as_ref()
-            && preserved_dist_filled
-        {
-            // Green run — write the manifest the publish-only path will
-            // rehydrate from.
-            artifacts::write_preserved_dist_context(dest, &report).with_context(|| {
-                format!(
-                    "writing context.json under preserved dist {}",
-                    dest.display()
+        // Preserve-dist gate. Restructured per code review: if any
+        // copy failed mid-loop the `?` propagation already aborted the
+        // harness, so reaching this point with
+        // `self.preserve_dist == Some(_)` means run-0's tree IS on
+        // disk under `dest`. Branch on drift_count alone.
+        //
+        // Safety property: shippable bytes must come from a green
+        // determinism run, never a drifted one. Drift → remove the
+        // tree; green → write `<dest>/context.json` so the publish-
+        // only path can rehydrate.
+        if let Some(dest) = self.preserve_dist.as_ref() {
+            if report.drift_count > 0 {
+                remove_preserved_on_drift(dest);
+            } else {
+                write_preserved_dist_context(
+                    dest,
+                    ContextInputs {
+                        report: &report,
+                        harness_targets: self.targets.as_deref(),
+                        version_hint: &self.version_hint,
+                    },
                 )
-            })?;
+                .with_context(|| {
+                    format!(
+                        "writing context.json under preserved dist {}",
+                        dest.display()
+                    )
+                })?;
+            }
         }
         Ok(report)
     }
@@ -629,6 +644,7 @@ mod tests {
             inject_drift: None,
             targets: None,
             preserve_dist: None,
+            version_hint: String::new(),
         }
     }
 

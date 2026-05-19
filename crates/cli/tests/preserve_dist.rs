@@ -22,125 +22,16 @@
 
 use anodizer_core::DeterminismReport;
 use std::fs;
-use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-fn tool_on_path(tool: &str) -> bool {
-    Command::new(tool)
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+mod common;
+use common::{bootstrap_minimal_cargo_repo, sha256_file, tool_on_path, walk_files};
 
-fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
-    assert!(
-        out.status.success(),
-        "git {:?} failed: stdout={} stderr={}",
-        args,
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn host_triple() -> String {
-    let out = Command::new("rustc")
-        .args(["-vV"])
-        .output()
-        .expect("rustc -vV must succeed (cargo is on PATH; rustc is sibling)");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    for line in stdout.lines() {
-        if let Some(host) = line.strip_prefix("host: ") {
-            return host.trim().to_string();
-        }
-    }
-    panic!("no `host:` line in `rustc -vV` output:\n{}", stdout);
-}
-
-/// Bootstrap a minimal cargo workspace at `dir`, init it as a git
-/// repo, commit. Same shape as `check_determinism::bootstrap_minimal_cargo_repo`
-/// but inlined here so the two test files stay independent.
-fn bootstrap_minimal_cargo_repo(dir: &Path) {
-    fs::write(
-        dir.join("Cargo.toml"),
-        r#"[package]
-name = "anodize-det-fixture-preserve"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "anodize-det-fixture-preserve"
-path = "src/main.rs"
-"#,
-    )
-    .unwrap();
-    fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
-
-    let host = host_triple();
-    let yaml = format!(
-        r#"crates:
-  - name: anodize-det-fixture-preserve
-    path: .
-    builds:
-      - id: anodize-det-fixture-preserve
-        binary: anodize-det-fixture-preserve
-        targets:
-          - {host}
-"#,
-    );
-    fs::write(dir.join(".anodizer.yaml"), yaml).unwrap();
-
-    run_git(dir, &["init", "-q", "-b", "master"]);
-    run_git(dir, &["config", "user.email", "test@test.com"]);
-    run_git(dir, &["config", "user.name", "Test"]);
-    run_git(dir, &["config", "commit.gpgsign", "false"]);
-    run_git(dir, &["add", "-A"]);
-    run_git(dir, &["commit", "-q", "-m", "init"]);
-}
-
-/// SHA256 a file the way the harness does — `sha256:<hex>` prefix.
-fn sha256_file(path: &Path) -> String {
-    use sha2::{Digest, Sha256};
-    let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    format!("sha256:{:x}", hasher.finalize())
-}
-
-/// Walk `<dir>` recursively and return a sorted list of `(relpath, abspath)`
-/// for every regular file. Used to spot-check that the preserved tree
-/// matches the worktree dist tree.
-fn walk_files(dir: &Path) -> Vec<(String, std::path::PathBuf)> {
-    fn inner(root: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                inner(root, &path, out);
-            } else if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                out.push((rel, path));
-            }
-        }
-    }
-    let mut out = Vec::new();
-    inner(dir, dir, &mut out);
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
-}
+/// Crate name for the preserve_dist tests' fixture workspace —
+/// distinct from check_determinism's so the per-test cargo target dirs
+/// don't share lock state.
+const FIXTURE_CRATE_NAME: &str = "anodize-det-fixture-preserve";
 
 /// Test #1 from the spec's Test Plan section (Phase 1, item 1):
 /// `--preserve-dist=<tmp>` copies the dist tree AND emits a
@@ -157,7 +48,7 @@ fn preserve_dist_copies_dist_tree_and_emits_context_json() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo);
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
 
     let preserved = repo.join("preserved-dist");
     let report_path = repo.join("det.json");
@@ -301,7 +192,7 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo);
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
 
     let preserved = repo.join("preserved-dist");
     let report_path = repo.join("det.json");
@@ -348,26 +239,47 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
     );
 
     // Walk preserved-dist and confirm each file's SHA matches the
-    // report's recorded hash. Files NOT in the report (e.g. metadata.json,
-    // artifacts.json, context.json itself) are tolerated — the harness's
-    // discover walk filters to artifacts that pass `infer_stage_from_path`
-    // logic, and freshly-written metadata may post-date the walk.
+    // report's recorded hash. The expected-not-in-report set is
+    // bounded — only the manifest sidecars below are valid misses;
+    // any other miss indicates a regression in the harness's
+    // discover/hash walk and MUST fail the test.
+    //
+    // - `context.json` is written by the preserve module POST-loop,
+    //   after the determinism check finished, so it can't appear in
+    //   the report's artifacts array.
+    // - `metadata.json` / `artifacts.json` are written by the
+    //   release pipeline's `run_post_pipeline`. They post-date the
+    //   harness's `discover_artifacts` walk (which runs immediately
+    //   after `run_build_pipeline` returns, but BEFORE post-pipeline
+    //   bookkeeping fires inside the child), so they don't appear
+    //   in `determinism.json:artifacts`.
+    const EXPECTED_MISSES: &[&str] = &["context.json", "metadata.json", "artifacts.json"];
+
     let mut matched = 0usize;
+    let mut expected_misses = 0usize;
     for (rel, abs) in walk_files(&preserved) {
-        // context.json is written AFTER the determinism check completes,
-        // so it doesn't appear in the report's artifacts array — skip.
-        if rel == "context.json" {
-            continue;
-        }
         let basename = abs
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Some(expected) = by_name.get(basename.as_str()) else {
-            // File present in preserved tree but not in the report's
-            // hashed set — tolerated (see comment above).
+        if EXPECTED_MISSES.contains(&basename.as_str()) {
+            expected_misses += 1;
             continue;
-        };
+        }
+        let expected = by_name.get(basename.as_str()).unwrap_or_else(|| {
+            panic!(
+                "preserved file {} (basename {}) has no matching entry in determinism.json; \
+                 expected one of the bounded EXPECTED_MISSES set or a hashed artifact. \
+                 Preserved tree: {:?}\nReport artifacts: {:?}",
+                rel,
+                basename,
+                walk_files(&preserved)
+                    .iter()
+                    .map(|(r, _)| r)
+                    .collect::<Vec<_>>(),
+                report.artifacts.iter().map(|a| &a.name).collect::<Vec<_>>(),
+            )
+        });
         let actual = sha256_file(&abs);
         assert_eq!(
             &actual, expected,
@@ -376,6 +288,20 @@ fn preserve_dist_bytes_match_determinism_report_hashes() {
         );
         matched += 1;
     }
+
+    // Tight floor: matched + expected_misses MUST account for every
+    // file in the preserved tree. A regression where a file silently
+    // stops appearing in the report (e.g. the discover walk drops
+    // `.sha256` sidecars) would shift it out of `matched` AND out of
+    // `EXPECTED_MISSES`, tripping the panic above. This assertion is
+    // the belt to that suspender — it locks the count.
+    let total_files = walk_files(&preserved).len();
+    assert_eq!(
+        matched + expected_misses,
+        total_files,
+        "matched ({matched}) + expected_misses ({expected_misses}) must equal \
+         total preserved files ({total_files}); a file is escaping both buckets"
+    );
     assert!(
         matched > 0,
         "no preserved files matched determinism.json hashes; preserved tree: {:?}; \
@@ -408,7 +334,7 @@ fn preserve_dist_removed_on_drift_detection() {
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
-    bootstrap_minimal_cargo_repo(repo);
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
 
     let preserved = repo.join("preserved-dist");
     let report_path = repo.join("det.json");
@@ -451,5 +377,85 @@ fn preserve_dist_removed_on_drift_detection() {
             .iter()
             .map(|(r, _)| r)
             .collect::<Vec<_>>()
+    );
+}
+
+/// FIX #2 regression test: the production end-to-end harness run must
+/// emit a `context.json` with NON-EMPTY `targets` and `version`
+/// fields. The release pipeline's `run_post_pipeline` writes
+/// `dist/metadata.json` (`version`) and `dist/artifacts.json`
+/// (`target` per entry) even when the `release` stage is skipped, so
+/// both fields are available in the preserved tree. This test pins
+/// that contract so a future contributor refactoring the post-
+/// pipeline write site can't silently regress to empty manifest
+/// fields (which would force Phase-2 consumers to fall back to
+/// guess-and-pray on the version string).
+#[test]
+fn preserve_dist_context_json_has_non_empty_targets_and_version() {
+    if !tool_on_path("cargo") || !tool_on_path("git") {
+        eprintln!(
+            "SKIP preserve_dist_context_json_has_non_empty_targets_and_version: \
+             cargo or git missing from PATH"
+        );
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+
+    let preserved = repo.join("preserved-dist");
+    let report_path = repo.join("det.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "check",
+            "determinism",
+            "--runs",
+            "2",
+            "--stages",
+            "build,archive",
+            "--report",
+        ])
+        .arg(&report_path)
+        .args(["--preserve-dist"])
+        .arg(&preserved)
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodize check determinism --preserve-dist");
+
+    assert!(
+        output.status.success(),
+        "expected zero exit on green run; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let context_bytes = fs::read(preserved.join("context.json")).expect("reading context.json");
+    let context: serde_json::Value =
+        serde_json::from_slice(&context_bytes).expect("parsing context.json");
+
+    let targets = context
+        .get("targets")
+        .and_then(|v| v.as_array())
+        .expect("context.json missing `targets` array");
+    assert!(
+        !targets.is_empty(),
+        "context.json `targets` MUST be non-empty in production runs \
+         (release pipeline writes target metadata via run_post_pipeline). \
+         Full context: {}",
+        String::from_utf8_lossy(&context_bytes)
+    );
+
+    let version = context
+        .get("version")
+        .and_then(|v| v.as_str())
+        .expect("context.json missing `version` string");
+    assert!(
+        !version.is_empty(),
+        "context.json `version` MUST be non-empty in production runs \
+         (release pipeline writes metadata.json:version via run_post_pipeline, \
+         and the harness threads CARGO_PKG_VERSION as fallback). \
+         Full context: {}",
+        String::from_utf8_lossy(&context_bytes)
     );
 }

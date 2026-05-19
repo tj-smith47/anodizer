@@ -8,6 +8,19 @@ use std::path::{Path, PathBuf};
 
 /// Rich artifact format for split/merge serialization.
 /// Mirrors GoReleaser's artifact JSON with OS/arch metadata.
+///
+/// **Cross-format compatibility with `PreservedDistContext`**: the
+/// `sha256` + `size` fields are `Option`, default to `None`, and are
+/// skipped when `None` on serialization. The split/merge path
+/// historically didn't populate them, but the determinism harness's
+/// `--preserve-dist` flag emits a sibling
+/// [`crate::determinism_harness::preserve::PreservedArtifact`] with
+/// the same field names + types. Adding `Option`-typed fields here
+/// means a Phase-2 publish-only consumer that reads `context.json`
+/// can deserialize either shape via this single type — without
+/// requiring a separate parser per producer. Spec:
+/// `.claude/specs/2026-05-19-determinism-produces-shippable.md`
+/// section A.3.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SplitArtifact {
     /// Artifact filename (basename).
@@ -30,6 +43,18 @@ pub struct SplitArtifact {
     pub crate_name: String,
     /// Rich metadata.
     pub extra: HashMap<String, serde_json::Value>,
+    /// SHA256 of the artifact bytes, prefixed `sha256:`. Populated by
+    /// the determinism harness's `--preserve-dist` writer; left
+    /// `None` by the split/merge writer (which doesn't have hash info
+    /// at split time). Phase-2 publish-only consumers MAY rely on
+    /// this to verify preserved bytes against the determinism
+    /// report's recorded hashes before re-signing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// File size in bytes. Same nullability semantics as
+    /// [`Self::sha256`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 /// Full context serialized during split for merge recovery.
@@ -113,6 +138,12 @@ fn artifact_to_split(a: &artifact::Artifact) -> SplitArtifact {
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
             .collect(),
+        // split/merge path doesn't track per-artifact hashes — those
+        // are populated by the determinism harness's preserve-dist
+        // writer (which IS hash-aware). `None` here keeps the JSON
+        // output unchanged (`skip_serializing_if = "Option::is_none"`).
+        sha256: None,
+        size: a.size,
     }
 }
 
@@ -702,6 +733,8 @@ mod tests {
             type_s: kind.to_string(),
             crate_name: "myapp".to_string(),
             extra: HashMap::new(),
+            sha256: None,
+            size: None,
         }
     }
 

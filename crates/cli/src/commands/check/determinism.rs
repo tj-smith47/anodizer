@@ -88,6 +88,23 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         }
     });
 
+    // `version_hint` is the fallback `context.json:version` when the
+    // preserved-dist's `metadata.json` is missing or malformed. The
+    // production path populates `metadata.json` via the release
+    // pipeline's `run_post_pipeline`, so this fallback is normally
+    // dormant — but threading a known-good placeholder keeps the
+    // manifest's `version` field non-empty even when the sibling JSON
+    // gets corrupted between write and consume. Unused when
+    // `preserve_dist` is `None`.
+    //
+    // We seed from the running anodizer's `CARGO_PKG_VERSION` rather
+    // than re-running snapshot version resolution: the dispatcher
+    // doesn't have access to the rendered template `Version` without
+    // recreating the release pipeline's context bootstrap, and the
+    // production path's metadata.json will always win the fallback
+    // race.
+    let version_hint = env!("CARGO_PKG_VERSION").to_string();
+
     let harness = Harness {
         repo_root: repo_root.clone(),
         commit: commit.clone(),
@@ -99,6 +116,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         inject_drift,
         targets,
         preserve_dist,
+        version_hint,
     };
 
     let report = harness.run()?;
