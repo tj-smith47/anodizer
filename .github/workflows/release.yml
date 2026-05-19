@@ -54,6 +54,7 @@ jobs:
           determinism: true
           determinism-targets: ${{ matrix.targets }}
           preserve-dist: 'true'
+          shard-label: ${{ matrix.shard }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -107,14 +108,30 @@ jobs:
 
       - name: Verify preserved dist
         run: |
-          echo "Context manifests found:"
-          find dist -maxdepth 1 \( -name 'context.json' -o -name 'context-*.json' \) -type f
-          COUNT=$(find dist -maxdepth 1 \( -name 'context.json' -o -name 'context-*.json' \) -type f | wc -l)
-          if [ "$COUNT" -eq 0 ]; then
+          set -euo pipefail
+          mapfile -t files < <(find dist -maxdepth 1 \( -name 'context.json' -o -name 'context-*.json' \) -type f)
+          if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::No preserved-dist context manifests found in dist/"
             exit 1
           fi
-          echo "Found $COUNT preserved-dist context manifest(s)"
+          printf 'Found %d preserved-dist context manifest(s):\n' "${#files[@]}"
+          printf '  %s\n' "${files[@]}"
+
+      # `fail-fast: false` above allows one drift failure to leave the
+      # other shards green. Reject a partial dist tree before signing.
+      - name: Assert all shards present
+        run: |
+          set -euo pipefail
+          expected=(ubuntu-latest macos-latest windows-x86_64 windows-aarch64)
+          missing=()
+          for shard in "${expected[@]}"; do
+            [ -f "dist/context-${shard}.json" ] || missing+=("$shard")
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf '::error::Missing context-<shard>.json for: %s\n' "${missing[*]}"
+            exit 1
+          fi
+          echo "All ${#expected[@]} shards uploaded preserved dist."
 
       - name: Run anodizer release --publish-only
         uses: tj-smith47/anodizer-action@v1

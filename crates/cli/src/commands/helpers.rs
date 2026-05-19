@@ -875,10 +875,9 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
 }
 
 /// Load artifacts from an explicitly-named manifest path under `dist/`.
-/// `dist` is retained for the error message (caller-meaningful location),
-/// while `manifest_path` is the file actually parsed. Used by the
-/// publish-only flow to fold in per-shard manifests
-/// (`artifacts-<shard>.json`) emitted by the sharded determinism matrix.
+/// Split from [`load_artifacts_from_dist`] so a sharded matrix can fold
+/// in `artifacts-<shard>.json` files one at a time. `dist` is carried
+/// only for the error message (caller-meaningful location).
 pub fn load_artifacts_from_manifest(
     ctx: &mut Context,
     dist: &Path,

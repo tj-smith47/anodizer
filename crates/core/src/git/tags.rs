@@ -442,19 +442,10 @@ pub fn tag_points_at_head(tag: &str) -> Result<bool> {
     Ok(tag_sha == head_sha)
 }
 
-/// Return `true` when HEAD coincides with at least one tag.
+/// Returns `true` when HEAD coincides with a tag.
 ///
-/// Implemented as `git -C <repo> describe --tags --exact-match HEAD`:
-/// git exits non-zero (no output) when HEAD is not at a tag, and prints
-/// the tag name when it is. We treat any successful exit as "HEAD is at
-/// a tag" regardless of the printed name — the determinism harness only
-/// needs the binary signal so it can decide whether the child
-/// `anodize release ...` subprocess should run in snapshot mode.
-///
-/// Failure to invoke `git` at all bubbles up; a successful non-zero exit
-/// from git (HEAD has no annotated/lightweight tag) is mapped to `false`
-/// — this is the common case for `master`/`main` and must not panic the
-/// caller.
+/// HEAD-with-no-tag is the common case for development branches and
+/// must not error; only inability to invoke git at all does.
 pub fn head_is_at_tag(repo: &std::path::Path) -> Result<bool> {
     let out = Command::new("git")
         .arg("-C")

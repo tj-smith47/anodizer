@@ -361,10 +361,6 @@ fn detect_duplicate_artifact_paths(ctx: &Context) -> Result<()> {
     detect_duplicate_paths_in(ctx.artifacts.all().iter().map(|a| a.path.as_path()))
 }
 
-/// Inner form decoupled from `Context` for testability — accepts any
-/// iterator over `&Path`. The Context-facing wrapper above is what
-/// production code calls; tests construct a synthetic path list and
-/// hand it directly to this form.
 fn detect_duplicate_paths_in<'a, I>(paths: I) -> Result<()>
 where
     I: IntoIterator<Item = &'a Path>,
@@ -407,9 +403,6 @@ fn detect_missing_artifact_files(ctx: &Context, dist: &Path) -> Result<()> {
     detect_missing_files_in(ctx.artifacts.all().iter().map(|a| a.path.as_path()), dist)
 }
 
-/// Inner form decoupled from `Context` for testability — accepts any
-/// iterator over `&Path` plus the dist root for resolving relative
-/// entries. Production code calls `detect_missing_artifact_files`.
 fn detect_missing_files_in<'a, I>(paths: I, dist: &Path) -> Result<()>
 where
     I: IntoIterator<Item = &'a Path>,

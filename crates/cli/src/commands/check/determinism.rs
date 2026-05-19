@@ -86,29 +86,13 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         }
     });
 
-    // `version_hint` is the fallback `context.json:version` when the
-    // preserved-dist's `metadata.json` is missing or malformed. The
-    // production path populates `metadata.json` via the release
-    // pipeline's `run_post_pipeline`, so this fallback is normally
-    // dormant — but threading a known-good placeholder keeps the
-    // manifest's `version` field non-empty even when the sibling JSON
-    // gets corrupted between write and consume. Unused when
-    // `preserve_dist` is `None`.
-    //
-    // Resolve from the TARGET project's `Cargo.toml` (the project the
-    // harness is being run against), not the running anodizer's
-    // `CARGO_PKG_VERSION`. Third-party consumers of `anodize check
-    // determinism` would otherwise see anodizer's own version in their
-    // dist manifests — load-bearing for downstream `--publish-only`
-    // consumers that read `context.json:version`. Falls back to the
-    // running binary's version only when the target project can't be
-    // read (e.g. non-Cargo project), so the field stays non-empty.
+    // Fallback only — production runs always have a sibling metadata.json
+    // that wins. A missing or malformed one would otherwise emit anodizer's
+    // own version into `context.json:version`, which third-party consumers
+    // would then publish as their own release version.
     let version_hint =
         read_project_version(&repo_root).unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
 
-    // Resolve child_snapshot: `--snapshot` / `--no-snapshot` override
-    // the default; otherwise auto-detect from `git describe --tags
-    // --exact-match HEAD`.
     let child_snapshot =
         resolve_child_snapshot(args.snapshot, args.no_snapshot, head_is_at_tag(&repo_root)?);
 
@@ -272,10 +256,6 @@ fn commit_short(commit: &str) -> String {
 
 /// Resolve the harness's `child_snapshot` flag.
 ///
-/// Truth table (the clap surface enforces `--snapshot` /
-/// `--no-snapshot` are mutually exclusive, so the explicit-both case
-/// is dead at the CLI parsing layer):
-///
 /// ```text
 /// snapshot | no_snapshot | head_at_tag | child_snapshot | reason
 /// ---------+-------------+-------------+----------------+--------
@@ -285,37 +265,23 @@ fn commit_short(commit: &str) -> String {
 ///  false   | false       | false       | true           | auto: untagged → snapshot artifacts
 /// ```
 ///
-/// Pulled out as a free function so the matrix can be unit-tested
-/// without forking a git subprocess.
+/// Free function so the matrix is unit-testable without forking git.
 fn resolve_child_snapshot(snapshot: bool, no_snapshot: bool, head_at_tag: bool) -> bool {
     if snapshot {
         true
     } else if no_snapshot {
         false
     } else {
-        // Auto: a tagged HEAD means we're cutting a release —
-        // produce-stages should emit artifacts named with the actual
-        // release version. An untagged HEAD (master/main) means we're
-        // rehearsing — produce-stages should emit `-SNAPSHOT-<sha>`-
-        // suffixed artifacts so a local run doesn't pretend to be a
-        // release build.
         !head_at_tag
     }
 }
 
 /// Read the target project's release version from `<repo>/Cargo.toml`.
 ///
-/// Resolution order:
-/// 1. `[workspace.package].version` (workspace inheritance — what `cfgd`
-///    et al use to share a single version across crates).
-/// 2. `[package].version` (single-crate or monorepo-leaf).
-///
-/// Returns `None` if `Cargo.toml` is missing (non-Cargo project), can't
-/// be parsed, or has neither key. Used to seed the harness's
-/// `version_hint` so `context.json:version` reflects the project being
-/// released, not the anodizer binary's own version — a load-bearing
-/// distinction for third-party consumers whose
-/// `--publish-only` downstream reads `context.json:version`.
+/// Resolves `[workspace.package].version` first (workspace inheritance,
+/// as cfgd uses to share one version across crates), then falls back to
+/// `[package].version`. Returns `None` if the manifest is missing,
+/// unparseable, or has neither key.
 fn read_project_version(repo_root: &std::path::Path) -> Option<String> {
     let manifest = repo_root.join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest).ok()?;

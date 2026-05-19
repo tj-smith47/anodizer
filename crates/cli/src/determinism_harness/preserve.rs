@@ -38,12 +38,12 @@ use std::path::Path;
 ///
 /// **Cross-format deserialization**: `SplitArtifact` carries
 /// `#[serde(default)] sha256: Option<String>` and `#[serde(default)]
-/// size: Option<u64>` so a Phase-2 reader that already speaks
-/// `SplitContext` can deserialize a `PreservedDistContext` cleanly
-/// (extra fields ignored, missing fields default to `None`). The
-/// reverse direction works too: deserializing a `SplitArtifact`-shaped
-/// entry as a `PreservedArtifact` requires `sha256` / `size` to be
-/// present, which they are when written by this module.
+/// size: Option<u64>` so a reader that already speaks `SplitContext`
+/// can deserialize a `PreservedDistContext` cleanly (extra fields
+/// ignored, missing fields default to `None`). The reverse direction
+/// works too: deserializing a `SplitArtifact`-shaped entry as a
+/// `PreservedArtifact` requires `sha256` / `size` to be present, which
+/// they are when written by this module.
 ///
 /// We deliberately do NOT reuse `SplitArtifact` directly: the harness
 /// runs as a subprocess of `anodize release` and never instantiates the
@@ -298,9 +298,8 @@ pub(super) fn write_preserved_dist_context(dest: &Path, inputs: ContextInputs<'_
 
     // Atomic write: stage to `.tmp` then rename so a mid-write death
     // (OOM, SIGKILL, runner timeout) never leaves a truncated
-    // context.json that a Phase-2 reader would silently mis-deserialize
-    // into `Default::default()`-shaped values. Mirrors the pattern in
-    // `commands/release/split.rs::run_split`.
+    // context.json that a publish-only reader would silently
+    // mis-deserialize into `Default::default()`-shaped values.
     let ctx_path = dest.join("context.json");
     let tmp_path = ctx_path.with_extension("json.tmp");
     std::fs::write(&tmp_path, &json)

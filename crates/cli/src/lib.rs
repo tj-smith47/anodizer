@@ -493,13 +493,13 @@ pub struct CheckDeterminismArgs {
     #[arg(
         long,
         conflicts_with = "no_snapshot",
-        help = "Seed SDE from snapshot rules instead of HEAD commit. Implicitly forces the child `anodize release ...` subprocess into snapshot mode (the artifacts get a `-SNAPSHOT-<sha>` suffix). Use this to override the default auto-detect when working on a tagged commit but you still want snapshot-style artifacts."
+        help = "Force snapshot mode on the child release subprocess (artifacts get a `-SNAPSHOT-<sha>` suffix). Default: auto — snapshot off when HEAD is at a tag, on otherwise."
     )]
     pub snapshot: bool,
     #[arg(
         long = "no-snapshot",
         conflicts_with = "snapshot",
-        help = "Drop `--snapshot` from the child `anodize release ...` subprocess so produce-stages emit artifacts named with the actual release version. By default the harness auto-detects this from HEAD: a tagged HEAD turns snapshot off; a non-tagged HEAD leaves it on. Pass this flag to force snapshot-off explicitly."
+        help = "Force snapshot mode OFF on the child release subprocess (artifacts emit the actual release version). Default: auto — see --snapshot."
     )]
     pub no_snapshot: bool,
     #[arg(
