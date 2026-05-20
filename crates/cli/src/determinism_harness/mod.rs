@@ -286,32 +286,27 @@ impl Harness {
                 None
             };
 
+        // Default to <repo_root>/.det-worktrees/ — keeps the harness
+        // off `/tmp` (which is tmpfs on many distros and exhausts fast
+        // when the cargo target dir lives inside the worktree). CI
+        // (GitHub Actions) sets RUNNER_TEMP to a disk-backed path
+        // outside the repo, so honor that when present.
+        let worktree_root = std::env::var_os("RUNNER_TEMP")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| self.repo_root.join(".det-worktrees"));
+        let _ = std::fs::create_dir_all(&worktree_root);
+        // PID-suffix the worktree so parallel harness invocations
+        // (cargo test running multiple determinism integration tests
+        // concurrently) don't collide on the same path. WITHIN one
+        // invocation every run reuses the same path — that's the
+        // load-bearing invariant for /Brepro and UTF-16 cargo-registry
+        // paths embedded into binaries (drift otherwise cascades from
+        // a 2-byte path diff). Across invocations the path must be
+        // unique because git worktree add refuses a populated target.
+        let worktree_path =
+            worktree_root.join(format!("anodize-determinism-{}", std::process::id()));
+
         for run_idx in 0..self.runs {
-            // Default to <repo_root>/.det-worktrees/ — keeps the harness
-            // off `/tmp` (which is tmpfs on many distros and exhausts
-            // fast when the cargo target dir lives inside the worktree).
-            // CI (GitHub Actions) sets RUNNER_TEMP to a disk-backed path
-            // outside the repo, so honor that when present.
-            let worktree_root = std::env::var_os("RUNNER_TEMP")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| self.repo_root.join(".det-worktrees"));
-            let _ = std::fs::create_dir_all(&worktree_root);
-            // Worktree path MUST be identical across runs. Some
-            // dependencies embed their absolute cargo-registry path as
-            // UTF-16LE inside the compiled binary (commonly seen on
-            // Windows where Win32 APIs need wchar paths). Rust's
-            // `--remap-path-prefix` operates on UTF-8 source-path
-            // references only and does NOT touch UTF-16-encoded
-            // strings. If the worktree path differs between runs (e.g.
-            // `...-run-0` vs `...-run-1`), those 2 bytes propagate
-            // into the binary, /Brepro hashes the new content,
-            // produces a different COFF TimeDateStamp, and cascades
-            // into every artifact wrapping the binary.
-            //
-            // Using a constant path with `remove_dir_all` between
-            // runs collapses both runs onto identical absolute paths
-            // and eliminates the UTF-16 drift entirely.
-            let worktree_path = worktree_root.join("anodize-determinism");
             // Defensive: prior aborted runs may have left the dir behind;
             // `git worktree add` would reject a populated target.
             let _ = std::fs::remove_dir_all(&worktree_path);
