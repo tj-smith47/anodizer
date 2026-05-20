@@ -18,6 +18,14 @@ use anyhow::Result;
 /// This whitelist exists to prevent accidental leakage of release
 /// credentials (`GITHUB_TOKEN`, `COSIGN_*`, signing keys, etc.) into
 /// arbitrary user-supplied commands.
+///
+/// Includes toolchain vars (`RUSTUP_*`, `CARGO_HOME`) so user hooks
+/// invoking `cargo` resolve a toolchain — without them, rustup-managed
+/// runners fail with `rustup could not choose a version of cargo to
+/// run`. Also includes CI identity vars (`CI`, `GITHUB_*`, `RUNNER_*`)
+/// so hooks can detect the runner context and emit appropriate output
+/// without seeing release credentials (`GITHUB_TOKEN` is intentionally
+/// not in the list).
 pub const ENV_WHITELIST: &[&str] = &[
     "HOME",
     "USER",
@@ -27,6 +35,26 @@ pub const ENV_WHITELIST: &[&str] = &[
     "TEMP",
     "PATH",
     "SYSTEMROOT",
+    "RUSTUP_HOME",
+    "RUSTUP_TOOLCHAIN",
+    "CARGO_HOME",
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITHUB_WORKFLOW",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_NUMBER",
+    "GITHUB_JOB",
+    "GITHUB_REPOSITORY",
+    "GITHUB_REF",
+    "GITHUB_REF_NAME",
+    "GITHUB_SHA",
+    "GITHUB_EVENT_NAME",
+    "GITHUB_WORKSPACE",
+    "RUNNER_OS",
+    "RUNNER_ARCH",
+    "RUNNER_NAME",
+    "RUNNER_TEMP",
+    "RUNNER_TOOL_CACHE",
 ];
 
 /// Construct a `Command` whose argv is `argv` and whose environment is
