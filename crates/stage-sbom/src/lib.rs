@@ -257,14 +257,13 @@ pub fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
 }
 
 /// Get the repository root via `git rev-parse --show-toplevel`.
-fn get_repo_root() -> Result<PathBuf> {
+fn get_repo_root(log: &anodizer_core::log::StageLogger) -> Result<PathBuf> {
+    log.debug("running: git rev-parse --show-toplevel");
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .context("sbom: failed to run git rev-parse")?;
-    if !output.status.success() {
-        bail!("sbom: git rev-parse --show-toplevel failed");
-    }
+    let output = log.check_output(output, "git rev-parse --show-toplevel")?;
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Ok(PathBuf::from(path))
 }
@@ -693,7 +692,7 @@ fn run_sbom_builtin(
         return Ok(());
     }
 
-    let search_dir = get_repo_root()
+    let search_dir = get_repo_root(&log)
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let cargo_lock_path = find_cargo_lock(&search_dir)?;
     let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path).with_context(|| {

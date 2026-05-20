@@ -20,6 +20,18 @@ use crate::generate::{NfpmLibraryPaths, generate_nfpm_yaml_with_env};
 
 pub struct NfpmStage;
 
+/// Render an `Option<String>` field in place through the template engine.
+///
+/// `None` is a no-op. Saves ~3 lines per field at the ~15 call sites where
+/// nfpm field-by-field templating used to expand the same `if let Some(ref
+/// s) = X { X = Some(ctx.render_template(s)?); }` shape inline.
+fn render_in_place(field: &mut Option<String>, ctx: &mut Context) -> Result<()> {
+    if let Some(s) = field.as_deref() {
+        *field = Some(ctx.render_template(s)?);
+    }
+    Ok(())
+}
+
 /// A fully-staged nfpm job: config YAML written, filename decided,
 /// subprocess args composed. Step 1 (serial, `&mut ctx`) renders all
 /// templates and writes the YAML into `_tmp_dir`; Step 2 (parallel)
@@ -383,86 +395,46 @@ impl Stage for NfpmStage {
                         if rendered_cfg.license.is_none() {
                             rendered_cfg.license = ctx.config.meta_license().map(str::to_string);
                         }
-                        if let Some(ref s) = rendered_cfg.description {
-                            rendered_cfg.description = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.maintainer {
-                            rendered_cfg.maintainer = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.homepage {
-                            rendered_cfg.homepage = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.license {
-                            rendered_cfg.license = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.vendor {
-                            rendered_cfg.vendor = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.section {
-                            rendered_cfg.section = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.priority {
-                            rendered_cfg.priority = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.changelog {
-                            rendered_cfg.changelog = Some(ctx.render_template(s)?);
-                        }
+                        render_in_place(&mut rendered_cfg.description, ctx)?;
+                        render_in_place(&mut rendered_cfg.maintainer, ctx)?;
+                        render_in_place(&mut rendered_cfg.homepage, ctx)?;
+                        render_in_place(&mut rendered_cfg.license, ctx)?;
+                        render_in_place(&mut rendered_cfg.vendor, ctx)?;
+                        render_in_place(&mut rendered_cfg.section, ctx)?;
+                        render_in_place(&mut rendered_cfg.priority, ctx)?;
+                        render_in_place(&mut rendered_cfg.changelog, ctx)?;
                         // Template-render bindir and mtime (GoReleaser parity)
-                        if let Some(ref s) = rendered_cfg.bindir {
-                            rendered_cfg.bindir = Some(ctx.render_template(s)?);
-                        }
-                        if let Some(ref s) = rendered_cfg.mtime {
-                            rendered_cfg.mtime = Some(ctx.render_template(s)?);
-                        }
+                        render_in_place(&mut rendered_cfg.bindir, ctx)?;
+                        render_in_place(&mut rendered_cfg.mtime, ctx)?;
                         // Template-render script paths
                         if let Some(ref mut scripts) = rendered_cfg.scripts {
-                            if let Some(ref s) = scripts.preinstall {
-                                scripts.preinstall = Some(ctx.render_template(s)?);
-                            }
-                            if let Some(ref s) = scripts.postinstall {
-                                scripts.postinstall = Some(ctx.render_template(s)?);
-                            }
-                            if let Some(ref s) = scripts.preremove {
-                                scripts.preremove = Some(ctx.render_template(s)?);
-                            }
-                            if let Some(ref s) = scripts.postremove {
-                                scripts.postremove = Some(ctx.render_template(s)?);
-                            }
+                            render_in_place(&mut scripts.preinstall, ctx)?;
+                            render_in_place(&mut scripts.postinstall, ctx)?;
+                            render_in_place(&mut scripts.preremove, ctx)?;
+                            render_in_place(&mut scripts.postremove, ctx)?;
                         }
                         // Template-render signature key_file and key_name
                         if let Some(ref mut deb) = rendered_cfg.deb
                             && let Some(ref mut sig) = deb.signature
-                            && let Some(ref s) = sig.key_file
                         {
-                            sig.key_file = Some(ctx.render_template(s)?);
+                            render_in_place(&mut sig.key_file, ctx)?;
                         }
                         if let Some(ref mut rpm) = rendered_cfg.rpm
                             && let Some(ref mut sig) = rpm.signature
-                            && let Some(ref s) = sig.key_file
                         {
-                            sig.key_file = Some(ctx.render_template(s)?);
+                            render_in_place(&mut sig.key_file, ctx)?;
                         }
                         if let Some(ref mut apk) = rendered_cfg.apk
                             && let Some(ref mut sig) = apk.signature
                         {
-                            if let Some(ref s) = sig.key_file {
-                                sig.key_file = Some(ctx.render_template(s)?);
-                            }
-                            if let Some(ref s) = sig.key_name {
-                                sig.key_name = Some(ctx.render_template(s)?);
-                            }
+                            render_in_place(&mut sig.key_file, ctx)?;
+                            render_in_place(&mut sig.key_name, ctx)?;
                         }
                         // Template-render libdirs
                         if let Some(ref mut libdirs) = rendered_cfg.libdirs {
-                            if let Some(ref s) = libdirs.header {
-                                libdirs.header = Some(ctx.render_template(s)?);
-                            }
-                            if let Some(ref s) = libdirs.cshared {
-                                libdirs.cshared = Some(ctx.render_template(s)?);
-                            }
-                            if let Some(ref s) = libdirs.carchive {
-                                libdirs.carchive = Some(ctx.render_template(s)?);
-                            }
+                            render_in_place(&mut libdirs.header, ctx)?;
+                            render_in_place(&mut libdirs.cshared, ctx)?;
+                            render_in_place(&mut libdirs.carchive, ctx)?;
                         }
 
                         // Template-render contents: src, dst, file_info.owner/group/mtime
@@ -471,15 +443,9 @@ impl Stage for NfpmStage {
                                 entry.src = ctx.render_template(&entry.src)?;
                                 entry.dst = ctx.render_template(&entry.dst)?;
                                 if let Some(ref mut fi) = entry.file_info {
-                                    if let Some(ref s) = fi.owner {
-                                        fi.owner = Some(ctx.render_template(s)?);
-                                    }
-                                    if let Some(ref s) = fi.group {
-                                        fi.group = Some(ctx.render_template(s)?);
-                                    }
-                                    if let Some(ref s) = fi.mtime {
-                                        fi.mtime = Some(ctx.render_template(s)?);
-                                    }
+                                    render_in_place(&mut fi.owner, ctx)?;
+                                    render_in_place(&mut fi.group, ctx)?;
+                                    render_in_place(&mut fi.mtime, ctx)?;
                                 }
                             }
                         }

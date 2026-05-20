@@ -74,9 +74,51 @@ pub struct FlatpakStage;
 
 /// Parse Os and Arch from a Rust target triple using the shared mapping.
 fn os_arch_from_target(target: Option<&str>) -> (String, String) {
-    target
-        .map(anodizer_core::target::map_target)
-        .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()))
+    anodizer_core::target::os_arch_with_default(target, "linux")
+}
+
+/// Resolve `extra_files` specs to `(source_path, destination_filename)` pairs.
+///
+/// Walks the configured glob patterns, keeps only regular files, and pairs
+/// each match with the spec's `name_template` (or, if unset, the source
+/// basename). Invalid glob patterns are warned-and-skipped to match the
+/// previous in-place behaviour. Centralises the spec-iteration shape so the
+/// manifest-emission path and the copy-into-workdir path agree on which
+/// files participate and what filename they take in `/app/share/<id>/`.
+fn resolve_extra_file_specs(
+    specs: &[anodizer_core::config::ExtraFileSpec],
+    log: &anodizer_core::log::StageLogger,
+) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    for spec in specs {
+        let pattern = spec.glob();
+        match glob::glob(pattern) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if entry.is_file() {
+                        let dst_name = spec
+                            .name_template()
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                entry
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .map(|s| s.to_string())
+                            })
+                            .unwrap_or_else(|| "extra".to_string());
+                        out.push((entry, dst_name));
+                    }
+                }
+            }
+            Err(e) => {
+                log.warn(&format!(
+                    "invalid extra_files glob pattern '{}': {}",
+                    pattern, e
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// A fully-staged flatpak job. Step 1 (serial, `&mut ctx`) stages the
@@ -357,37 +399,15 @@ impl Stage for FlatpakStage {
                     let finish_args = flatpak_cfg.finish_args.clone().unwrap_or_default();
 
                     // Resolve extra_files globs to concrete file names
-                    let mut extra_file_names: Vec<String> = Vec::new();
-                    if let Some(extra_files) = &flatpak_cfg.extra_files {
-                        for spec in extra_files {
-                            let pattern = spec.glob();
-                            match glob::glob(pattern) {
-                                Ok(entries) => {
-                                    for entry in entries.flatten() {
-                                        if entry.is_file() {
-                                            let dst_name = spec
-                                                .name_template()
-                                                .map(|s| s.to_string())
-                                                .or_else(|| {
-                                                    entry
-                                                        .file_name()
-                                                        .and_then(|n| n.to_str())
-                                                        .map(|s| s.to_string())
-                                                })
-                                                .unwrap_or_else(|| "extra".to_string());
-                                            extra_file_names.push(dst_name);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    log.warn(&format!(
-                                        "invalid extra_files glob pattern '{}': {}",
-                                        pattern, e
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                    let extra_file_names: Vec<String> =
+                        if let Some(extra_files) = &flatpak_cfg.extra_files {
+                            resolve_extra_file_specs(extra_files, &log)
+                                .into_iter()
+                                .map(|(_, dst)| dst)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
 
                     // Build manifest sources and build_commands
                     let mut sources = vec![ManifestSource {
@@ -497,39 +517,11 @@ impl Stage for FlatpakStage {
 
                     // Copy extra files into working dir
                     if let Some(extra_files) = &flatpak_cfg.extra_files {
-                        for spec in extra_files {
-                            let pattern = spec.glob();
-                            match glob::glob(pattern) {
-                                Ok(entries) => {
-                                    for entry in entries.flatten() {
-                                        if entry.is_file() {
-                                            let dst_name = spec
-                                                .name_template()
-                                                .map(|s| s.to_string())
-                                                .or_else(|| {
-                                                    entry
-                                                        .file_name()
-                                                        .and_then(|n| n.to_str())
-                                                        .map(|s| s.to_string())
-                                                })
-                                                .unwrap_or_else(|| "extra".to_string());
-                                            let dst = work_dir.join(&dst_name);
-                                            fs::copy(&entry, &dst).with_context(|| {
-                                                format!(
-                                                    "copy extra file {} to work dir",
-                                                    entry.display()
-                                                )
-                                            })?;
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    log.warn(&format!(
-                                        "invalid extra_files glob pattern '{}': {}",
-                                        pattern, e
-                                    ));
-                                }
-                            }
+                        for (entry, dst_name) in resolve_extra_file_specs(extra_files, &log) {
+                            let dst = work_dir.join(&dst_name);
+                            fs::copy(&entry, &dst).with_context(|| {
+                                format!("copy extra file {} to work dir", entry.display())
+                            })?;
                         }
                     }
 

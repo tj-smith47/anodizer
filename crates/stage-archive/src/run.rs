@@ -459,6 +459,17 @@ impl Stage for ArchiveStage {
                     } else {
                         None
                     };
+                    // Reject path-traversal segments and absolute paths so a
+                    // user template cannot rewrite archive entries to an
+                    // arbitrary on-disk location once unpacked.
+                    if let Some(ref rendered) = wrap_dir_rendered
+                        && (rendered.contains("..") || Path::new(rendered).is_absolute())
+                    {
+                        bail!(
+                            "archive: wrap_in_directory '{}' must be a relative path with no '..' segments",
+                            rendered
+                        );
+                    }
                     let wrap_dir = wrap_dir_rendered.as_deref();
 
                     // Collect binary files — unless meta archive

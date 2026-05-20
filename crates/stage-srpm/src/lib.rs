@@ -255,11 +255,10 @@ impl Stage for SrpmStage {
             .output()
             .with_context(|| "srpm: failed to spawn rpmbuild")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            anyhow::bail!("rpmbuild -bs failed:\n{}{}", stdout, stderr);
-        }
+        // Route through the logger so stderr/stdout are passed through
+        // env-driven redaction before they reach the error chain. rpmbuild
+        // echoes GPG_PASSPHRASE / SRPM_PASSPHRASE on signing failure.
+        log.check_output(output, "rpmbuild -bs")?;
 
         // Find the generated SRPM in SRPMS/
         let generated: Vec<PathBuf> = glob::glob(&format!("{}/**/*.src.rpm", srpms_dir.display()))

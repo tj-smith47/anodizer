@@ -107,9 +107,18 @@ fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Redact sensitive values from command args for safe logging.
-fn redact_args(args: &[String]) -> Vec<String> {
-    // Anything immediately following one of these flags is a credential or
-    // file path containing a credential.
+///
+/// Two-pass redaction:
+///   1. Per-flag pass — anything immediately following a known sensitive
+///      flag (`--password`, `--api-key-path`, …) is swapped for `[REDACTED]`.
+///      Catches the case where the credential is a literal CLI arg.
+///   2. Env-value pass — the joined argv string is re-run through the
+///      logger's env-driven redactor (`core::redact::string`), so secrets
+///      that arrive via the environment (APPLE_API_KEY, APPLE_API_ISSUER,
+///      AC_PASSWORD, …) but get echoed into argv via shell expansion are
+///      replaced with `$KEY_NAME`. Tokens are only redacted if `log` has
+///      env pairs attached; the per-flag pass still runs.
+fn redact_args(args: &[String], log: &anodizer_core::log::StageLogger) -> Vec<String> {
     let sensitive_flags = [
         "--p12-password",
         "--api-key-path",
@@ -128,7 +137,7 @@ fn redact_args(args: &[String]) -> Vec<String> {
             result.push(arg.clone());
             redact_next = true;
         } else {
-            result.push(arg.clone());
+            result.push(log.redact(arg));
         }
     }
     result
@@ -183,13 +192,22 @@ const RETRIABLE_OUTPUT_MARKERS: &[&str] = &[
 /// (network blip, retriable HTTP status). Apple-side hard rejections must
 /// not retry; treat them as terminal so misconfigured artifacts fail fast
 /// instead of burning multi-minute App Store Connect API quota.
-fn is_retriable_notarize_output(output: &std::process::Output) -> bool {
-    let combined = format!(
+///
+/// Output is run through the logger's env-driven redaction BEFORE the
+/// substring contains-check so a credential value that happens to coincide
+/// with a retry marker substring cannot influence retry classification —
+/// and so any diagnostic log written from inside the retry loop reads from
+/// the same scrubbed text.
+fn is_retriable_notarize_output(
+    output: &std::process::Output,
+    log: &anodizer_core::log::StageLogger,
+) -> bool {
+    let raw = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    )
-    .to_lowercase();
+    );
+    let combined = log.redact(&raw).to_lowercase();
     if combined.contains("status: invalid")
         || combined.contains("invalid submission")
         || combined.contains("status: rejected")
@@ -232,7 +250,7 @@ fn run_with_retry(
         let try_n = attempt + 1;
         match build_command_from_args(args).output() {
             Ok(output) => {
-                if output.status.success() || !is_retriable_notarize_output(&output) {
+                if output.status.success() || !is_retriable_notarize_output(&output, log) {
                     return Ok(output);
                 }
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -647,7 +665,7 @@ fn run_cross_platform(
         if dry_run {
             log.status(&format!(
                 "  [dry-run] would run: {}",
-                redact_args(&sign_args).join(" ")
+                redact_args(&sign_args, log).join(" ")
             ));
         } else {
             // M6: rcodesign sign contacts Apple's RFC 3161 timestamp server
@@ -694,7 +712,7 @@ fn run_cross_platform(
             if dry_run {
                 log.status(&format!(
                     "  [dry-run] would run: {}",
-                    redact_args(&notarize_args).join(" ")
+                    redact_args(&notarize_args, log).join(" ")
                 ));
             } else {
                 // M6: wrap in a 3-attempt 30s exponential retry so a
@@ -2317,9 +2335,15 @@ crates: []
     }
 
     #[cfg(unix)]
+    fn test_logger() -> anodizer_core::log::StageLogger {
+        anodizer_core::log::StageLogger::new("notarize", anodizer_core::log::Verbosity::Quiet)
+    }
+
+    #[cfg(unix)]
     #[test]
     fn test_is_retriable_notarize_output_network_markers() {
         // Network-side blips: must classify as retriable.
+        let log = test_logger();
         for marker in [
             "tls: bad record",
             "i/o timeout",
@@ -2331,7 +2355,7 @@ crates: []
         ] {
             let out = fake_output(marker, 1);
             assert!(
-                is_retriable_notarize_output(&out),
+                is_retriable_notarize_output(&out, &log),
                 "should retry on '{marker}'"
             );
         }
@@ -2343,6 +2367,7 @@ crates: []
         // Apple-side hard rejections: must NOT retry. Re-submitting an
         // invalid bundle is wasted API quota and worse UX (multi-minute
         // delays before the user sees the real error).
+        let log = test_logger();
         for marker in [
             "status: Invalid",
             "Invalid submission",
@@ -2351,7 +2376,7 @@ crates: []
         ] {
             let out = fake_output(marker, 1);
             assert!(
-                !is_retriable_notarize_output(&out),
+                !is_retriable_notarize_output(&out, &log),
                 "must NOT retry on '{marker}'"
             );
         }
@@ -2364,7 +2389,7 @@ crates: []
         // CLI args, certificate not found) is treated as terminal — retrying
         // will not help.
         let out = fake_output("error: --p12-file: no such file", 64);
-        assert!(!is_retriable_notarize_output(&out));
+        assert!(!is_retriable_notarize_output(&out, &test_logger()));
     }
 
     #[cfg(unix)]

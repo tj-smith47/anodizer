@@ -61,9 +61,7 @@ pub struct NsisStage;
 
 /// Parse Os and Arch from a Rust target triple using the shared mapping.
 fn os_arch_from_target(target: Option<&str>) -> (String, String) {
-    target
-        .map(anodizer_core::target::map_target)
-        .unwrap_or_else(|| ("windows".to_string(), "amd64".to_string()))
+    anodizer_core::target::os_arch_with_default(target, "windows")
 }
 
 /// Default output filename template: `{ProjectName}_{Version}_{Arch}_setup.exe`

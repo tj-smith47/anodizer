@@ -361,6 +361,21 @@ pub(crate) fn process_sign_configs(
                 .transpose()?;
 
             let certificate_for_vars = certificate_str.clone();
+            // Invariant: every value below is supplied by anodizer itself,
+            // not by raw user input. Sources:
+            //   - artifact / artifactName: stage-derived path / basename of
+            //     an Artifact produced upstream (build/archive/etc.).
+            //   - signature / certificate: rendered from sign-stage
+            //     templates against the controlled template var set, then
+            //     joined with a `dist/` prefix below if not already
+            //     absolute.
+            //   - digest / artifactID: read from artifact metadata, also
+            //     populated by stages (no direct config write surface).
+            // Values feed `Command::args` (no shell), so shell metacharacters
+            // (`;`, backticks, `$()`) cannot escape into a subshell. Keep
+            // this invariant in mind when adding new entries — anything
+            // user-controllable that reaches argv must still be free of
+            // path-traversal / option-injection risk.
             let shell_vars: HashMap<&str, &str> = HashMap::from([
                 ("artifact", artifact_str.as_ref()),
                 ("signature", signature_str.as_str()),

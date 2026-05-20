@@ -101,6 +101,19 @@ pub fn is_nfpm_target(triple: &str) -> bool {
     is_linux(triple) || is_ios(triple) || triple.contains("android") || is_aix(triple)
 }
 
+/// Map an optional target triple to `(os, arch)` strings, falling back to
+/// `(default_os, "amd64")` when no triple is supplied.
+///
+/// Each platform-specific stage (DMG, AppBundle, NSIS, Flatpak) needs the
+/// same lookup but with its own platform-specific default OS — DMG and
+/// AppBundle default to darwin, NSIS to windows, Flatpak to linux. Sharing
+/// the call site here keeps the default-OS list discoverable in one place.
+pub fn os_arch_with_default(target: Option<&str>, default_os: &str) -> (String, String) {
+    target
+        .map(map_target)
+        .unwrap_or_else(|| (default_os.to_string(), "amd64".to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
