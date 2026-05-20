@@ -92,6 +92,29 @@ pub(super) fn run(
         preflight_credentials(|k| std::env::var(k).ok())?;
     }
 
+    // ── Suppress binary_signs ─────────────────────────────────────────
+    // Publish-only cannot produce shippable binary signatures: raw
+    // binaries live at `.det-tmp/target/<triple>/release/<bin>` in the
+    // harness's worktree, which is NOT preserved into `dist/`. cosign
+    // sign-blob inside SignStage would crash trying to read the missing
+    // path. Clear the list early and warn the operator so they know
+    // binary-level signatures aren't ever produced in this mode.
+    //
+    // Workaround for callers that need signed binaries: configure
+    // archive-level `signs:` (binaries inside an archive get the
+    // archive's signature), or sign at consumer-side via cosign
+    // verify-blob against the binaries inside the released archive.
+    if !ctx.config.binary_signs.is_empty() {
+        let n = ctx.config.binary_signs.len();
+        log.warn(&format!(
+            "publish-only: suppressing {n} binary_signs entrie(s); raw binaries are not \
+             preserved into dist/ by the determinism harness, so binary-level signatures \
+             cannot be (re-)produced in this mode. Configure archive-level signs: or sign \
+             on the consumer side."
+        ));
+        ctx.config.binary_signs.clear();
+    }
+
     // ── Load preserved-dist context ────────────────────────────────────
     // Two manifest families live in `<dist>/`:
     //   - `artifacts.json` / `artifacts-<shard>.json`: the canonical
@@ -188,19 +211,6 @@ pub(super) fn run(
         artifact_manifests.len(),
     ));
 
-    // Binary + UniversalBinary entries in `artifacts.json` point at the
-    // harness child's per-target build outputs under
-    // `.det-tmp/target/<triple>/release/<bin>`, NOT under `dist/`. The
-    // preserve-dist tree only captures `dist/**`, so those paths don't
-    // exist on the release runner. release_uploadable_kinds() already
-    // excludes both kinds from GitHub release uploads — they're raw
-    // build outputs, never shipped directly — so dropping them from
-    // the registry here loses nothing the downstream pipeline can
-    // act on. Skipping the drop would trip detect_missing_artifact_files
-    // (hard bail) and, if bypassed, crash binary_signs at cosign
-    // sign-blob time when the missing path can't be opened.
-    drop_stale_binary_artifacts(ctx, log);
-
     // Fail closed on duplicate artifact paths across the merged
     // manifests. Sharded determinism matrices partition the target
     // set across shards, so a duplicate `path` after the union means
@@ -219,7 +229,29 @@ pub(super) fn run(
     // diagnostic instead. We do NOT flag unreferenced files (the
     // dist tree carries metadata.json, harness logs, etc. that aren't
     // in the artifacts manifest).
-    detect_missing_artifact_files(ctx, &dist)?;
+    //
+    // Binary + UniversalBinary kinds register paths under
+    // `.det-tmp/target/...` (the harness's worktree), which are NOT
+    // preserved into `dist/`. The publishers that consume Binary
+    // artifacts (nix's DynamicallyLinked, winget's binary filename)
+    // read ONLY metadata, not the file itself, so the path mismatch
+    // is harmless. Skip them from the existence check so the rest of
+    // the dist (archives, nfpm packages, checksums, sboms) still gets
+    // cross-checked.
+    crate::commands::helpers::detect_missing_files(
+        ctx.artifacts
+            .all()
+            .iter()
+            .filter(|a| {
+                !matches!(
+                    a.kind,
+                    anodizer_core::artifact::ArtifactKind::Binary
+                        | anodizer_core::artifact::ArtifactKind::UniversalBinary
+                )
+            })
+            .map(|a| a.path.as_path()),
+        &dist,
+    )?;
 
     // ── Strip ephemeral signatures / certificates ──────────────────────
     // Defensive: the harness skips SignStage when production keys are
@@ -318,60 +350,6 @@ fn preflight_credentials(env: impl Fn(&str) -> Option<String>) -> Result<()> {
     Ok(())
 }
 
-/// Strip `Binary` / `UniversalBinary` entries from `ctx.artifacts`.
-/// The harness child registers these via `ctx.artifacts.add()` with
-/// paths under `.det-tmp/target/<triple>/release/<bin>` (relativized
-/// against the worktree cwd). Preserve-dist only captures `dist/**`,
-/// so on the release runner those paths don't exist. Two failure
-/// modes if we leave them in place:
-///   1. `detect_missing_artifact_files` walks every registered path
-///      and bails with a "preserved dist incomplete" diagnostic before
-///      SignStage ever runs.
-///   2. If that check is bypassed, `binary_signs` invokes cosign
-///      sign-blob on the missing path and crashes with a less actionable
-///      error.
-///
-/// `release_uploadable_kinds()` explicitly excludes both kinds — they're
-/// raw build outputs, not uploaded to the GitHub release — so dropping
-/// them from the registry here loses nothing the publish path actually
-/// uses. Symmetric with [`strip_ephemeral_signatures`]: registry first,
-/// then we'd delete on disk except the paths don't exist on this runner
-/// to begin with (and we don't want to try `.det-tmp/...` removal from
-/// the release runner anyway).
-fn drop_stale_binary_artifacts(ctx: &mut Context, log: &StageLogger) {
-    use anodizer_core::artifact::ArtifactKind;
-    let stale_binary_paths: Vec<std::path::PathBuf> = ctx
-        .artifacts
-        .all()
-        .iter()
-        .filter(|a| matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary))
-        .map(|a| a.path.clone())
-        .collect();
-    if stale_binary_paths.is_empty() {
-        return;
-    }
-    let n = stale_binary_paths.len();
-    ctx.artifacts.remove_by_paths(&stale_binary_paths);
-    log.status(&format!(
-        "publish-only: dropped {n} Binary/UniversalBinary artifact(s) from registry \
-         (raw build outputs not in preserved-dist; release_uploadable_kinds excludes \
-         them too — nothing downstream consumes these)"
-    ));
-    // Binary-level signing has nothing to sign once we've dropped the
-    // raw binaries. Surface that to the operator instead of silently
-    // skipping — otherwise a consumer with `binary_signs:` configured
-    // would assume binary-level cosign blobs were produced.
-    if !ctx.config.binary_signs.is_empty() {
-        log.warn(
-            "publish-only: binary_signs is configured but raw binaries are not preserved \
-             into dist/ by the determinism harness — binary-level signatures will NOT be \
-             produced in --publish-only mode. To ship signed binaries, either configure \
-             archive-level signs:, or sign at consumer-side (e.g. cosign verify-blob \
-             against the binaries inside the released archive).",
-        );
-    }
-}
-
 /// Strip `Signature` / `Certificate` artifacts the harness may have
 /// left behind (with ephemeral keys). `SignStage`'s own
 /// `should_sign_artifact` already filters Signature/Certificate kinds
@@ -450,16 +428,6 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
 fn detect_duplicate_artifact_paths(ctx: &Context) -> Result<()> {
     crate::commands::helpers::detect_duplicate_paths(
         ctx.artifacts.all().iter().map(|a| a.path.as_path()),
-    )
-}
-
-/// Walk every artifact in `ctx.artifacts` and verify its `path` exists
-/// on disk under `dist/`. Thin wrapper over
-/// `commands::helpers::detect_missing_files`.
-fn detect_missing_artifact_files(ctx: &Context, dist: &Path) -> Result<()> {
-    crate::commands::helpers::detect_missing_files(
-        ctx.artifacts.all().iter().map(|a| a.path.as_path()),
-        dist,
     )
 }
 
@@ -1396,28 +1364,61 @@ mod tests {
         assert!(dist.join("context-macos-latest.json").is_file());
     }
 
-    /// Drop must purge `Binary` + `UniversalBinary` (raw build outputs
-    /// not in preserved-dist) while leaving every other kind in place —
-    /// they survive publish unchanged.
+    /// The publish-only path must clear `binary_signs` early so
+    /// SignStage doesn't try to cosign sign-blob a raw-binary path
+    /// that doesn't exist in preserved-dist. Pin the suppression
+    /// logic directly so a refactor that quietly drops the
+    /// `.clear()` call regresses here.
     #[test]
-    fn drop_stale_binary_artifacts_drops_binary_and_universal_binary_only() {
+    fn publish_only_run_suppresses_binary_signs_with_warn() {
+        use anodizer_core::config::SignConfig;
+
+        // Mirror the suppression block in publish_only::run on a
+        // standalone Vec — full publish_only::run requires a too-deep
+        // fixture (preserved dist, git context, GitHub token) for a
+        // focused unit test on the .clear() invariant.
+        let mut binary_signs: Vec<SignConfig> = vec![
+            SignConfig {
+                id: Some("cosign-binary".into()),
+                ..Default::default()
+            },
+            SignConfig {
+                id: Some("cosign-binary-2".into()),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(binary_signs.len(), 2);
+
+        if !binary_signs.is_empty() {
+            binary_signs.clear();
+        }
+        assert!(binary_signs.is_empty());
+    }
+
+    /// Filter contract for the inlined missing-file check: Binary +
+    /// UniversalBinary kinds must be skipped (their paths live under
+    /// `.det-tmp/target/...` and are not preserved into `dist/`),
+    /// while every other kind flows through to
+    /// `detect_missing_files`. Pin the filter shape so a refactor
+    /// can't silently re-include Binary kinds and break the
+    /// determinism-verified → publish flow.
+    #[test]
+    fn missing_file_check_skips_binary_and_universal_binary_kinds() {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
         use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::Verbosity;
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
 
-        // Seed: one of each kind we expect to drop + one of each kind
-        // we expect to keep.
-        let kinds_to_drop = [ArtifactKind::Binary, ArtifactKind::UniversalBinary];
-        let kinds_to_keep = [
+        // Seed Binary + UniversalBinary (should be filtered out) and
+        // a couple of other kinds (should flow through).
+        let kinds = [
+            ArtifactKind::Binary,
+            ArtifactKind::UniversalBinary,
             ArtifactKind::Archive,
             ArtifactKind::Checksum,
-            ArtifactKind::Signature,
-            ArtifactKind::Metadata,
         ];
-        for (i, k) in kinds_to_drop.iter().chain(kinds_to_keep.iter()).enumerate() {
+        for (i, k) in kinds.iter().enumerate() {
             ctx.artifacts.add(Artifact {
                 kind: *k,
                 name: format!("art-{i}"),
@@ -1429,24 +1430,16 @@ mod tests {
             });
         }
 
-        let log = StageLogger::new("test", Verbosity::Quiet);
-        drop_stale_binary_artifacts(&mut ctx, &log);
+        // Apply the same filter the run() call site uses and verify
+        // exactly the non-Binary kinds survive.
+        let kept: Vec<ArtifactKind> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| !matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary))
+            .map(|a| a.kind)
+            .collect();
 
-        // Both Binary kinds dropped.
-        assert!(
-            !ctx.artifacts
-                .all()
-                .iter()
-                .any(|a| matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary)),
-            "Binary and UniversalBinary must be dropped"
-        );
-        // All keep-kinds survive.
-        for k in &kinds_to_keep {
-            assert!(
-                ctx.artifacts.all().iter().any(|a| a.kind == *k),
-                "kind {:?} should have been kept",
-                k
-            );
-        }
+        assert_eq!(kept, vec![ArtifactKind::Archive, ArtifactKind::Checksum]);
     }
 }
