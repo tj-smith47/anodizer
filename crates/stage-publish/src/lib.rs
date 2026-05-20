@@ -530,8 +530,6 @@ fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], 
 /// `Ok(())` on first run (no report yet), when `--allow-rerun` is
 /// set, or under any of the skip conditions documented at the call
 /// site (snapshot / dry-run / rollback-only / run_id == "local").
-///
-/// Audit ref: 2026-05-15 release-resilience-review finding I4.
 fn refuse_rerun_if_report_exists(ctx: &Context) -> Result<()> {
     if ctx.is_snapshot() || ctx.is_dry_run() {
         return Ok(());
@@ -727,7 +725,6 @@ impl Stage for PublishStage {
             return Ok(());
         }
 
-        // Audit ref: 2026-05-15 release-resilience-review finding I4.
         // Refuse to re-run publish when a prior `report.json` exists
         // for the current `run_id` unless the operator explicitly
         // opts in via `--allow-rerun`. The guard exists because
@@ -1839,11 +1836,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // I4 — refuse_rerun_if_report_exists.
-    //
-    // Guards PublishStage::run from re-publishing when a prior run's
-    // report.json is on disk for the same `run_id`. Audit ref:
-    // 2026-05-15 release-resilience-review finding I4.
+    // refuse_rerun_if_report_exists — guards PublishStage::run from
+    // re-publishing when a prior run's report.json is on disk for the
+    // same `run_id`. PR-based publishers (homebrew / scoop / nix /
+    // krew / MCP) open a fresh PR on each invocation, so re-running
+    // against the same tag would duplicate work with no safeguard.
     // -----------------------------------------------------------------------
 
     /// Build a Context whose `config.dist` is a real on-disk tempdir

@@ -75,11 +75,12 @@ pub(super) fn run(
     let dist = config.dist.clone();
 
     // ── Pre-flight credential check ────────────────────────────────────
-    // Bail BEFORE any state mutation. Spec section C: "Pre-flight
-    // credential check at top of publish-only". Dry-run skips so
-    // operators can preview the pipeline without secrets;
-    // `--no-preflight` is the explicit operator opt-out for the rare
-    // case where they want the mid-pipeline failure instead.
+    // Bail BEFORE any state mutation: a credential miss this late
+    // (mid-pipeline) leaves a partially-uploaded release behind with no
+    // idempotent recovery. Dry-run skips so operators can preview the
+    // pipeline without secrets; `--no-preflight` is the explicit
+    // operator opt-out for the rare case where they want the
+    // mid-pipeline failure instead.
     if opts.dry_run {
         log.verbose("(dry-run) skipping production-credential preflight");
     } else if opts.no_preflight {
@@ -187,6 +188,19 @@ pub(super) fn run(
         artifact_manifests.len(),
     ));
 
+    // Binary + UniversalBinary entries in `artifacts.json` point at the
+    // harness child's per-target build outputs under
+    // `.det-tmp/target/<triple>/release/<bin>`, NOT under `dist/`. The
+    // preserve-dist tree only captures `dist/**`, so those paths don't
+    // exist on the release runner. release_uploadable_kinds() already
+    // excludes both kinds from GitHub release uploads — they're raw
+    // build outputs, never shipped directly — so dropping them from
+    // the registry here loses nothing the downstream pipeline can
+    // act on. Skipping the drop would trip detect_missing_artifact_files
+    // (hard bail) and, if bypassed, crash binary_signs at cosign
+    // sign-blob time when the missing path can't be opened.
+    drop_stale_binary_artifacts(ctx, log);
+
     // Fail closed on duplicate artifact paths across the merged
     // manifests. Sharded determinism matrices partition the target
     // set across shards, so a duplicate `path` after the union means
@@ -208,29 +222,41 @@ pub(super) fn run(
     detect_missing_artifact_files(ctx, &dist)?;
 
     // ── Strip ephemeral signatures / certificates ──────────────────────
-    // Defensive: the harness Phase-1 work skips SignStage when
-    // production keys are set on the runner, so preserved-dist
-    // usually has no `.sig` / `.asc` files. But re-signing on top
-    // of an existing chain (e.g. operator ran the harness without
-    // prod keys, then brought them in) would emit `*.sig.sig` /
-    // `*.pem.sig` — corrupt checksums and confuse downstream
-    // verifiers. Strip up-front so `SignStage` always sees a clean
-    // input registry.
+    // Defensive: the harness skips SignStage when production keys are
+    // exported on the runner, so preserved-dist usually has no `.sig`
+    // / `.asc` files. But re-signing on top of an existing chain (e.g.
+    // operator ran the harness without prod keys, then brought them
+    // in) would emit `*.sig.sig` / `*.pem.sig` — corrupt checksums
+    // and confuse downstream verifiers. Strip up-front so `SignStage`
+    // always sees a clean input registry.
     strip_ephemeral_signatures(ctx, log);
 
     // ── Run the extended publish pipeline ──────────────────────────────
-    // `build_publish_only_pipeline` is `[SignStage, ReleaseStage,
-    // PublishStage, BlobStage, SnapcraftPublishStage]` — the head
-    // SignStage is the production-keys re-sign pass that spec
-    // section D.1 requires. Distinct from the legacy
-    // `build_publish_pipeline` (consumed by `anodize publish`) which
-    // does NOT prepend SignStage; conflating them would silently
-    // introduce a new credential requirement to `anodize publish`.
+    // `build_publish_only_pipeline` prepends `SignStage` ahead of the
+    // usual release / publish / blob / snapcraft-publish chain — the
+    // head SignStage is the production-keys re-sign pass that overlays
+    // shippable signatures on the byte-stable preserved archives.
+    // Distinct from `build_publish_pipeline` (consumed by `anodize
+    // publish`) which does NOT prepend SignStage; conflating them
+    // would silently introduce a new credential requirement to
+    // `anodize publish`.
     let p = pipeline::build_publish_only_pipeline();
     let result = p.run(ctx, log);
 
     if result.is_ok() {
         super::run_post_pipeline(ctx, config, opts.dry_run, log)?;
+
+        // run_post_pipeline writes the canonical un-suffixed
+        // artifacts.json from the merged registry. The per-shard
+        // manifests (artifacts-*.json, context-*.json) that fed the
+        // merge are no longer load-bearing, and their continued
+        // presence next to the new un-suffixed file would trip
+        // check_no_unsuffixed_suffixed_collision on a retry. Delete
+        // them so a second invocation (operator-driven workflow rerun)
+        // sees a clean canonical layout. Best-effort: by the time this
+        // runs the release has already completed successfully, so a
+        // remove failure is logged but never propagated.
+        cleanup_shard_manifests(&dist, log);
     }
 
     // Same gate as `release` / `--merge`: required-publisher failures
@@ -290,6 +316,47 @@ fn preflight_credentials(env: impl Fn(&str) -> Option<String>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Strip `Binary` / `UniversalBinary` entries from `ctx.artifacts`.
+/// The harness child registers these via `ctx.artifacts.add()` with
+/// paths under `.det-tmp/target/<triple>/release/<bin>` (relativized
+/// against the worktree cwd). Preserve-dist only captures `dist/**`,
+/// so on the release runner those paths don't exist. Two failure
+/// modes if we leave them in place:
+///   1. `detect_missing_artifact_files` walks every registered path
+///      and bails with a "preserved dist incomplete" diagnostic before
+///      SignStage ever runs.
+///   2. If that check is bypassed, `binary_signs` invokes cosign
+///      sign-blob on the missing path and crashes with a less actionable
+///      error.
+///
+/// `release_uploadable_kinds()` explicitly excludes both kinds — they're
+/// raw build outputs, not uploaded to the GitHub release — so dropping
+/// them from the registry here loses nothing the publish path actually
+/// uses. Symmetric with [`strip_ephemeral_signatures`]: registry first,
+/// then we'd delete on disk except the paths don't exist on this runner
+/// to begin with (and we don't want to try `.det-tmp/...` removal from
+/// the release runner anyway).
+fn drop_stale_binary_artifacts(ctx: &mut Context, log: &StageLogger) {
+    use anodizer_core::artifact::ArtifactKind;
+    let stale_binary_paths: Vec<std::path::PathBuf> = ctx
+        .artifacts
+        .all()
+        .iter()
+        .filter(|a| matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary))
+        .map(|a| a.path.clone())
+        .collect();
+    if stale_binary_paths.is_empty() {
+        return;
+    }
+    let n = stale_binary_paths.len();
+    ctx.artifacts.remove_by_paths(&stale_binary_paths);
+    log.status(&format!(
+        "publish-only: dropped {n} Binary/UniversalBinary artifact(s) from registry \
+         (raw build outputs not in preserved-dist; release_uploadable_kinds excludes \
+         them too — nothing downstream consumes these)"
+    ));
 }
 
 /// Strip `Signature` / `Certificate` artifacts the harness may have
@@ -744,6 +811,51 @@ fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> R
     Ok(())
 }
 
+/// Delete sharded `<base>-<shard>.json` manifests at dist root after the
+/// canonical un-suffixed `<base>.json` has been re-written by
+/// `run_post_pipeline`. Targets both `context` and `artifacts` families.
+///
+/// Best-effort: logs a warn on each remove failure but does not fail
+/// the publish — by the time this is called the release has already
+/// completed successfully, and a stale shard manifest only matters on
+/// the next retry (where it would trip
+/// `check_no_unsuffixed_suffixed_collision`).
+fn cleanup_shard_manifests(dist: &Path, log: &StageLogger) {
+    for base in ["context", "artifacts"] {
+        let entries = match std::fs::read_dir(dist) {
+            Ok(e) => e,
+            Err(e) => {
+                log.warn(&format!(
+                    "publish-only: failed to read {} for shard-manifest cleanup: {} \
+                     (a retry may trip the unsuffixed-vs-suffixed collision check)",
+                    dist.display(),
+                    e,
+                ));
+                return;
+            }
+        };
+        let prefix = format!("{base}-");
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = match name.to_str() {
+                Some(s) => s,
+                None => continue,
+            };
+            if name_str.starts_with(&prefix) && name_str.ends_with(".json") {
+                let path = entry.path();
+                if let Err(e) = std::fs::remove_file(&path) {
+                    log.warn(&format!(
+                        "publish-only: failed to remove shard manifest {}: {} \
+                         (a retry may trip the unsuffixed-vs-suffixed collision check)",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,9 +885,9 @@ mod tests {
             msg.contains("--preserve-dist"),
             "error should point at the preserve-dist flag; got: {msg}"
         );
-        // M3 regression: the error must use the literal placeholder,
-        // not a path.parent() interpolation that would emit "." for
-        // relative paths.
+        // The error must use the literal `<dist-dir>` placeholder, not
+        // a `path.parent()` interpolation that would emit "." for
+        // relative paths and confuse the operator on the recovery hint.
         assert!(
             msg.contains("<dist-dir>"),
             "error should use the literal <dist-dir> placeholder; got: {msg}"
@@ -868,7 +980,8 @@ mod tests {
     fn discover_sharded_manifests_skips_tmp_siblings_uniformly() {
         // Both manifest families (`context`, `artifacts`) must skip a
         // `*.tmp` file the harness's atomic-rename writer may have
-        // left mid-crash. Regression guard for WARN A2.
+        // left mid-crash — a leftover scratch file never represents a
+        // committed manifest, regardless of which base it sits next to.
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("context.json"), "{}").unwrap();
         std::fs::write(tmp.path().join("context.json.tmp"), "garbage").unwrap();

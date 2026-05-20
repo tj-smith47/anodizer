@@ -593,15 +593,14 @@ impl Pipeline {
     /// Run every registered stage in order; `emit_summary` always
     /// fires after the inner body returns, regardless of `Ok`/`Err`.
     ///
-    /// Audit ref: 2026-05-15 release-resilience-review finding I1.
     /// `emit_summary` runs at the pipeline level (not inside
-    /// `AnnounceStage::run`) so the end-of-pipeline status table
-    /// and `--summary-json=<path>` write always fire — including
-    /// when announce itself is operator-skipped via `--skip=announce`.
-    /// The scope-guard shape (inner-fn returns the outcome, outer
-    /// wrapper calls `emit_summary` then propagates) means the
-    /// summary fires on Ok, Err, AND when the pipeline body
-    /// short-circuits early via `?`.
+    /// `AnnounceStage::run`) so the end-of-pipeline status table and
+    /// `--summary-json=<path>` write always fire — including when
+    /// announce itself is operator-skipped via `--skip=announce`. The
+    /// scope-guard shape (inner-fn returns the outcome, outer wrapper
+    /// calls `emit_summary` then propagates) means the summary fires
+    /// on Ok, Err, AND when the pipeline body short-circuits early
+    /// via `?`.
     ///
     /// # Panics
     ///
@@ -939,13 +938,13 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// `commands/release/publish_only::strip_ephemeral_signatures` so
 /// the head SignStage only sees the underlying archives.
 ///
-/// **Deferred**: an "auto-fill missing stages" mode (archive/nfpm/
-/// sbom/checksum stages run only if their outputs aren't already in
-/// `dist/`) is not yet implemented. Cross-platform packagers like
-/// msi/nsis/dmg/pkg/appbundle/flatpak that the harness's default
-/// stage list doesn't cover are expected to have run in the upstream
-/// harness pipeline (those stages are added to the harness's stage
-/// list in CI). Filling the missing-stages gap is a follow-up.
+/// Cross-platform packagers (msi/nsis/dmg/pkg/appbundle/flatpak/etc.)
+/// that the harness's default stage list doesn't cover are expected
+/// to have run in the upstream harness pipeline before preserve-dist
+/// captured the tree — those stages are added to the harness's stage
+/// list in CI and their outputs land under `dist/`. The publish-only
+/// pipeline therefore consumes the full artifact set as-is and does
+/// not re-run any artifact-producing stages.
 pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_blob::BlobStage;
@@ -1787,7 +1786,7 @@ crates:
 
     #[test]
     fn publish_only_pipeline_runs_blob_before_snapcraft_publish() {
-        // Phase-2 `--publish-only` pipeline must honor the same
+        // The `--publish-only` pipeline must honor the same
         // blob-before-snapcraft-publish ordering as every other
         // variant so a required-blob failure can short-circuit the
         // (irreversible) snapcraft upload via the
@@ -1799,9 +1798,9 @@ crates:
 
     #[test]
     fn publish_only_pipeline_runs_sign_before_release() {
-        // Phase-2 contract: SignStage must be at the HEAD of the
-        // publish-only pipeline so production signatures land on the
-        // preserved archives BEFORE ReleaseStage uploads them.
+        // SignStage must be at the HEAD of the publish-only pipeline
+        // so production signatures land on the preserved archives
+        // BEFORE ReleaseStage uploads them.
         let p = build_publish_only_pipeline();
         let names = p.stage_names();
         let sign_idx = names
@@ -1869,19 +1868,18 @@ crates:
     }
 
     // -----------------------------------------------------------------------
-    // I1 — Pipeline-level emit_summary contract.
+    // Pipeline-level emit_summary contract.
     //
     // Pipeline::run must ALWAYS invoke `emit_summary` (regardless of
     // whether `AnnounceStage::run` was reached). The unit tests in
     // `stage-announce` pin the stage-side contract; this test pins the
     // pipeline-side contract — specifically that `--skip=announce`
-    // doesn't drop `--summary-json`. Audit ref: 2026-05-15
-    // release-resilience-review finding I1.
+    // doesn't drop `--summary-json`.
     // -----------------------------------------------------------------------
 
-    /// A `Stage` that always returns `Err`. Used by I-3's regression
-    /// test to pin the "emit_summary fires even on inner-fn Err" half
-    /// of `Pipeline::run`'s contract. Kept private to the test module.
+    /// A `Stage` that always returns `Err`. Pins the "emit_summary
+    /// fires even on inner-fn Err" half of `Pipeline::run`'s contract.
+    /// Kept private to the test module.
     struct AlwaysFailStage;
     impl anodizer_core::stage::Stage for AlwaysFailStage {
         fn name(&self) -> &str {
@@ -1894,11 +1892,10 @@ crates:
 
     #[test]
     fn pipeline_emits_summary_even_when_inner_stage_returns_err() {
-        // Audit ref: B6 review I-3 — the inner-fn scope-guard shape in
-        // `Pipeline::run` must invoke `emit_summary` on Err too, not
-        // just on Ok. Without this test, only the doc line pinned the
-        // contract; this puts a bisectable green/red signal on the
-        // Err path.
+        // The inner-fn scope-guard shape in `Pipeline::run` must
+        // invoke `emit_summary` on Err too, not just on Ok. Without
+        // this test, only the doc line pinned the contract; this
+        // puts a bisectable green/red signal on the Err path.
         use anodizer_core::context::ContextOptions;
 
         let tmp = TempDir::new().expect("tempdir");

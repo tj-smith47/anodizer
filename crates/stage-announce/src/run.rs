@@ -27,13 +27,12 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
         AnnounceGate::None => false,
         AnnounceGate::RequiredPublishers => report.is_some_and(|r| r.required_failures() > 0),
         AnnounceGate::AllPublishers => report.is_some_and(|r| {
-            // Audit ref: 2026-05-15 release-resilience-review finding I2.
-            // Only *failure-like* outcomes gate announce. The previous
-            // `!Succeeded` rule treated happy-path pending states
+            // Only *failure-like* outcomes gate announce. A naive
+            // `!Succeeded` rule would treat happy-path pending states
             // (`PendingModeration` from chocolatey, `PendingValidation`
-            // from winget) and `Skipped(NotConfigured)` as if they were
-            // failures — defeating the stage on any release that
-            // included a moderated publisher.
+            // from winget) and `Skipped(NotConfigured)` as failures,
+            // silently defeating announce on any release that included
+            // a moderated publisher.
             //
             // # Exhaustiveness
             //
@@ -73,13 +72,13 @@ impl Stage for AnnounceStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
-        // Audit ref: I1 — `emit_summary` is invoked by `Pipeline::run`
-        // (single source of truth), not here. Moving the call to the
-        // pipeline layer ensures the summary fires even when announce
-        // is operator-skipped via `--skip=announce` (the stage's `run`
-        // is never invoked in that case). Keeping a fallback call here
-        // would double-write the file; removing it lets the
-        // pipeline-level scope-guard own the contract.
+        // `emit_summary` is invoked by `Pipeline::run` (single source
+        // of truth), not here. The pipeline-layer call ensures the
+        // summary fires even when announce is operator-skipped via
+        // `--skip=announce` (the stage's `run` is never invoked in
+        // that case). A fallback call here would double-write the
+        // file; leaving ownership at the pipeline-level scope-guard
+        // keeps the contract single-homed.
         announce_body(self, ctx)
     }
 }
@@ -1036,10 +1035,8 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
 /// Always invoked by `Pipeline::run` at the very end (success or
 /// failure) so the per-publisher status table prints to stderr and
 /// `--summary-json=<path>` is honored regardless of whether the
-/// announce stage itself ran. Audit ref: 2026-05-15
-/// release-resilience-review finding I1 — previously this was only
-/// invoked from inside `AnnounceStage::run`, so `--skip=announce`
-/// silently dropped `--summary-json`.
+/// announce stage itself ran. Owned at the pipeline layer so
+/// `--skip=announce` does not silently drop the summary write.
 ///
 /// Best-effort: a `summary.json` write failure logs a warn but never
 /// escalates to a pipeline error — the release itself is unaffected
@@ -1121,10 +1118,10 @@ mod gate_tests {
 
     #[test]
     fn evaluate_gate_all_skips_on_any_failure() {
-        // Audit ref: I2 — AllPublishers gates on Failed (regardless of
-        // required), not on "any non-Succeeded". This test covers the
-        // base failure case; the dedicated tests below pin every
-        // happy-path-pending / skip-not-configured variant to NOT gate.
+        // AllPublishers gates on Failed (regardless of required), not
+        // on "any non-Succeeded". This test covers the base failure
+        // case; the dedicated tests below pin every happy-path-pending
+        // / skip-not-configured variant to NOT gate.
         let mut r = PublishReport::default();
         r.results
             .push(failed_result("p", PublisherGroup::Manager, false));
@@ -1422,13 +1419,13 @@ mod summary_tests {
         serde_json::from_str(&text).expect("parse summary.json")
     }
 
-    // Audit ref: I1 — `emit_summary` was moved out of
-    // `AnnounceStage::run` and is now invoked at the pipeline layer
-    // (see `crates/cli/src/pipeline.rs::Pipeline::run`). These tests
-    // exercise `emit_summary` directly to keep the contract pinned at
-    // the stage level; the pipeline-layer integration that ensures
-    // the call always fires (including under `--skip=announce`) is
-    // covered by the integration test
+    // `emit_summary` is invoked at the pipeline layer (see
+    // `crates/cli/src/pipeline.rs::Pipeline::run`), not from inside
+    // `AnnounceStage::run`. These tests exercise `emit_summary`
+    // directly to keep the stage-level contract pinned; the
+    // pipeline-layer integration that ensures the call always fires
+    // (including under `--skip=announce`) is covered by the
+    // integration test
     // `announce_skipped_via_skip_flag_still_emits_summary` in
     // `crates/cli/tests`.
 
