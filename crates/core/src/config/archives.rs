@@ -250,7 +250,36 @@ pub struct ArchiveConfig {
     pub hooks: Option<ArchiveHooksConfig>,
 }
 
-// F3: custom Deserialize that accepts deprecated GR aliases:
+/// Fold a deprecated singular `format: tar.gz` into the canonical
+/// `formats: [tar.gz]` list, emitting a `tracing::warn!` deprecation notice
+/// keyed by `context_label` (the archive id or override `os=` so the user
+/// can locate the offending entry). Returns the folded list (creating one
+/// if `formats` was `None` and `legacy` is `Some`).
+///
+/// Shared by `ArchiveConfig` and `FormatOverride` to keep the deprecation
+/// message + fold semantics in one place.
+fn fold_format_into_formats(
+    context_label: &str,
+    context_kind: &str,
+    formats: Option<Vec<String>>,
+    legacy: Option<String>,
+) -> Option<Vec<String>> {
+    let mut formats = formats;
+    if let Some(legacy) = legacy {
+        tracing::warn!(
+            "DEPRECATION: {}[{}]: 'format: {}' is deprecated; \
+             use 'formats: [{}]' instead.",
+            context_kind,
+            context_label,
+            legacy,
+            legacy
+        );
+        formats.get_or_insert_with(Vec::new).push(legacy);
+    }
+    formats
+}
+
+// Custom Deserialize that accepts deprecated GR aliases:
 // - `format: tar.gz` (singular String) folded into `formats: [tar.gz]`
 //   (`internal/pipe/archive/archive.go:62-64`)
 // - `builds: [foo]` folded into `ids: [foo]`
@@ -284,17 +313,12 @@ impl<'de> Deserialize<'de> for ArchiveConfig {
         let raw = Raw::deserialize(deserializer)?;
 
         let id_label = raw.id.clone().unwrap_or_else(|| "default".to_string());
-        let mut formats = raw.formats;
-        if let Some(legacy) = raw.format {
-            tracing::warn!(
-                "DEPRECATION: archives[id={}]: 'format: {}' is deprecated; \
-                 use 'formats: [{}]' instead.",
-                id_label,
-                legacy,
-                legacy
-            );
-            formats.get_or_insert_with(Vec::new).push(legacy);
-        }
+        let formats = fold_format_into_formats(
+            &format!("id={}", id_label),
+            "archives",
+            raw.formats,
+            raw.format,
+        );
         let mut ids = raw.ids;
         if let Some(legacy) = raw.builds {
             tracing::warn!(
@@ -334,10 +358,11 @@ pub struct FormatOverride {
     pub formats: Option<Vec<String>>,
 }
 
-// F3: custom Deserialize that accepts both `formats: [tar.gz]` (canonical)
-// and the deprecated singular `format: tar.gz` (GR
+// Custom Deserialize that accepts both `formats: [tar.gz]` (canonical) and
+// the deprecated singular `format: tar.gz` (GR
 // `internal/pipe/archive/archive.go:71-74`). The legacy spelling is folded
-// into `formats` at parse time and a deprecation warning is emitted.
+// into `formats` at parse time via the shared `fold_format_into_formats`
+// helper, which also emits the deprecation warning.
 impl<'de> Deserialize<'de> for FormatOverride {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -351,17 +376,12 @@ impl<'de> Deserialize<'de> for FormatOverride {
             format: Option<String>,
         }
         let raw = Raw::deserialize(deserializer)?;
-        let mut formats = raw.formats;
-        if let Some(legacy) = raw.format {
-            tracing::warn!(
-                "DEPRECATION: archives.format_overrides[os={}]: 'format: {}' is deprecated; \
-                 use 'formats: [{}]' instead.",
-                raw.os,
-                legacy,
-                legacy
-            );
-            formats.get_or_insert_with(Vec::new).push(legacy);
-        }
+        let formats = fold_format_into_formats(
+            &format!("os={}", raw.os),
+            "archives.format_overrides",
+            raw.formats,
+            raw.format,
+        );
         Ok(FormatOverride {
             os: raw.os,
             formats,

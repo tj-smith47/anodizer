@@ -33,10 +33,19 @@ pub struct ReleaseConfig {
     /// Text appended to the release body (inline string, from_file, or from_url).
     pub footer: Option<ContentSource>,
     /// Extra files to upload to the release beyond build artifacts.
+    ///
+    /// Paths / globs are resolved relative to the project root. `..`
+    /// segments are accepted (matches GoReleaser behaviour), so an entry
+    /// like `../sibling/dist/*` will reach outside the project tree —
+    /// security-conscious users should keep the entries inside the repo or
+    /// canonicalise them before invoking the release pipeline.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before upload.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
     /// GoReleaser Pro feature.
+    ///
+    /// Same path-traversal caveat as `extra_files`: `..` segments reach
+    /// outside the project tree.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Skip uploading artifacts: true, false, or "auto" (skip for snapshots).
     /// Accepts bool or template string (GoReleaser uses string type).

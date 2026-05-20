@@ -234,8 +234,13 @@ pub struct BuildConfig {
     /// Copy the binary from another build ID instead of building it.
     pub copy_from: Option<String>,
     /// Extra flags passed to cargo build, one per list entry (e.g., `["--release", "--locked"]`).
-    /// Each entry is template-rendered then passed verbatim as a single argv token,
-    /// so quoted shell arguments (`--cfg=feature="foo bar"`) survive intact.
+    ///
+    /// Each entry is template-rendered then passed verbatim as a single argv
+    /// token — there is no `sh -c` step and no shell tokenization, so a
+    /// rendered value containing spaces stays one argv entry (it is NOT
+    /// re-split). Use one list entry per flag, including the flag and its
+    /// value as separate entries (`["--target-dir", "/tmp/{{ .Version }}"]`)
+    /// when the value itself may contain spaces.
     pub flags: Option<Vec<String>>,
     /// When true, enable reproducible builds by stripping timestamps.
     pub reproducible: Option<bool>,

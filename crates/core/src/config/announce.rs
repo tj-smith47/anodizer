@@ -163,7 +163,12 @@ pub struct DiscordAnnounce {
     /// Enable Discord announcements (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
-    /// Discord webhook URL. Use templates like `{{ Env.DISCORD_WEBHOOK_ID }}` to reference environment variables.
+    /// Discord webhook URL.
+    ///
+    /// Prefer `{{ .Env.DISCORD_WEBHOOK }}` (or similar) over an in-config
+    /// literal — plaintext webhook URLs grant full posting access and are
+    /// NOT redacted from error messages or `dist/config.yaml` after a
+    /// dry-run / snapshot run.
     pub webhook_url: Option<String>,
     /// Message template for the Discord embed. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
@@ -183,6 +188,11 @@ pub struct WebhookConfig {
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
     /// Webhook endpoint URL (supports template variables).
+    ///
+    /// Prefer `{{ .Env.WEBHOOK_URL }}` for any URL containing a secret
+    /// token in its path / query string — plaintext values are NOT
+    /// redacted from error messages or `dist/config.yaml` after a
+    /// dry-run / snapshot run.
     pub endpoint_url: Option<String>,
     /// Custom HTTP headers to include in the request.
     ///
@@ -216,6 +226,11 @@ pub struct TelegramAnnounce {
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
     /// Telegram Bot API token. Get one from @BotFather.
+    ///
+    /// Prefer `{{ .Env.TELEGRAM_BOT_TOKEN }}` over an in-config literal —
+    /// plaintext tokens grant full bot impersonation and are NOT redacted
+    /// from error messages or `dist/config.yaml` after a dry-run / snapshot
+    /// run.
     pub bot_token: Option<String>,
     /// Telegram chat ID to send the message to (supports template variables).
     pub chat_id: Option<String>,

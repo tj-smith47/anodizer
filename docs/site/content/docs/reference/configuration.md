@@ -470,7 +470,9 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 |-------|------|---------|-------------|
 | `discussion_category_name` | string | — | GitHub Discussion category name for the release. |
 | `draft` | bool | — | When true, create the release as a draft (unpublished). |
-| `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts. |
+| `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts.
+
+Paths / globs are resolved relative to the project root. `..` segments are accepted (matches GoReleaser behaviour), so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline. |
 | `footer` | ContentSource | — | Text appended to the release body (inline string, from_file, or from_url). |
 | `gitea` | ScmRepoConfig | — | Gitea repository to release to (owner and name). |
 | `github` | ScmRepoConfig | — | GitHub repository to release to (owner and name). |
@@ -488,7 +490,9 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type). |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
-| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature. |
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.
+
+Same path-traversal caveat as `extra_files`: `..` segments reach outside the project tree. |
 | `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously.
 
 GitHub's secondary rate-limit is triggered by burst traffic. Keeping this value low avoids tripping the limit even for releases with many artifacts. Default: 4. Override at runtime with `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`. |
@@ -629,7 +633,9 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `method` | string | — | HTTP method: PUT or POST (default: PUT). |
 | `mode` | string | — | Upload mode: "archive" (default) or "binary". |
 | `name` | string | — | Human-readable name for this upload config. |
-| `password` | string | — | Password for HTTP basic auth (env var template strongly recommended; in-config plaintext leaves the value in `dist/config.yaml` after dry-run). Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12). |
+| `password` | string | — | Password for HTTP basic auth.
+
+Strongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade. |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `skip` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
 | `target` | string | — | Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}). |

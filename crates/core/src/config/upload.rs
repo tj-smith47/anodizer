@@ -24,10 +24,14 @@ pub struct UploadConfig {
     /// Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`.
     /// Set this to a literal value or a `{{ .Env.X }}` template.
     pub username: Option<String>,
-    /// Password for HTTP basic auth (env var template strongly recommended;
-    /// in-config plaintext leaves the value in `dist/config.yaml` after dry-run).
-    /// Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.
-    /// Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12).
+    /// Password for HTTP basic auth.
+    ///
+    /// Strongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var
+    /// template) over an in-config literal — plaintext values here are NOT
+    /// redacted from dry-run output and will land in `dist/config.yaml`
+    /// when the pipeline runs with `--dry-run` / `--snapshot`. Resolution
+    /// order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.
+    /// Mirrors GoReleaser's `Upload.Password` cascade.
     pub password: Option<String>,
     /// HTTP method: PUT or POST (default: PUT).
     pub method: Option<String>,

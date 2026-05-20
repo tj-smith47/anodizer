@@ -43,10 +43,13 @@ pub struct McpConfig {
     /// nuget, oci, mcpb).
     pub packages: Vec<McpPackage>,
 
-    /// Top-level transports list. Parsed for GoReleaser config-portability;
-    /// the current MCP server schema derives transports per-package via the
-    /// `packages[].transport` field, so this list is not currently emitted
-    /// to the registry.
+    /// Top-level transports list. Intentional GoReleaser config-portability
+    /// shim: `McpConfig` carries `deny_unknown_fields`, so a migrated
+    /// `.goreleaser.yaml` containing `transports:` would fail to parse if
+    /// the field were absent. The list is accepted and discarded — the
+    /// current MCP server schema derives transports per-package via
+    /// `packages[].transport`, so the top-level list is never read after
+    /// deserialization and is intentionally not emitted to the registry.
     pub transports: Vec<McpTransport>,
 
     /// Skip this publisher when the expression evaluates truthy. Accepts a

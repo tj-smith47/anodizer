@@ -22,7 +22,16 @@ pub struct HooksConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct StructuredHook {
-    /// Command to run (passed through the shell).
+    /// Command to run.
+    ///
+    /// The entire string is interpreted by `sh -c`, so shell metacharacters
+    /// (`|`, `;`, `&&`, backticks, `$()`, redirects, globs) are honoured —
+    /// any templated values folded into `cmd` become part of the shell
+    /// command and are subject to word-splitting and metacharacter expansion.
+    /// Keep templated user-config values out of `cmd` when possible, or quote
+    /// them defensively (e.g. `'{{ .Env.FOO }}'`). Hooks already run with
+    /// `env_clear()` plus an allow-list, so secrets in `$ENV` are not
+    /// inherited unless explicitly listed in `env`.
     pub cmd: String,
     /// Working directory for the command (defaults to project root).
     pub dir: Option<String>,

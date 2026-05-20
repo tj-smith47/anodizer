@@ -257,6 +257,13 @@ pub struct ContentFromFile {
     pub path: Option<String>,
 }
 
+/// Regex-based commit filters for the changelog stage.
+///
+/// Patterns are NOT compile-validated at config-load — a malformed regex
+/// only surfaces when the changelog stage runs, which on a release pipeline
+/// is well past the point of cheap failure. Test patterns locally
+/// (`anodizer changelog --check` or any external regex tool) before
+/// committing config changes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChangelogFilters {

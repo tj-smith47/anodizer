@@ -150,9 +150,18 @@ pub type NfpmFileInfo = FileInfo;
 /// them explicitly prevents accidentally packaging empty paths.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NfpmContent {
-    /// Source path on the build machine (supports glob patterns).
+    /// Source path on the build machine (supports glob patterns and templates).
+    ///
+    /// Paths are resolved relative to the project root. `..` segments are
+    /// NOT stripped, so a templated value resolving to `../../etc/passwd`
+    /// will reach outside the project tree — avoid splicing untrusted
+    /// template inputs (e.g. arbitrary `{{ .Env.X }}` values) into `src`.
     pub src: String,
-    /// Destination path inside the package (absolute path).
+    /// Destination path inside the package (absolute path, supports templates).
+    ///
+    /// Same caveat as `src`: `..` segments are passed through to nfpm
+    /// verbatim. Templated values from untrusted sources should be
+    /// canonicalised by the caller before use.
     pub dst: String,
     /// Content entry type: "config", "config|noreplace", "doc", "dir", "symlink", "ghost", or empty for regular file.
     #[serde(rename = "type")]

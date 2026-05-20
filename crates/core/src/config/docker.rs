@@ -74,6 +74,12 @@ pub struct DockerV2Config {
     /// Target platforms for multi-arch builds (e.g., ["linux/amd64", "linux/arm64"]).
     pub platforms: Option<Vec<String>>,
     /// Build arguments passed as `--build-arg KEY=VALUE`.
+    ///
+    /// Each value is template-expanded and forwarded verbatim to buildx
+    /// (one argv token per pair, no shell tokenization). Prefer
+    /// `{{ .Env.VAR }}` over raw user-config strings for secrets — buildx
+    /// records build-args in image history by default, so plaintext values
+    /// here propagate into the image metadata.
     pub build_args: Option<HashMap<String, String>>,
     /// Retry configuration for docker push operations.
     pub retry: Option<DockerRetryConfig>,

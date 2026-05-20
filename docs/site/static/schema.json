@@ -2067,7 +2067,7 @@
           }
         },
         "flags": {
-          "description": "Extra flags passed to cargo build, one per list entry (e.g., `[\"--release\", \"--locked\"]`). Each entry is template-rendered then passed verbatim as a single argv token, so quoted shell arguments (`--cfg=feature=\"foo bar\"`) survive intact.",
+          "description": "Extra flags passed to cargo build, one per list entry (e.g., `[\"--release\", \"--locked\"]`).\n\nEach entry is template-rendered then passed verbatim as a single argv token — there is no `sh -c` step and no shell tokenization, so a rendered value containing spaces stays one argv entry (it is NOT re-split). Use one list entry per flag, including the flag and its value as separate entries (`[\"--target-dir\", \"/tmp/{{ .Version }}\"]`) when the value itself may contain spaces.",
           "default": null,
           "type": [
             "array",
@@ -2661,6 +2661,7 @@
       }
     },
     "ChangelogFilters": {
+      "description": "Regex-based commit filters for the changelog stage.\n\nPatterns are NOT compile-validated at config-load — a malformed regex only surfaces when the changelog stage runs, which on a release pipeline is well past the point of cheap failure. Test patterns locally (`anodizer changelog --check` or any external regex tool) before committing config changes.",
       "type": "object",
       "properties": {
         "exclude": {
@@ -4002,7 +4003,7 @@
           ]
         },
         "webhook_url": {
-          "description": "Discord webhook URL. Use templates like `{{ Env.DISCORD_WEBHOOK_ID }}` to reference environment variables.",
+          "description": "Discord webhook URL.\n\nPrefer `{{ .Env.DISCORD_WEBHOOK }}` (or similar) over an in-config literal — plaintext webhook URLs grant full posting access and are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
           "default": null,
           "type": [
             "string",
@@ -4576,7 +4577,7 @@
           }
         },
         "build_args": {
-          "description": "Build arguments passed as `--build-arg KEY=VALUE`.",
+          "description": "Build arguments passed as `--build-arg KEY=VALUE`.\n\nEach value is template-expanded and forwarded verbatim to buildx (one argv token per pair, no shell tokenization). Prefer `{{ .Env.VAR }}` over raw user-config strings for secrets — buildx records build-args in image history by default, so plaintext values here propagate into the image metadata.",
           "default": null,
           "type": [
             "object",
@@ -7247,7 +7248,7 @@
           ]
         },
         "transports": {
-          "description": "Top-level transports list. Parsed for GoReleaser config-portability; the current MCP server schema derives transports per-package via the `packages[].transport` field, so this list is not currently emitted to the registry.",
+          "description": "Top-level transports list. Intentional GoReleaser config-portability shim: `McpConfig` carries `deny_unknown_fields`, so a migrated `.goreleaser.yaml` containing `transports:` would fail to parse if the field were absent. The list is accepted and discarded — the current MCP server schema derives transports per-package via `packages[].transport`, so the top-level list is never read after deserialization and is intentionally not emitted to the registry.",
           "default": [],
           "type": "array",
           "items": {
@@ -8167,7 +8168,7 @@
       ],
       "properties": {
         "dst": {
-          "description": "Destination path inside the package (absolute path).",
+          "description": "Destination path inside the package (absolute path, supports templates).\n\nSame caveat as `src`: `..` segments are passed through to nfpm verbatim. Templated values from untrusted sources should be canonicalised by the caller before use.",
           "type": "string"
         },
         "expand": {
@@ -8196,7 +8197,7 @@
           ]
         },
         "src": {
-          "description": "Source path on the build machine (supports glob patterns).",
+          "description": "Source path on the build machine (supports glob patterns and templates).\n\nPaths are resolved relative to the project root. `..` segments are NOT stripped, so a templated value resolving to `../../etc/passwd` will reach outside the project tree — avoid splicing untrusted template inputs (e.g. arbitrary `{{ .Env.X }}` values) into `src`.",
           "type": "string"
         },
         "type": {
@@ -9821,7 +9822,7 @@
           ]
         },
         "extra_files": {
-          "description": "Extra files to upload to the release beyond build artifacts.",
+          "description": "Extra files to upload to the release beyond build artifacts.\n\nPaths / globs are resolved relative to the project root. `..` segments are accepted (matches GoReleaser behaviour), so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline.",
           "default": null,
           "type": [
             "array",
@@ -10013,7 +10014,7 @@
           ]
         },
         "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
+          "description": "Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.\n\nSame path-traversal caveat as `extra_files`: `..` segments reach outside the project tree.",
           "default": null,
           "type": [
             "array",
@@ -11718,7 +11719,7 @@
       "type": "object",
       "properties": {
         "cmd": {
-          "description": "Command to run (passed through the shell).",
+          "description": "Command to run.\n\nThe entire string is interpreted by `sh -c`, so shell metacharacters (`|`, `;`, `&&`, backticks, `$()`, redirects, globs) are honoured — any templated values folded into `cmd` become part of the shell command and are subject to word-splitting and metacharacter expansion. Keep templated user-config values out of `cmd` when possible, or quote them defensively (e.g. `'{{ .Env.FOO }}'`). Hooks already run with `env_clear()` plus an allow-list, so secrets in `$ENV` are not inherited unless explicitly listed in `env`.",
           "default": "",
           "type": "string"
         },
@@ -11978,7 +11979,7 @@
       "type": "object",
       "properties": {
         "bot_token": {
-          "description": "Telegram Bot API token. Get one from @BotFather.",
+          "description": "Telegram Bot API token. Get one from @BotFather.\n\nPrefer `{{ .Env.TELEGRAM_BOT_TOKEN }}` over an in-config literal — plaintext tokens grant full bot impersonation and are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
           "default": null,
           "type": [
             "string",
@@ -12303,7 +12304,7 @@
           ]
         },
         "password": {
-          "description": "Password for HTTP basic auth (env var template strongly recommended; in-config plaintext leaves the value in `dist/config.yaml` after dry-run). Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12).",
+          "description": "Password for HTTP basic auth.\n\nStrongly prefer `{{ .Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade.",
           "default": null,
           "type": [
             "string",
@@ -12487,7 +12488,7 @@
           ]
         },
         "endpoint_url": {
-          "description": "Webhook endpoint URL (supports template variables).",
+          "description": "Webhook endpoint URL (supports template variables).\n\nPrefer `{{ .Env.WEBHOOK_URL }}` for any URL containing a secret token in its path / query string — plaintext values are NOT redacted from error messages or `dist/config.yaml` after a dry-run / snapshot run.",
           "default": null,
           "type": [
             "string",
