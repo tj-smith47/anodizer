@@ -35,7 +35,7 @@ mod vars;
 #[cfg(test)]
 mod tests;
 
-pub use render::{extract_artifact_ext, render, validate_single_env_only};
+pub use render::{extract_artifact_ext, render};
 pub use static_render::{parse_static, render_static};
 pub use vars::{
     PER_ARTIFACT_VARS, PER_TARGET_VARS, TemplateVars, clear_per_artifact_vars,

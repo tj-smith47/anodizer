@@ -97,10 +97,15 @@ pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<s
             all_items.push(val);
         } else {
             // Log unparseable chunks so corrupt data doesn't go unnoticed.
-            eprintln!(
-                "warning: gh_api_get_paginated: failed to parse JSON chunk (len={}): {:?}",
-                trimmed.len(),
-                &trimmed[..trimmed.len().min(200)]
+            // Route through `tracing::warn!` so subscriber-level redaction
+            // applies (the chunk may carry templated request data). Cap
+            // the logged chunk at 200 bytes — an HTTP body in an error
+            // context should convey "what server said" without dumping a
+            // multi-MB stack trace to the user's terminal.
+            tracing::warn!(
+                len = trimmed.len(),
+                chunk = ?&trimmed[..trimmed.len().min(200)],
+                "gh_api_get_paginated: failed to parse JSON chunk",
             );
         }
     }

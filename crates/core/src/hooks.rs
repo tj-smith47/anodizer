@@ -86,6 +86,19 @@ pub fn run_hooks(
             log.status(&format!("running {} hook: {}", label, cmd_str));
             let mut command = Command::new("sh");
             command.arg("-c").arg(&cmd_str);
+            // Drop inherited env first so accidental release-credential
+            // exports (`GITHUB_TOKEN`, `COSIGN_*`, etc.) never leak into a
+            // user-defined hook. Reseat a platform-neutral whitelist so `sh`
+            // can still resolve binaries (`PATH`), find a writable temp
+            // (`TMPDIR`), and read user config (`HOME`). User-declared
+            // `env:` entries are applied AFTER the whitelist so they can
+            // intentionally export additional values.
+            command.env_clear();
+            for key in crate::user_command::ENV_WHITELIST {
+                if let Ok(val) = std::env::var(key) {
+                    command.env(key, val);
+                }
+            }
             if let Some(ref d) = dir_str {
                 command.current_dir(d);
             }

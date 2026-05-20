@@ -1,7 +1,5 @@
 use anyhow::{Context as _, Result};
-use regex::Regex;
 use std::collections::HashMap;
-use std::sync::LazyLock;
 use tera::Value;
 
 use crate::template_preprocess::preprocess;
@@ -16,6 +14,14 @@ use super::vars::{ENV_REF_RE, NUMERIC_FIELDS, TemplateVars};
 /// erroring. Tera's strict mode would error on a missing map key, so we scan
 /// the preprocessed template for `Env.VARNAME` references and ensure every
 /// referenced key exists in the env map (defaulting to "").
+///
+/// Fallback semantics: when an `Env.X` key is not in `TemplateVars::env`,
+/// `std::env::var(X)` is consulted before defaulting to `""`. This is
+/// intentional — GoReleaser-compat semantics let a user reference any
+/// process env var via `{{ Env.X }}`, and the `StageLogger`-level
+/// redaction layer (see `crate::redact`) prevents accidental secret
+/// prints in the rendered output. A `*_TOKEN` / `*_KEY` / `*_PASSWORD`
+/// value flowing through here is redacted before it reaches stderr.
 fn build_tera_context_for_template(vars: &TemplateVars, preprocessed: &str) -> tera::Context {
     // Discover all Env.VARNAME references in the template.
     let referenced_env_keys: Vec<String> = ENV_REF_RE
@@ -191,25 +197,5 @@ pub fn extract_artifact_ext(filename: &str) -> &str {
     match filename.rfind('.') {
         Some(pos) if pos > 0 => &filename[pos..],
         _ => "",
-    }
-}
-
-/// Validate that a template string contains only a single `{{ Env.VAR }}` reference.
-/// Used for credential fields (e.g. Docker registry passwords) to prevent
-/// hardcoded secrets mixed with env var references.
-///
-/// Accepts: `{{ .Env.VAR }}`, `{{ Env.VAR }}`, `{{.Env.VAR}}`, `{{Env.VAR}}`
-/// Rejects: `prefix-{{ .Env.VAR }}`, `{{ .Env.VAR }}-suffix`, any literal text
-pub fn validate_single_env_only(template: &str) -> Result<()> {
-    static ENV_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
-        crate::util::static_regex(r"^\s*\{\{\s*\.?Env\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}\s*$")
-    });
-    if ENV_ONLY_RE.is_match(template) {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "expected a single env var reference like '{{{{ .Env.VAR }}}}', got: {}",
-            template
-        )
     }
 }

@@ -264,6 +264,14 @@ pub fn collect_if_replace(
     }
 }
 
+/// Convert any Windows-style backslash separators in `s` to forward
+/// slashes. Cross-platform path string normalization for cases where the
+/// downstream consumer (artifact-manifest JSON, MSYS subprocess env var)
+/// is sensitive to separator drift between Linux/macOS and Windows hosts.
+pub fn normalize_path_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 /// Apply a "minimal trusted" environment to a `Command` after `env_clear()`.
 ///
 /// Stage subprocess invocations (sbom, source-archive, …) clear the env to

@@ -357,7 +357,7 @@ mod tests {
     fn test_redact_url_credentials_ssh_unchanged() {
         // SSH-style `git@github.com:owner/repo.git` has no `://`, so the
         // helper leaves it alone. The `git@` is part of the SSH user, not
-        // an embedded credential. Mirrors `git::remote::strip_url_credentials`.
+        // an embedded credential.
         let input = "fetching git@github.com:owner/repo.git";
         assert_eq!(redact_url_credentials(input), input);
     }

@@ -1,20 +1,7 @@
 use anyhow::Result;
 
 use super::git_output;
-
-/// Strip userinfo (credentials) from an HTTPS URL.
-///
-/// If the URL starts with `https://` and contains `@`, everything between
-/// `://` and `@` is removed (e.g. `https://user:token@github.com/...` becomes
-/// `https://github.com/...`). Non-HTTPS URLs are returned unchanged.
-pub(super) fn strip_url_credentials(url: &str) -> String {
-    if let Some(rest) = url.strip_prefix("https://")
-        && let Some(at_pos) = rest.find('@')
-    {
-        return format!("https://{}", &rest[at_pos + 1..]);
-    }
-    url.to_string()
-}
+use crate::redact::redact_url_credentials;
 
 /// Parse owner and repo name from a GitHub remote URL.
 /// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH (`git@github.com:owner/repo.git`).
@@ -50,9 +37,9 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
 pub fn detect_github_repo() -> Result<(String, String)> {
     let url = git_output(&["remote", "get-url", "origin"])?;
     parse_github_remote(&url).ok_or_else(|| {
-        // Strip inline `https://<token>@...` userinfo before surfacing
+        // Strip inline `<scheme>://<userinfo>@...` userinfo before surfacing
         // the URL in a user-visible error.
-        let safe = strip_url_credentials(&url);
+        let safe = redact_url_credentials(&url);
         anyhow::anyhow!(
             "could not parse GitHub owner/repo from remote URL: {}",
             safe
@@ -122,7 +109,7 @@ pub fn detect_owner_repo() -> Result<(String, String)> {
     let url = git_output(&["remote", "get-url", "origin"])?;
     parse_remote_owner_repo(&url).ok_or_else(|| {
         // Strip inline userinfo before surfacing the URL.
-        let safe = strip_url_credentials(&url);
+        let safe = redact_url_credentials(&url);
         anyhow::anyhow!("could not parse owner/repo from remote URL: {}", safe)
     })
 }

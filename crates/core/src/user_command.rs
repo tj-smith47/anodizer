@@ -9,6 +9,8 @@
 use std::ffi::OsStr;
 use std::process::Command;
 
+use anyhow::Result;
+
 /// Environment variables that are inherited from the parent process
 /// when constructing a sandboxed `Command`. Anything else must be
 /// explicitly added via `Command::env`.
@@ -33,11 +35,12 @@ pub const ENV_WHITELIST: &[&str] = &[
 /// is responsible for adding any further env vars / cwd / I/O config
 /// before invoking `output()`.
 ///
-/// Panics: returns an empty `Command` (program = empty string) when
-/// `argv` is empty; callers should reject that case before reaching
-/// this helper. The CLI's publisher command does so explicitly.
-pub fn whitelisted<S: AsRef<OsStr>>(argv: &[S]) -> Command {
-    let program = argv.first().map(AsRef::as_ref).unwrap_or(OsStr::new(""));
+/// Returns `Err` when `argv` is empty — surfacing a clear error at the
+/// allow-listed boundary is preferable to deferring failure to the
+/// kernel via an empty `program` path.
+pub fn whitelisted<S: AsRef<OsStr>>(argv: &[S]) -> Result<Command> {
+    anyhow::ensure!(!argv.is_empty(), "user command argv cannot be empty");
+    let program = argv[0].as_ref();
     let mut cmd = Command::new(program);
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
@@ -48,5 +51,5 @@ pub fn whitelisted<S: AsRef<OsStr>>(argv: &[S]) -> Command {
             cmd.env(key, val);
         }
     }
-    cmd
+    Ok(cmd)
 }

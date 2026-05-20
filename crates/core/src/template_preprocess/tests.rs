@@ -2,6 +2,22 @@
 
 use super::preprocess;
 
+/// Force-touch every `LazyLock<Regex>` static in the preprocessor so an
+/// invalid literal surfaces here, not on the first real preprocess() call
+/// in the field. Each `LazyLock::new(|| static_regex(…))` panics on bad
+/// pattern; running them under the test binary turns a deferred panic into
+/// a deterministic test failure.
+#[test]
+fn static_regex_literals_compile() {
+    let _ = preprocess("{{ Version }}");
+    let _ = preprocess("{{ replace Version \"v\" \"\" }}");
+    let _ = preprocess("{{ Version | replace \"v\" \"\" }}");
+    let _ = preprocess("{{ in (list \"a\" \"b\") \"a\" }}");
+    let _ = preprocess("{{ Now.Format \"2006\" }}");
+    let _ = preprocess("{% if eq .Os \"linux\" %}x{% end %}");
+    let _ = preprocess("{{ map \"k1\" \"v1\" }}");
+}
+
 #[test]
 fn test_preprocess_positional_replace() {
     // Unit test for the preprocessor output

@@ -207,7 +207,7 @@ pub fn run_publishers(
                 if shell_args.is_empty() {
                     anyhow::bail!("publisher: empty command after parsing: {}", full_cmd);
                 }
-                let mut cmd = anodizer_core::user_command::whitelisted(&shell_args);
+                let mut cmd = anodizer_core::user_command::whitelisted(&shell_args)?;
 
                 if let Some(ref dir) = publisher.dir {
                     let rendered_dir =

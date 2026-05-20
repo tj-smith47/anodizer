@@ -723,11 +723,11 @@ mod tests {
         let commands = collect_all_commands(&cmd);
         let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
         assert!(
-            names.iter().any(|n| *n == "check config"),
+            names.contains(&"check config"),
             "`check config` must be documented: {names:?}"
         );
         assert!(
-            names.iter().any(|n| *n == "check determinism"),
+            names.contains(&"check determinism"),
             "`check determinism` must be documented: {names:?}"
         );
     }

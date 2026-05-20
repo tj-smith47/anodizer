@@ -1,9 +1,10 @@
-use super::remote::{parse_github_remote, parse_remote_owner_repo, strip_url_credentials};
+use super::remote::{parse_github_remote, parse_remote_owner_repo};
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
     find_latest_tag_matching, find_latest_tag_matching_with_prefix, find_previous_tag,
     get_all_semver_tags, strip_monorepo_prefix,
 };
+use crate::redact::redact_url_credentials;
 
 #[test]
 fn test_parse_semver() {
@@ -188,24 +189,28 @@ fn test_parse_remote_http() {
 
 #[test]
 fn test_strip_url_credentials_with_userinfo() {
+    // `redact_url_credentials` keeps the `@` boundary and inserts the
+    // `<redacted>` placeholder so the output signals there was userinfo.
     assert_eq!(
-        strip_url_credentials("https://user:token@github.com/owner/repo.git"),
-        "https://github.com/owner/repo.git"
+        redact_url_credentials("https://user:token@github.com/owner/repo.git"),
+        "https://<redacted>@github.com/owner/repo.git"
     );
 }
 
 #[test]
 fn test_strip_url_credentials_no_userinfo() {
     assert_eq!(
-        strip_url_credentials("https://github.com/owner/repo.git"),
+        redact_url_credentials("https://github.com/owner/repo.git"),
         "https://github.com/owner/repo.git"
     );
 }
 
 #[test]
 fn test_strip_url_credentials_ssh_unchanged() {
+    // SSH-style `git@github.com:owner/repo.git` has no `://`, so the
+    // helper leaves it alone.
     assert_eq!(
-        strip_url_credentials("git@github.com:owner/repo.git"),
+        redact_url_credentials("git@github.com:owner/repo.git"),
         "git@github.com:owner/repo.git"
     );
 }
@@ -213,9 +218,20 @@ fn test_strip_url_credentials_ssh_unchanged() {
 #[test]
 fn test_strip_url_credentials_user_only() {
     assert_eq!(
-        strip_url_credentials("https://user@github.com/owner/repo.git"),
-        "https://github.com/owner/repo.git"
+        redact_url_credentials("https://user@github.com/owner/repo.git"),
+        "https://<redacted>@github.com/owner/repo.git"
     );
+}
+
+#[test]
+fn test_strip_url_credentials_token_with_at_sign_does_not_leak() {
+    // A token literal containing `@` (which the previous `find('@')` would
+    // have split early on) must be fully consumed by the userinfo redaction
+    // — `rfind('@')` locks onto the host-boundary `@`.
+    let leaky = "https://user:t@k@n@github.com/owner/repo.git";
+    let scrubbed = redact_url_credentials(leaky);
+    assert!(!scrubbed.contains("t@k@n"));
+    assert_eq!(scrubbed, "https://<redacted>@github.com/owner/repo.git");
 }
 
 #[test]
@@ -1048,15 +1064,18 @@ fn test_commit_in_bail_redacts_token_in_stderr() {
 fn test_detect_github_repo_error_strips_url_credentials() {
     // `parse_github_remote` does not match a `gitlab.example.com` URL,
     // so feeding such a URL to the wrapping error path forces the
-    // strip_url_credentials helper to run on its argument. We
-    // exercise the redaction wrapper directly because spinning up a
-    // non-github origin in a temp repo just to trigger this branch is
-    // not worth the test runtime.
+    // redaction helper to run on its argument. Exercise the redaction
+    // wrapper directly because spinning up a non-github origin in a
+    // temp repo just to trigger this branch is not worth the test
+    // runtime.
     let leaky = "https://ghp_leakytoken@gitlab.example.com/grp/proj.git";
     // The helper used inside detect_github_repo:
-    let scrubbed = strip_url_credentials(leaky);
+    let scrubbed = redact_url_credentials(leaky);
     assert!(!scrubbed.contains("ghp_leakytoken"));
-    assert_eq!(scrubbed, "https://gitlab.example.com/grp/proj.git");
+    assert_eq!(
+        scrubbed,
+        "https://<redacted>@gitlab.example.com/grp/proj.git"
+    );
 }
 
 // ── short_commit_str — canonical short-hash truncation ─────────────────────

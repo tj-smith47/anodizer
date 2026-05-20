@@ -19,6 +19,26 @@ pub(super) enum Token {
     Other(String),
 }
 
+/// Advance `*i` past a quoted string starting at `bytes[*i]` (the opening
+/// quote). The opening byte is one of `"` or `'`. Honors backslash escapes
+/// (skips one extra byte after a `\`) and consumes the closing quote when
+/// present. Safe to call when the quote is unterminated — `*i` is left at
+/// `bytes.len()` so the outer loop terminates cleanly.
+fn consume_quoted(bytes: &[u8], i: &mut usize) {
+    let quote = bytes[*i];
+    *i += 1;
+    while *i < bytes.len() && bytes[*i] != quote {
+        if bytes[*i] == b'\\' && *i + 1 < bytes.len() {
+            *i += 2;
+        } else {
+            *i += 1;
+        }
+    }
+    if *i < bytes.len() {
+        *i += 1; // closing quote
+    }
+}
+
 /// Tokenize the inner content of a `{{ }}` block.
 /// Splits into identifiers, quoted strings, pipes, spaces, and other chars.
 pub(super) fn tokenize_block(inner: &str) -> Vec<Token> {
@@ -39,19 +59,8 @@ pub(super) fn tokenize_block(inner: &str) -> Vec<Token> {
 
         // Quoted string
         if bytes[i] == b'"' || bytes[i] == b'\'' {
-            let quote = bytes[i];
             let start = i;
-            i += 1;
-            while i < bytes.len() && bytes[i] != quote {
-                if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            if i < bytes.len() {
-                i += 1; // closing quote
-            }
+            consume_quoted(bytes, &mut i);
             tokens.push(Token::Quoted(inner[start..i].to_string()));
             continue;
         }
@@ -69,18 +78,7 @@ pub(super) fn tokenize_block(inner: &str) -> Vec<Token> {
                     depth -= 1;
                 } else if bytes[i] == b'"' || bytes[i] == b'\'' {
                     // Skip quoted strings inside the array
-                    let quote = bytes[i];
-                    i += 1;
-                    while i < bytes.len() && bytes[i] != quote {
-                        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-                            i += 2;
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    if i < bytes.len() {
-                        i += 1; // closing quote
-                    }
+                    consume_quoted(bytes, &mut i);
                     continue;
                 }
                 i += 1;

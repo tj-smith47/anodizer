@@ -1,10 +1,10 @@
 use anyhow::Result;
 
 use super::git_output;
-use super::remote::strip_url_credentials;
 use super::semver::{SemVer, parse_semver_tag};
 use super::status::{is_git_dirty, is_git_repo};
 use super::tags::get_first_commit;
+use crate::redact::redact_url_credentials;
 
 #[derive(Debug, Clone)]
 pub struct GitInfo {
@@ -104,8 +104,9 @@ pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
             String::new()
         }
     };
-    // Strip credentials from HTTPS URLs (e.g. https://user:token@github.com/... → https://github.com/...)
-    let remote_url = strip_url_credentials(&remote_url_raw);
+    // Strip credentials from URLs of any scheme
+    // (e.g. https://user:token@github.com/... → https://<redacted>@github.com/...).
+    let remote_url = redact_url_credentials(&remote_url_raw);
     let summary = git_output(&[
         "-c",
         "log.showSignature=false",
@@ -143,7 +144,7 @@ pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
         Ok(sv) => sv,
         Err(e) => {
             if skip_validate {
-                eprintln!("WARNING: current tag is not semver, skipping validation");
+                tracing::warn!("current tag is not semver, skipping validation");
                 SemVer {
                     major: 0,
                     minor: 0,

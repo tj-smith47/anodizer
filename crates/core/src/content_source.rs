@@ -8,17 +8,24 @@
 //! `FromUrl` enforces a 256 KiB body cap and rejects CR/LF in rendered header
 //! values to defend against header-injection via templated user data.
 
-use std::ops::ControlFlow;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
 use crate::config::ContentSource;
 use crate::context::Context;
-use crate::retry::{RetryPolicy, retry_sync};
+use crate::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 
 const MAX_BODY_BYTES: usize = 256 * 1024;
+/// Total per-request deadline. `reqwest::blocking::ClientBuilder` does
+/// not expose a separate `read_timeout` (the API is async-only); the
+/// total `timeout` bounds connect + transfer for the blocking surface,
+/// so a stalled server cannot hold the connection open past 30 s.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connect-only deadline. Allows the connect phase to fail fast on a
+/// dead host without consuming the full request budget; the remaining
+/// time is then available for the actual transfer.
+const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const POLICY: RetryPolicy = RetryPolicy {
     max_attempts: 3,
     base_delay: Duration::from_millis(500),
@@ -72,60 +79,42 @@ pub fn resolve(source: &ContentSource, kind: &str, ctx: &Context) -> Result<Stri
                 }
             }
 
-            let client = crate::http::blocking_client(HTTP_TIMEOUT)?;
+            let client = reqwest::blocking::Client::builder()
+                .user_agent(crate::http::USER_AGENT)
+                .timeout(HTTP_TIMEOUT)
+                .connect_timeout(HTTP_CONNECT_TIMEOUT)
+                .build()
+                .context("build blocking HTTP client for ContentSource::FromUrl")?;
 
-            retry_sync(&POLICY, |attempt| {
-                let mut req = client.get(&rendered_url);
-                for (k, v) in &rendered_headers {
-                    req = req.header(k.as_str(), v.as_str());
-                }
-                match req.send() {
-                    Ok(response) => {
-                        let status = response.status();
-                        if status.is_success() {
-                            match response.bytes() {
-                                Ok(bytes) => {
-                                    if bytes.len() > MAX_BODY_BYTES {
-                                        return Err(ControlFlow::Break(anyhow::anyhow!(
-                                            "{kind} from_url {} body is {} bytes, exceeds \
-                                             {} KiB limit",
-                                            rendered_url,
-                                            bytes.len(),
-                                            MAX_BODY_BYTES / 1024,
-                                        )));
-                                    }
-                                    match String::from_utf8(bytes.to_vec()) {
-                                        Ok(text) => Ok(text),
-                                        Err(e) => Err(ControlFlow::Break(anyhow::anyhow!(e))),
-                                    }
-                                }
-                                Err(e) => Err(ControlFlow::Break(anyhow::anyhow!(e))),
-                            }
-                        } else if status.is_client_error() {
-                            Err(ControlFlow::Break(anyhow::anyhow!(
-                                "{kind} content URL {} returned HTTP {} (no retry on 4xx)",
-                                rendered_url,
-                                status
-                            )))
-                        } else {
-                            Err(ControlFlow::Continue(anyhow::anyhow!(
-                                "{kind} content URL {} returned HTTP {} (attempt {}/{})",
-                                rendered_url,
-                                status,
-                                attempt,
-                                POLICY.max_attempts
-                            )))
-                        }
+            // `retry_http_blocking` handles 5xx → retry, 4xx → fast-fail, and
+            // transport errors via the shared `is_retriable` classifier.
+            // Body-cap and label-formatting are applied on the returned
+            // body string.
+            let label = format!("{kind} from_url {rendered_url}");
+            let rendered_url_for_err = rendered_url.clone();
+            let (_status, body) = retry_http_blocking(
+                &label,
+                &POLICY,
+                SuccessClass::Strict,
+                |_attempt| {
+                    let mut req = client.get(&rendered_url);
+                    for (k, v) in &rendered_headers {
+                        req = req.header(k.as_str(), v.as_str());
                     }
-                    Err(e) => Err(ControlFlow::Continue(anyhow::anyhow!(
-                        "{kind} fetch {} failed (attempt {}/{}): {}",
-                        rendered_url,
-                        attempt,
-                        POLICY.max_attempts,
-                        e
-                    ))),
-                }
-            })
+                    req.send()
+                },
+                |status, _body| format!("returned HTTP {status}"),
+            )?;
+
+            if body.len() > MAX_BODY_BYTES {
+                anyhow::bail!(
+                    "{kind} from_url {} body is {} bytes, exceeds {} KiB limit",
+                    rendered_url_for_err,
+                    body.len(),
+                    MAX_BODY_BYTES / 1024,
+                );
+            }
+            Ok(body)
         }
     }
 }

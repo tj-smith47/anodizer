@@ -122,6 +122,11 @@ pub fn run_build_pipeline_subprocess(
         extra_skip,
         snapshot,
     );
+    tracing::debug!(
+        args = ?cmd.get_args(),
+        worktree = %worktree_path.display(),
+        "spawning anodize release child for determinism harness",
+    );
     let status = cmd
         .status()
         .context("spawning anodize release for determinism harness")?;

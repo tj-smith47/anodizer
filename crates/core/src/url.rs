@@ -66,18 +66,6 @@ pub fn percent_encode_path_segment(s: &str) -> String {
     utf8_percent_encode(s, PATH_SEGMENT).to_string()
 }
 
-/// Join `path` onto `base`, ensuring exactly one `/` between them.
-/// Trailing `/` on `base` and a leading `/` on `path` are both tolerated.
-pub fn join(base: &str, path: &str) -> String {
-    let b = base.trim_end_matches('/');
-    let p = path.trim_start_matches('/');
-    if p.is_empty() {
-        b.to_string()
-    } else {
-        format!("{}/{}", b, p)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

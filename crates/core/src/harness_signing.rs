@@ -22,6 +22,13 @@ use tempfile::TempDir;
 /// Cosign requires a non-empty `generate-key-pair` password; signature
 /// output is independent of the password (it only encrypts the on-disk
 /// private key). Hardcoded so a single value is used across runs.
+///
+/// Security note: this password is for the ephemeral test-harness-only
+/// keypair generated inside a per-run tempdir. It never gates a
+/// production signing key; it only encrypts the throwaway private key
+/// in memory while the harness drives a hermetic rebuild. The cosign
+/// signature itself is non-deterministic regardless (ECDSA random-k),
+/// so verifying the harness output downstream is the real gate.
 const HARNESS_COSIGN_PASSWORD: &str = "anodize-harness";
 
 /// EdDSA ed25519 keypair config template for `gpg --batch --gen-key`.
@@ -113,7 +120,7 @@ pub fn path_for_subprocess_env(path: &Path) -> String {
     if !cfg!(windows) {
         return raw;
     }
-    let forward = raw.replace('\\', "/");
+    let forward = crate::util::normalize_path_separators(&raw);
     let mut chars = forward.chars();
     match (chars.next(), chars.next(), chars.next()) {
         (Some(drive), Some(':'), Some('/')) if drive.is_ascii_alphabetic() => {

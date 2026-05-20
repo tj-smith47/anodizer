@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use colored::Colorize;
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
@@ -321,7 +320,7 @@ impl ArtifactRegistry {
         }
 
         // Normalize path: convert to forward slashes for cross-platform consistency.
-        let path_str = artifact.path.to_string_lossy().replace('\\', "/");
+        let path_str = crate::util::normalize_path_separators(&artifact.path.to_string_lossy());
         artifact.path = PathBuf::from(path_str);
 
         // Warn on duplicate names for uploadable artifact types.
@@ -331,12 +330,13 @@ impl ArtifactRegistry {
                 .iter()
                 .find(|a| is_uploadable(a.kind) && a.name == name)
         {
-            eprintln!(
-                "{} artifact '{}' already registered (existing: {}, new: {}); upload may fail with duplicate error",
-                "Warning:".yellow().bold(),
-                name,
-                existing.path.display(),
-                artifact.path.display()
+            // Route through `tracing::warn!` so the subscriber-level redaction
+            // layer applies and the warning is intercept-friendly for tests.
+            tracing::warn!(
+                artifact = %name,
+                existing = %existing.path.display(),
+                new = %artifact.path.display(),
+                "artifact already registered; upload may fail with duplicate error",
             );
         }
 
@@ -451,7 +451,7 @@ impl ArtifactRegistry {
                 if let Some(path) = entry
                     .get("path")
                     .and_then(|p| p.as_str())
-                    .map(|s| s.replace('\\', "/"))
+                    .map(crate::util::normalize_path_separators)
                 {
                     entry["path"] = serde_json::Value::String(path);
                 }

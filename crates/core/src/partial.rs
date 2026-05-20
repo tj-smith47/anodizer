@@ -132,8 +132,10 @@ pub fn resolve_partial_target(config: &Option<PartialConfig>) -> Result<PartialT
 
 /// Detect the host target triple via `rustc -vV`.
 pub fn detect_host_target() -> Result<String> {
-    let output = std::process::Command::new("rustc")
-        .args(["-vV"])
+    let mut cmd = std::process::Command::new("rustc");
+    cmd.args(["-vV"]);
+    tracing::debug!(args = ?cmd.get_args(), "spawning rustc for host target detection");
+    let output = cmd
         .output()
         .context("failed to run `rustc -vV` for host target detection")?;
 
