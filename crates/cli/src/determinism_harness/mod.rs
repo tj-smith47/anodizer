@@ -110,14 +110,12 @@ impl StageId {
 ///
 /// - `validate` — config / target / signing-cred validation.
 /// - `before` — user `before:` hooks (e.g. codegen).
-/// - `changelog` — populates release notes context downstream stages may
-///   read; cheap and side-effect-free in `--snapshot` mode.
 /// - `templatefiles` — pre-build template materialization.
 ///
 /// Adding any of these to the child `--skip=` list would break stages
 /// that depend on their side-effects-on-context (not on disk), which is
 /// why the harness's complement-set calculation subtracts them.
-const PRESERVE_SET: &[&str] = &["validate", "before", "changelog", "templatefiles"];
+const PRESERVE_SET: &[&str] = &["validate", "before", "templatefiles"];
 
 /// Compute the harness's child-subprocess "extra skip" set — every stage
 /// name in [`anodizer_core::context::VALID_RELEASE_SKIPS`] that is NOT:
@@ -854,8 +852,8 @@ mod tests {
     /// PRESERVE_SET stages MUST never appear in the extra skip list,
     /// regardless of whether the operator listed them via `--stages=`.
     /// Skipping `validate` would let bad configs through; skipping
-    /// `before` would silently drop user hooks; skipping `changelog`
-    /// would strip release-notes context downstream stages may read.
+    /// `before` would silently drop user hooks; skipping `templatefiles`
+    /// would leave downstream stages without their materialized inputs.
     #[test]
     fn harness_extra_skip_omits_preserve_set() {
         let stages = vec![StageId::Build, StageId::Archive];
@@ -866,6 +864,23 @@ mod tests {
                 "compute_extra_skip emitted PRESERVE_SET stage `{name}`: {extra:?}"
             );
         }
+    }
+
+    /// `changelog` is NOT in PRESERVE_SET — its output isn't a built
+    /// artifact the harness diffs, `use=github-native` is inherently
+    /// non-deterministic (depends on remote API state), and the harness
+    /// env strips `GITHUB_TOKEN` for hermeticity so the stage would
+    /// bail on tag-push runs. The publish-only path still runs the
+    /// changelog stage with the real token, so the GitHub Release body
+    /// is unaffected.
+    #[test]
+    fn harness_extra_skip_includes_changelog() {
+        let stages = vec![StageId::Build, StageId::Archive];
+        let extra = compute_extra_skip(&stages);
+        assert!(
+            extra.iter().any(|s| s == "changelog"),
+            "compute_extra_skip missing `changelog`: {extra:?}"
+        );
     }
 
     /// If the operator names a produce-stage in `--stages=`, the harness
