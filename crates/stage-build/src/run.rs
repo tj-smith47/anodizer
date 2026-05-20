@@ -1115,6 +1115,7 @@ impl Stage for super::BuildStage {
                                     run_hooks(&pre_hooks, "pre-build", false, &thread_log, Some(&thread_tvars))?;
                                 }
 
+                                thread_log.status(&format!("running: {} {}", program, args.join(" ")));
                                 let output = Command::new(&program)
                                     .args(&args)
                                     .envs(&env)

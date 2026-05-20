@@ -76,6 +76,17 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
 
     cmd.arg(commit);
 
+    log.debug(&format!(
+        "running: git archive --format {} {}--output {} {}",
+        initial_format,
+        if prefix.is_empty() {
+            String::new()
+        } else {
+            format!("--prefix={} ", prefix)
+        },
+        initial_path.display(),
+        commit,
+    ));
     let output = cmd
         .output()
         .context("source: failed to run 'git archive'")?;
@@ -377,7 +388,11 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
 }
 
 /// Determine the repository root via `git rev-parse --show-toplevel`.
-pub(crate) fn get_repo_root(cwd: &Path) -> Result<PathBuf> {
+pub(crate) fn get_repo_root(cwd: &Path, log: &anodizer_core::log::StageLogger) -> Result<PathBuf> {
+    log.debug(&format!(
+        "running: git rev-parse --show-toplevel (cwd: {})",
+        cwd.display()
+    ));
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)

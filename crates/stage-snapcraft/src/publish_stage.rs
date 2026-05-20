@@ -335,17 +335,22 @@ fn run_uploads(
                             "A human will soon review your snap",
                             "(NEEDS REVIEW)",
                         ];
-                        let stderr = String::from_utf8_lossy(&upload_output.stderr);
-                        let stdout = String::from_utf8_lossy(&upload_output.stdout);
-                        let combined = format!("{}{}", stdout, stderr);
+                        // Redact before any warn-logging — `log.warn` ships
+                        // straight to the operator, whereas `log.check_output`
+                        // (called below on the fall-through path) already
+                        // redacts internally. Without this hop the
+                        // review-pending branch would leak any auth tokens
+                        // snapcraft happens to echo on stderr.
+                        let combined = log.redact(&format!(
+                            "{}{}",
+                            String::from_utf8_lossy(&upload_output.stdout),
+                            String::from_utf8_lossy(&upload_output.stderr),
+                        ));
                         if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
                             log.warn(&format!("snap upload pending review: {}", combined.trim()));
                             return Ok(());
                         }
 
-                        // Materialize the failure as an anyhow::Error via
-                        // `log.check_output`, which preserves stderr/stdout for
-                        // operators reading the log.
                         let err = match log.check_output(upload_output, "snapcraft upload") {
                             Ok(_) => return Ok(()),
                             Err(e) => e,

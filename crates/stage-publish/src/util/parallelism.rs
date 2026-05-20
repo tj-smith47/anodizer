@@ -10,34 +10,15 @@
 //! Bundle B drives through this primitive.
 
 use anodizer_core::log::StageLogger;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 use std::thread::ScopedJoinHandle;
 
 use super::git_revert::{RevertTarget, run_git_revert_and_push};
 
-/// Acquire a `Mutex` guard, recovering from poison rather than panicking.
-///
-/// A poisoned lock means a *sibling* worker thread panicked while
-/// holding the guard — the data itself is still readable and the
-/// rollback counters are a 3-tuple of `usize` with no invariant a panic
-/// could have broken. Panicking this worker too would abandon its
-/// already-completed network call without updating the count, silently
-/// inflating the `failed` bucket reported to the operator.
-pub(crate) fn lock_recover<'a, T>(
-    m: &'a Mutex<T>,
-    log: &StageLogger,
-    label: &str,
-) -> MutexGuard<'a, T> {
-    match m.lock() {
-        Ok(g) => g,
-        Err(poisoned) => {
-            log.warn(&format!(
-                "{label}: mutex poisoned by sibling thread panic; recovering counter state"
-            ));
-            poisoned.into_inner()
-        }
-    }
-}
+// `lock_recover` is the canonical poisoned-mutex recovery helper in
+// `anodizer_core::parallel`; re-exported here so existing `crate::util::lock_recover`
+// call sites in sibling publisher modules keep compiling without a path change.
+pub(crate) use anodizer_core::parallel::lock_recover;
 
 /// Join a scoped worker thread, logging a warn line on panic instead
 /// of silently dropping the join error.

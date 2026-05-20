@@ -89,7 +89,7 @@ impl SourceStage {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        let repo_root = get_repo_root(&cwd)?;
+        let repo_root = get_repo_root(&cwd, &log)?;
 
         // Render and expand extra-file globs up front, even in dry-run mode,
         // so users catch template typos and zero-match patterns before the
@@ -538,7 +538,7 @@ impl SourceStage {
             .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        let search_dir = get_repo_root(&fallback_cwd).unwrap_or(fallback_cwd);
+        let search_dir = get_repo_root(&fallback_cwd, &log).unwrap_or(fallback_cwd);
         let cargo_lock_path = find_cargo_lock(&search_dir)?;
         let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path).with_context(|| {
             format!(
