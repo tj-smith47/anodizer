@@ -1294,7 +1294,7 @@ fn test_upload_to_in_memory_store() {
     ];
     let config = BlobConfig::default();
     let ctx = make_ctx();
-    let _log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+    let log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
 
     let put_opts: Vec<PutOptions> = upload_items
         .iter()
@@ -1309,6 +1309,7 @@ fn test_upload_to_in_memory_store() {
         put_opts,
         1,
         None,
+        &log,
     );
     assert!(result.is_ok(), "upload failed: {:?}", result.err());
 
@@ -1343,7 +1344,7 @@ fn test_upload_to_in_memory_store_empty_directory() {
     let upload_items = vec![(file1, "file.txt".to_string())];
     let config = BlobConfig::default();
     let ctx = make_ctx();
-    let _log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+    let log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
 
     let put_opts: Vec<PutOptions> = upload_items
         .iter()
@@ -1358,6 +1359,7 @@ fn test_upload_to_in_memory_store_empty_directory() {
         put_opts,
         1,
         None,
+        &log,
     );
     assert!(result.is_ok());
 
@@ -1388,6 +1390,7 @@ fn upload_files_owned_returns_successful_keys() {
     let upload_items = vec![(f1, "alpha.txt".to_string()), (f2, "bravo.txt".to_string())];
     let config = BlobConfig::default();
     let ctx = make_ctx();
+    let log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
     let put_opts: Vec<PutOptions> = upload_items
         .iter()
         .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
@@ -1401,6 +1404,7 @@ fn upload_files_owned_returns_successful_keys() {
         put_opts,
         1,
         None,
+        &log,
     )
     .expect("upload should succeed");
     // Order is sorted (deterministic across runs) so evidence is stable.
@@ -1421,7 +1425,7 @@ fn test_upload_with_content_disposition() {
         ..Default::default()
     };
     let ctx = make_ctx();
-    let _log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+    let log = anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
 
     let put_opts: Vec<PutOptions> = upload_items
         .iter()
@@ -1436,6 +1440,7 @@ fn test_upload_with_content_disposition() {
         put_opts,
         1,
         None,
+        &log,
     );
     assert!(result.is_ok());
 }

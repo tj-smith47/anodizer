@@ -521,9 +521,8 @@ impl Stage for super::DockerStage {
                 handles
                     .into_iter()
                     .map(|h| {
-                        h.join().unwrap_or_else(|_| {
-                            Err(anyhow::anyhow!("docker build worker thread panicked"))
-                        })
+                        anodizer_core::parallel::join_panic_to_err(h.join(), "docker build")
+                            .and_then(|r| r)
                     })
                     .collect()
             });

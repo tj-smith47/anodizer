@@ -177,8 +177,11 @@ pub(crate) fn execute_docker_build(
 
         {
             use std::io::Write;
-            let _ = std::io::stdout().write_all(&output.stdout);
-            let _ = std::io::stderr().write_all(&output.stderr);
+            // Best-effort tee: an EPIPE from a parent pipe close must
+            // not abort the build worker. `.ok()` is more intent-clear
+            // than `let _ =`.
+            std::io::stdout().write_all(&output.stdout).ok();
+            std::io::stderr().write_all(&output.stderr).ok();
         }
 
         let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();

@@ -1208,8 +1208,12 @@ impl Stage for super::BuildStage {
                     handles
                         .into_iter()
                         .map(|h| {
-                            h.join()
-                                .unwrap_or_else(|_| Err(anyhow::anyhow!("build thread panicked")))
+                            // Lift a panic into an anyhow::Error tagged with
+                            // the stage so the bubbled error names what
+                            // crashed, then flatten with the worker's own
+                            // Result<T, anyhow::Error>.
+                            anodizer_core::parallel::join_panic_to_err(h.join(), "build")
+                                .and_then(|r| r)
                         })
                         .collect()
                 });

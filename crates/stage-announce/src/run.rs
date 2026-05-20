@@ -357,18 +357,25 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
                     return Ok(());
                 }
             };
+            // Strip embedded userinfo (`https://user:pass@host`) before
+            // the URL lands in any operator-facing error message — the
+            // raw template can carry inline credentials and the error
+            // chain is the easiest place for them to leak.
+            let safe_url = anodizer_core::redact::redact_url_credentials(&url);
             let parsed = reqwest::Url::parse(&url).map_err(|e| {
-                anyhow::anyhow!("announce.webhook: endpoint_url {url:?} is not a valid URL: {e}")
+                anyhow::anyhow!(
+                    "announce.webhook: endpoint_url {safe_url:?} is not a valid URL: {e}"
+                )
             })?;
             if !matches!(parsed.scheme(), "http" | "https") {
                 anyhow::bail!(
-                    "announce.webhook: endpoint_url {url:?} must use http or https \
+                    "announce.webhook: endpoint_url {safe_url:?} must use http or https \
                          (got scheme {:?})",
                     parsed.scheme()
                 );
             }
             if parsed.host().is_none() {
-                anyhow::bail!("announce.webhook: endpoint_url {url:?} must include a host");
+                anyhow::bail!("announce.webhook: endpoint_url {safe_url:?} must include a host");
             }
             // webhook uses a JSON-envelope
             // default distinct from the plain-text default used by other

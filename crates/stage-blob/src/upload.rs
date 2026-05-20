@@ -201,6 +201,10 @@ pub(crate) fn collect_artifacts<'a>(
 /// only landed uploads in `PublishEvidence::artifact_paths` — the prior
 /// pre-upload capture produced a rollback checklist that referenced
 /// files which were never uploaded.
+// Eight params is over clippy's default of 7 — the caller fan-out lives
+// inside an async block + tokio task graph, where bundling args into a
+// struct adds clone/lifetime noise without simplifying the call shape.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn upload_files_owned(
     runtime: &tokio::runtime::Runtime,
     store: Arc<dyn ObjectStore>,
@@ -209,6 +213,7 @@ pub(crate) fn upload_files_owned(
     put_opts_per_item: Vec<PutOptions>,
     parallelism: usize,
     client_kms: Option<(String, KmsProvider)>,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<String>> {
     runtime.block_on(async move {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
@@ -233,6 +238,7 @@ pub(crate) fn upload_files_owned(
             let local = local_path;
             let key_display = object_key.clone();
             let client_kms = client_kms.clone();
+            let task_log = log.clone();
 
             handles.push(tokio::spawn(async move {
                 let _permit = sem
@@ -255,12 +261,12 @@ pub(crate) fn upload_files_owned(
                     .put_opts(&object_path, upload_data.into(), put_opts)
                     .await
                     .map_err(|e| handle_upload_error(e, &path_display, &key_display))?;
-                // Record the successful upload's key so the caller can
-                // emit it into PublishEvidence. Lock order: held only for
-                // the push, so contention is negligible.
-                uploaded
-                    .lock()
-                    .expect("uploaded list lock")
+                // Record the successful upload's key. Lock held only for
+                // the push, so contention is negligible. Use the poison-
+                // recovering helper so one panicked sibling task doesn't
+                // forfeit every other worker's recorded upload — partial
+                // success must still land in PublishEvidence for rollback.
+                anodizer_core::parallel::lock_recover(&uploaded, &task_log, "blob upload")
                     .push(object_key);
                 Ok::<(), anyhow::Error>(())
             }));
@@ -282,7 +288,7 @@ pub(crate) fn upload_files_owned(
                 }
             }
         }
-        let mut keys = uploaded.lock().expect("uploaded list lock").clone();
+        let mut keys = anodizer_core::parallel::lock_recover(&uploaded, log, "blob upload").clone();
         // Deterministic order so evidence is reproducible across runs.
         keys.sort();
         match first_err {

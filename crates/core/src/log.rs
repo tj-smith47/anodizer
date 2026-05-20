@@ -184,10 +184,36 @@ impl StageLogger {
             if let Some(line) = stdout_line {
                 self.error(&line);
             }
+            // Embed a (truncated, redacted) stderr tail in the bubbled
+            // error so operators reading the final anyhow chain see
+            // something more actionable than just an exit code. The
+            // separately-emitted `log.error` lines above remain the
+            // primary surface; this is defense in depth for callers
+            // that propagate the error past the StageLogger context.
+            let stderr_raw = String::from_utf8_lossy(&output.stderr);
+            let stderr_tail = if stderr_raw.is_empty() {
+                String::from("<no stderr>")
+            } else {
+                let redacted = self.redact(&stderr_raw);
+                let trimmed = redacted.trim();
+                // Cap at 2 KiB to keep error chains scannable.
+                const MAX: usize = 2048;
+                if trimmed.len() > MAX {
+                    let cut = trimmed
+                        .char_indices()
+                        .nth(MAX)
+                        .map(|(i, _)| i)
+                        .unwrap_or(MAX);
+                    format!("{}…", &trimmed[..cut])
+                } else {
+                    trimmed.to_string()
+                }
+            };
             anyhow::bail!(
-                "{} failed with exit code: {}",
+                "{} failed with exit code: {}; stderr: {}",
                 label,
-                output.status.code().unwrap_or(-1)
+                output.status.code().unwrap_or(-1),
+                stderr_tail
             );
         }
         if self.is_verbose()
@@ -455,10 +481,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_check_output_bail_message_excludes_raw_secret() {
-        // The error returned by `check_output` is itself short (only
-        // mentions the label + exit code), but make this explicit so a
-        // refactor that decides to interpolate stderr into the bail
-        // message would also have to redact it.
+        // The bail message embeds the (truncated, redacted) stderr tail
+        // so an operator reading the bubbled anyhow chain sees something
+        // more actionable than the bare exit code. That redaction must
+        // still strip env-resolved secrets — otherwise the new tail
+        // would leak whatever stderr the subprocess emitted.
         let log = StageLogger::new("test", Verbosity::Normal).with_env(vec![(
             "AUTH_TOKEN".to_string(),
             "secret_zzz_yyy".to_string(),
@@ -471,6 +498,54 @@ mod tests {
         assert!(
             !msg.contains("secret_zzz_yyy"),
             "bail message leaks secret: {msg}"
+        );
+        assert!(
+            msg.contains("stderr:") && msg.contains("401 Unauthorized"),
+            "bail message should embed redacted stderr tail: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_output_bail_includes_no_stderr_marker_when_empty() {
+        // Subprocess failed with empty stderr — the bail still wants
+        // SOMETHING after `stderr:` so a grep on operator logs sees a
+        // deterministic marker rather than blank text.
+        let log = StageLogger::new("test", Verbosity::Normal);
+        let output = fake_output(b"", b"", 7);
+        let err = log
+            .check_output(output, "tool")
+            .expect_err("non-zero exit should bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("stderr: <no stderr>"),
+            "expected explicit <no stderr> marker: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_output_bail_truncates_long_stderr() {
+        // Stderr larger than the 2 KiB cap is truncated with an ellipsis
+        // so the operator's error chain remains scannable.
+        let log = StageLogger::new("test", Verbosity::Normal);
+        // 3 KiB of stderr.
+        let big = vec![b'x'; 3072];
+        let output = fake_output(b"", &big, 1);
+        let err = log
+            .check_output(output, "tool")
+            .expect_err("non-zero exit should bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.ends_with('…'),
+            "expected ellipsis on truncated stderr: {msg}"
+        );
+        // Truncation must keep the surface manageable — well under
+        // 3 KiB of raw stderr should make it into the bail.
+        assert!(
+            msg.len() < 2500,
+            "bail message too long: {} bytes",
+            msg.len()
         );
     }
 

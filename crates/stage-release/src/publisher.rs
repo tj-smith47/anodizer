@@ -440,7 +440,26 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                     }));
                 }
                 for h in handles {
-                    let (r, t) = h.join().expect("github-release rollback worker panicked");
+                    // A panicked worker must not abort the rollback summary —
+                    // one crashed delete-pair would otherwise hide the
+                    // counters for every sibling target. Translate the
+                    // panic into a (Failed, Failed) outcome pair so the
+                    // operator still sees the per-target failure in the
+                    // summary line below.
+                    let (r, t) = match anodizer_core::parallel::join_panic_to_err(
+                        h.join(),
+                        "github-release rollback",
+                    ) {
+                        Ok(pair) => pair,
+                        Err(err) => {
+                            log.warn(&format!("{err}"));
+                            let msg = format!("{err}");
+                            (
+                                ReleaseDeleteOutcome::Failed(msg.clone()),
+                                ReleaseDeleteOutcome::Failed(msg),
+                            )
+                        }
+                    };
                     match r {
                         ReleaseDeleteOutcome::Deleted => release_deleted += 1,
                         ReleaseDeleteOutcome::AlreadyAbsent => release_already_absent += 1,

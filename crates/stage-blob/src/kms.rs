@@ -107,6 +107,11 @@ pub(crate) fn preflight_kms_cli(provider: KmsProvider) -> Result<()> {
 /// Run a CLI subprocess with stdin piped, return stdout on success.
 /// Centralizes the spawn / write / wait_with_output pattern that the per-CLI
 /// arms used to repeat with subtle differences in error wrapping.
+///
+/// `program` is one of `aws` / `gcloud` / `az` — the binary presence is
+/// validated by [`preflight_kms_cli`] before any caller reaches this
+/// helper, so a missing tool fails fast at upload-config validation
+/// rather than per-artifact during fan-out.
 pub(crate) fn run_kms_cli_with_stdin(
     program: &str,
     args: &[&str],

@@ -548,6 +548,7 @@ impl BlobStage {
         // the structured shape needed for the rollback DELETE path.
         let uploaded_targets: std::sync::Arc<std::sync::Mutex<Vec<BlobTarget>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let job_log = log.clone();
         let run_job = |job: &BlobJob| -> Result<()> {
             match upload_files_owned(
                 runtime_ref,
@@ -557,9 +558,14 @@ impl BlobStage {
                 job.put_opts_per_item.clone(),
                 job.parallelism_inner,
                 job.client_kms.clone(),
+                &job_log,
             ) {
                 Ok(keys) => {
-                    let mut acc = uploaded_targets.lock().expect("uploaded list lock");
+                    let mut acc = anodizer_core::parallel::lock_recover(
+                        &uploaded_targets,
+                        &job_log,
+                        "blob targets",
+                    );
                     for key in keys {
                         acc.push(BlobTarget {
                             provider: job.provider_display.to_string(),
@@ -585,7 +591,8 @@ impl BlobStage {
         // so callers can record partial success in PublishEvidence.
         // Sort by URL so the resulting evidence is deterministic across
         // runs of the same job graph.
-        let mut targets = uploaded_targets.lock().expect("uploaded list lock").clone();
+        let mut targets =
+            anodizer_core::parallel::lock_recover(&uploaded_targets, &log, "blob targets").clone();
         targets.sort_by_key(|t| t.url());
 
         if result.is_ok() {

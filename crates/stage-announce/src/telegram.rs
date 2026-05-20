@@ -14,11 +14,18 @@ const REDACTED_BOT_TOKEN_MARKER: &str = "<REDACTED_BOT_TOKEN>";
 /// surfaced upstream. Returns the message unchanged when the token is
 /// empty (an empty `String::replace` needle would inject the marker
 /// between every byte).
+///
+/// Composes with [`anodizer_core::redact::redact_url_credentials`] for
+/// defense-in-depth: callers should apply both so any URL-shaped
+/// secret (userinfo segment) is also scrubbed before the message
+/// lands in a log or error chain.
 fn redact_bot_token(message: &str, bot_token: &str) -> String {
-    if bot_token.is_empty() {
-        return message.to_string();
-    }
-    message.replace(bot_token, REDACTED_BOT_TOKEN_MARKER)
+    let token_stripped = if bot_token.is_empty() {
+        message.to_string()
+    } else {
+        message.replace(bot_token, REDACTED_BOT_TOKEN_MARKER)
+    };
+    anodizer_core::redact::redact_url_credentials(&token_stripped)
 }
 
 // ---------------------------------------------------------------------------
@@ -220,5 +227,21 @@ mod tests {
         let msg = "no secrets here";
         let out = redact_bot_token(msg, "123:ABC");
         assert_eq!(out, msg);
+    }
+
+    #[test]
+    fn redact_bot_token_also_strips_url_userinfo() {
+        // Defense-in-depth: combined redaction also strips
+        // `user:pass@host` userinfo from any URL in the message so the
+        // (rare) case of a wrapped reqwest::Error carrying both a bot
+        // token AND inline URL credentials surfaces neither.
+        let msg = "error at https://admin:pw@proxy/bot123:ABC/sendMessage: refused";
+        let out = redact_bot_token(msg, "123:ABC");
+        assert!(!out.contains("123:ABC"), "token leaked: {out}");
+        assert!(!out.contains("admin:pw"), "userinfo leaked: {out}");
+        assert!(
+            out.contains("<redacted>@proxy"),
+            "expected url redaction: {out}"
+        );
     }
 }

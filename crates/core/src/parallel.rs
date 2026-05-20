@@ -29,6 +29,58 @@
 
 use anyhow::{Result, anyhow};
 
+use crate::log::StageLogger;
+use std::sync::{Mutex, MutexGuard};
+
+/// Acquire a `Mutex` guard, recovering from poison rather than panicking.
+///
+/// A poisoned lock means a sibling worker thread panicked while holding
+/// the guard. For the data shapes this helper is used on (counters,
+/// `Vec` accumulators), the inner state has no invariant a panic could
+/// have broken — the worst case is one partial write missing. Panicking
+/// the current worker too would abandon its already-completed network
+/// call without updating the count, silently inflating the operator's
+/// `failed` bucket.
+pub fn lock_recover<'a, T>(m: &'a Mutex<T>, log: &StageLogger, label: &str) -> MutexGuard<'a, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            log.warn(&format!(
+                "{label}: mutex poisoned by sibling thread panic; recovering state"
+            ));
+            poisoned.into_inner()
+        }
+    }
+}
+
+/// Translate a `thread::JoinHandle::join` result's panic payload into
+/// an `anyhow::Error` tagged with `label`. The two common panic
+/// payload shapes (`&'static str` / `String`) are downcast so the
+/// surfaced message is readable rather than the opaque `Any`
+/// placeholder.
+///
+/// Accepts `Result<T, Box<dyn Any + Send>>` rather than the handle
+/// itself so a single helper covers both [`std::thread::JoinHandle`]
+/// and [`std::thread::ScopedJoinHandle`] — both expose `.join()`
+/// returning the same `Result` shape.
+///
+/// Use when the worker returns `T` and the caller wants `Result<T>`
+/// so a panic doesn't propagate as a silently-lost result. For
+/// workers that already return `Result<T, anyhow::Error>`, prefer
+/// [`run_parallel_chunks`] which bakes this in.
+pub fn join_panic_to_err<T>(join_result: std::thread::Result<T>, label: &str) -> Result<T> {
+    join_result.map_err(|panic_payload| {
+        let msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            format!("{:?}", panic_payload)
+        };
+        anyhow!("{label} worker thread panicked: {msg}")
+    })
+}
+
 /// Run `run_job` across `jobs` with bounded parallelism. Returns the
 /// per-job results in submission order.
 ///
@@ -166,5 +218,91 @@ mod tests {
             "unexpected error: {}",
             err
         );
+    }
+
+    // ---------- lock_recover ----------
+
+    #[test]
+    fn lock_recover_returns_inner_when_unpoisoned() {
+        // Happy path: an unpoisoned Mutex yields its guard, the helper
+        // adds no observable behavior over a bare `.lock().unwrap()`.
+        let log = StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let m = Mutex::new(0u32);
+        {
+            let mut g = lock_recover(&m, &log, "test");
+            *g = 42;
+        }
+        assert_eq!(*m.lock().unwrap(), 42);
+    }
+
+    #[test]
+    fn lock_recover_recovers_from_poison() {
+        // A poisoned Mutex (sibling thread panicked while holding the
+        // guard) must yield the inner state rather than panicking the
+        // recovering thread too.
+        let log = StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let m = std::sync::Arc::new(Mutex::new(7u32));
+        let m_for_thread = std::sync::Arc::clone(&m);
+        let h = std::thread::spawn(move || {
+            let _g = m_for_thread.lock().unwrap();
+            panic!("poison the mutex");
+        });
+        let _ = h.join();
+        assert!(m.is_poisoned(), "test setup: mutex should be poisoned");
+        let g = lock_recover(&m, &log, "test");
+        assert_eq!(*g, 7);
+    }
+
+    // ---------- join_panic_to_err ----------
+
+    #[test]
+    fn join_panic_to_err_passes_through_success() {
+        let h = std::thread::spawn(|| 42u32);
+        let r = join_panic_to_err(h.join(), "worker").unwrap();
+        assert_eq!(r, 42);
+    }
+
+    #[test]
+    fn join_panic_to_err_translates_str_panic() {
+        // The most common panic shape in our codebase is `panic!("msg")`
+        // which produces a `&'static str` payload — verify the message
+        // survives into the surfaced anyhow chain.
+        let h = std::thread::spawn(|| -> u32 {
+            panic!("kaboom");
+        });
+        let err = join_panic_to_err(h.join(), "worker").unwrap_err();
+        let s = err.to_string();
+        assert!(
+            s.contains("worker worker thread panicked") && s.contains("kaboom"),
+            "unexpected error: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn join_panic_to_err_translates_string_panic() {
+        // The other common panic shape — `format!()`-derived `String`
+        // payloads — must also be downcast rather than printing as `Any`.
+        let h = std::thread::spawn(|| -> u32 {
+            panic!("{}", String::from("string-panic"));
+        });
+        let err = join_panic_to_err(h.join(), "worker").unwrap_err();
+        assert!(
+            err.to_string().contains("string-panic"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn join_panic_to_err_works_on_scoped_handle() {
+        // ScopedJoinHandle::join returns the same Result shape as
+        // JoinHandle::join — verify a single helper covers both so
+        // callers using `std::thread::scope` don't need a second variant.
+        let out: Result<u32> = std::thread::scope(|s| {
+            let h = s.spawn(|| 99u32);
+            join_panic_to_err(h.join(), "scoped")
+        });
+        assert_eq!(out.unwrap(), 99);
     }
 }
