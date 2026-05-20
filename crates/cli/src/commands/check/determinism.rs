@@ -191,6 +191,8 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                     "upx" => parsed.push(StageId::Upx),
                     "archive" => parsed.push(StageId::Archive),
                     "nfpm" => parsed.push(StageId::Nfpm),
+                    "makeself" => parsed.push(StageId::Makeself),
+                    "snapcraft" => parsed.push(StageId::Snapcraft),
                     "sbom" => parsed.push(StageId::Sbom),
                     "sign" => parsed.push(StageId::Sign),
                     "checksum" => parsed.push(StageId::Checksum),
@@ -200,7 +202,7 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
             if !unknown.is_empty() {
                 return Err(format!(
                     "--stages contained unknown stage(s): {}. \
-                     Known stages: build, source, upx, archive, nfpm, sbom, sign, checksum.",
+                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum.",
                     unknown.join(", ")
                 ));
             }
@@ -305,13 +307,25 @@ mod tests {
         // Every stage name reachable from anodizer-action's per-OS
         // determinism-stages default must parse cleanly. Drift between
         // this parser and the action's expanded default surfaces as
-        // "unknown stage(s): source, upx, nfpm" in CI.
-        let stages = parse_stages(Some("build,source,upx,archive,nfpm,sbom,sign,checksum"))
-            .expect("all stages in the action's Linux default must parse");
+        // "unknown stage(s): makeself, snapcraft" in CI. This test pins
+        // the parser to the action's current Linux default CSV.
+        let stages = parse_stages(Some(
+            "build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum",
+        ))
+        .expect("all stages in the action's Linux default must parse");
         assert_eq!(
             stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             vec![
-                "build", "source", "upx", "archive", "nfpm", "sbom", "sign", "checksum"
+                "build",
+                "source",
+                "upx",
+                "archive",
+                "nfpm",
+                "makeself",
+                "snapcraft",
+                "sbom",
+                "sign",
+                "checksum"
             ]
         );
     }

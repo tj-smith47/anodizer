@@ -113,7 +113,7 @@ impl DeterminismState {
             ),
             (
                 "*.snap",
-                "snapcraft pack output embeds squashfs mtimes; needs deterministic flags + lxd/docker backend (deferred — see .claude/known-bugs.md)",
+                "snapcraft pack runs deterministically when SOURCE_DATE_EPOCH propagates (harness env exports it; mksquashfs respects it via craft-parts); allowlisted as defense-in-depth in case snapcraft introduces non-mtime variance",
             ),
         ];
         let mut compile_time_allowlist: Vec<(String, String)> = Vec::new();
