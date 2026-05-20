@@ -138,6 +138,14 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
+    //! Env-mutating tests in this module use `serial_test` with the
+    //! shared group name `rollback_env`. Any new test that calls
+    //! `std::env::set_var` / `remove_var` (directly or through a future
+    //! helper) MUST carry `#[serial(rollback_env)]` — without it the
+    //! `unsafe` env mutations can race a concurrent reader in another
+    //! test, which is UB per the `set_var` contract. The group name
+    //! is distinct from `scope_env` (used in `scope.rs::tests`) so
+    //! the two suites don't serialize against each other unnecessarily.
     use super::*;
     use crate::testing::*;
     use anodizer_core::{

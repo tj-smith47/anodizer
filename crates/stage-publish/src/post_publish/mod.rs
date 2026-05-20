@@ -161,15 +161,24 @@ pub fn run_post_publish_polls(jobs: Vec<PollJob>, log: &StageLogger) -> Vec<Post
         thread::spawn(move || {
             let worker_log = StageLogger::new(stage_label, verbosity);
             let status = job.execute(&worker_log);
-            let _ = tx.send((
+            // Receiver only drops if the parent thread already gave up on
+            // collecting results (panic in `run_post_publish_polls` or
+            // early-return). Surface that in logs so a missing result in
+            // the final report is at least attributable.
+            if let Err(send_err) = tx.send((
                 idx,
                 PostPublishResult {
-                    publisher,
-                    package,
-                    version,
+                    publisher: publisher.clone(),
+                    package: package.clone(),
+                    version: version.clone(),
                     status,
                 },
-            ));
+            )) {
+                worker_log.warn(&format!(
+                    "post-publish: result channel closed for {} {} {}: {}",
+                    publisher, package, version, send_err
+                ));
+            }
         });
     }
     drop(tx);

@@ -1258,11 +1258,11 @@ impl anodizer_core::Publisher for KrewPublisher {
                         );
                         match outcome {
                             crate::util::CloseOutcome::Closed => {
-                                let mut c = counts.lock().expect("counts lock");
+                                let mut c = crate::util::lock_recover(counts, &log, "krew");
                                 c.0 += 1;
                             }
                             crate::util::CloseOutcome::AlreadyClosed => {
-                                let mut c = counts.lock().expect("counts lock");
+                                let mut c = crate::util::lock_recover(counts, &log, "krew");
                                 c.1 += 1;
                                 log.status(&format!(
                                     "krew: PR {} ({}) already closed/deleted upstream — \
@@ -1271,7 +1271,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                                 ));
                             }
                             crate::util::CloseOutcome::Failed(err) => {
-                                let mut c = counts.lock().expect("counts lock");
+                                let mut c = crate::util::lock_recover(counts, &log, "krew");
                                 c.2 += 1;
                                 log.warn(&crate::publisher_helpers::rollback_failure_warning_msg(
                                     "krew",
@@ -1285,11 +1285,20 @@ impl anodizer_core::Publisher for KrewPublisher {
                     }));
                 }
                 for h in handles {
-                    let _ = h.join();
+                    crate::util::join_or_warn(h, &log, "krew");
                 }
             });
         }
-        let (closed, already_closed, failed) = counts.into_inner().expect("counts lock");
+        // `into_inner` consumes the Mutex; poison here means a worker
+        // panicked. Counter state is still valid (3-tuple of usize) so
+        // recover and emit the summary rather than abandon the operator.
+        let (closed, already_closed, failed) = match counts.into_inner() {
+            Ok(c) => c,
+            Err(poisoned) => {
+                log.warn("krew: mutex poisoned by worker panic; reporting counters as-of poison");
+                poisoned.into_inner()
+            }
+        };
         log.status(&format!(
             "krew: closed {}, already-closed {}, failed {}",
             closed, already_closed, failed

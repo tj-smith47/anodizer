@@ -1126,7 +1126,10 @@ mod tests {
         );
         let (addr, captured) = spawn_request_capturing_responder(response);
         let url = format!("http://{}/search/issues", addr);
-        let _ = query_winget_pr_at(&url, Some("secret-token"), &fast_retry()).expect("ok");
+        // `.expect()` propagates Result; discard the WingetPrLookup payload
+        // — this test asserts on the captured Authorization header side
+        // effect, not the response body.
+        query_winget_pr_at(&url, Some("secret-token"), &fast_retry()).expect("ok");
 
         // reqwest lowercases header names on the wire (HTTP/2 style); match
         // case-insensitively so the assertion isn't brittle to that detail.

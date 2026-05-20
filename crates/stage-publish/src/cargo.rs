@@ -301,6 +301,11 @@ fn poll_crates_io_index(
 
     let mut backoff = INITIAL_POLL_DELAY;
 
+    // Per-attempt logs go to `debug` — transient HTTP errors are the
+    // normal shape of "the index hasn't propagated yet"; surfacing them
+    // at `warn`/`error` floods normal release output. The terminal
+    // timeout below escalates with a single bail!() carrying the same
+    // context the per-attempt logs would have shown.
     loop {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => {
@@ -320,14 +325,14 @@ fn poll_crates_io_index(
                 }
             }
             Ok(resp) => {
-                log.warn(&format!(
+                log.debug(&format!(
                     "crates.io index returned {} for {}, retrying…",
                     resp.status(),
                     crate_name
                 ));
             }
             Err(e) => {
-                log.error(&format!(
+                log.debug(&format!(
                     "HTTP error polling index for {}: {}",
                     crate_name, e
                 ));

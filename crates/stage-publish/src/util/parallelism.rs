@@ -10,9 +10,66 @@
 //! Bundle B drives through this primitive.
 
 use anodizer_core::log::StageLogger;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
+use std::thread::ScopedJoinHandle;
 
 use super::git_revert::{RevertTarget, run_git_revert_and_push};
+
+/// Acquire a `Mutex` guard, recovering from poison rather than panicking.
+///
+/// A poisoned lock means a *sibling* worker thread panicked while
+/// holding the guard — the data itself is still readable and the
+/// rollback counters are a 3-tuple of `usize` with no invariant a panic
+/// could have broken. Panicking this worker too would abandon its
+/// already-completed network call without updating the count, silently
+/// inflating the `failed` bucket reported to the operator.
+pub(crate) fn lock_recover<'a, T>(
+    m: &'a Mutex<T>,
+    log: &StageLogger,
+    label: &str,
+) -> MutexGuard<'a, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(poisoned) => {
+            log.warn(&format!(
+                "{label}: mutex poisoned by sibling thread panic; recovering counter state"
+            ));
+            poisoned.into_inner()
+        }
+    }
+}
+
+/// Join a scoped worker thread, logging a warn line on panic instead
+/// of silently dropping the join error.
+///
+/// `label` names the publisher / phase so operators can correlate the
+/// log with the surrounding "closed N, failed M" summary. The panic
+/// payload's most common shapes (`&'static str` / `String`) are
+/// downcast to surface a readable message; other payload types fall
+/// back to `{:?}` rather than vanishing.
+///
+/// Accepts [`ScopedJoinHandle`] (not [`std::thread::JoinHandle`])
+/// because every caller drives workers through [`std::thread::scope`]
+/// — that's what makes it safe to borrow `&Mutex` / `&StageLogger`
+/// across thread boundaries without a `'static` bound.
+pub(crate) fn join_or_warn<'scope, T>(
+    h: ScopedJoinHandle<'scope, T>,
+    log: &StageLogger,
+    label: &str,
+) {
+    if let Err(panic_payload) = h.join() {
+        // Try the two common payload types first so the warn line
+        // shows a readable string rather than the `Any` placeholder.
+        let msg = if let Some(s) = panic_payload.downcast_ref::<&'static str>() {
+            (*s).to_string()
+        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            format!("{:?}", panic_payload)
+        };
+        log.warn(&format!("{label}: worker thread panicked: {msg}"));
+    }
+}
 
 /// Maximum concurrent rollback workers per publisher.
 ///
@@ -59,11 +116,11 @@ pub(crate) fn run_revert_targets_parallel(
                     ));
                     match run_git_revert_and_push(target, &log) {
                         Ok(()) => {
-                            let mut c = counts.lock().expect("counts lock");
+                            let mut c = lock_recover(counts, &log, publisher);
                             c.0 += 1;
                         }
                         Err(err) => {
-                            let mut c = counts.lock().expect("counts lock");
+                            let mut c = lock_recover(counts, &log, publisher);
                             c.1 += 1;
                             log.warn(&crate::publisher_helpers::rollback_failure_warning_msg(
                                 publisher,
@@ -77,11 +134,22 @@ pub(crate) fn run_revert_targets_parallel(
                 }));
             }
             for h in handles {
-                let _ = h.join();
+                join_or_warn(h, log, publisher);
             }
         });
     }
-    counts.into_inner().expect("counts lock")
+    // `into_inner` consumes the Mutex — poison here would mean a worker
+    // panicked while holding the guard. Counters are still readable, so
+    // recover rather than abandon the operator-facing summary.
+    match counts.into_inner() {
+        Ok(c) => c,
+        Err(poisoned) => {
+            log.warn(&format!(
+                "{publisher}: mutex poisoned by worker panic; reporting counters as-of poison"
+            ));
+            poisoned.into_inner()
+        }
+    }
 }
 
 #[cfg(test)]

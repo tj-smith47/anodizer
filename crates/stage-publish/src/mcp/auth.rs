@@ -188,6 +188,11 @@ pub struct GithubAtAuthProvider {
 
 impl McpAuthProvider for GithubAtAuthProvider {
     fn get_token(&self) -> Result<String> {
+        // Two resolution sources: config `auth.token` first, then the
+        // `MCP_GITHUB_TOKEN` env var. `unwrap_or_default()` collapses
+        // "var unset" and "var set to empty string" into the same empty-
+        // string sentinel; the explicit `is_empty()` check below fails
+        // fast with a single actionable error covering both states.
         let github_token = if self.token.is_empty() {
             std::env::var("MCP_GITHUB_TOKEN").unwrap_or_default()
         } else {

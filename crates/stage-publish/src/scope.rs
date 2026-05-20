@@ -55,6 +55,20 @@ pub(crate) fn warn_scope_unavailable_msg(prefix: &str, publisher: &str, label: &
 /// the var is `GITHUB_TOKEN` and `ANODIZER_GITHUB_TOKEN` is set.
 ///
 /// See module docs for the label-format rationale.
+///
+/// # Why not `util::config::resolve_token`?
+///
+/// The sibling `resolve_token` helper covers a *narrower* problem:
+/// "given a `Context` and a publisher-specific env-var hint, produce
+/// the resolved token string (with fallbacks)". This helper is broader
+/// and has no `Context` — it answers "is the env var named by an
+/// arbitrary scope label set?" for any rollback-scope label the
+/// publisher returns. Routing through `resolve_token` would force
+/// the rollback path to thread `Context` everywhere just to do an
+/// env-var presence check, and would still need a special case for
+/// non-`GITHUB_TOKEN` labels (e.g. `KREW_INDEX_TOKEN write`). The two
+/// helpers share the `ANODIZER_GITHUB_TOKEN` alias by design; the
+/// duplication is bounded to that one block.
 pub(crate) fn scope_available(label: &str) -> bool {
     let env_var = label.split_once(' ').map(|(v, _)| v).unwrap_or(label);
     if std::env::var(env_var)
@@ -82,6 +96,17 @@ mod tests {
     /// closure, then restore the prior value. Avoids cross-test bleed
     /// when serial_test ordering doesn't apply (within a single test,
     /// multiple set/unset pairs).
+    ///
+    /// # Serial requirement
+    ///
+    /// Every test calling `with_env` MUST carry `#[serial(scope_env)]`.
+    /// The `unsafe` blocks below rely on `serial_test` to keep env
+    /// mutation single-threaded across the suite — without that pin, a
+    /// concurrent reader in another test can observe a half-mutated
+    /// process env (UB by Rust's `set_var` / `remove_var` contract).
+    /// The `scope_env` name groups every env-mutating test in this
+    /// module under one lock; sibling helpers in `rollback.rs` use
+    /// `rollback_env` so the two test suites don't contend.
     fn with_env<F: FnOnce()>(key: &str, value: Option<&str>, f: F) {
         let prior = std::env::var(key).ok();
         // SAFETY: env mutation is single-threaded within a serial group.

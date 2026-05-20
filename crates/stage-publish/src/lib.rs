@@ -25,7 +25,6 @@ pub mod rollback_only;
 pub mod run_summary;
 pub mod scoop;
 pub(crate) mod scope;
-pub mod upload;
 pub(crate) mod util;
 pub mod winget;
 

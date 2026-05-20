@@ -1060,11 +1060,11 @@ fn parallel_delete(
                             let status = resp.status();
                             match classify_delete_status(status) {
                                 DeleteOutcome::Deleted => {
-                                    let mut c = counts.lock().expect("counts lock");
+                                    let mut c = crate::util::lock_recover(counts, &log, "artifactory");
                                     c.0 += 1;
                                 }
                                 DeleteOutcome::AlreadyAbsent => {
-                                    let mut c = counts.lock().expect("counts lock");
+                                    let mut c = crate::util::lock_recover(counts, &log, "artifactory");
                                     c.1 += 1;
                                     log.status(&format!(
                                         "artifactory: DELETE {} returned HTTP {} (already absent)",
@@ -1072,7 +1072,7 @@ fn parallel_delete(
                                     ));
                                 }
                                 DeleteOutcome::Failed(_) => {
-                                    let mut c = counts.lock().expect("counts lock");
+                                    let mut c = crate::util::lock_recover(counts, &log, "artifactory");
                                     c.2 += 1;
                                     log.warn(&format!(
                                         "artifactory: DELETE {} returned HTTP {} (manual cleanup may be required)",
@@ -1082,7 +1082,7 @@ fn parallel_delete(
                             }
                         }
                         Err(e) => {
-                            let mut c = counts.lock().expect("counts lock");
+                            let mut c = crate::util::lock_recover(counts, &log, "artifactory");
                             c.2 += 1;
                             log.warn(&format!(
                                 "artifactory: DELETE {} transport error: {} (manual cleanup may be required)",
@@ -1093,11 +1093,22 @@ fn parallel_delete(
                 }));
             }
             for h in handles {
-                let _ = h.join();
+                crate::util::join_or_warn(h, log, "artifactory");
             }
         });
     }
-    counts.into_inner().expect("counts lock")
+    // `into_inner` consumes the Mutex; poison here means a worker
+    // panicked. Counter state is still valid (3-tuple of usize) so
+    // recover and emit the summary rather than abandon the operator.
+    match counts.into_inner() {
+        Ok(c) => c,
+        Err(poisoned) => {
+            log.warn(
+                "artifactory: mutex poisoned by worker panic; reporting counters as-of poison",
+            );
+            poisoned.into_inner()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
