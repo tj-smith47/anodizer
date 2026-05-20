@@ -85,16 +85,20 @@ anodize check config [--workspace=<path>]
 anodize check determinism \
   --runs=<N> \
   --stages=<subset> \
+  --targets=<csv> \
   --report=<path> \
-  --snapshot
+  --preserve-dist=<path> \
+  [--snapshot | --no-snapshot]
 ```
 
 | Flag | Default | Description |
 |---|---|---|
 | `--runs=<N>` | `2` | Number of from-clean rebuilds to diff against each other. |
 | `--stages=<subset>` | full set | Restrict to a stage subset (`build,archive,sbom,sign,checksum`). |
+| `--targets=<csv>` | (all) | Restrict the harness to a comma-separated subset of configured target triples (forwarded to the child `anodize release` subprocess). Used by the sharded release matrix so each runner only validates targets it can natively build. |
 | `--report=<path>` | `dist/run-<id>/determinism.json` | JSON report destination. |
-| `--snapshot` | off | Seed SDE from snapshot rules (env > HEAD > dirty-tree hash) instead of the release commit. |
+| `--preserve-dist=<path>` | off | On green, copy run-0's `<worktree>/dist/**` to `<path>` and emit `<path>/context.json`. The release workflow's `release --publish-only` step consumes this directly — eliminating a separate recompile job. |
+| `--snapshot` / `--no-snapshot` | auto | Force snapshot mode on or off for the child release subprocess. Default: auto — `--no-snapshot` when HEAD is at a tag (`git describe --tags --exact-match HEAD` succeeds), `--snapshot` otherwise. Mutually exclusive. |
 
 Scope: build-side only. The harness runs the pipeline up to and including
 `checksum`. It never invokes `release`, `publish`, `blob`, `snapcraft-publish`,
@@ -290,8 +294,11 @@ A non-zero `drift_count` (or any `deterministic: false` without a matching
 `--stages=<offending-stage>` to bisect, then fix the underlying source of
 drift (timestamp embed, file-order non-determinism, embedded GUID).
 
-In CI, the determinism check runs as a fan-out matrix that gates the
-release job. Each shard validates one platform's targets; the release
+In CI, the determinism check runs as a fan-out matrix that doubles as
+the build step. Each shard validates one platform's targets and
+uploads its byte-stable `dist/` under `dist-<shard>`; the downstream
+`release:` job downloads every shard's preserved dist and runs
+`anodize release --publish-only` against the merged tree. The release
 proceeds only when every shard passes. Anodizer's own release workflow
 uses this shape:
 
@@ -314,6 +321,15 @@ jobs:
         with:
           determinism: true
           determinism-targets: ${{ matrix.targets }}
+          preserve-dist: 'true'
+          shard-label: ${{ matrix.shard }}
+      - name: Upload dist artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.shard }}
+          path: preserved-dist/
+          if-no-files-found: error
       - name: Upload determinism report
         if: always()
         uses: actions/upload-artifact@v4
@@ -324,10 +340,21 @@ jobs:
             dist/run-*/drift-bins/**
 
   release:
-    needs: [determinism-check]
+    needs: determinism-check
     runs-on: ubuntu-latest
     steps:
-      - # existing release steps
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: dist-*
+          merge-multiple: true
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          args: release --publish-only
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 ```
 
 Windows is split per-target because it's the slowest platform; pinning
@@ -338,6 +365,11 @@ because both complete inside the Windows envelope.
 `determinism-targets: ''` lets the action pick the targets matching
 `RUNNER_OS` from `.anodizer.yaml`'s configured target list. An explicit
 value overrides that selection for the shard.
+
+`preserve-dist: 'true'` reuses the harness's run-0 dist as the release's
+build output, eliminating a recompile pass. `shard-label` is required
+because `merge-multiple: true` would otherwise collide each shard's
+`context.json` / `artifacts.json` on the consumer side.
 
 PR builds run the same harness with a fast advisory subset
 (`--stages=archive,sbom,sign,checksum`) on a single Linux shard via the

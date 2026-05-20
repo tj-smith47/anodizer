@@ -9,6 +9,8 @@ Split/merge lets you build binaries for each platform on native CI runners (Linu
 
 This avoids slow cross-compilation and lets each job run on hardware that matches its target OS.
 
+> If your CI already runs the [determinism harness](@/docs/advanced/determinism.md), prefer `preserve-dist` + `release --publish-only` — the harness's per-platform builds are already byte-stable, so a separate split/merge matrix repeats work.
+
 ## How it works
 
 1. **Matrix jobs** — each job runs `anodizer release --split` on its native runner. This builds only the binaries for that job's platform and writes a `context.json` (artifacts list + git state) to a `dist/<platform>/` subdirectory.

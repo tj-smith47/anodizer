@@ -130,20 +130,23 @@ cargo test --test e2e
 4. Wire it into the pipeline in `crates/cli/src/pipeline.rs`.
 5. Add config structs to `crates/core/src/config.rs`.
 6. Add tests (both unit and integration).
-7. Document the new config fields in `docs/configuration.md`.
+7. Document the new config fields via `schemars` doc comments on the new
+   struct — the docsite reference at `docs/site/content/docs/reference/configuration.md`
+   regenerates from those via `cargo xtask gen-docs`.
 
 ### Adding a New Config Field
 
 1. Add the field to the appropriate struct in `crates/core/src/config.rs`.
 2. Use `Option<T>` for optional fields with `#[serde(default)]`.
 3. Add validation in `crates/cli/src/commands/check.rs` if needed.
-4. Update the documentation in `docs/configuration.md`.
+4. Add a `///` doc comment describing the field — picked up by `schemars`
+   and surfaced in the regenerated docsite reference and JSON schema.
 5. Add a test that parses a YAML/TOML config with the new field.
 
 ### Adding a New Template Variable
 
 1. Add the variable in the appropriate stage where `TemplateVars` is populated.
-2. Document it in `docs/templates.md`.
+2. Document it in `docs/site/content/docs/general/templates.md`.
 3. Add a test in `crates/core/src/template.rs`.
 
 ## Reporting Issues

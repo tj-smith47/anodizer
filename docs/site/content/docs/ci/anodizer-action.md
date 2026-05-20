@@ -223,6 +223,8 @@ Note: `resolve-workspace: true` runs `anodizer resolve-tag` and exposes the crat
 
 The action's built-in `upload-dist` / `download-dist` replaces the manual `actions/upload-artifact` + `actions/download-artifact` pair for split builds.
 
+> If your release path already runs `anodizer check determinism`, the [`preserve-dist` + `release --publish-only`](@/docs/advanced/determinism.md) pattern is strictly better — it reuses the harness's byte-stable dist instead of compiling everything a second time in a separate matrix.
+
 ```yaml
 jobs:
   build:

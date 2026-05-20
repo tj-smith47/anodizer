@@ -12,9 +12,11 @@ Each row maps to a single Action input.
 
 | Input | Status | Notes |
 |---|---|---|
-| `from-source` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`from-source: true` in build job) |
-| `install-rust` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`install-rust: false` since toolchain installed separately) |
-| `args` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`args: release --split --clean`) |
+| `from-source` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`from-source: true` in split-build jobs) |
+| `install-rust` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`uses: dtolnay/rust-toolchain@stable` in the release job) |
+| `args` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`args: release --publish-only`) |
+| `preserve-dist` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`preserve-dist: 'true'` in determinism-check shards) |
+| `shard-label` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`shard-label: ${{ matrix.shard }}` per matrix entry) |
 | `from-artifact` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`from-artifact: anodizer-linux`) |
 | `artifact-run-id` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`artifact-run-id: auto`) |
 | `artifact-workflow` | ✅ Verified | [cfgd `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml) (`artifact-workflow: ci.yml`) |

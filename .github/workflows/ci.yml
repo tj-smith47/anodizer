@@ -59,7 +59,8 @@ jobs:
       - name: Tests
         run: task test
       # Build release binary on Linux only — used as bootstrap for
-      # release workflow --split and for the snapshot dry-run job.
+      # the `release` job's `--publish-only` step (consumed via
+      # `from-artifact: anodizer-linux`) and for the snapshot dry-run.
       - name: Build release binary
         if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
         run: task build
@@ -147,5 +148,3 @@ jobs:
           args: tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-      - name: Push tags
-        run: git push --tags

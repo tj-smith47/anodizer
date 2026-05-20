@@ -211,7 +211,7 @@ For split/merge fan-out, GPG key import, registry login, and per-platform varian
 ## CLI Reference
 
 ```
-anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --rollback-only)
+anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--merge, --publish-only, --rollback-only)
 anodizer tag           Auto-tag from commit directives
 anodizer check         Validate configuration + run determinism harness
 anodizer init          Generate starter .anodizer.yaml

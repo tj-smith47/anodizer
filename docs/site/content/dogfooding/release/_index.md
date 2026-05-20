@@ -72,7 +72,7 @@ Byte-stability contract plus a `check determinism` harness, an operator
 
 | Key | Status | Notes |
 |---|---|---|
-| `anodize check determinism --runs=N` harness | 🤝 Help wanted | [`crates/cli/src/commands/check/determinism.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/check/determinism.rs) - N-run harness wired; not yet invoked from a tagged release run |
+| `anodize check determinism --runs=N` harness | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`determinism-check:` matrix runs the harness on every tag push; `release:` consumes the preserved dist via `release --publish-only`) |
 | `anodize check config` (post-restructure) | 🤝 Help wanted | [`crates/cli/src/commands/check/config.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/check/config.rs) - post-restructure config validator; no release has exercised the new surface yet |
 | `--allow-nondeterministic <name>=<reason>` | 🤝 Help wanted | Operator escape parsed and threaded through the build stage; rejection paths covered by `crates/cli/tests/integration.rs::release_allow_nondeterministic_rejects_no_eq`, `release_allow_nondeterministic_rejects_empty_reason`, `release_strict_conflicts_with_allow_nondeterministic`; no live release has waived an artifact yet |
 | "Non-deterministic exemptions:" block in release body | 🤝 Help wanted | [`crates/stage-release/src/release_body.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-release/src/release_body.rs) - emitter wired; release body fragment unused until an exemption ships |

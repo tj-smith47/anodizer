@@ -336,9 +336,10 @@ anodize release --rollback-only --from-run=v0.2.1
 #         for the ones that need manual cleanup — those entries name
 #         the publisher and the error).
 
-# Step 3: cut a new tag and re-release.
-git tag v0.2.2 && git push --tags
-anodize release
+# Step 3: cut a new tag (anodize tag creates and pushes the next
+#         semver from your commit log; release.yml triggers on the
+#         pushed tag and re-runs the pipeline).
+anodize tag
 ```
 
 Only use `--allow-rerun` when:
