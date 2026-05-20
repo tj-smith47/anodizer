@@ -8,9 +8,12 @@ tasks:
 
   _check:tmp-headroom:
     internal: true
-    desc: "Precondition: /tmp under 50% full — tmpfs pressure here OOMs the cargo linker."
+    desc: "Precondition (Linux only): /tmp under 50% full — tmpfs pressure OOMs the cargo linker."
     preconditions:
-      - sh: '[ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
+      # macOS and Windows back /tmp with real disk, not tmpfs, so the
+      # pressure scenario doesn't apply there. Skip the check entirely
+      # outside Linux.
+      - sh: '[ "$(uname)" != "Linux" ] || [ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
         msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
 
   build:
