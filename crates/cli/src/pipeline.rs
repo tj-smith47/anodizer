@@ -908,13 +908,25 @@ pub fn build_publish_pipeline() -> Pipeline {
 }
 
 /// Build the pipeline for `anodize release --publish-only`:
-/// `[SignStage, ReleaseStage, PublishStage, BlobStage,
-/// SnapcraftPublishStage]`. The head `SignStage` is the production-keys
-/// re-sign pass — the preserved dist's archive bytes are byte-stable
-/// (the determinism check verified that) but their `.sig`/`.asc`
-/// signatures are either missing entirely (harness skips Sign when
-/// prod keys are exported on the runner) or ephemeral (harness ran
-/// without prod keys).
+/// `[ChangelogStage, SignStage, ReleaseStage, PublishStage,
+/// BlobStage, SnapcraftPublishStage, AnnounceStage]`. The head
+/// `SignStage` is the production-keys re-sign pass — the preserved
+/// dist's archive bytes are byte-stable (the determinism check
+/// verified that) but their `.sig`/`.asc` signatures are either
+/// missing entirely (harness skips Sign when prod keys are exported
+/// on the runner) or ephemeral (harness ran without prod keys).
+///
+/// **Ordering invariants**:
+/// - `ChangelogStage` runs first. It is a pure GitHub API call with
+///   no artifact dependency, and `ReleaseStage::build_release_json`
+///   reads `ctx.stage_outputs.changelogs` to populate the GitHub
+///   release body — so it MUST land before `ReleaseStage`. Placing
+///   it at the head also means a GitHub API failure aborts before
+///   any signing work is performed.
+/// - `AnnounceStage` runs last, matching `build_merge_pipeline` and
+///   `build_release_pipeline`. The stage's internal
+///   `required_publishers` gate then sees the final publish report
+///   and only fires notifications on a green publish.
 ///
 /// **Idempotence requirement on SignStage**: must be safe to re-run
 /// on a dist whose existing `.sig`/`.asc` files are already
@@ -935,18 +947,22 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// harness pipeline (those stages are added to the harness's stage
 /// list in CI). Filling the missing-stages gap is a follow-up.
 pub(crate) fn build_publish_only_pipeline() -> Pipeline {
+    use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_blob::BlobStage;
+    use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_publish::PublishStage;
     use anodizer_stage_release::ReleaseStage;
     use anodizer_stage_sign::SignStage;
     use anodizer_stage_snapcraft::SnapcraftPublishStage;
 
     let mut p = Pipeline::new();
+    p.add(Box::new(ChangelogStage));
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(BlobStage));
     p.add(Box::new(SnapcraftPublishStage));
+    p.add(Box::new(AnnounceStage));
     p
 }
 
@@ -1799,6 +1815,56 @@ crates:
         assert!(
             sign_idx < release_idx,
             "sign (idx {sign_idx}) must precede release (idx {release_idx}); got {names:?}"
+        );
+    }
+
+    #[test]
+    fn publish_only_pipeline_runs_changelog_before_release() {
+        // ReleaseStage::build_release_json reads ctx.stage_outputs.changelogs;
+        // without ChangelogStage ahead of it the GitHub release body would
+        // be empty even though the project configures `changelog.use:
+        // github-native`. ChangelogStage at the head also costs no signing
+        // work if its GitHub API call fails.
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        let changelog_idx = names
+            .iter()
+            .position(|n| *n == "changelog")
+            .expect("publish-only pipeline must include changelog stage");
+        let release_idx = names
+            .iter()
+            .position(|n| *n == "release")
+            .expect("publish-only pipeline must include release stage");
+        assert!(
+            changelog_idx < release_idx,
+            "changelog (idx {changelog_idx}) must precede release (idx {release_idx}); got {names:?}"
+        );
+    }
+
+    #[test]
+    fn publish_only_pipeline_runs_announce_after_publish() {
+        // AnnounceStage must follow the publisher chain so it only fires on
+        // a green release; it is the last stage by symmetry with merge /
+        // release pipelines so the `required_publishers` gate sees the
+        // final publish report.
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        let announce_idx = names
+            .iter()
+            .position(|n| *n == "announce")
+            .expect("publish-only pipeline must include announce stage");
+        let publish_idx = names
+            .iter()
+            .position(|n| *n == "publish")
+            .expect("publish-only pipeline must include publish stage");
+        assert!(
+            announce_idx > publish_idx,
+            "announce (idx {announce_idx}) must follow publish (idx {publish_idx}); got {names:?}"
+        );
+        assert_eq!(
+            announce_idx,
+            names.len() - 1,
+            "announce must be the final stage; got {names:?}"
         );
     }
 
