@@ -600,11 +600,11 @@ impl Stage for super::ReleaseStage {
                         log.warn("use_existing_draft has no effect on GitLab (draft releases are not supported)");
                     }
 
-                    // Per-publisher retry policy (Wave-1 RetryConfig). 5xx /
-                    // 429 / network errors retry with exponential backoff
-                    // through `retry_http_async` inside every gitlab_*
-                    // function. Default: 10 attempts × 10s base × 5m cap
-                    // (matches GoReleaser `pkg/config.Retry` defaults).
+                    // Per-publisher retry policy. 5xx / 429 / network errors
+                    // retry with exponential backoff through `retry_http_async`
+                    // inside every gitlab_* function. Default: 10 attempts ×
+                    // 10s base × 5m cap (matches GoReleaser `pkg/config.Retry`
+                    // defaults).
                     let policy = ctx.retry_policy();
 
                     let url = rt.block_on(async {
@@ -806,8 +806,8 @@ impl Stage for super::ReleaseStage {
                         );
                     }
 
-                    // Per-publisher retry policy (Wave-1 RetryConfig). Same
-                    // shape and rationale as the GitLab branch above.
+                    // Per-publisher retry policy. Same shape and rationale
+                    // as the GitLab branch above.
                     let policy = ctx.retry_policy();
 
                     let url = rt.block_on(async {

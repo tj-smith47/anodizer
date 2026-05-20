@@ -84,7 +84,7 @@ impl Stage for AnnounceStage {
 }
 
 /// Body of `AnnounceStage::run` — kept separated from the trait `run`
-/// to make the I1 boundary explicit: the trait `run` is "announce body
+/// to make the boundary explicit: the trait `run` is "announce body
 /// only" while `Pipeline::run` is responsible for `emit_summary`.
 fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     let log = ctx.logger("announce");
@@ -1128,10 +1128,10 @@ mod gate_tests {
         assert!(evaluate_gate(Some(&r), AnnounceGate::AllPublishers));
     }
 
-    // ---- I2 happy-path-pending must NOT gate ---------------------------
+    // ---- happy-path-pending outcomes must NOT gate announce ----------
 
     /// Construct a `PublisherResult` with an arbitrary outcome — used by
-    /// the I2-specific tests below where we need to exercise variants
+    /// the variant-specific tests below where we need to exercise outcomes
     /// the basic `failed_result` helper doesn't reach.
     fn result_with_outcome(
         name: &str,
@@ -1522,10 +1522,11 @@ mod summary_tests {
 
     #[test]
     fn emit_summary_writes_when_announce_stage_was_not_called() {
-        // Direct regression test for I1: a release that operator-
-        // skipped announce entirely (`--skip=announce` in the
-        // pipeline) STILL gets a summary write. We model
-        // "AnnounceStage.run never invoked" by simply not calling it.
+        // Regression: a release that operator-skipped announce entirely
+        // (`--skip=announce` in the pipeline) STILL gets a summary
+        // write, because emit_summary lives on Pipeline rather than
+        // inside AnnounceStage. We model "AnnounceStage.run never
+        // invoked" by simply not calling it.
         let tmp = tempfile::tempdir().expect("tempdir");
         let summary_path = tmp.path().join("summary.json");
 

@@ -512,14 +512,13 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // RollbackFailed entry, persist the result to `rollback.json`, and
     // return. No build / publish / announce stages run in this mode.
     //
-    // Audit ref: B6 review I-1 — the rollback-only branch bypasses
-    // `Pipeline::run` entirely, so it must invoke `emit_summary`
-    // itself for `--summary-json=<path>` to land on disk. Without
-    // this call, the rollback-only path silently drops the summary
-    // file even though every other code path produces one. The call
-    // wraps both the rollback dispatch result and the early-error
-    // return so the summary fires regardless of how rollback_only
-    // resolved (Ok, Err, missing --from-run, ...).
+    // The rollback-only branch bypasses `Pipeline::run` entirely, so it
+    // must invoke `emit_summary` itself for `--summary-json=<path>` to
+    // land on disk. Without this call, the rollback-only path silently
+    // drops the summary file even though every other code path produces
+    // one. The call wraps both the rollback dispatch result and the
+    // early-error return so the summary fires regardless of how
+    // rollback_only resolved (Ok, Err, missing --from-run, ...).
     if ctx.options.rollback_only {
         let outcome = (|| -> Result<()> {
             // Clone the run id so the borrow on `ctx.options` ends before
@@ -1515,7 +1514,7 @@ mod tests {
         // `--publish-only` must skip the publisher-state preflight so
         // the credential preflight (which lives inside
         // `publish_only::run`) gets first crack at bailing before any
-        // network call. Audit ref: Phase-2 review I2.
+        // network call.
         assert!(!should_run_preflight_auto(
             false, false, false, false, true, false
         ));

@@ -103,11 +103,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    // F3 + M3: walk the raw YAML pre-parse for two checks that lose
-    // information once typed deserialization runs:
-    //   * F3: legacy `snapshot.name_template` (renamed to `version_template`
+    // Walk the raw YAML pre-parse for two checks that lose information
+    // once typed deserialization runs:
+    //   * legacy `snapshot.name_template` (renamed to `version_template`
     //     in GR; serde alias accepts both but collapses them on parse).
-    //   * M3: GR V1 `dockers:` block — anodizer is V2-only by design;
+    //   * GR V1 `dockers:` block — anodizer is V2-only by design;
     //     without this check `deny_unknown_fields` emits a generic
     //     "unknown field" error that does not point at `docker_v2:`.
     // Best-effort — YAML parse failures are reported by the typed loader below.
@@ -124,12 +124,12 @@ pub fn load_config(path: &Path) -> Result<Config> {
         _ => bail!("unsupported config format: {}", ext),
     };
 
-    // F3: fold deprecated archive `format` / `format_overrides[].format` /
+    // Fold deprecated archive `format` / `format_overrides[].format` /
     // `builds` aliases into their canonical fields, emitting deprecation
     // warnings. Done before validation so unique-id checks see the
     // post-fold state.
     anodizer_core::config::apply_archive_legacy_aliases(&mut config);
-    // F3: emit deprecation warning + ignore any `gobinary:` field on builds
+    // Emit deprecation warning + ignore any `gobinary:` field on builds
     // (Go-only — anodizer always uses cargo).
     anodizer_core::config::apply_build_legacy_aliases(&mut config);
 
@@ -1938,9 +1938,9 @@ crates:
         let summary_path = tmp.path().join("summary.json");
 
         // Build a pipeline whose only stage is AnnounceStage and skip
-        // it via `--skip=announce`. With the I1 fix the summary still
-        // lands on disk because Pipeline::run invokes emit_summary
-        // after the stage loop, regardless of whether the stage ran.
+        // it via `--skip=announce`. The summary still lands on disk
+        // because Pipeline::run owns emit_summary and invokes it after
+        // the stage loop, regardless of whether the stage ran.
         let mut p = Pipeline::new();
         p.add(Box::new(AnnounceStage));
 
@@ -1961,9 +1961,10 @@ crates:
         p.run(&mut ctx, &log).expect("pipeline run");
 
         // The stage was skipped — but the summary must STILL be written.
-        // Pre-I1, the assertion below would have failed because the
-        // emit_summary call lived inside AnnounceStage::run and the
-        // skipped stage never reached it.
+        // Regression: an earlier shape put emit_summary inside
+        // AnnounceStage::run, where a skipped stage never reached it.
+        // Pipeline must own emit_summary so operator-skip can't suppress
+        // the summary side-effect.
         assert!(
             summary_path.exists(),
             "summary.json must be written even when announce is operator-skipped",

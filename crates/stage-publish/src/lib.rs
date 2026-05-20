@@ -1405,7 +1405,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task 4C: Additional behavior tests — config fields actually do things
+    // ── Config-to-behavior wiring tests ──
     // -----------------------------------------------------------------------
 
     #[test]

@@ -357,6 +357,19 @@ fn drop_stale_binary_artifacts(ctx: &mut Context, log: &StageLogger) {
          (raw build outputs not in preserved-dist; release_uploadable_kinds excludes \
          them too — nothing downstream consumes these)"
     ));
+    // Binary-level signing has nothing to sign once we've dropped the
+    // raw binaries. Surface that to the operator instead of silently
+    // skipping — otherwise a consumer with `binary_signs:` configured
+    // would assume binary-level cosign blobs were produced.
+    if !ctx.config.binary_signs.is_empty() {
+        log.warn(
+            "publish-only: binary_signs is configured but raw binaries are not preserved \
+             into dist/ by the determinism harness — binary-level signatures will NOT be \
+             produced in --publish-only mode. To ship signed binaries, either configure \
+             archive-level signs:, or sign at consumer-side (e.g. cosign verify-blob \
+             against the binaries inside the released archive).",
+        );
+    }
 }
 
 /// Strip `Signature` / `Certificate` artifacts the harness may have
@@ -811,9 +824,19 @@ fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> R
     Ok(())
 }
 
-/// Delete sharded `<base>-<shard>.json` manifests at dist root after the
-/// canonical un-suffixed `<base>.json` has been re-written by
-/// `run_post_pipeline`. Targets both `context` and `artifacts` families.
+/// Delete sharded `artifacts-<shard>.json` manifests at dist root after
+/// the canonical un-suffixed `artifacts.json` has been re-written by
+/// `run_post_pipeline`.
+///
+/// Scope is limited to the `artifacts` family on purpose:
+/// `run_post_pipeline` re-writes the un-suffixed `artifacts.json` from
+/// the merged in-memory context, which makes the per-shard
+/// `artifacts-<shard>.json` files stale the instant that write lands.
+/// The `context` family has no equivalent un-suffixed re-writer — only
+/// the harness emits `write_preserved_dist_context`, and that only
+/// produces shard-suffixed files. Cleaning `context-<shard>.json` here
+/// would leave a subsequent retry with no manifest at all and trip
+/// `discover_preserved_contexts`'s bail.
 ///
 /// Best-effort: logs a warn on each remove failure but does not fail
 /// the publish — by the time this is called the release has already
@@ -821,36 +844,35 @@ fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> R
 /// the next retry (where it would trip
 /// `check_no_unsuffixed_suffixed_collision`).
 fn cleanup_shard_manifests(dist: &Path, log: &StageLogger) {
-    for base in ["context", "artifacts"] {
-        let entries = match std::fs::read_dir(dist) {
-            Ok(e) => e,
-            Err(e) => {
-                log.warn(&format!(
-                    "publish-only: failed to read {} for shard-manifest cleanup: {} \
-                     (a retry may trip the unsuffixed-vs-suffixed collision check)",
-                    dist.display(),
-                    e,
-                ));
-                return;
-            }
+    let base = "artifacts";
+    let entries = match std::fs::read_dir(dist) {
+        Ok(e) => e,
+        Err(e) => {
+            log.warn(&format!(
+                "publish-only: failed to read {} for shard-manifest cleanup: {} \
+                 (a retry may trip the unsuffixed-vs-suffixed collision check)",
+                dist.display(),
+                e,
+            ));
+            return;
+        }
+    };
+    let prefix = format!("{base}-");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = match name.to_str() {
+            Some(s) => s,
+            None => continue,
         };
-        let prefix = format!("{base}-");
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = match name.to_str() {
-                Some(s) => s,
-                None => continue,
-            };
-            if name_str.starts_with(&prefix) && name_str.ends_with(".json") {
-                let path = entry.path();
-                if let Err(e) = std::fs::remove_file(&path) {
-                    log.warn(&format!(
-                        "publish-only: failed to remove shard manifest {}: {} \
-                         (a retry may trip the unsuffixed-vs-suffixed collision check)",
-                        path.display(),
-                        e
-                    ));
-                }
+        if name_str.starts_with(&prefix) && name_str.ends_with(".json") {
+            let path = entry.path();
+            if let Err(e) = std::fs::remove_file(&path) {
+                log.warn(&format!(
+                    "publish-only: failed to remove shard manifest {}: {} \
+                     (a retry may trip the unsuffixed-vs-suffixed collision check)",
+                    path.display(),
+                    e
+                ));
             }
         }
     }
@@ -1340,5 +1362,91 @@ mod tests {
             msg.contains("absent.tar.gz"),
             "error must name the missing file; got: {msg}"
         );
+    }
+
+    /// Cleanup must drop the stale per-shard `artifacts-<shard>.json`
+    /// manifests but leave `context-<shard>.json` alone — see the
+    /// function-level doc-comment on `cleanup_shard_manifests`.
+    #[test]
+    fn cleanup_shard_manifests_removes_only_artifacts_shards_leaves_context() {
+        use anodizer_core::log::Verbosity;
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path();
+        // Set up: one un-suffixed artifacts.json (the canonical), three
+        // sharded artifacts-*.json, three sharded context-*.json.
+        std::fs::write(dist.join("artifacts.json"), b"[]").unwrap();
+        std::fs::write(dist.join("artifacts-ubuntu-latest.json"), b"[]").unwrap();
+        std::fs::write(dist.join("artifacts-macos-latest.json"), b"[]").unwrap();
+        std::fs::write(dist.join("artifacts-windows-x86_64.json"), b"[]").unwrap();
+        std::fs::write(dist.join("context-ubuntu-latest.json"), b"{}").unwrap();
+        std::fs::write(dist.join("context-macos-latest.json"), b"{}").unwrap();
+
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        cleanup_shard_manifests(dist, &log);
+
+        // Canonical artifacts.json survives.
+        assert!(dist.join("artifacts.json").is_file());
+        // Sharded artifacts-* are gone.
+        assert!(!dist.join("artifacts-ubuntu-latest.json").exists());
+        assert!(!dist.join("artifacts-macos-latest.json").exists());
+        assert!(!dist.join("artifacts-windows-x86_64.json").exists());
+        // Context shards SURVIVE — there's no un-suffixed replacement, so
+        // we must not delete the only manifest the next retry could use.
+        assert!(dist.join("context-ubuntu-latest.json").is_file());
+        assert!(dist.join("context-macos-latest.json").is_file());
+    }
+
+    /// Drop must purge `Binary` + `UniversalBinary` (raw build outputs
+    /// not in preserved-dist) while leaving every other kind in place —
+    /// they survive publish unchanged.
+    #[test]
+    fn drop_stale_binary_artifacts_drops_binary_and_universal_binary_only() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::Verbosity;
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        // Seed: one of each kind we expect to drop + one of each kind
+        // we expect to keep.
+        let kinds_to_drop = [ArtifactKind::Binary, ArtifactKind::UniversalBinary];
+        let kinds_to_keep = [
+            ArtifactKind::Archive,
+            ArtifactKind::Checksum,
+            ArtifactKind::Signature,
+            ArtifactKind::Metadata,
+        ];
+        for (i, k) in kinds_to_drop.iter().chain(kinds_to_keep.iter()).enumerate() {
+            ctx.artifacts.add(Artifact {
+                kind: *k,
+                name: format!("art-{i}"),
+                path: std::path::PathBuf::from(format!("art-{i}")),
+                target: None,
+                crate_name: String::new(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        drop_stale_binary_artifacts(&mut ctx, &log);
+
+        // Both Binary kinds dropped.
+        assert!(
+            !ctx.artifacts
+                .all()
+                .iter()
+                .any(|a| matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary)),
+            "Binary and UniversalBinary must be dropped"
+        );
+        // All keep-kinds survive.
+        for k in &kinds_to_keep {
+            assert!(
+                ctx.artifacts.all().iter().any(|a| a.kind == *k),
+                "kind {:?} should have been kept",
+                k
+            );
+        }
     }
 }

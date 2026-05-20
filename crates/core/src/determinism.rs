@@ -107,6 +107,14 @@ impl DeterminismState {
                 "*.deb",
                 "dpkg-deb reproducibility varies by version; tracked in determinism-installers",
             ),
+            (
+                "*.run",
+                "makeself --packaging-date header embeds wallclock unless pinned; tracked in determinism-installers follow-up",
+            ),
+            (
+                "*.snap",
+                "snapcraft pack output embeds squashfs mtimes; needs deterministic flags + lxd/docker backend (deferred — see .claude/known-bugs.md)",
+            ),
         ];
         let mut compile_time_allowlist: Vec<(String, String)> = Vec::new();
         for (pattern, reason) in installer_allow {
