@@ -108,10 +108,6 @@ impl DeterminismState {
                 "dpkg-deb reproducibility varies by version; tracked in determinism-installers",
             ),
             (
-                "*.run",
-                "makeself --packaging-date header embeds wallclock unless pinned; tracked in determinism-installers follow-up",
-            ),
-            (
                 "*.snap",
                 "snapcraft pack runs deterministically when SOURCE_DATE_EPOCH propagates (harness env exports it; mksquashfs respects it via craft-parts); allowlisted as defense-in-depth in case snapcraft introduces non-mtime variance",
             ),

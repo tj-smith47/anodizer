@@ -45,6 +45,21 @@ pub fn resolve_now() -> DateTime<Utc> {
         .unwrap_or_else(Utc::now)
 }
 
+/// Return the `SOURCE_DATE_EPOCH`-derived `DateTime<Utc>` ONLY when the env
+/// var is set to a valid seconds-since-epoch value, else `None`.
+///
+/// Distinct from [`resolve_now`], which always returns a value (falling back
+/// to `Utc::now`). Use this when a call site needs to behave conditionally on
+/// whether reproducibility is in effect — e.g. `stage-makeself` only injects
+/// `--packaging-date` under SDE so non-harness production runs keep
+/// makeself's default `LC_ALL=C date` behavior.
+pub fn source_date_epoch() -> Option<DateTime<Utc>> {
+    std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +99,31 @@ mod tests {
         // Just check it succeeds and returns a reasonable wall-clock
         // value (post-2020). The point is the SDE branch didn't fire.
         assert!(now.timestamp() > 1_577_836_800);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn source_date_epoch_returns_some_when_set() {
+        // SAFETY: serialized via the env_source_date_epoch group.
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
+        let dt = source_date_epoch();
+        assert_eq!(dt.map(|d| d.timestamp()), Some(1715000000));
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn source_date_epoch_returns_none_when_unset() {
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+        assert!(source_date_epoch().is_none());
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn source_date_epoch_returns_none_when_malformed() {
+        // SAFETY: serialized via the env_source_date_epoch group.
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "not-a-number") };
+        assert!(source_date_epoch().is_none());
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
     }
 }

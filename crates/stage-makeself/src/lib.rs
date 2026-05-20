@@ -59,6 +59,7 @@ fn make_args(
     compression: Option<&str>,
     script: &str,
     extra_args: &[String],
+    packaging_date: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec!["--quiet".to_string()];
 
@@ -75,6 +76,18 @@ fn make_args(
     args.push("--lsm".to_string());
     args.push("package.lsm".to_string());
 
+    // Pin the packaging-date header under SOURCE_DATE_EPOCH so the .run
+    // header is byte-stable across runs. makeself's default
+    // `DATE=`LC_ALL=C date`` reads wall-clock and otherwise leaks into the
+    // .run file (the `Date of packaging:` line in the embedded header), which
+    // in turn shifts the .run's compressed size — and that size shadows
+    // through `dist/artifacts.json` via the `size_bytes` field even though
+    // `*.run` itself is allow-listed by the determinism harness.
+    if let Some(date) = packaging_date {
+        args.push("--packaging-date".to_string());
+        args.push(date.to_string());
+    }
+
     args.extend(extra_args.iter().cloned());
 
     // positional args: archive_dir output_file label startup_script
@@ -84,6 +97,46 @@ fn make_args(
     args.push(script.to_string());
 
     args
+}
+
+/// Format a packaging date string for makeself's `--packaging-date` flag.
+/// Resolves from `SOURCE_DATE_EPOCH`; returns `None` when SDE is unset so
+/// normal production runs keep makeself's default `LC_ALL=C date` behaviour.
+fn resolve_packaging_date() -> Option<String> {
+    // Format mirrors `LC_ALL=C date -u` output (which is what makeself's
+    // default `DATE=`LC_ALL=C date`` produces in the harness's UTC=Etc/UTC
+    // env), keeping the embedded `Date of packaging:` line readable.
+    anodizer_core::sde::source_date_epoch()
+        .map(|dt| dt.format("%a %b %e %H:%M:%S UTC %Y").to_string())
+}
+
+/// Recursively pin every regular file's mtime in `dir` to `epoch_secs`.
+///
+/// makeself wraps `tar` over the work directory; tar embeds each file's
+/// on-disk mtime into the archive header. `fs::copy` stamps destination
+/// files with the current wallclock, so two harness runs produce identical
+/// file contents but with different mtimes — that drifts the tar payload,
+/// the gzip compressed bytes (length + content), and ultimately the
+/// `size_bytes` field that artifacts.json carries for the `.run` artifact.
+/// Pinning every file's mtime to `SOURCE_DATE_EPOCH` removes the drift.
+fn pin_workdir_mtimes(dir: &Path, epoch_secs: i64) -> Result<()> {
+    let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        for entry in fs::read_dir(&p)
+            .with_context(|| format!("makeself: read_dir {} for mtime pin", p.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                anodizer_core::util::set_file_mtime_epoch(&path, epoch_secs)
+                    .with_context(|| format!("makeself: pin mtime on {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Group artifacts by platform string (e.g. "linux_amd64").
@@ -532,12 +585,22 @@ impl Stage for MakeselfStage {
                 format!("makeself: write LSM file in {}", job.work_dir.display())
             })?;
 
+            // Pin every file's mtime to SOURCE_DATE_EPOCH so tar embeds the
+            // same per-file timestamps across runs. Without this, fs::copy
+            // stamps the destination with the current wallclock and the
+            // resulting tar.gz payload differs between consecutive runs.
+            if let Some(epoch) = anodizer_core::sde::source_date_epoch().map(|dt| dt.timestamp()) {
+                pin_workdir_mtimes(&job.work_dir, epoch)?;
+            }
+
+            let packaging_date = resolve_packaging_date();
             let args = make_args(
                 &job.rendered_name,
                 &job.filename,
                 job.rendered_compression.as_deref(),
                 &format!("./{}", job.script_basename),
                 &job.extra_args,
+                packaging_date.as_deref(),
             );
 
             thread_log.status(&format!("creating makeself package: {}", job.filename));
@@ -652,7 +715,7 @@ mod tests {
 
     #[test]
     fn test_make_args_default_compression() {
-        let args = make_args("MyApp", "myapp.run", None, "./setup.sh", &[]);
+        let args = make_args("MyApp", "myapp.run", None, "./setup.sh", &[], None);
         assert_eq!(args[0], "--quiet");
         assert!(args.contains(&"--lsm".to_string()));
         assert!(args.contains(&"package.lsm".to_string()));
@@ -664,22 +727,65 @@ mod tests {
 
     #[test]
     fn test_make_args_xz_compression() {
-        let args = make_args("MyApp", "myapp.run", Some("xz"), "./setup.sh", &[]);
+        let args = make_args("MyApp", "myapp.run", Some("xz"), "./setup.sh", &[], None);
         assert!(args.contains(&"--xz".to_string()));
     }
 
     #[test]
     fn test_make_args_no_compression() {
-        let args = make_args("MyApp", "myapp.run", Some("none"), "./setup.sh", &[]);
+        let args = make_args("MyApp", "myapp.run", Some("none"), "./setup.sh", &[], None);
         assert!(args.contains(&"--nocomp".to_string()));
     }
 
     #[test]
     fn test_make_args_extra_args() {
         let extra = vec!["--noprogress".to_string(), "--nox11".to_string()];
-        let args = make_args("MyApp", "myapp.run", None, "./setup.sh", &extra);
+        let args = make_args("MyApp", "myapp.run", None, "./setup.sh", &extra, None);
         assert!(args.contains(&"--noprogress".to_string()));
         assert!(args.contains(&"--nox11".to_string()));
+    }
+
+    #[test]
+    fn test_make_args_packaging_date_emitted() {
+        let args = make_args(
+            "MyApp",
+            "myapp.run",
+            None,
+            "./setup.sh",
+            &[],
+            Some("Tue May 20 14:30:00 UTC 2026"),
+        );
+        let idx = args
+            .iter()
+            .position(|a| a == "--packaging-date")
+            .expect("expected --packaging-date in args");
+        assert_eq!(args[idx + 1], "Tue May 20 14:30:00 UTC 2026");
+    }
+
+    #[test]
+    fn test_make_args_packaging_date_omitted_when_none() {
+        let args = make_args("MyApp", "myapp.run", None, "./setup.sh", &[], None);
+        assert!(!args.iter().any(|a| a == "--packaging-date"));
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_resolve_packaging_date_honors_sde() {
+        // SAFETY: serialized via the env_source_date_epoch group used by
+        // anodizer-core's `sde::tests`.
+        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
+        let date = resolve_packaging_date().expect("packaging date under SDE");
+        // 1715000000 = 2024-05-06 16:53:20 UTC; format mirrors `LC_ALL=C date -u`.
+        assert!(date.contains("2024"), "date string: {date}");
+        assert!(date.contains("UTC"), "date string: {date}");
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_resolve_packaging_date_none_without_sde() {
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+        assert!(resolve_packaging_date().is_none());
     }
 
     #[test]
