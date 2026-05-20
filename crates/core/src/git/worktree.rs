@@ -34,7 +34,28 @@ impl Worktree {
     /// dirty index) the returned error includes the captured stderr
     /// from git so the operator has an actionable detail rather than
     /// an opaque "git worktree add failed".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `path` contains ASCII whitespace. The
+    /// determinism harness composes `path` into RUSTFLAGS via
+    /// `--remap-path-prefix=<path>=/anodize`, and RUSTFLAGS is a
+    /// space-delimited token list with no quoting mechanism — a path
+    /// containing whitespace would be parsed as multiple arguments by
+    /// rustc and either silently misremap or hard-fail the build. Reject
+    /// at construction so the operator sees a clear "rename the
+    /// scratch dir" message instead of an opaque rustc parse error
+    /// later.
     pub fn add(repo_root: &Path, path: &Path, commit: &str) -> Result<Self> {
+        if path.to_string_lossy().chars().any(char::is_whitespace) {
+            anyhow::bail!(
+                "git worktree path {} contains whitespace; pick a scratch directory \
+                 without spaces or tabs (the determinism harness composes this path \
+                 into RUSTFLAGS via `--remap-path-prefix`, which is space-delimited \
+                 with no quoting support)",
+                path.display()
+            );
+        }
         let out = Command::new("git")
             .arg("-C")
             .arg(repo_root)
@@ -228,6 +249,29 @@ mod tests {
         assert!(
             msg.contains("git worktree add failed"),
             "error must still identify the failing operation; got: {msg}",
+        );
+    }
+
+    #[test]
+    fn worktree_add_rejects_whitespace_in_path() {
+        // Whitespace in the worktree path breaks RUSTFLAGS injection
+        // downstream (--remap-path-prefix=<path>=...), so Worktree::add
+        // must reject the path before git ever runs.
+        let repo = init_repo();
+        let wt_dir = tempfile::tempdir().unwrap();
+        let bad_path = wt_dir.path().join("wt with spaces");
+        let err = match Worktree::add(repo.path(), &bad_path, "HEAD") {
+            Err(e) => e,
+            Ok(_) => panic!("whitespace path must be rejected"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("whitespace"),
+            "error must explain the whitespace constraint; got: {msg}"
+        );
+        assert!(
+            msg.contains("RUSTFLAGS"),
+            "error must point at the downstream RUSTFLAGS reason; got: {msg}"
         );
     }
 

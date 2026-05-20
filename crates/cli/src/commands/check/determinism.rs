@@ -211,37 +211,16 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
 
 /// Parse a comma-separated triple list (`--targets=x86_64-...,aarch64-...`).
 ///
-/// Mirrors [`parse_stages`]'s tolerance rules:
-/// - `None` → `None` (no filter; harness validates every configured target).
-/// - Empty / whitespace-only tokens (trailing / repeated commas) are noise
-///   and dropped silently.
-/// - `Some("")` or `Some(" , , ")` (all-empty after trimming) is an
-///   error: the operator typed something to filter on but gave nothing
-///   to filter to. Surfacing the typo beats silently degrading into "no
-///   filter".
-///
-/// Unlike `--stages=<csv>`, there is no closed vocabulary to validate
-/// against: the legal set is whatever appears in the project's
-/// `.anodizer.yaml` `targets` list, and that's resolved later in the
-/// pipeline. Forwarding raw triples is correct here.
+/// Thin wrapper over `commands::helpers::parse_csv_list` that supplies
+/// the `--targets`-shaped error hint. Unlike `--stages=<csv>`, there is
+/// no closed vocabulary to validate against here — the legal set is
+/// whatever appears in the project's `.anodizer.yaml` `targets` list,
+/// and that's resolved later in the pipeline.
 fn parse_targets(s: Option<&str>) -> Result<Option<Vec<String>>, String> {
-    match s {
-        None => Ok(None),
-        Some(list) => {
-            let parsed: Vec<String> = list
-                .split(',')
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map(str::to_string)
-                .collect();
-            if parsed.is_empty() {
-                return Err("--targets must list at least one target triple (e.g. \
-                     --targets=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu)"
-                    .to_string());
-            }
-            Ok(Some(parsed))
-        }
-    }
+    crate::commands::helpers::parse_csv_list(
+        s,
+        "--targets=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu",
+    )
 }
 
 /// Truncate a commit hash to the conventional 7-char "short" form, used
@@ -424,12 +403,12 @@ mod tests {
         // prevent).
         let err = parse_targets(Some("")).expect_err("empty CSV must error");
         assert!(
-            err.contains("at least one target triple"),
+            err.contains("at least one entry"),
             "error must explain the requirement: {err}"
         );
         let err = parse_targets(Some(" , , ")).expect_err("whitespace-only CSV must error");
         assert!(
-            err.contains("at least one target triple"),
+            err.contains("at least one entry"),
             "error must explain the requirement: {err}"
         );
     }

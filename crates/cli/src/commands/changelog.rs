@@ -15,7 +15,7 @@ pub fn run(
 ) -> Result<()> {
     let log = StageLogger::new("changelog", Verbosity::from_flags(quiet, verbose, debug));
 
-    let path = pipeline::find_config(config_override)?;
+    let path = pipeline::find_config_with_logger(config_override, Some(&log))?;
     let config = pipeline::load_config(&path)?;
 
     log.status("generating changelog");

@@ -4,7 +4,7 @@
 
 use super::helpers;
 use crate::pipeline;
-use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::context::ContextOptions;
 use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -26,10 +26,6 @@ pub fn run(opts: AnnounceOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    let mut config =
-        pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
-    helpers::auto_detect_github(&mut config, &log);
-
     let ctx_opts = ContextOptions {
         dry_run: opts.dry_run,
         quiet: opts.quiet,
@@ -39,18 +35,13 @@ pub fn run(opts: AnnounceOpts) -> Result<()> {
         token: opts.token,
         ..Default::default()
     };
-    let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::setup_context(&mut ctx, &config, &log)?;
-
-    // Load artifacts from dist/
-    let dist = opts.dist.as_deref().unwrap_or(&config.dist);
-    helpers::load_artifacts_from_dist(&mut ctx, dist)?;
-
-    log.status(&format!(
-        "loaded {} artifact(s) from {}",
-        ctx.artifacts.all().len(),
-        dist.display()
-    ));
+    let (_config, mut ctx, _dist) = helpers::init_publish_stage_ctx(
+        opts.config_override.as_deref(),
+        ctx_opts,
+        opts.dist.as_deref(),
+        false,
+        &log,
+    )?;
 
     // Run announce-only pipeline
     let p = pipeline::build_announce_pipeline();

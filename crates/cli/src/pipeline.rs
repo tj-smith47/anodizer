@@ -11,7 +11,22 @@ use std::time::Duration;
 
 /// Find config file. If `config_override` is provided, use that path directly;
 /// otherwise search the current directory for well-known config file names.
+///
+/// When the Cargo.toml fallback fires, the warning is routed through
+/// `log.warn` if a logger is supplied; otherwise it falls back to
+/// `tracing::warn!` so the bare-pipeline / tests path still surfaces the
+/// signal without bypassing structured logging.
 pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
+    find_config_with_logger(config_override, None)
+}
+
+/// Variant of [`find_config`] that routes the Cargo.toml-fallback
+/// warning through the caller's `StageLogger` so the message appears
+/// with the same stage prefix as the rest of the command's output.
+pub fn find_config_with_logger(
+    config_override: Option<&Path>,
+    log: Option<&StageLogger>,
+) -> Result<PathBuf> {
     if let Some(path) = config_override {
         if path.exists() {
             return Ok(path.to_path_buf());
@@ -34,7 +49,11 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
     }
     // Fallback: if Cargo.toml exists, use a default config instead of erroring.
     if Path::new("Cargo.toml").exists() {
-        eprintln!("WARNING: no anodizer config found; using defaults from Cargo.toml");
+        let msg = "no anodizer config found; using defaults from Cargo.toml";
+        match log {
+            Some(l) => l.warn(msg),
+            None => tracing::warn!("{}", msg),
+        }
         return Ok(PathBuf::from("Cargo.toml"));
     }
     bail!(
@@ -96,7 +115,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
         && let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content)
     {
         anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
-        anodizer_core::config::validate_no_docker_v1(&raw).map_err(|e| anyhow::anyhow!("{}", e))?;
+        anodizer_core::config::validate_no_docker_v1(&raw).map_err(anyhow::Error::msg)?;
     }
 
     let mut config = match ext {
@@ -115,22 +134,20 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::apply_build_legacy_aliases(&mut config);
 
     // Validate config schema version
-    anodizer_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_version(&config).map_err(anyhow::Error::msg)?;
     // Validate git.tag_sort if present
-    anodizer_core::config::validate_tag_sort(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_tag_sort(&config).map_err(anyhow::Error::msg)?;
     // Validate archives[].format_overrides[].goos
-    anodizer_core::config::validate_format_overrides(&config)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_format_overrides(&config).map_err(anyhow::Error::msg)?;
     // Validate release block does not configure multiple SCM backends.
-    anodizer_core::config::validate_release_backends(&config)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_release_backends(&config).map_err(anyhow::Error::msg)?;
     // Validate defaults.crates / defaults.workspaces axis matches top-level.
-    anodizer_core::config::validate_defaults_axis(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_defaults_axis(&config).map_err(anyhow::Error::msg)?;
     // Validate homebrew_cask does not set both url_template and url.template.
     anodizer_core::config::validate_homebrew_cask_url_template(&config)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        .map_err(anyhow::Error::msg)?;
     // Validate archives[].id and universal_binaries[].id uniqueness.
-    anodizer_core::config::validate_id_uniqueness(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_id_uniqueness(&config).map_err(anyhow::Error::msg)?;
 
     // source.prefix_template defaults to source.name_template when unset
     // (matches the long-documented behavior — see SourceConfig docs).

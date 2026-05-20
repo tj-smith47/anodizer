@@ -81,7 +81,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     }
 
     if !opts.yes && is_interactive_stdout() {
-        eprintln!("\nProceed? [y/N]");
+        log.status("\nProceed? [y/N]");
         let mut answer = String::new();
         std::io::stdin()
             .read_line(&mut answer)

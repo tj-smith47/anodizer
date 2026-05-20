@@ -200,7 +200,8 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         anyhow::bail!("--snapshot and --nightly cannot be combined");
     }
 
-    let config_path = pipeline::find_config(opts.config_override.as_deref())?;
+    let config_path =
+        pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
     let mut config = pipeline::load_config(&config_path)?;
 
     // If --workspace is specified, resolve the workspace and overlay its config

@@ -45,11 +45,6 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    let config_path = pipeline::find_config(opts.config_override.as_deref())?;
-    let mut config = pipeline::load_config(&config_path)?;
-    helpers::infer_project_name(&mut config, &log);
-    helpers::auto_detect_github(&mut config, &log);
-
     let ctx_opts = ContextOptions {
         dry_run: opts.dry_run,
         quiet: opts.quiet,
@@ -60,13 +55,19 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         merge: opts.merge,
         ..Default::default()
     };
-    let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::setup_context(&mut ctx, &config, &log)?;
-    ctx.populate_metadata_var()?;
 
     if opts.merge {
-        // Merge-mode: load split worker contexts and run the full post-build
-        // pipeline.
+        // Merge-mode does its own per-shard context.json load via run_merge,
+        // so init_publish_stage_ctx is the wrong prelude here. Build the
+        // context manually with the same setup steps.
+        let config_path =
+            pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
+        let mut config = pipeline::load_config(&config_path)?;
+        helpers::infer_project_name(&mut config, &log);
+        helpers::auto_detect_github(&mut config, &log);
+        let mut ctx = Context::new(config.clone(), ctx_opts);
+        helpers::setup_context(&mut ctx, &config, &log)?;
+        ctx.populate_metadata_var()?;
         return super::release::run_merge(
             &mut ctx,
             &config,
@@ -82,13 +83,14 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
     // continue` (no `--merge`) path: a prior release stalled mid-publish
     // (e.g. expired token, transient 5xx) and the user wants to resume
     // without rebuilding.
-    let dist = opts.dist.as_deref().unwrap_or(&config.dist);
-    helpers::load_artifacts_from_dist(&mut ctx, dist)?;
-    log.status(&format!(
-        "continue: loaded {} artifact(s) from {}",
-        ctx.artifacts.all().len(),
-        dist.display()
-    ));
+    let (_config, mut ctx, _dist) = helpers::init_publish_stage_ctx(
+        opts.config_override.as_deref(),
+        ctx_opts,
+        opts.dist.as_deref(),
+        true,
+        &log,
+    )?;
+    ctx.populate_metadata_var()?;
 
     let p = pipeline::build_publish_pipeline();
     p.run(&mut ctx, &log)

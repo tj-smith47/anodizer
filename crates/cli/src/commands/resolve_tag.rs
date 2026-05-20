@@ -1,4 +1,5 @@
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
+use serde_json::json;
 
 pub struct ResolveTagOpts {
     pub tag: String,
@@ -64,10 +65,13 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
         .unwrap_or(false);
 
     if opts.json {
-        println!(
-            "{{\"crate\":\"{}\",\"path\":\"{}\",\"has_builds\":{}}}",
-            crate_cfg.name, crate_cfg.path, has_builds
-        );
+        let out = serde_json::to_string(&json!({
+            "crate": crate_cfg.name,
+            "path": crate_cfg.path,
+            "has_builds": has_builds,
+        }))
+        .context("serialize resolve-tag JSON output")?;
+        println!("{}", out);
     } else {
         println!("crate={}", crate_cfg.name);
         println!("path={}", crate_cfg.path);

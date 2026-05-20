@@ -237,6 +237,27 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
     let worktree_str = inputs.worktree.to_string_lossy();
     let cargo_home_str = inputs.cargo_home.to_string_lossy();
     let cargo_target_str = inputs.cargo_target.to_string_lossy();
+    // RUSTFLAGS is a space-delimited token list with no quoting support.
+    // A whitespace-bearing path here would be parsed as multiple args by
+    // rustc. Worktree::add already rejects whitespace in the worktree
+    // path; we defend cargo_home / cargo_target the same way at this
+    // composition site so the constraint is enforced even when the
+    // caller bypassed Worktree (e.g. supplying a CARGO_HOME pointing
+    // into a system path with embedded spaces).
+    for (label, raw) in [
+        ("worktree", worktree_str.as_ref()),
+        ("cargo_home", cargo_home_str.as_ref()),
+        ("cargo_target", cargo_target_str.as_ref()),
+    ] {
+        if raw.chars().any(char::is_whitespace) {
+            panic!(
+                "determinism harness {label} path {raw:?} contains whitespace; \
+                 RUSTFLAGS has no quoting support and embedded spaces would \
+                 misparse --remap-path-prefix. Re-run with a scratch directory \
+                 free of whitespace."
+            );
+        }
+    }
     for (from, to) in [
         (worktree_str.as_ref(), "/anodize"),
         (cargo_home_str.as_ref(), "/cargo"),

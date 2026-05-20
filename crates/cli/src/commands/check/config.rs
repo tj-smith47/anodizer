@@ -15,7 +15,7 @@ pub fn run(
 ) -> Result<()> {
     let log = StageLogger::new("check", Verbosity::from_flags(quiet, verbose, debug));
 
-    let path = pipeline::find_config(config_override)?;
+    let path = pipeline::find_config_with_logger(config_override, Some(&log))?;
     log.verbose(&format!("loading config from {}", path.display()));
     let mut config = pipeline::load_config(&path)?;
 

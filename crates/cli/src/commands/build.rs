@@ -25,7 +25,8 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    let config_path = pipeline::find_config(opts.config_override.as_deref())?;
+    let config_path =
+        pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
     let mut config = pipeline::load_config(&config_path)?;
 
     // Resolve workspace if specified

@@ -561,6 +561,18 @@ pub fn run_merge(
         context_files.len()
     ));
 
+    // Filesystem vs manifest cross-check. Every artifact path the
+    // merged contexts reference must exist on disk under `dist/`;
+    // missing files mean a split worker uploaded a context.json whose
+    // referenced binary didn't make it into the dist tree (transient
+    // CI upload failure, partial restore, etc.). Surface as a
+    // manifest-shaped diagnostic before SignStage / ChecksumStage
+    // bails with cosign / gpg's less actionable "file not found".
+    crate::commands::helpers::detect_missing_files(
+        ctx.artifacts.all().iter().map(|a| a.path.as_path()),
+        dist,
+    )?;
+
     // Run post-build pipeline
     let p = pipeline::build_merge_pipeline();
     let result = p.run(ctx, log);

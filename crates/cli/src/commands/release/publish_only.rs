@@ -357,82 +357,23 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
 /// more than once. Called post-rehydration so a sharded matrix that
 /// accidentally overlapped on a target surfaces as a hard error rather
 /// than a double-publish downstream.
+///
+/// Thin wrapper over `commands::helpers::detect_duplicate_paths` that
+/// projects the artifact iter into a path iter.
 fn detect_duplicate_artifact_paths(ctx: &Context) -> Result<()> {
-    detect_duplicate_paths_in(ctx.artifacts.all().iter().map(|a| a.path.as_path()))
-}
-
-fn detect_duplicate_paths_in<'a, I>(paths: I) -> Result<()>
-where
-    I: IntoIterator<Item = &'a Path>,
-{
-    use std::collections::BTreeMap;
-    let mut counts: BTreeMap<PathBuf, usize> = BTreeMap::new();
-    for p in paths {
-        *counts.entry(p.to_path_buf()).or_insert(0) += 1;
-    }
-    let duplicates: Vec<(PathBuf, usize)> = counts.into_iter().filter(|(_, n)| *n > 1).collect();
-    if duplicates.is_empty() {
-        return Ok(());
-    }
-    let summary = duplicates
-        .iter()
-        .map(|(p, n)| format!("{} ({}×)", p.display(), n))
-        .collect::<Vec<_>>()
-        .join(", ");
-    anyhow::bail!(
-        "publish-only: duplicate artifact path(s) after merging per-shard manifests: {summary}. \
-         Hypothesis: two determinism shards overlapped on the same target, so both \
-         emitted an artifact for the same path. Inspect the matrix in \
-         `.github/workflows/release.yml` to confirm the shards partition the target set."
-    );
+    crate::commands::helpers::detect_duplicate_paths(
+        ctx.artifacts.all().iter().map(|a| a.path.as_path()),
+    )
 }
 
 /// Walk every artifact in `ctx.artifacts` and verify its `path` exists
-/// on disk under `dist/`. The manifest may reference paths either as
-/// absolute (the loader records them as written) or relative to `dist`
-/// (the determinism harness writes a relative shape in some flows) —
-/// we try the literal path first, then `dist.join(<path>)`. Missing
-/// files are fatal: SignStage would otherwise fail with cosign/gpg's
-/// less actionable "file not found" rather than the operator-friendly
-/// manifest-shaped diagnostic this emits.
-///
-/// We do NOT flag files in `dist/` that are absent from the manifest —
-/// dist trees carry metadata.json, harness logs, etc. that aren't part
-/// of the artifact registry.
+/// on disk under `dist/`. Thin wrapper over
+/// `commands::helpers::detect_missing_files`.
 fn detect_missing_artifact_files(ctx: &Context, dist: &Path) -> Result<()> {
-    detect_missing_files_in(ctx.artifacts.all().iter().map(|a| a.path.as_path()), dist)
-}
-
-fn detect_missing_files_in<'a, I>(paths: I, dist: &Path) -> Result<()>
-where
-    I: IntoIterator<Item = &'a Path>,
-{
-    let mut missing: Vec<PathBuf> = Vec::new();
-    for p in paths {
-        if p.is_absolute() {
-            if !p.is_file() {
-                missing.push(p.to_path_buf());
-            }
-        } else if !p.is_file() && !dist.join(p).is_file() {
-            missing.push(p.to_path_buf());
-        }
-    }
-    if missing.is_empty() {
-        return Ok(());
-    }
-    missing.sort();
-    let summary = missing
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    anyhow::bail!(
-        "publish-only: artifacts manifest references file(s) not present under {}: {summary}. \
-         The preserved dist is incomplete; re-run \
-         `anodize check determinism --preserve-dist=<dist>` to repopulate, or \
-         remove the stale manifest entries before retrying.",
-        dist.display(),
-    );
+    crate::commands::helpers::detect_missing_files(
+        ctx.artifacts.all().iter().map(|a| a.path.as_path()),
+        dist,
+    )
 }
 
 /// Minimal `PreservedDistContext` deserializer. We re-declare the
@@ -1068,7 +1009,7 @@ mod tests {
     #[test]
     fn detect_duplicate_paths_in_passes_on_unique_set() {
         let paths = [Path::new("a.tar.gz"), Path::new("b.tar.gz")];
-        detect_duplicate_paths_in(paths).expect("unique paths must pass");
+        crate::commands::helpers::detect_duplicate_paths(paths).expect("unique paths must pass");
     }
 
     #[test]
@@ -1078,7 +1019,7 @@ mod tests {
             Path::new("b.tar.gz"),
             Path::new("a.tar.gz"),
         ];
-        let err = detect_duplicate_paths_in(paths).unwrap_err();
+        let err = crate::commands::helpers::detect_duplicate_paths(paths).unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("a.tar.gz"),
@@ -1105,7 +1046,8 @@ mod tests {
         // to ensure both code paths are exercised.
         std::fs::write(tmp.path().join("rel.tar.gz"), b"x").unwrap();
         let paths = [a.as_path(), Path::new("rel.tar.gz")];
-        detect_missing_files_in(paths, tmp.path()).expect("all present must pass");
+        crate::commands::helpers::detect_missing_files(paths, tmp.path())
+            .expect("all present must pass");
     }
 
     #[test]
@@ -1113,7 +1055,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("does-not-exist.tar.gz");
         let paths = [missing.as_path()];
-        let err = detect_missing_files_in(paths, tmp.path()).unwrap_err();
+        let err = crate::commands::helpers::detect_missing_files(paths, tmp.path()).unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("does-not-exist.tar.gz"),
@@ -1129,7 +1071,7 @@ mod tests {
     fn detect_missing_files_in_errors_on_absent_relative_path() {
         let tmp = tempfile::tempdir().unwrap();
         let paths = [Path::new("rel-missing.tar.gz")];
-        let err = detect_missing_files_in(paths, tmp.path()).unwrap_err();
+        let err = crate::commands::helpers::detect_missing_files(paths, tmp.path()).unwrap_err();
         let msg = format!("{err:#}");
         assert!(
             msg.contains("rel-missing.tar.gz"),
@@ -1148,7 +1090,7 @@ mod tests {
         std::fs::write(tmp.path().join("metadata.json"), b"{}").unwrap();
         std::fs::write(tmp.path().join("orphan.tar.gz"), b"x").unwrap();
         let paths = [a.as_path()];
-        detect_missing_files_in(paths, tmp.path())
+        crate::commands::helpers::detect_missing_files(paths, tmp.path())
             .expect("unreferenced dist files must not trigger the check");
     }
 }

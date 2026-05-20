@@ -26,32 +26,14 @@ fn parse_timeout_or_exit(timeout: &str) -> std::time::Duration {
 /// canonical `Option<Vec<String>>` form consumed by `ReleaseOpts.targets`
 /// and the Determinism Harness dispatcher.
 ///
-/// Behaviour mirrors `--stages=<csv>`:
-/// - `None`           → `None` (no filter).
-/// - `Some("a,b")`    → `Some(["a", "b"])`.
-/// - Empty / whitespace-only tokens (trailing comma, double comma,
-///   surrounding spaces) are dropped — they're noise, not intent.
-/// - `Some("")` or `Some(" , ")` (all-empty after trimming) → `Err`. The
-///   operator clearly meant to pass *something*; surfacing the typo
-///   beats silently degrading into a no-op filter.
+/// Thin wrapper over `commands::helpers::parse_csv_list` that supplies
+/// the `--targets`-shaped error hint. See that function for the full
+/// trim / drop-empty / err-on-all-empty matrix.
 fn parse_targets_csv(raw: Option<&str>) -> Result<Option<Vec<String>>, String> {
-    match raw {
-        None => Ok(None),
-        Some(list) => {
-            let parsed: Vec<String> = list
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect();
-            if parsed.is_empty() {
-                return Err("--targets must list at least one target triple (e.g. \
-                     --targets=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu)"
-                    .to_string());
-            }
-            Ok(Some(parsed))
-        }
-    }
+    commands::helpers::parse_csv_list(
+        raw,
+        "--targets=x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu",
+    )
 }
 
 /// Resolve --single-target flag to the actual host target triple.
