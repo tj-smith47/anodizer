@@ -4,6 +4,7 @@
 .task/
 .worktrees/
 .det-worktrees/
+.det-tmp/
 .worktreeinclude
 .superpowers/
 .zig-cache/
