@@ -128,6 +128,13 @@ pub(super) fn run(
         preserved.artifacts.len(),
     ));
 
+    // Pin the determinism-check → publish-only safety invariant: hash
+    // every preserved artifact's bytes BEFORE the commit cross-check
+    // and any registry mutation. A mismatch here means the dist tree
+    // is no longer the bytes the harness verified — refuse to ship
+    // rather than re-sign corrupted input.
+    hash_verify_preserved_dist(&preserved, &dist)?;
+
     // Commit / version cross-checks across shards now live inside
     // `merge_preserved_contexts` — they're part of the merge contract,
     // not a separate post-processing step.
@@ -398,12 +405,10 @@ struct PreservedDistContext {
     commit: String,
 }
 
-/// Per-artifact entry in `context.json`. The harness's writer always
-/// populates `sha256` + `size`, but the publish-only path doesn't yet
-/// consume them — they're reserved for a forthcoming "hash-verify"
-/// mode that cross-checks each preserved file's bytes against the
-/// determinism report before re-signing.
-#[allow(dead_code)] // `name`/`path`/`sha256`/`size` retained for hash-verify mode
+/// Per-artifact entry in `context.json`: name + relative path,
+/// SHA256 (in `sha256:<hex>` form), and byte size. Consumed by
+/// [`hash_verify_preserved_dist`] to cross-check on-disk bytes
+/// against the determinism record before re-signing.
 #[derive(serde::Deserialize, Debug, Default, Clone)]
 struct PreservedArtifact {
     #[serde(default)]
@@ -682,6 +687,61 @@ fn load_preserved_context(path: &Path) -> Result<PreservedDistContext> {
         )
     })?;
     Ok(ctx)
+}
+
+/// Cross-check that every artifact recorded in the preserved
+/// `context.json` matches the on-disk bytes under `dist_root`. Pins
+/// the determinism-check → publish-only safety invariant: the bytes
+/// shipped MUST be the bytes the harness verified. Closes the
+/// silent-corruption window between `upload-artifact` /
+/// `download-artifact` in the CI fan-out.
+fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    for artifact in &ctx.artifacts {
+        let path = dist_root.join(&artifact.path);
+        let mut file = std::fs::File::open(&path).with_context(|| {
+            format!(
+                "publish-only hash-verify: opening preserved artifact {}",
+                path.display(),
+            )
+        })?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .with_context(|| format!("publish-only hash-verify: reading {}", path.display()))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let actual_hex = format!("{:x}", hasher.finalize());
+        let actual = format!("sha256:{actual_hex}");
+
+        // Tolerate bare hex OR `sha256:<hex>` on the recorded side.
+        // The harness writes the prefixed form today; accepting both
+        // keeps the contract loose for future producers.
+        let expected = if artifact.sha256.starts_with("sha256:") {
+            artifact.sha256.clone()
+        } else {
+            format!("sha256:{}", artifact.sha256)
+        };
+
+        if actual != expected {
+            anyhow::bail!(
+                "publish-only hash-verify: bytes on disk diverge from determinism record for {} \
+                 (expected {}, got {}). The dist tree may have been modified between determinism \
+                 check and publish — refusing to ship.",
+                path.display(),
+                expected,
+                actual,
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1092,5 +1152,80 @@ mod tests {
         let paths = [a.as_path()];
         crate::commands::helpers::detect_missing_files(paths, tmp.path())
             .expect("unreferenced dist files must not trigger the check");
+    }
+
+    // ── hash_verify_preserved_dist ─────────────────────────────────────
+
+    /// `sha256("hello world")` — pinned literal so the matching-bytes
+    /// test doesn't recompute the hash via the very function under test.
+    const HELLO_WORLD_SHA256: &str =
+        "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+    #[test]
+    fn hash_verify_preserved_dist_accepts_matching_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), b"hello world").unwrap();
+        let ctx = PreservedDistContext {
+            artifacts: vec![PreservedArtifact {
+                name: "hello.txt".into(),
+                path: "hello.txt".into(),
+                sha256: format!("sha256:{HELLO_WORLD_SHA256}"),
+                size: 11,
+            }],
+            ..PreservedDistContext::default()
+        };
+        hash_verify_preserved_dist(&ctx, tmp.path()).expect("matching bytes must verify clean");
+    }
+
+    #[test]
+    fn hash_verify_preserved_dist_rejects_mismatched_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rel = "hello.txt";
+        std::fs::write(tmp.path().join(rel), b"hello world").unwrap();
+        let ctx = PreservedDistContext {
+            artifacts: vec![PreservedArtifact {
+                name: rel.into(),
+                path: rel.into(),
+                // Wrong hash on purpose — drives the mismatch branch.
+                sha256: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                size: 11,
+            }],
+            ..PreservedDistContext::default()
+        };
+        let err = hash_verify_preserved_dist(&ctx, tmp.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("diverge"),
+            "error must surface the divergence wording; got: {msg}"
+        );
+        assert!(
+            msg.contains(rel),
+            "error must name the offending file; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn hash_verify_preserved_dist_rejects_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = PreservedDistContext {
+            artifacts: vec![PreservedArtifact {
+                name: "absent.tar.gz".into(),
+                path: "absent.tar.gz".into(),
+                sha256: format!("sha256:{HELLO_WORLD_SHA256}"),
+                size: 11,
+            }],
+            ..PreservedDistContext::default()
+        };
+        let err = hash_verify_preserved_dist(&ctx, tmp.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("opening preserved artifact"),
+            "error must surface the open-failure wording; got: {msg}"
+        );
+        assert!(
+            msg.contains("absent.tar.gz"),
+            "error must name the missing file; got: {msg}"
+        );
     }
 }

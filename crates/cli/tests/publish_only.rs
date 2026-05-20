@@ -83,12 +83,16 @@ fn bootstrap_preserved_dist(
     .unwrap();
 
     // context.json — the Phase-1 harness's PreservedDistContext shape.
+    // sha256 must match the on-disk bytes of `archive_path` because
+    // publish-only hash-verifies every preserved artifact before
+    // re-signing. Pinned literal is the sha256 of `b"ARCHIVE\n"`.
+    let archive_sha256 = "5c1f30e5f037be631bf54f0b521304c77bb439bfe90f7839b885a1b5099c724c";
     let context_json = serde_json::json!({
         "artifacts": [
             {
                 "name": archive_name,
                 "path": archive_name,
-                "sha256": format!("sha256:{}", "0".repeat(64)),
+                "sha256": format!("sha256:{archive_sha256}"),
                 "size": 8u64,
             }
         ],
