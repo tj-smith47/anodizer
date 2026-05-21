@@ -772,13 +772,31 @@ fn is_ephemeral_signature_path(path: &str) -> bool {
 /// whose mismatch is an architectural feature.
 fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> Result<()> {
     use sha2::{Digest, Sha256};
+    use std::collections::BTreeMap;
     use std::io::Read;
 
+    // Group recorded hashes by relative path. The merged context carries
+    // one entry per (shard, path) pair, so a cross-shard duplicate like
+    // `anodizer-<ver>-source.tar.gz` (produced independently on every
+    // shard) shows up once per shard with potentially differing recorded
+    // bytes — git/tar/locale variance across OS runners is real and
+    // shows up here. After `actions/download-artifact merge-multiple`,
+    // exactly ONE shard's bytes survive on disk for any given path, so
+    // the disk file must match SOME shard's claim, not all of them
+    // simultaneously.
+    let mut by_path: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for artifact in &ctx.artifacts {
         if is_ephemeral_signature_path(&artifact.path) {
             continue;
         }
-        let path = dist_root.join(&artifact.path);
+        by_path
+            .entry(artifact.path.as_str())
+            .or_default()
+            .push(artifact.sha256.as_str());
+    }
+
+    for (path_str, expected_hashes) in &by_path {
+        let path = dist_root.join(path_str);
         let mut file = std::fs::File::open(&path).with_context(|| {
             format!(
                 "publish-only hash-verify: opening preserved artifact {}",
@@ -802,19 +820,39 @@ fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> R
         // Tolerate bare hex OR `sha256:<hex>` on the recorded side.
         // The harness writes the prefixed form today; accepting both
         // keeps the contract loose for future producers.
-        let expected = if artifact.sha256.starts_with("sha256:") {
-            artifact.sha256.clone()
-        } else {
-            format!("sha256:{}", artifact.sha256)
-        };
+        let expected_normalized: Vec<String> = expected_hashes
+            .iter()
+            .map(|h| {
+                if h.starts_with("sha256:") {
+                    (*h).to_string()
+                } else {
+                    format!("sha256:{h}")
+                }
+            })
+            .collect();
+        let matches_any = expected_normalized.iter().any(|e| e == &actual);
 
-        if actual != expected {
+        if !matches_any {
+            // Distinct expected values, deduped + sorted for a stable
+            // error message that shows the operator every shard's
+            // recorded view of this path.
+            let mut distinct: Vec<&String> = expected_normalized.iter().collect();
+            distinct.sort();
+            distinct.dedup();
+            let expected_list = distinct
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             anyhow::bail!(
-                "publish-only hash-verify: bytes on disk diverge from determinism record for {} \
-                 (expected {}, got {}). The dist tree may have been modified between determinism \
-                 check and publish — refusing to ship.",
+                "publish-only hash-verify: bytes on disk diverge from every shard's recorded \
+                 determinism state for {} (recorded across {} shard(s): [{}], on disk: {}). \
+                 The dist tree was modified between determinism check and publish, OR no \
+                 shard's preserved bytes survived `download-artifact merge-multiple` — \
+                 refusing to ship.",
                 path.display(),
-                expected,
+                expected_normalized.len(),
+                expected_list,
                 actual,
             );
         }
@@ -1395,6 +1433,93 @@ mod tests {
         };
         hash_verify_preserved_dist(&ctx, tmp.path())
             .expect("ephemeral .pem / .asc paths must skip hash-verify");
+    }
+
+    /// Regression: cross-shard duplicate paths with diverging recorded
+    /// hashes (e.g. `anodizer-<ver>-source.tar.gz` produced
+    /// independently on every shard with subtle git/tar/locale variance)
+    /// land in the merged context multiple times. Only ONE shard's bytes
+    /// survive `download-artifact merge-multiple` on disk; the others'
+    /// claims cannot match. hash-verify must accept the path as soon as
+    /// the disk bytes match ANY shard's recorded hash, not bail because
+    /// some shards disagree with disk.
+    #[test]
+    fn hash_verify_preserved_dist_accepts_when_any_shard_matches_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("source.tar.gz"), b"hello world").unwrap();
+        let ctx = PreservedDistContext {
+            artifacts: vec![
+                // Shard A: WRONG hash (would fail alone).
+                PreservedArtifact {
+                    name: "source.tar.gz".into(),
+                    path: "source.tar.gz".into(),
+                    sha256:
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                            .into(),
+                    size: 11,
+                },
+                // Shard B: correct hash → verifies the merged context.
+                PreservedArtifact {
+                    name: "source.tar.gz".into(),
+                    path: "source.tar.gz".into(),
+                    sha256: format!("sha256:{HELLO_WORLD_SHA256}"),
+                    size: 11,
+                },
+                // Shard C: another WRONG hash (asserts iteration doesn't
+                // short-circuit on the first mismatch).
+                PreservedArtifact {
+                    name: "source.tar.gz".into(),
+                    path: "source.tar.gz".into(),
+                    sha256:
+                        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                            .into(),
+                    size: 11,
+                },
+            ],
+            ..PreservedDistContext::default()
+        };
+        hash_verify_preserved_dist(&ctx, tmp.path())
+            .expect("cross-shard duplicate must verify when any shard's hash matches disk");
+    }
+
+    /// Counterpart: if NO shard's recorded hash matches disk, the
+    /// verifier must still bail and surface every shard's expected hash
+    /// in the error so the operator can audit which shards diverged.
+    #[test]
+    fn hash_verify_preserved_dist_bails_when_no_shard_matches_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("source.tar.gz"), b"hello world").unwrap();
+        let ctx = PreservedDistContext {
+            artifacts: vec![
+                PreservedArtifact {
+                    name: "source.tar.gz".into(),
+                    path: "source.tar.gz".into(),
+                    sha256:
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                            .into(),
+                    size: 11,
+                },
+                PreservedArtifact {
+                    name: "source.tar.gz".into(),
+                    path: "source.tar.gz".into(),
+                    sha256:
+                        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                            .into(),
+                    size: 11,
+                },
+            ],
+            ..PreservedDistContext::default()
+        };
+        let err = hash_verify_preserved_dist(&ctx, tmp.path()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("recorded across 2 shard(s)"),
+            "error must surface the shard count; got: {msg}"
+        );
+        assert!(
+            msg.contains("source.tar.gz"),
+            "error must name the offending file; got: {msg}"
+        );
     }
 
     #[test]
