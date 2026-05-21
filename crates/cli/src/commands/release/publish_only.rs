@@ -737,17 +737,47 @@ fn load_preserved_context(path: &Path) -> Result<PreservedDistContext> {
     Ok(ctx)
 }
 
+/// Filename suffixes whose bytes the publish-only path will replace
+/// via `strip_ephemeral_signatures` + the head `SignStage` re-sign.
+/// hash-verifying them across shards is meaningless: cosign's ECDSA
+/// nonce makes per-shard signatures of identical content diverge by
+/// design, and the bytes are discarded before the production keys
+/// re-sign anyway. Verifying them would block multi-shard releases on
+/// signatures whose mismatch is an architectural feature, not a
+/// corruption signal.
+///
+/// Stays narrow on purpose: `.sig` (cosign / gpg detached signatures),
+/// `.asc` (gpg armored signatures), `.pem` (cosign signing certs).
+/// Any future ephemeral-output kind should be added here AND the
+/// `strip_ephemeral_signatures` filter that consumes it.
+const EPHEMERAL_SIGNATURE_SUFFIXES: &[&str] = &[".sig", ".asc", ".pem"];
+
+fn is_ephemeral_signature_path(path: &str) -> bool {
+    EPHEMERAL_SIGNATURE_SUFFIXES
+        .iter()
+        .any(|suffix| path.ends_with(suffix))
+}
+
 /// Cross-check that every artifact recorded in the preserved
 /// `context.json` matches the on-disk bytes under `dist_root`. Pins
 /// the determinism-check → publish-only safety invariant: the bytes
 /// shipped MUST be the bytes the harness verified. Closes the
 /// silent-corruption window between `upload-artifact` /
 /// `download-artifact` in the CI fan-out.
+///
+/// Skips ephemeral signature/certificate paths (`.sig`, `.asc`,
+/// `.pem`): they vary per shard (cosign ECDSA nonce) and are stripped
+/// then re-signed by [`strip_ephemeral_signatures`] before publish,
+/// so verifying them would fail the multi-shard fan-out on signatures
+/// whose mismatch is an architectural feature.
 fn hash_verify_preserved_dist(ctx: &PreservedDistContext, dist_root: &Path) -> Result<()> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
     for artifact in &ctx.artifacts {
+        if is_ephemeral_signature_path(&artifact.path) {
+            continue;
+        }
         let path = dist_root.join(&artifact.path);
         let mut file = std::fs::File::open(&path).with_context(|| {
             format!(
@@ -1306,6 +1336,65 @@ mod tests {
             msg.contains(rel),
             "error must name the offending file; got: {msg}"
         );
+    }
+
+    /// Regression test for the multi-shard ephemeral-signature
+    /// false-positive. cosign's ECDSA nonce makes per-shard signatures
+    /// of identical content diverge by design; each shard's context.json
+    /// records its own .sig hash, but only ONE shard's file wins the
+    /// `actions/download-artifact merge-multiple: true` race. The merged
+    /// context references the others' hashes which CANNOT match the
+    /// surviving bytes. Since `strip_ephemeral_signatures` discards
+    /// these files and `SignStage` produces the production-key
+    /// signatures, the hash-verify must skip them rather than block
+    /// the publish.
+    #[test]
+    fn hash_verify_preserved_dist_skips_ephemeral_signatures() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Plant a `.sig` whose bytes do NOT match the recorded hash.
+        // A non-skipping verify would error here.
+        std::fs::write(tmp.path().join("foo.tar.gz.sha256.sig"), b"shard-A-bytes").unwrap();
+        let ctx = PreservedDistContext {
+            artifacts: vec![PreservedArtifact {
+                name: "foo.tar.gz.sha256.sig".into(),
+                path: "foo.tar.gz.sha256.sig".into(),
+                // Hash of unrelated bytes — exercises the skip path.
+                sha256: format!("sha256:{HELLO_WORLD_SHA256}"),
+                size: 13,
+            }],
+            ..PreservedDistContext::default()
+        };
+        hash_verify_preserved_dist(&ctx, tmp.path())
+            .expect("ephemeral .sig paths must skip hash-verify");
+    }
+
+    #[test]
+    fn hash_verify_preserved_dist_skips_pem_and_asc() {
+        // Same guarantee for the `.pem` (cosign cert) and `.asc` (gpg
+        // armored sig) suffixes. Both are produced by SignStage's
+        // ephemeral path and replaced on re-sign.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("foo.pem"), b"cert-A").unwrap();
+        std::fs::write(tmp.path().join("foo.asc"), b"asc-A").unwrap();
+        let ctx = PreservedDistContext {
+            artifacts: vec![
+                PreservedArtifact {
+                    name: "foo.pem".into(),
+                    path: "foo.pem".into(),
+                    sha256: format!("sha256:{HELLO_WORLD_SHA256}"),
+                    size: 6,
+                },
+                PreservedArtifact {
+                    name: "foo.asc".into(),
+                    path: "foo.asc".into(),
+                    sha256: format!("sha256:{HELLO_WORLD_SHA256}"),
+                    size: 5,
+                },
+            ],
+            ..PreservedDistContext::default()
+        };
+        hash_verify_preserved_dist(&ctx, tmp.path())
+            .expect("ephemeral .pem / .asc paths must skip hash-verify");
     }
 
     #[test]
