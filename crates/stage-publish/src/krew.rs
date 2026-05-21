@@ -560,10 +560,10 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("krew: no krew config for '{}'", crate_name))?;
 
-    // Honor `disable` first (template-aware), then `skip_upload`. Anodizer
-    // exposes `disable` so projects that are not kubectl plugins can keep a
-    // krew block in shared config and turn it off without removing the
-    // surrounding repository/short_description boilerplate.
+    // Honor `skip` first (template-aware), then `skip_upload`. `skip` lets
+    // projects that aren't kubectl plugins keep a krew block in shared
+    // config and turn it off without removing the surrounding
+    // repository/short_description boilerplate.
     if let Some(d) = krew_cfg.skip.as_ref() {
         let off = d
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
