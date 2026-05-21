@@ -240,14 +240,27 @@ pub(super) fn hash_artifacts(
         let stage = infer_stage_from_path(&relative);
         let head_len = bytes.len().min(HEAD_SAMPLE_BYTES);
         let head_sample = bytes[..head_len].to_vec();
-        // Tail sample is non-overlapping with the head: when the file
-        // is smaller than HEAD + TAIL, the head already covers the
-        // whole content and the tail is left empty so the drift
-        // summary doesn't double-count bytes.
-        let tail_sample = if bytes.len() > HEAD_SAMPLE_BYTES + TAIL_SAMPLE_BYTES {
-            bytes[bytes.len() - TAIL_SAMPLE_BYTES..].to_vec()
-        } else {
+        // Tail sample is chosen so head + tail together cover every byte
+        // of files up to HEAD + TAIL with no unsampled gap:
+        //   * len ≤ HEAD            → tail empty (head already covers all)
+        //   * HEAD < len ≤ HEAD+TAIL → tail = bytes[HEAD..end] (closes the
+        //                              gap; smaller than TAIL but enough
+        //                              to keep drift detection contiguous)
+        //   * len > HEAD + TAIL     → tail = trailing TAIL_SAMPLE_BYTES
+        //                              window (the gap in (HEAD, len-TAIL)
+        //                              is genuinely unsampled — too large
+        //                              to retain).
+        // The earlier shape ("empty when ≤ HEAD+TAIL") created a black
+        // hole exactly where mid-size artifacts (artifacts.json at ~24
+        // KiB) actually drift — drift detector then couldn't localize.
+        let tail_sample = if bytes.len() <= HEAD_SAMPLE_BYTES {
             Vec::new()
+        } else {
+            let tail_start = bytes
+                .len()
+                .saturating_sub(TAIL_SAMPLE_BYTES)
+                .max(HEAD_SAMPLE_BYTES);
+            bytes[tail_start..].to_vec()
         };
         out.insert(
             name,
@@ -342,7 +355,19 @@ fn prune_dump_subtree(root: &Path, dir: &Path, drift_names: &std::collections::H
                 .strip_prefix(root)
                 .map(|r| r.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
-            if !drift_names.contains(rel.as_str()) {
+            // `DriftRow.artifact` is the harness map key:
+            //   * `dist/*` artifacts → basename (e.g. `"artifacts.json"`)
+            //   * raw cargo binaries → `target/<triple>/release/<bin>`
+            // The dumped relative path always carries the `dist/<name>` or
+            // `target/...` prefix, so a basename-only drift entry would
+            // never match the full rel path. Keep the file if EITHER form
+            // matches — otherwise legitimate drift bins get silently
+            // deleted before the CI upload step ever sees them.
+            let basename = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            if !drift_names.contains(rel.as_str()) && !drift_names.contains(basename) {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -522,6 +547,130 @@ mod tests {
                 "raw binary `{k}` must be attributed to `build` stage"
             );
         }
+    }
+
+    /// `prune_dump_to_drifted` MUST keep dumped bytes whose BASENAME
+    /// matches a drift entry, even though the dumped path carries a
+    /// `dist/` prefix. Regression: `DriftRow.artifact` for `dist/*`
+    /// artifacts is the basename only (e.g. `"artifacts.json"`); the
+    /// dumped file lives at `<run_dir>/dist/artifacts.json`. The prior
+    /// shape compared only the full relative path, deleted every
+    /// drifted file, and emitted an empty `drift-bins/**` upload —
+    /// exactly the v0.3.0 CI failure where the operator had no way to
+    /// inspect the differing artifact.
+    #[test]
+    fn prune_dump_to_drifted_keeps_files_matched_by_basename() {
+        use anodizer_core::{
+            AllowList, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dump_root = tmp.path();
+        // Two runs, each with a drifted dist artifact + a deterministic
+        // sibling that must be pruned.
+        for run_idx in 0..2 {
+            let run = dump_root.join(format!("run-{run_idx}"));
+            std::fs::create_dir_all(run.join("dist")).unwrap();
+            std::fs::write(run.join("dist/artifacts.json"), b"{}").unwrap();
+            std::fs::write(run.join("dist/keep-me-not.tar.gz"), b"green").unwrap();
+            // Raw cargo binary — matched by full rel path, not basename.
+            let raw = run
+                .join("target")
+                .join("x86_64-unknown-linux-gnu")
+                .join("release");
+            std::fs::create_dir_all(&raw).unwrap();
+            std::fs::write(raw.join("anodize"), b"binary").unwrap();
+        }
+
+        let report = DeterminismReport {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.3.0".into(),
+            commit: "abc".into(),
+            commit_timestamp: 0,
+            runs: 2,
+            stages_under_test: vec!["archive".into()],
+            allowlist: AllowList::default(),
+            artifacts: vec![],
+            drift: vec![
+                DriftRow {
+                    artifact: "artifacts.json".into(),
+                    hashes: vec!["sha256:a".into(), "sha256:b".into()],
+                    differing_bytes_summary: None,
+                },
+                DriftRow {
+                    artifact: "target/x86_64-unknown-linux-gnu/release/anodize".into(),
+                    hashes: vec!["sha256:c".into(), "sha256:d".into()],
+                    differing_bytes_summary: None,
+                },
+            ],
+            drift_count: 2,
+        };
+        // ArtifactRow not required for prune; pad to satisfy invariants
+        let _ = ArtifactRow {
+            name: "noop".into(),
+            path: "noop".into(),
+            size_bytes: 0,
+            stage: "unknown".into(),
+            deterministic: true,
+            nondeterministic_reason: None,
+            hash: None,
+            hashes: vec![],
+        };
+
+        prune_dump_to_drifted(dump_root, &report);
+
+        for run_idx in 0..2 {
+            let run = dump_root.join(format!("run-{run_idx}"));
+            assert!(
+                run.join("dist/artifacts.json").is_file(),
+                "drifted dist artifact must survive prune (basename match)"
+            );
+            assert!(
+                run.join("target/x86_64-unknown-linux-gnu/release/anodize")
+                    .is_file(),
+                "drifted raw binary must survive prune (rel-path match)"
+            );
+            assert!(
+                !run.join("dist/keep-me-not.tar.gz").exists(),
+                "non-drifted artifact must be pruned"
+            );
+        }
+    }
+
+    /// Sampler regression guard: `hash_artifacts` MUST emit a tail
+    /// sample that closes the gap for mid-size artifacts. Previously
+    /// files in `(HEAD, HEAD+TAIL]` carried an empty tail, leaving
+    /// bytes `[HEAD..size]` unsampled — which is precisely where
+    /// `artifacts.json` (~24 KiB) drifted in v0.3.0.
+    #[test]
+    fn hash_artifacts_samples_tail_for_mid_size_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path();
+        let dist = wt.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        // 24 KiB content.
+        let mut bytes = vec![0u8; 24 * 1024];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = (i & 0xff) as u8;
+        }
+        std::fs::write(dist.join("artifacts.json"), &bytes).unwrap();
+
+        let paths = discover_artifacts(wt).unwrap();
+        let map = hash_artifacts(wt, &paths).unwrap();
+        let info = map.get("artifacts.json").expect("artifacts.json must hash");
+        assert_eq!(info.head_sample.len(), HEAD_SAMPLE_BYTES);
+        assert_eq!(
+            info.tail_sample.len(),
+            bytes.len() - HEAD_SAMPLE_BYTES,
+            "tail must cover bytes [HEAD..size] to close the gap"
+        );
+        // Round-trip: head + tail bytes must equal the original.
+        let mut reconstructed = info.head_sample.clone();
+        reconstructed.extend_from_slice(&info.tail_sample);
+        assert_eq!(
+            reconstructed, bytes,
+            "head + tail must concatenate back to the original artifact"
+        );
     }
 
     /// `discover_artifacts` must tolerate a missing `.det-tmp/target`
