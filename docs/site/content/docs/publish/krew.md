@@ -36,8 +36,8 @@ Both `repository` and `short_description` are required. The publisher will error
 | `homepage` | string | inferred | Project homepage URL; falls back to `https://github.com/<owner>/<repo>` |
 | `url_template` | string | release URL | Custom URL template for artifact download URLs |
 | `caveats` | string | none | Post-install message shown to users after `kubectl krew install` |
-| `skip_upload` | bool or string | `false` | Skip publishing; `true` always skips, `"auto"` skips for pre-releases |
-| `upstream_repo` | object | none | Legacy PR target repo (`owner`/`name`). Prefer `repository.pull_request.base` |
+| `skip` | bool or string | `false` | Skip the krew publisher entirely (no manifest generated). Accepts bool or template string. |
+| `skip_upload` | bool or string | `false` | Generate the manifest but skip the upload step; `true` always skips, `"auto"` skips for pre-releases |
 | `amd64_variant` | string | `"v1"` | amd64 microarchitecture variant filter (`"v1"`, `"v2"`, `"v3"`, `"v4"`) |
 | `arm_variant` | string | none | ARM version filter (`"6"`, `"7"`) |
 
@@ -48,10 +48,8 @@ All string fields support Tera template rendering (e.g. `{{ ProjectName }}`, `{{
 Krew plugins are distributed through the [krew-index](https://github.com/kubernetes-sigs/krew-index) repository. To publish your plugin:
 
 1. **Fork** the `kubernetes-sigs/krew-index` repository to your GitHub account or organization.
-2. Set `manifests_repo.owner` and `manifests_repo.name` to point to your fork.
-3. Anodizer will clone the fork, write the manifest into the `plugins/` directory, commit to a versioned branch (`<name>-v<version>`), push, and open a pull request against the upstream krew-index.
-
-If you use the unified `repository` config instead of `manifests_repo`, you can configure PR behavior with the `pull_request` sub-key:
+2. Set `repository.owner` and `repository.name` to point to your fork; configure the PR target with `repository.pull_request.base`.
+3. Anodizer clones the fork, writes the manifest into the `plugins/` directory, commits to a versioned branch (`<name>-v<version>`), pushes, and opens a pull request against the upstream krew-index.
 
 ```yaml
 krew:
@@ -153,6 +151,100 @@ crates:
         amd64_variant: "v1"
         skip_upload: auto
 ```
+
+## Auto-promote to krew-release-bot
+
+After your initial krew-index PR is approved and merged, the krew maintainers [recommend](https://krew.sigs.k8s.io/docs/developer-guide/release/automating-updates/) switching to [krew-release-bot](https://github.com/rajatjindal/krew-release-bot) so trivial version bumps auto-merge without manual review. **Anodizer auto-detects the switch — no config change required.**
+
+### How auto-detection works
+
+On every release, anodizer probes two signals:
+
+1. **Plugin in krew-index?** — anonymous GET against `api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml` (200 = published, 404 = not yet).
+2. **Bot wired in this repo?** — searches `.github/workflows/*.{yml,yaml}` for the string `rajatjindal/krew-release-bot`.
+
+The resulting mode is reported in the release summary:
+
+| In krew-index | Bot wired | Mode | Behavior |
+|---|---|---|---|
+| No | — | `pr-direct` | Open PR against krew-index (initial submission). |
+| Yes | No | `pr-direct-with-hint` | Open PR + log a hint about switching to the bot. |
+| Yes | Yes | `bot-template` | Write `.krew.yaml`; the bot opens the krew-index PR. |
+
+### Wiring the bot — same job, after anodizer
+
+Add the bot step to your **existing** release workflow, **immediately after** the anodizer release step in the same job. The bot needs the GitHub Release to already be published (so its `addURIAndSha` calls can fetch each archive); running it in the same job, right after anodizer, guarantees that ordering:
+
+```yaml
+name: release
+on:
+  push:
+    tags: ['v*']
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          args: release
+      # Bot reads the .krew.yaml that anodizer wrote in the previous step.
+      - uses: rajatjindal/krew-release-bot@v0.0.46
+```
+
+**Don't put the bot in a separate workflow gated on `push: tags`** — it would race anodizer's release workflow, fire before the assets exist, and fail `addURIAndSha`.
+
+### Alternative: separate workflow on the release event
+
+A standalone workflow is fine if you trigger it on the release-published event so it only runs after anodizer's publish step completes:
+
+```yaml
+name: krew-release
+on:
+  release:
+    types: [published]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rajatjindal/krew-release-bot@v0.0.46
+```
+
+### Template path
+
+By default anodizer writes `.krew.yaml` (the bot's default read location). To use a different path, set the bot action's `krew_template_file:` input — anodizer reads that value and writes there:
+
+```yaml
+      - uses: rajatjindal/krew-release-bot@v0.0.46
+        with:
+          krew_template_file: deploy/mytool.krew.yaml
+```
+
+For workspaces with multiple kubectl plugins, create a `.krew/` directory in your repo root. Anodizer detects it and writes each plugin's template to `.krew/<plugin-name>.yaml`; configure the bot action's `krew_template_file:` per plugin.
+
+### What anodizer writes in bot-template mode
+
+```yaml
+# Generated by anodizer for krew-release-bot. DO NOT EDIT.
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: kubectl-mytool
+spec:
+  version: "{{ .TagName }}"
+  homepage: https://github.com/myorg/mytool
+  shortDescription: A kubectl plugin
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      {{addURIAndSha "https://github.com/myorg/mytool/releases/download/{{ .TagName }}/mytool-{{ .TagName }}-linux-amd64.tar.gz" .TagName | indent 6}}
+      bin: kubectl-mytool
+```
+
+`{{ .TagName }}` and `addURIAndSha` are bot-side placeholders — anodizer emits them literally; the bot expands them when it composes the actual krew-index manifest.
 
 ## Dry-run mode
 
