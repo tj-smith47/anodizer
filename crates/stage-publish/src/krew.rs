@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -175,6 +177,317 @@ fn krew_os(os: &str) -> &str {
         "windows" => "windows",
         other => other,
     }
+}
+
+// ---------------------------------------------------------------------------
+// krew-release-bot auto-detection
+// ---------------------------------------------------------------------------
+//
+// Spec: `.claude/features/krew-bot-auto-detect.md`.
+//
+// Once a plugin lands in `kubernetes-sigs/krew-index`, the krew maintainers
+// recommend switching from anodizer's `pr-direct` (clone fork → write manifest
+// → PR) flow to `krew-release-bot` — a GitHub Action in the plugin's own repo
+// that opens the krew-index PR on the plugin's behalf on every git-tag push.
+//
+// Anodizer auto-detects which mode applies. No config key; the consumer never
+// has to toggle a flag.
+//
+// Two signals decide the mode:
+//   1. Plugin in krew-index?  Anon GET against the GitHub contents API:
+//        `api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/<name>.yaml`
+//      → 200 means published; 404 means not yet; any other error means
+//      "unknown" and we fall back to the safe `pr-direct` flow.
+//   2. Bot wired in this repo?  Grep `.github/workflows/*.yml` for
+//      `rajatjindal/krew-release-bot` (the published Action). The Action
+//      input `krew_template_file` is also parsed when present so anodizer
+//      writes the template to the path the user's workflow actually reads.
+
+/// Three publish modes the krew publisher dispatches between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KrewMode {
+    /// Initial-submission flow — plugin isn't in krew-index yet.
+    /// Behaviour: clone fork, write `plugins/<name>.yaml`, commit, PR
+    /// against `kubernetes-sigs/krew-index`. Unchanged from pre-detection.
+    PrDirect,
+    /// Plugin IS in krew-index but the bot is NOT wired in this repo.
+    /// Behaviour: same `pr-direct` flow PLUS a one-line hint in the run
+    /// summary pointing the user at the bot setup doc. Wiring the bot is
+    /// the user's call; anodizer never edits `.github/workflows/`.
+    PrDirectWithHint,
+    /// Plugin IS in krew-index AND the bot is wired in this repo.
+    /// Behaviour: render the manifest as a bot template (uses
+    /// `{{ .TagName }}` + `addURIAndSha` placeholders) and write it to
+    /// `<workdir>/<template_path>`. NO PR against krew-index — the bot
+    /// opens that PR when the user pushes the release tag.
+    BotTemplate { template_path: PathBuf },
+}
+
+/// Detect the appropriate krew mode for a given plugin in the current
+/// repository. Always succeeds — every detection error falls back to
+/// the safe `PrDirect` mode rather than aborting the publisher.
+fn detect_krew_mode(plugin_name: &str, workdir: Option<&Path>, token: Option<&str>) -> KrewMode {
+    let in_index = matches!(is_plugin_in_krew_index(plugin_name, token), Some(true));
+    if !in_index {
+        return KrewMode::PrDirect;
+    }
+    // Plugin is in krew-index. Check whether the user has already wired
+    // the bot in this repo's workflows.
+    let workflow_hit = workdir.and_then(find_wired_bot_workflow);
+    match workflow_hit {
+        Some(hit) => KrewMode::BotTemplate {
+            template_path: resolve_bot_template_path(workdir, plugin_name, hit.as_path()),
+        },
+        None => KrewMode::PrDirectWithHint,
+    }
+}
+
+/// HTTP probe: does `kubernetes-sigs/krew-index/plugins/<name>.yaml` exist?
+/// Returns:
+///   - `Some(true)` → 200 OK, the plugin is published.
+///   - `Some(false)` → 404 Not Found, the plugin is not yet published.
+///   - `None` → network error, rate-limit, or unexpected status. Caller
+///     treats this as "unknown" and falls back to `pr-direct`.
+///
+/// `token` is optional — anodizer's GitHub PATs are scoped enough that
+/// passing one raises the rate limit from 60/hr (anon) to 5,000/hr
+/// (authenticated), but an anonymous probe is sufficient for low-volume
+/// release cadence (≤ 60 releases per hour from one IP is generous).
+fn is_plugin_in_krew_index(plugin_name: &str, token: Option<&str>) -> Option<bool> {
+    let url = format!(
+        "https://api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/{}.yaml",
+        plugin_name
+    );
+    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(10)).ok()?;
+    let mut req = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json");
+    if let Some(tok) = token {
+        req = req.bearer_auth(tok);
+    }
+    let resp = req.send().ok()?;
+    let status = resp.status();
+    if status.is_success() {
+        return Some(true);
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Some(false);
+    }
+    // 403 (rate limited / token denied), 5xx (GitHub flaking) — both go
+    // back as `None` so the caller falls through to `pr-direct`.
+    None
+}
+
+/// Scan `<workdir>/.github/workflows/*.yml` (and `*.yaml`) for the
+/// `rajatjindal/krew-release-bot` Action reference. Returns the path
+/// to the FIRST workflow file that hits, or `None` when nothing
+/// matches (or the workflows dir doesn't exist).
+///
+/// Loud match string: `rajatjindal/krew-release-bot`. The Action's
+/// canonical reference shape is `uses: rajatjindal/krew-release-bot@vX`,
+/// so a substring search avoids brittleness against `@<ref>` and any
+/// custom-fork rewrites.
+fn find_wired_bot_workflow(workdir: &Path) -> Option<PathBuf> {
+    let dir = workdir.join(".github").join("workflows");
+    let entries = std::fs::read_dir(&dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_yaml = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| matches!(e.to_ascii_lowercase().as_str(), "yml" | "yaml"))
+            .unwrap_or(false);
+        if !is_yaml {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && content.contains("rajatjindal/krew-release-bot")
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Resolve where the bot expects to find its template file.
+///
+/// Precedence:
+///   1. The workflow file `workflow_path` is parsed for a
+///      `krew_template_file: <value>` line. When found, that path
+///      (joined against `workdir`) wins — anodizer writes wherever the
+///      user told the bot to read from.
+///   2. Otherwise, fall back to the bot's documented default,
+///      `<workdir>/.krew.yaml`. The feature spec also proposes
+///      `.krew/<name>.yaml` for multi-plugin workspaces; when the
+///      `.krew/` directory already exists we pick that per-plugin
+///      shape so a workspace with several kubectl plugins keeps each
+///      template separate. The user can override either default by
+///      adding `krew_template_file:` to the workflow.
+fn resolve_bot_template_path(
+    workdir: Option<&Path>,
+    plugin_name: &str,
+    workflow_path: &Path,
+) -> PathBuf {
+    let workdir = workdir.unwrap_or_else(|| Path::new("."));
+    if let Some(custom) = read_krew_template_file_input(workflow_path) {
+        return workdir.join(custom);
+    }
+    let dot_krew_dir = workdir.join(".krew");
+    if dot_krew_dir.is_dir() {
+        return dot_krew_dir.join(format!("{}.yaml", plugin_name));
+    }
+    workdir.join(".krew.yaml")
+}
+
+/// Parse a YAML workflow file for the bot's `krew_template_file:` action
+/// input. Returns the parsed value when present, else `None`.
+///
+/// Best-effort regex-free parse: walk the file looking for a line that
+/// contains `krew_template_file:` and split on the first colon. This
+/// avoids pulling in a YAML parser for a one-line lookup and tolerates
+/// the value being quoted ("...", '...') or bare.
+fn read_krew_template_file_input(workflow_path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(workflow_path).ok()?;
+    for raw_line in content.lines() {
+        let line = raw_line.trim_start();
+        if !line.starts_with("krew_template_file:") {
+            continue;
+        }
+        let (_, rhs) = line.split_once(':')?;
+        let v = rhs.trim();
+        // Strip single or double quotes if present.
+        let stripped = v
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(v);
+        if stripped.is_empty() {
+            return None;
+        }
+        return Some(stripped.to_string());
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Bot template generation
+// ---------------------------------------------------------------------------
+
+/// Swap the concrete release version out of every platform URL for the
+/// bot's `{{ .TagName }}` placeholder so the resulting template is
+/// version-independent. Commits made once and reused for every future
+/// release without re-rendering.
+///
+/// Replaces both the `v<ver>` and bare `<ver>` forms — most release URLs
+/// embed the tag as `v<ver>` in the release path (e.g.
+/// `/releases/download/v1.2.3/...`) AND a bare `<ver>` in the artifact
+/// filename (e.g. `tool-1.2.3-linux-amd64.tar.gz`). Both need to flip
+/// to the bot's placeholder. Order matters: replace the longer form
+/// first so `v1.2.3` doesn't collapse to `v{{ .TagName }}` mid-replace.
+fn platforms_with_tag_placeholders(platforms: &[KrewPlatform], version: &str) -> Vec<KrewPlatform> {
+    let placeholder = "{{ .TagName }}";
+    let v_form = format!("v{}", version);
+    platforms
+        .iter()
+        .map(|p| {
+            let mut url = p.url.replace(&v_form, placeholder);
+            if !version.is_empty() {
+                url = url.replace(version, placeholder);
+            }
+            KrewPlatform {
+                os: p.os.clone(),
+                arch: p.arch.clone(),
+                url,
+                sha256: p.sha256.clone(),
+                bin: p.bin.clone(),
+            }
+        })
+        .collect()
+}
+
+/// Render a krew-release-bot template variant of the plugin manifest.
+///
+/// The bot consumes Go-template syntax with two custom funcs:
+///   - `{{ .TagName }}` — replaced with the pushed git tag at bot run
+///     time (e.g. `v1.2.3`). Used in the spec's `version` and inside
+///     every URL passed to `addURIAndSha`.
+///   - `{{ addURIAndSha "<URL with .TagName>" .TagName | indent N }}` —
+///     downloads the URL at bot run time, computes the sha256, and
+///     emits two indented YAML lines (`uri:` + `sha256:`) inline.
+///
+/// Per-platform we emit ONE `addURIAndSha` call (not a separate `uri:` +
+/// `sha256:` pair), since the bot can compute the hash itself from the
+/// release artifacts the publisher uploads via `stage-release`.
+///
+/// `url_template` MUST be a tag-aware template string (e.g.
+/// `"https://github.com/{{ .repo_owner }}/{{ .crate_name }}/releases/download/{{ .TagName }}/...tar.gz"`)
+/// — the caller substitutes runtime values for everything EXCEPT
+/// `.TagName`, which the bot owns. The tag placeholder is what makes
+/// the template version-independent: once committed, the same file
+/// drives every future release without anodizer touching it again.
+fn generate_bot_template(params: &KrewManifestParams<'_>) -> Result<String> {
+    use std::fmt::Write as _;
+
+    // Header + top-level metadata. We use literal strings rather than
+    // serde_yaml_ng so that the embedded `{{ ... }}` placeholders
+    // survive untouched (a YAML serializer would either quote the
+    // braces, escape them, or treat them as plain text in ways that
+    // break Go templating).
+    let mut out = String::new();
+    out.push_str("# This file was generated by anodizer for krew-release-bot. DO NOT EDIT.\n");
+    out.push_str("apiVersion: krew.googlecontainertools.github.com/v1alpha2\n");
+    out.push_str("kind: Plugin\n");
+    out.push_str("metadata:\n");
+    writeln!(out, "  name: {}", params.name)?;
+    out.push_str("spec:\n");
+    // `{{ .TagName }}` already starts with `v` for a typical
+    // `v<semver>` tag. Don't prepend `v` here or the bot would emit
+    // `vv1.0.0`. (anodizer's PR-direct path stamps `v{version}` because
+    // it has the resolved version string in hand; the bot doesn't.)
+    out.push_str("  version: \"{{ .TagName }}\"\n");
+    if !params.homepage.is_empty() {
+        writeln!(out, "  homepage: {}", params.homepage)?;
+    }
+    writeln!(out, "  shortDescription: {}", params.short_description)?;
+    if !params.description.is_empty() {
+        out.push_str("  description: |\n");
+        for line in params.description.lines() {
+            writeln!(out, "    {}", line)?;
+        }
+    }
+    if !params.caveats.is_empty() {
+        out.push_str("  caveats: |\n");
+        for line in params.caveats.lines() {
+            writeln!(out, "    {}", line)?;
+        }
+    }
+    out.push_str("  platforms:\n");
+
+    // Sort by uri descending to match `generate_manifest`'s ordering —
+    // the bot has no opinion on order, so keeping it consistent with
+    // the pr-direct path lets a side-by-side diff stay readable.
+    let mut sorted: Vec<&KrewPlatform> = params.platforms.iter().collect();
+    sorted.sort_by(|a, b| b.url.cmp(&a.url));
+
+    for p in sorted {
+        out.push_str("    - selector:\n");
+        out.push_str("        matchLabels:\n");
+        writeln!(out, "          os: {}", p.os)?;
+        writeln!(out, "          arch: {}", krew_arch(&p.arch))?;
+        // `addURIAndSha` MUST receive a URL whose `.TagName` placeholder
+        // is still un-rendered — the bot expands it at PR time using
+        // the actual pushed tag. The indent value (6) matches the
+        // spec.platforms[].uri / sha256 indent the bot expects: two
+        // spaces under `- selector:` plus four for the `uri:` line
+        // emitted by the function.
+        writeln!(
+            out,
+            "      {{{{addURIAndSha \"{}\" .TagName | indent 6}}}}",
+            p.url
+        )?;
+        writeln!(out, "      bin: {}", p.bin)?;
+    }
+    Ok(out)
 }
 
 /// Convert `OsArtifact`s into `KrewPlatform`s.
@@ -437,6 +750,60 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     let token =
         util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), Some("KREW_INDEX_TOKEN"));
 
+    // ── krew-release-bot auto-detection ──────────────────────────────
+    // Once a plugin lands in `kubernetes-sigs/krew-index`, the krew
+    // maintainers recommend switching from the PR-direct flow to the
+    // krew-release-bot Action. Detect which mode applies and branch.
+    // Detection failures fall back to the safe `PrDirect` mode so a
+    // network blip or permission hiccup never blocks the release.
+    let mode = detect_krew_mode(
+        plugin_name,
+        ctx.options.project_root.as_deref(),
+        token.as_deref(),
+    );
+    if let KrewMode::BotTemplate { template_path } = &mode {
+        // Bot-template mode: write a `{{ .TagName }}`-templated manifest
+        // to the path the user's workflow reads from, then return.
+        // The bot owns the krew-index PR — anodizer must NOT clone or
+        // PR against `kubernetes-sigs/krew-index` from this code path
+        // or two PRs would race to land the same version.
+        let bot_platforms = platforms_with_tag_placeholders(&platforms, &version);
+        let bot_template = generate_bot_template(&KrewManifestParams {
+            name: plugin_name,
+            version: &version, // ignored by the renderer; placeholder rules
+            homepage: &homepage,
+            short_description: &short_description,
+            description: &description,
+            caveats: &caveats,
+            platforms: &bot_platforms,
+        })?;
+        if let Some(parent) = template_path.parent() {
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("krew: create bot-template parent dir {}", parent.display())
+            })?;
+        }
+        std::fs::write(template_path, &bot_template)
+            .with_context(|| format!("krew: write bot template to {}", template_path.display()))?;
+        log.status(&format!(
+            "krew: mode=bot-template plugin={} template={} \
+             (krew-release-bot will open the krew-index PR on tag push)",
+            plugin_name,
+            template_path.display()
+        ));
+        return Ok(());
+    }
+    if matches!(mode, KrewMode::PrDirectWithHint) {
+        log.status(&format!(
+            "krew: mode=pr-direct-with-hint plugin={} — published in krew-index; \
+             consider wiring `rajatjindal/krew-release-bot` so future releases \
+             auto-merge without a manual PR \
+             (https://krew.sigs.k8s.io/docs/developer-guide/release/automating-updates/)",
+            plugin_name
+        ));
+    } else {
+        log.status(&format!("krew: mode=pr-direct plugin={}", plugin_name));
+    }
+
     let tmp_dir = tempfile::tempdir().context("krew: create temp dir")?;
     let repo_path = tmp_dir.path();
 
@@ -551,6 +918,213 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // krew-release-bot auto-detection tests
+    // -----------------------------------------------------------------------
+
+    /// No workflows dir → `find_wired_bot_workflow` returns None.
+    #[test]
+    fn find_wired_bot_workflow_returns_none_when_no_workflows_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(find_wired_bot_workflow(tmp.path()).is_none());
+    }
+
+    /// Workflows dir exists but no file references the bot → None.
+    #[test]
+    fn find_wired_bot_workflow_returns_none_when_bot_not_referenced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join(".github").join("workflows");
+        std::fs::create_dir_all(&wf).unwrap();
+        std::fs::write(
+            wf.join("release.yml"),
+            "name: Release\njobs:\n  build:\n    runs-on: ubuntu-latest\n",
+        )
+        .unwrap();
+        assert!(find_wired_bot_workflow(tmp.path()).is_none());
+    }
+
+    /// Any workflow referencing `rajatjindal/krew-release-bot` → that path.
+    #[test]
+    fn find_wired_bot_workflow_matches_bot_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join(".github").join("workflows");
+        std::fs::create_dir_all(&wf).unwrap();
+        let target = wf.join("krew.yaml");
+        std::fs::write(
+            &target,
+            "name: Update krew-index\non:\n  push:\n    tags: ['v*']\njobs:\n  update:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: rajatjindal/krew-release-bot@v0.0.46\n",
+        )
+        .unwrap();
+        let hit = find_wired_bot_workflow(tmp.path()).unwrap();
+        assert_eq!(hit, target);
+    }
+
+    /// Bot reference matches regardless of `.yml` vs `.yaml` extension.
+    #[test]
+    fn find_wired_bot_workflow_matches_yml_extension_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join(".github").join("workflows");
+        std::fs::create_dir_all(&wf).unwrap();
+        let target = wf.join("release.yml");
+        std::fs::write(
+            &target,
+            "jobs:\n  x:\n    uses: rajatjindal/krew-release-bot@v0.0.46\n",
+        )
+        .unwrap();
+        let hit = find_wired_bot_workflow(tmp.path()).unwrap();
+        assert_eq!(hit, target);
+    }
+
+    /// `krew_template_file:` action input is parsed when present so we
+    /// write the template to the path the user's workflow reads from.
+    #[test]
+    fn read_krew_template_file_input_extracts_custom_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join("krew.yaml");
+        std::fs::write(
+            &wf,
+            "      - uses: rajatjindal/krew-release-bot@v0.0.46\n        with:\n          krew_template_file: .krew/my-plugin.yaml\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_krew_template_file_input(&wf),
+            Some(".krew/my-plugin.yaml".to_string())
+        );
+    }
+
+    /// Quoted values (single + double) are unwrapped.
+    #[test]
+    fn read_krew_template_file_input_strips_quotes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join("krew.yaml");
+        std::fs::write(&wf, "          krew_template_file: \".krew.yaml\"\n").unwrap();
+        assert_eq!(
+            read_krew_template_file_input(&wf),
+            Some(".krew.yaml".to_string())
+        );
+
+        std::fs::write(&wf, "          krew_template_file: '.krew/x.yaml'\n").unwrap();
+        assert_eq!(
+            read_krew_template_file_input(&wf),
+            Some(".krew/x.yaml".to_string())
+        );
+    }
+
+    /// Missing input line → None (caller falls back to defaults).
+    #[test]
+    fn read_krew_template_file_input_returns_none_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join("krew.yaml");
+        std::fs::write(&wf, "      - uses: rajatjindal/krew-release-bot@v0.0.46\n").unwrap();
+        assert_eq!(read_krew_template_file_input(&wf), None);
+    }
+
+    /// Path resolution: custom input wins over both defaults.
+    #[test]
+    fn resolve_bot_template_path_honors_custom_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join("krew.yaml");
+        std::fs::write(&wf, "          krew_template_file: my-template.yaml\n").unwrap();
+        assert_eq!(
+            resolve_bot_template_path(Some(tmp.path()), "anodizer", &wf),
+            tmp.path().join("my-template.yaml")
+        );
+    }
+
+    /// Path resolution: `.krew/` exists → `.krew/<name>.yaml`.
+    #[test]
+    fn resolve_bot_template_path_prefers_dot_krew_directory_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".krew")).unwrap();
+        let wf = tmp.path().join("krew.yaml");
+        std::fs::write(&wf, "# no template-file input\n").unwrap();
+        assert_eq!(
+            resolve_bot_template_path(Some(tmp.path()), "anodizer", &wf),
+            tmp.path().join(".krew").join("anodizer.yaml")
+        );
+    }
+
+    /// Path resolution: no custom input + no `.krew/` → `.krew.yaml`.
+    #[test]
+    fn resolve_bot_template_path_falls_back_to_dot_krew_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wf = tmp.path().join("krew.yaml");
+        std::fs::write(&wf, "# no template-file input\n").unwrap();
+        assert_eq!(
+            resolve_bot_template_path(Some(tmp.path()), "anodizer", &wf),
+            tmp.path().join(".krew.yaml")
+        );
+    }
+
+    /// Bot template uses `{{ .TagName }}` (not the concrete version) so
+    /// the file is version-independent — committed once, drives every
+    /// release. `addURIAndSha` wraps every per-platform URL.
+    #[test]
+    fn generate_bot_template_emits_tag_placeholders_and_addurianadsha() {
+        let template = generate_bot_template(&KrewManifestParams {
+            name: "anodizer",
+            version: "1.2.3", // ignored — placeholder rules
+            homepage: "https://github.com/owner/anodizer",
+            short_description: "Release tool",
+            description: "Multi-line\ndescription.",
+            caveats: "",
+            platforms: &[KrewPlatform {
+                os: "linux".to_string(),
+                arch: "amd64".to_string(),
+                url: "https://github.com/owner/anodizer/releases/download/{{ .TagName }}/anodizer-{{ .TagName }}-linux-amd64.tar.gz".to_string(),
+                sha256: "ignored-in-template".to_string(),
+                bin: "kubectl-anodizer".to_string(),
+            }],
+        })
+        .unwrap();
+
+        assert!(
+            template.starts_with(
+                "# This file was generated by anodizer for krew-release-bot. DO NOT EDIT.\n"
+            ),
+            "bot template missing header: {template}"
+        );
+        // Version uses `.TagName`, NOT the concrete `1.2.3`.
+        assert!(
+            template.contains("version: \"{{ .TagName }}\""),
+            "got: {template}"
+        );
+        assert!(
+            !template.contains("v1.2.3"),
+            "concrete version leaked: {template}"
+        );
+        // Each platform has an `addURIAndSha` call (not a literal uri+sha256 pair).
+        assert!(
+            template.contains("{{addURIAndSha \"https://github.com/owner/anodizer/releases/download/{{ .TagName }}/anodizer-{{ .TagName }}-linux-amd64.tar.gz\" .TagName | indent 6}}"),
+            "addURIAndSha invocation missing: {template}"
+        );
+        assert!(
+            !template.contains("sha256: ignored-in-template"),
+            "literal sha256 must be replaced: {template}"
+        );
+        // Description block scalar preserved.
+        assert!(template.contains("description: |"), "got: {template}");
+        assert!(template.contains("    Multi-line"), "got: {template}");
+    }
+
+    /// `platforms_with_tag_placeholders` swaps both `v<ver>` and bare
+    /// `<ver>` forms so the template is fully tag-independent.
+    #[test]
+    fn platforms_with_tag_placeholders_replaces_both_version_forms() {
+        let inputs = vec![KrewPlatform {
+            os: "linux".to_string(),
+            arch: "amd64".to_string(),
+            url: "https://example.com/v1.2.3/tool-1.2.3-linux-amd64.tar.gz".to_string(),
+            sha256: "deadbeef".to_string(),
+            bin: "kubectl-tool".to_string(),
+        }];
+        let out = platforms_with_tag_placeholders(&inputs, "1.2.3");
+        assert_eq!(
+            out[0].url,
+            "https://example.com/{{ .TagName }}/tool-{{ .TagName }}-linux-amd64.tar.gz"
+        );
+    }
 
     // -----------------------------------------------------------------------
     // generate_manifest tests
