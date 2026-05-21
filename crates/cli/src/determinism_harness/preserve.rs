@@ -136,8 +136,40 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     // the dest dir so context.json can still land — caller writes it
     // post-loop regardless.
     match std::fs::read_dir(&src) {
-        Ok(_) => copy_dir_recursive(&src, dest)
-            .with_context(|| format!("copying {} -> {}", src.display(), dest.display()))?,
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.with_context(|| format!("reading entry in {}", src.display()))?;
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                if INTERMEDIATE_STAGE_DIRS.contains(&name_str.as_ref()) {
+                    // Stage scratch space (e.g. `dist/makeself/<id>/<arch>/`)
+                    // holds intermediate inputs the stage bundled into its
+                    // shippable output (the .run / .snap / .msi etc.). These
+                    // staging files routinely share basenames across arches
+                    // (`anodizer`, `makeself-install.sh`, `package.lsm`), and
+                    // the harness's basename-keyed hash map collapses such
+                    // siblings — preserving them leaves the manifest with
+                    // mismatched hash/path pairs that publish-only hash-verify
+                    // then trips on. The shippable bytes live under
+                    // `dist/<os>/...` and travel independently.
+                    continue;
+                }
+                let src_path = entry.path();
+                let dst_path = dest.join(&name);
+                let ft = entry
+                    .file_type()
+                    .with_context(|| format!("stat {}", src_path.display()))?;
+                if ft.is_dir() {
+                    copy_dir_recursive(&src_path, &dst_path).with_context(|| {
+                        format!("copying {} -> {}", src_path.display(), dst_path.display())
+                    })?;
+                } else {
+                    std::fs::copy(&src_path, &dst_path).with_context(|| {
+                        format!("copying {} -> {}", src_path.display(), dst_path.display())
+                    })?;
+                }
+            }
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => {
             return Err(e).with_context(|| format!("reading source dir {}", src.display()));
@@ -145,6 +177,20 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     }
     Ok(())
 }
+
+/// Top-level `dist/<name>/` subdirectories that hold stage-internal
+/// scratch space, NOT shippable artifacts. Skipped during preservation
+/// so the resulting manifest only references files that actually ship.
+///
+/// Why a hardcoded list rather than a config field: anodizer owns these
+/// directory names — they're emitted by anodizer's own stage code, not
+/// user config. The list grows in lockstep with stages that scribble
+/// under `dist/<stage_id>/...`. As of v0.3.0 only `makeself` does (its
+/// pre-pack staging area for each arch holds copies of the source binary
+/// alongside the install script and `package.lsm`; all three collide on
+/// basename across arches). If a future stage adopts the same pattern,
+/// add it here so the manifest stays hash-stable across multi-arch runs.
+const INTERMEDIATE_STAGE_DIRS: &[&str] = &["makeself"];
 
 /// Recursive directory copy with predictable semantics — files via
 /// `std::fs::copy`, directories created on demand. Symlinks are
@@ -705,6 +751,54 @@ mod tests {
         assert!(
             names.contains(&"foo.tar.gz"),
             "real artifacts must still be preserved: {names:?}"
+        );
+    }
+
+    /// Regression: `dist/makeself/<id>/<arch>/` holds per-arch staging
+    /// inputs (anodizer, makeself-install.sh, package.lsm) that the
+    /// harness's basename-keyed hash map collapses across arches. Those
+    /// scratch dirs must NOT be copied into the preserved tree — only
+    /// the shippable `.run` files under `dist/<os>/` should survive.
+    /// Without this filter the preserved manifest carries mismatched
+    /// hash/path pairs and publish-only hash-verify trips on them
+    /// (`bytes on disk diverge from determinism record for
+    /// ./dist/makeself/default/linux_arm64/anodizer`).
+    #[test]
+    fn preserve_dist_tree_skips_intermediate_stage_dirs() {
+        let src_root = TempDir::new().unwrap();
+        let dest_root = TempDir::new().unwrap();
+        let dist = src_root.path().join("dist");
+        // Shippable .run lives under dist/linux/ — must be preserved.
+        std::fs::create_dir_all(dist.join("linux")).unwrap();
+        std::fs::write(
+            dist.join("linux")
+                .join("anodizer-0.3.0-linux-amd64-installer.run"),
+            b"shippable .run bytes",
+        )
+        .unwrap();
+        // Two per-arch staging dirs that collide on basename — must NOT
+        // be preserved.
+        for arch in &["linux_amd64", "linux_arm64"] {
+            let stage_dir = dist.join("makeself").join("default").join(arch);
+            std::fs::create_dir_all(&stage_dir).unwrap();
+            std::fs::write(stage_dir.join("anodizer"), format!("staging-{}", arch)).unwrap();
+            std::fs::write(stage_dir.join("makeself-install.sh"), b"install").unwrap();
+        }
+
+        preserve_dist_tree(src_root.path(), dest_root.path())
+            .expect("preserve_dist_tree must succeed");
+
+        assert!(
+            dest_root
+                .path()
+                .join("linux/anodizer-0.3.0-linux-amd64-installer.run")
+                .exists(),
+            "shippable .run must survive preservation",
+        );
+        assert!(
+            !dest_root.path().join("makeself").exists(),
+            "makeself/ scratch dir must NOT be preserved — its per-arch \
+             siblings share basenames and collide in the harness's hash map",
         );
     }
 
