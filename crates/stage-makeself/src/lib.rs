@@ -63,6 +63,14 @@ fn make_args(
 ) -> Vec<String> {
     let mut args = vec!["--quiet".to_string()];
 
+    // Compression default is `--xz` (not makeself's `--gzip`): the gzip
+    // pipeline embeds the wallclock mtime of the intermediate tarball into
+    // the gzip stream header (gzip reads stdin from a regular file, sees its
+    // mtime, ignores SOURCE_DATE_EPOCH), which drifts the compressed bytes
+    // and the CRCsum/MD5/SHA values embedded in the .run shell header. xz
+    // does not embed wall-clock data and is byte-stable under SDE. Users can
+    // override via `compression: gzip` in config but should expect non-
+    // deterministic .run output under the harness in that case.
     match compression {
         Some("gzip") => args.push("--gzip".to_string()),
         Some("bzip2") => args.push("--bzip2".to_string()),
@@ -70,19 +78,27 @@ fn make_args(
         Some("lzo") => args.push("--lzo".to_string()),
         Some("compress") => args.push("--compress".to_string()),
         Some("none") => args.push("--nocomp".to_string()),
-        _ => {} // let makeself choose default
+        None => args.push("--xz".to_string()),
+        Some(_) => {} // unknown values pass through to makeself default
     }
 
     args.push("--lsm".to_string());
     args.push("package.lsm".to_string());
 
+    // Pin the extraction-target dir name. Without `--target`, makeself falls
+    // back to `makeself-$$-$(date +%Y%m%d%H%M%S)` which embeds the PID + the
+    // wallclock and drifts byte-by-byte between two harness runs. The
+    // filename (sans `.run` extension) is stable across runs by construction
+    // (it's templated from config + version + target) and reads naturally
+    // when the user extracts to inspect the archive.
+    let target_dir = filename.strip_suffix(".run").unwrap_or(filename);
+    args.push("--target".to_string());
+    args.push(target_dir.to_string());
+
     // Pin the packaging-date header under SOURCE_DATE_EPOCH so the .run
     // header is byte-stable across runs. makeself's default
     // `DATE=`LC_ALL=C date`` reads wall-clock and otherwise leaks into the
-    // .run file (the `Date of packaging:` line in the embedded header), which
-    // in turn shifts the .run's compressed size — and that size shadows
-    // through `dist/artifacts.json` via the `size_bytes` field even though
-    // `*.run` itself is allow-listed by the determinism harness.
+    // .run file (the `Date of packaging:` line in the embedded header).
     if let Some(date) = packaging_date {
         args.push("--packaging-date".to_string());
         args.push(date.to_string());
@@ -90,7 +106,10 @@ fn make_args(
 
     args.extend(extra_args.iter().cloned());
 
-    // positional args: archive_dir output_file label startup_script
+    // positional args: archive_dir output_file label startup_script.
+    // Output is the bare filename (relative to current_dir); using an
+    // absolute path here would leak the per-run worktree prefix into
+    // makeself's embedded `MS_COMMAND` variable and break determinism.
     args.push(".".to_string());
     args.push(filename.to_string());
     args.push(name.to_string());
@@ -723,12 +742,48 @@ mod tests {
         assert!(args.contains(&"myapp.run".to_string()));
         assert!(args.contains(&"MyApp".to_string()));
         assert!(args.contains(&"./setup.sh".to_string()));
+        assert!(
+            args.contains(&"--xz".to_string()),
+            "compression must default to --xz, not makeself's --gzip default: {args:?}"
+        );
+    }
+
+    #[test]
+    fn test_make_args_target_pinned() {
+        let args = make_args("MyApp", "myapp.run", None, "./setup.sh", &[], None);
+        let idx = args
+            .iter()
+            .position(|a| a == "--target")
+            .expect("expected --target in args");
+        assert_eq!(
+            args[idx + 1],
+            "myapp",
+            "target must derive from filename without .run extension"
+        );
+    }
+
+    #[test]
+    fn test_make_args_target_handles_filename_without_run_ext() {
+        let args = make_args("MyApp", "weird-name", None, "./setup.sh", &[], None);
+        let idx = args
+            .iter()
+            .position(|a| a == "--target")
+            .expect("expected --target in args");
+        assert_eq!(args[idx + 1], "weird-name");
     }
 
     #[test]
     fn test_make_args_xz_compression() {
         let args = make_args("MyApp", "myapp.run", Some("xz"), "./setup.sh", &[], None);
         assert!(args.contains(&"--xz".to_string()));
+    }
+
+    #[test]
+    fn test_make_args_gzip_passthrough() {
+        // Explicit gzip is honored even though it's non-deterministic — user's
+        // choice respected; they can fix by setting compression: xz.
+        let args = make_args("MyApp", "myapp.run", Some("gzip"), "./setup.sh", &[], None);
+        assert!(args.contains(&"--gzip".to_string()));
     }
 
     #[test]
