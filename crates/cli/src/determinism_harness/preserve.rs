@@ -375,7 +375,29 @@ fn collect_preserved_entries(
         // anyway). The atomic `.tmp` sibling also lives here mid-
         // write; skip that too so a concurrent enumerator doesn't
         // see a half-formed entry.
-        if name == "context.json" || name == "context.json.tmp" {
+        //
+        // Also skip the sibling harness manifests `artifacts.json` and
+        // `metadata.json`: these are pipeline-internal metadata, not
+        // shippable artifacts. The action's post-harness rename step
+        // labels them per-shard (`artifacts-<shard>.json`) so that
+        // `actions/download-artifact merge-multiple: true` does not
+        // collide when fanning 4 shards back into one `dist/`. If we
+        // record them here under the un-suffixed name, the rename
+        // leaves dangling path references that `hash_verify_preserved_dist`
+        // bails on (`opening preserved artifact ./dist/artifacts.json:
+        // No such file or directory`). The publish-only path
+        // discovers the renamed manifests directly via
+        // `discover_artifacts_manifests` and does not need them in the
+        // hash-verify set.
+        if matches!(
+            name.as_str(),
+            "context.json"
+                | "context.json.tmp"
+                | "artifacts.json"
+                | "artifacts.json.tmp"
+                | "metadata.json"
+                | "metadata.json.tmp"
+        ) {
             continue;
         }
         let rel = path
@@ -635,6 +657,54 @@ mod tests {
         assert!(
             !dest.join("context.json.tmp").exists(),
             "atomic write must rename the .tmp away on success"
+        );
+    }
+
+    /// Regression test: the preserved-dist manifest MUST NOT list
+    /// the sibling harness manifests (`artifacts.json`,
+    /// `metadata.json`) as preserved artifacts. The action's post-
+    /// harness rename step labels them per-shard so multi-shard
+    /// `download-artifact merge-multiple: true` does not collide;
+    /// recording them under the un-suffixed name leaves dangling
+    /// references that the publish-only hash-verify chokes on
+    /// (`opening preserved artifact ./dist/artifacts.json: No such
+    /// file or directory`). They are pipeline metadata, not
+    /// shippable artifacts; publish-only discovers them directly via
+    /// `discover_artifacts_manifests`.
+    #[test]
+    fn context_excludes_harness_sidecar_manifests() {
+        let tmp = TempDir::new().unwrap();
+        let dest = tmp.path();
+        // Plant the three harness sidecars + one real artifact so
+        // the test asserts both "sidecars excluded" and "real
+        // artifacts still included" rather than just "no entries".
+        std::fs::write(dest.join("artifacts.json"), b"[]").unwrap();
+        std::fs::write(dest.join("metadata.json"), b"{}").unwrap();
+        std::fs::write(dest.join("foo.tar.gz"), b"real artifact bytes").unwrap();
+        let report = empty_report("c0ffee");
+        write_preserved_dist_context(
+            dest,
+            ContextInputs {
+                report: &report,
+                harness_targets: None,
+                version_hint: "0.0.0-fixture",
+            },
+        )
+        .unwrap();
+        let ctx: PreservedDistContext =
+            serde_json::from_slice(&std::fs::read(dest.join("context.json")).unwrap()).unwrap();
+        let names: Vec<&str> = ctx.artifacts.iter().map(|a| a.name.as_str()).collect();
+        assert!(
+            !names.contains(&"artifacts.json"),
+            "artifacts.json must not appear as a preserved artifact (would dangle after rename): {names:?}"
+        );
+        assert!(
+            !names.contains(&"metadata.json"),
+            "metadata.json must not appear as a preserved artifact (would dangle after rename): {names:?}"
+        );
+        assert!(
+            names.contains(&"foo.tar.gz"),
+            "real artifacts must still be preserved: {names:?}"
         );
     }
 
