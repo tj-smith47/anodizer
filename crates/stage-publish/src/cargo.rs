@@ -375,15 +375,16 @@ fn poll_crates_io_index(
 ///
 /// `poll_crates_io_index` already waits for the dep to appear on the edge
 /// anodizer queries, but cargo's own publish invocation may hit a different
-/// Fastly edge whose cache hasn't fanned out yet. The two cargo error
+/// Fastly edge whose cache hasn't fanned out yet. The cargo error
 /// signatures that show up in that race:
 ///
 /// - `no matching package named '<crate>' found` — cargo couldn't locate
 ///   the dep at all in its registry view (the historical signature; see
 ///   the comment on `expand_with_transitive_deps`).
 /// - `failed to select a version for the requirement '<crate> = "^X.Y.Z"'`
-///   — cargo found the crate but not the just-published version; this is
-///   the exact line surfaced by v0.3.0's run 26266694891.
+///   — cargo found the crate but not the just-published version; the
+///   post-publish race window where cargo's resolution hits a stale
+///   Fastly edge.
 /// - `failed to load source for dependency '<crate>'` — sparse-index
 ///   transport error variant that cargo emits when the fetch itself fails
 ///   mid-resolution (less common but seen during Fastly fan-out windows).
@@ -1563,7 +1564,8 @@ mod tests {
         assert!(is_index_propagation_failure(
             "error: no matching package named `cfgd-core` found"
         ));
-        // v0.3.0's run 26266694891 failure mode.
+        // Stale-edge resolution failure: cargo found the crate on the
+        // sparse index but not the just-published version it depends on.
         assert!(is_index_propagation_failure(
             "error: failed to select a version for the requirement \
              `anodizer-stage-publish = \"^0.3.0\"`"
