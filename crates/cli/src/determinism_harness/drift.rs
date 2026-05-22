@@ -294,28 +294,22 @@ pub(super) fn pick_first_artifact_for_stage<'a>(
 /// Append one byte to `path` to force the artifact to differ across
 /// runs. Used by the `--inject-drift=<stage>` test-harness flag.
 ///
-/// Source byte: `/dev/urandom` on platforms that expose it;
-/// `SystemTime::now().subsec_nanos()` fallback otherwise. The fallback
+/// Byte source: a process-local atomic counter, incremented per call.
 /// MUST vary between successive runs — when the underlying archive is
-/// fully deterministic (the goal of this harness), appending a
-/// CONSTANT byte to two byte-identical archives yields two
-/// byte-identical archives and the harness reports no drift. The
-/// nanos fallback varies on every call (successive harness runs are
-/// at least milliseconds apart), so the appended byte differs across
-/// runs and the hash diverges as intended.
+/// fully deterministic (the goal of this harness), appending a CONSTANT
+/// byte to two byte-identical archives yields two byte-identical
+/// archives and the harness reports no drift.
+///
+/// The earlier `/dev/urandom`-or-`subsec_nanos()` source was flaky on
+/// Windows runners: no `/dev/urandom`, and consecutive runs can land
+/// in the same nanos-mod-256 window (100 ns clock resolution × u8
+/// truncation), producing identical injected bytes. The counter is
+/// monotonic per-process and platform-uniform, eliminating the flake.
 pub(super) fn inject_drift_byte(path: &Path) -> Result<()> {
-    use std::io::{Read, Write};
-    let byte: u8 = match std::fs::OpenOptions::new().read(true).open("/dev/urandom") {
-        Ok(mut f) => {
-            let mut buf = [0u8; 1];
-            f.read_exact(&mut buf).ok();
-            buf[0]
-        }
-        Err(_) => std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() as u8)
-            .unwrap_or(0xAB),
-    };
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static DRIFT_BYTE_COUNTER: AtomicU8 = AtomicU8::new(1);
+    let byte = DRIFT_BYTE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(path)
