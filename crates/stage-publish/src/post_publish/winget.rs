@@ -121,6 +121,15 @@ pub fn poll(
                 return PostPublishStatus::Rejected { detail };
             }
             PrVerdict::Pending(detail) => {
+                // A single transient `total_count: 1` from GitHub
+                // search (index lag, search-shard inconsistency)
+                // followed by a `check_pr_at` returning Pending
+                // flips this. A subsequent legitimate empty search
+                // is then treated as a regression. Accepted
+                // trade-off: false positives produce an
+                // investigable Error naming the package/version;
+                // false negatives (suppressing a real PR
+                // withdrawal) are not.
                 ever_found = true;
                 last_pending_detail = Some(detail.clone());
                 log.verbose(&format!(

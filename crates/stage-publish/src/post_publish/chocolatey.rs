@@ -63,8 +63,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// the page has been missing. The status remains `Pending` in either
 /// case — moderation queues routinely sit for days, so a chronic `404`
 /// on a freshly-submitted package is the expected state and not
-/// promoted to `Error` unless the page was previously observed Approved
-/// (regression detection).
+/// promoted to `Error` unless the page was previously observed
+/// resolvable (any HTTP 200) in the same run (regression detection).
 const NOT_FOUND_GRACE_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// Verdict of a single HTML scrape — either we resolved to a terminal
@@ -129,6 +129,15 @@ pub fn poll(
             }
             PageVerdict::Pending(detail) => {
                 not_found_since = None;
+                // Any HTTP 200 from a CDN edge — even a stale-cache
+                // hit during an origin blip, or a page whose callout
+                // text drifted upstream and fell through to the
+                // catch-all "status callout not yet present" branch —
+                // flips this. A subsequent legitimate `404` then
+                // surfaces as a regression. Accepted trade-off:
+                // false positives produce an investigable Error with
+                // the URL, which is cheap to dismiss; false negatives
+                // (suppressing a real takedown) are not.
                 ever_visible = true;
                 last_pending_detail = Some(detail.clone());
                 log.verbose(&format!(
