@@ -482,7 +482,16 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         publish_only: opts.publish_only,
         project_root: None,
         strict: opts.strict,
-        resume_release: opts.resume_release,
+        // Auto-enable resume_release in publish-only mode. The publish-only
+        // pipeline includes ReleaseStage (which creates the GH Release +
+        // uploads assets) AND PublishStage's github-release publisher
+        // (which targets the same release). Without resume_release, the
+        // publisher's pre-flight check sees the release ReleaseStage just
+        // created in THIS SAME RUN as "leftover from a prior failed
+        // attempt" and bails. resume_release tells it to continue into
+        // the existing release — the correct semantic since both code
+        // paths intentionally publish to the same tag.
+        resume_release: opts.resume_release || opts.publish_only,
         replace_existing_artifacts: opts.replace_existing,
         skip_post_publish_poll: opts.no_post_publish_poll,
         // `--no-gate-submitter` flips to `Some(false)`; absent flag
