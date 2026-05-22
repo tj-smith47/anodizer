@@ -299,8 +299,8 @@ fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
 // ('icon' was unexpected)", so a stray top-level `icon:` line blocks
 // snap upload even though `snapcraft pack` accepts it locally. These
 // tests pin the omit-when-None behaviour so a future serde refactor
-// (e.g. dropping `skip_serializing_if`) can't silently regress us back
-// into the v0.3.0 upload failure mode.
+// (e.g. dropping `skip_serializing_if`) can't silently regress this
+// behaviour back into emitting a Store-rejected `icon:` key.
 // -----------------------------------------------------------------------
 
 #[test]
@@ -334,10 +334,10 @@ fn test_generate_snap_yaml_omits_icon_when_none() {
 #[test]
 fn test_generate_snap_yaml_emits_icon_when_set() {
     // Sanity check: when the user *does* set an icon, the field round-trips.
-    // This pins the existing leak path so reviewers can see what happens
-    // (the build stage emits a warning; the user has to move the icon to
-    // snap/gui/<name>.png to actually publish). Until we add a proper
-    // snap/gui/ writer, this test documents the failure-mode shape.
+    // This pins the existing leak path so reviewers can see what happens:
+    // the build stage emits a warning, and the user must place the icon at
+    // snap/gui/<name>.png manually for the Snap Store to accept the upload
+    // (anodizer does not write to snap/gui/ on the user's behalf).
     let cfg = SnapcraftConfig {
         name: Some("mysnap".to_string()),
         summary: Some("A test snap".to_string()),
