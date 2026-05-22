@@ -1205,15 +1205,19 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 
 /// Warning emitted when the publisher was registered (at least one
 /// crate has a `publish.winget` block at the config level) but the
-/// run path processed zero crates. Covers both shapes:
-/// `selected_crates` is empty (the `ContextOptions` default), and
-/// `selected_crates` is non-empty but every entry was filtered out by
-/// the winget-config predicate. Operators must see this — otherwise the
+/// run path processed zero crates.
+///
+/// With the implicit-all default in
+/// [`crate::publisher_helpers::effective_publish_crates`], an empty
+/// `selected_crates` resolves to every crate carrying a
+/// `publish.winget` block — so a zero-processed run means `--crate` /
+/// `--all` matrix selection was non-empty AND filtered every
+/// winget-configured crate out. Operators must see this — otherwise the
 /// publisher's `succeeded` status hides the fact that nothing was
 /// pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "winget: registered but 0 of {} selected crate(s) had a winget \
+        "winget: registered but 0 of {} effective crate(s) had a winget \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.winget block is set.",
         selected_total
@@ -1237,7 +1241,8 @@ impl anodizer_core::Publisher for WingetPublisher {
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<WingetTarget> = Vec::new();
-        let selected = ctx.options.selected_crates.clone();
+        let selected =
+            crate::publisher_helpers::effective_publish_crates(ctx, is_winget_per_crate_configured);
         log.status(&run_start_message(selected.len()));
         for crate_name in &selected {
             if !is_winget_per_crate_configured(ctx, crate_name) {
@@ -1515,7 +1520,7 @@ mod publisher_tests {
         let msg = run_no_eligible_crates_warning(5);
         assert!(msg.starts_with("winget:"), "{msg}");
         assert!(msg.contains("registered"), "{msg}");
-        assert!(msg.contains("0 of 5 selected"), "{msg}");
+        assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         // The warning must point the operator at the remediation surface
         // (--crate / --all selection) — otherwise it's noise.
@@ -1525,13 +1530,13 @@ mod publisher_tests {
 
     #[test]
     fn run_no_eligible_crates_warning_handles_empty_selection() {
-        // The empty-selected case (selected_crates = Vec::new() — the
-        // ContextOptions default) must produce the same remediation
-        // string, just with a 0/0 count. The warn helper must not panic
-        // or omit the remediation text in this shape.
+        // The zero-effective case (no crate carries a `publish.winget`
+        // block) must produce the remediation string with a 0/0 count.
+        // The warn helper must not panic or omit the remediation text in
+        // this shape.
         let msg = run_no_eligible_crates_warning(0);
         assert!(msg.starts_with("winget:"), "{msg}");
-        assert!(msg.contains("0 of 0 selected"), "{msg}");
+        assert!(msg.contains("0 of 0 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
         assert!(msg.contains("--all"), "{msg}");
@@ -1606,11 +1611,14 @@ mod publisher_tests {
     }
 
     /// Default-empty `selected_crates` (the `ContextOptions::default()`
-    /// shape) must take the same warn-on-zero-processed path — without
-    /// this guard the publisher would emit `run_done_message(0)` and
-    /// report `succeeded` with zero winget activity in the publish log.
+    /// shape, produced by `release --publish-only` with no
+    /// `--crate`/`--all`) MUST resolve to implicit-all over every crate
+    /// carrying a `publish.winget` block. Without this the publisher
+    /// would emit `run_done_message(0)` and report `succeeded` with zero
+    /// winget activity in the publish log — the root-cause failure mode
+    /// this regression test pins against.
     #[test]
-    fn winget_publisher_run_empty_selection_returns_empty_evidence() {
+    fn winget_publisher_run_empty_selection_publishes_all_configured() {
         let mut ctx = TestContextBuilder::new()
             .crates(vec![winget_crate("demo")])
             // selected_crates intentionally left at the default Vec::new()
@@ -1618,12 +1626,50 @@ mod publisher_tests {
             .build();
         let p = WingetPublisher::new();
         let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        let primary = evidence
+            .primary_ref
+            .as_deref()
+            .expect("empty selection must implicitly publish every winget-configured crate");
         assert!(
-            evidence.primary_ref.is_none(),
-            "empty selection, primary_ref must be unset"
+            primary.starts_with("https://github.com/microsoft/winget-pkgs/pulls?q=head%3Aacme%3A"),
+            "primary_ref shape: {primary}"
         );
         let targets = decode_winget_targets(&evidence.extra);
-        assert!(targets.is_empty(), "empty selection, targets must be empty");
+        assert_eq!(
+            targets.len(),
+            1,
+            "empty selection must produce one target per winget-configured crate"
+        );
+        assert_eq!(targets[0].crate_name, "demo");
+    }
+
+    /// Implicit-all must still produce empty evidence when zero crates
+    /// carry a `publish.winget` block — the warn helper fires on
+    /// "registered but nothing eligible", which is meaningful only when
+    /// no crate is configured at all.
+    #[test]
+    fn winget_publisher_run_empty_selection_with_no_configured_crate_returns_empty_evidence() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![CrateConfig {
+                name: "other".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig::default()),
+                ..Default::default()
+            }])
+            .dry_run(true)
+            .build();
+        let p = WingetPublisher::new();
+        let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        assert!(
+            evidence.primary_ref.is_none(),
+            "no winget-configured crate present, primary_ref must be unset"
+        );
+        let targets = decode_winget_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "no winget-configured crate present, targets must be empty"
+        );
     }
 }
 

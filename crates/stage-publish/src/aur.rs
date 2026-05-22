@@ -846,7 +846,8 @@ impl anodizer_core::Publisher for AurOurPublisher {
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let targets = collect_aur_our_run_targets(ctx);
-        let selected = ctx.options.selected_crates.clone();
+        let selected =
+            crate::publisher_helpers::effective_publish_crates(ctx, is_aur_per_crate_configured);
         for crate_name in &selected {
             if !is_aur_per_crate_configured(ctx, crate_name) {
                 continue;
@@ -990,6 +991,41 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo-bin");
         assert!(targets[0].git_url.ends_with("demo-bin.git"));
+    }
+
+    #[test]
+    fn aur_effective_publish_crates_implicit_all_when_selection_empty() {
+        // Regression pin for the `selected_crates = Vec::new()` failure
+        // mode: the run path used to iterate the empty Vec and silently
+        // skip every configured AUR repo. The helper now resolves to
+        // implicit-all over `publish.aur`-carrying crates.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![
+                aur_crate("alpha"),
+                aur_crate("beta"),
+                CrateConfig {
+                    name: "gamma".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            .build();
+        let names =
+            crate::publisher_helpers::effective_publish_crates(&ctx, is_aur_per_crate_configured);
+        assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn aur_effective_publish_crates_honors_non_empty_selection() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![aur_crate("alpha"), aur_crate("beta")])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        let names =
+            crate::publisher_helpers::effective_publish_crates(&ctx, is_aur_per_crate_configured);
+        assert_eq!(names, vec!["beta".to_string()]);
     }
 
     #[test]

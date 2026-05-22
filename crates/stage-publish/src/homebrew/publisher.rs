@@ -171,7 +171,10 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         // touched, which both fails on missing identity AND would
         // otherwise revert the wrong commit (`HEAD` = whatever was on
         // remote before, NOT this run's work).
-        let selected = ctx.options.selected_crates.clone();
+        let selected = crate::publisher_helpers::effective_publish_crates(
+            ctx,
+            is_homebrew_per_crate_configured,
+        );
         let mut any_pushed = false;
         for crate_name in &selected {
             if !is_homebrew_per_crate_configured(ctx, crate_name) {
@@ -379,6 +382,45 @@ mod publisher_tests {
         let extra = serde_json::json!({ "homebrew_targets": original.clone() });
         let decoded = decode_homebrew_targets(&extra);
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn homebrew_effective_publish_crates_implicit_all_when_selection_empty() {
+        // Regression pin for the `selected_crates = Vec::new()` failure
+        // mode: the run path used to iterate the empty Vec and silently
+        // skip every configured tap. The helper now resolves to
+        // implicit-all over `publish.homebrew`-carrying crates.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![
+                homebrew_crate("alpha"),
+                homebrew_crate("beta"),
+                CrateConfig {
+                    name: "gamma".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            .build();
+        let names = crate::publisher_helpers::effective_publish_crates(
+            &ctx,
+            is_homebrew_per_crate_configured,
+        );
+        assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn homebrew_effective_publish_crates_honors_non_empty_selection() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![homebrew_crate("alpha"), homebrew_crate("beta")])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        let names = crate::publisher_helpers::effective_publish_crates(
+            &ctx,
+            is_homebrew_per_crate_configured,
+        );
+        assert_eq!(names, vec!["beta".to_string()]);
     }
 
     #[test]

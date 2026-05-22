@@ -653,7 +653,8 @@ impl anodizer_core::Publisher for ScoopPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        let selected = ctx.options.selected_crates.clone();
+        let selected =
+            crate::publisher_helpers::effective_publish_crates(ctx, is_scoop_per_crate_configured);
         // Only record rollback targets for buckets this run actually
         // mutated. See `HomebrewPublisher::run` for the long-form
         // rationale: intent-driven evidence makes the rollback
@@ -837,6 +838,41 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo");
         assert_eq!(targets[0].branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn scoop_effective_publish_crates_implicit_all_when_selection_empty() {
+        // Regression pin for the `selected_crates = Vec::new()` failure
+        // mode: the run path used to iterate the empty Vec and silently
+        // skip every configured bucket. The helper now resolves to
+        // implicit-all over `publish.scoop`-carrying crates.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![
+                scoop_crate("alpha"),
+                scoop_crate("beta"),
+                CrateConfig {
+                    name: "gamma".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            .build();
+        let names =
+            crate::publisher_helpers::effective_publish_crates(&ctx, is_scoop_per_crate_configured);
+        assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn scoop_effective_publish_crates_honors_non_empty_selection() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![scoop_crate("alpha"), scoop_crate("beta")])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        let names =
+            crate::publisher_helpers::effective_publish_crates(&ctx, is_scoop_per_crate_configured);
+        assert_eq!(names, vec!["beta".to_string()]);
     }
 
     #[test]

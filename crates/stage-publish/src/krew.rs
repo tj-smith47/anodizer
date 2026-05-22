@@ -1688,7 +1688,8 @@ impl anodizer_core::Publisher for KrewPublisher {
         // Snapshot rollback targets from config BEFORE the publish path
         // runs, mirroring Bundle B's `run` shape.
         let targets = collect_krew_run_targets(ctx);
-        let selected = ctx.options.selected_crates.clone();
+        let selected =
+            crate::publisher_helpers::effective_publish_crates(ctx, is_krew_per_crate_configured);
         for crate_name in &selected {
             if !is_krew_per_crate_configured(ctx, crate_name) {
                 continue;
@@ -1984,6 +1985,41 @@ mod publisher_tests {
         assert!(!s.contains("\"pat\":"), "{s}");
         // The env-var NAME is fine; values must never appear.
         assert!(s.contains("KREW_INDEX_TOKEN"), "{s}");
+    }
+
+    #[test]
+    fn krew_effective_publish_crates_implicit_all_when_selection_empty() {
+        // Regression pin for the `selected_crates = Vec::new()` failure
+        // mode: the run path used to iterate the empty Vec and silently
+        // skip every configured krew plugin. The helper now resolves to
+        // implicit-all over `publish.krew`-carrying crates.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![
+                krew_crate("alpha"),
+                krew_crate("beta"),
+                CrateConfig {
+                    name: "gamma".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            .build();
+        let names =
+            crate::publisher_helpers::effective_publish_crates(&ctx, is_krew_per_crate_configured);
+        assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn krew_effective_publish_crates_honors_non_empty_selection() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![krew_crate("alpha"), krew_crate("beta")])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        let names =
+            crate::publisher_helpers::effective_publish_crates(&ctx, is_krew_per_crate_configured);
+        assert_eq!(names, vec!["beta".to_string()]);
     }
 
     #[test]

@@ -44,6 +44,38 @@ pub(crate) fn is_top_level_block_configured<T>(field: Option<&Vec<T>>) -> bool {
     field.is_some_and(|v| !v.is_empty())
 }
 
+/// Resolve the effective list of crates a per-crate publisher should
+/// iterate over.
+///
+/// - When `ctx.options.selected_crates` is non-empty: returns those names
+///   verbatim (operator passed `--crate` and the run honors that scope).
+/// - When `ctx.options.selected_crates` is empty: returns every crate in
+///   `ctx.config.crates` for which `is_per_crate_configured` returns true
+///   (implicit-all over configured crates — matches the cargo publisher's
+///   established `selected.is_empty() || selected_set.contains(name)`
+///   shape so a `publish-only` run with no `--crate` / `--all` flag still
+///   visits every crate whose publisher block is set).
+///
+/// The implicit-all branch reads `ctx.config.crates` rather than
+/// `util::all_crates(ctx)` because every per-crate publisher's existing
+/// `collect_*_run_targets` helpers walk `ctx.config.crates`; aligning the
+/// iteration with the target-collection surface keeps the evidence
+/// shape coherent across both paths.
+pub(crate) fn effective_publish_crates(
+    ctx: &anodizer_core::context::Context,
+    is_per_crate_configured: impl Fn(&anodizer_core::context::Context, &str) -> bool,
+) -> Vec<String> {
+    if !ctx.options.selected_crates.is_empty() {
+        return ctx.options.selected_crates.clone();
+    }
+    ctx.config
+        .crates
+        .iter()
+        .filter(|c| is_per_crate_configured(ctx, &c.name))
+        .map(|c| c.name.clone())
+        .collect()
+}
+
 /// Canonical wording for a Bundle B publisher's rollback failure warn line.
 ///
 /// Bundle B rollbacks shell out to `git revert HEAD --no-edit` + `git push`.
@@ -193,6 +225,83 @@ mod tests {
         assert!(msg.contains("publish.aur.private_key"), "{msg}");
         assert!(msg.contains("GIT_SSH_COMMAND"), "{msg}");
         assert!(!msg.contains("ANODIZER_GITHUB_TOKEN"), "{msg}");
+    }
+
+    #[test]
+    fn effective_publish_crates_returns_selected_verbatim_when_non_empty() {
+        use anodizer_core::config::{CrateConfig, PublishConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let ctx = TestContextBuilder::new()
+            .crates(vec![
+                CrateConfig {
+                    name: "alpha".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "beta".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        // The predicate returns true for both — but with a non-empty
+        // selection, the helper MUST honor it verbatim and skip the
+        // implicit-all branch entirely.
+        let names = effective_publish_crates(&ctx, |_, _| true);
+        assert_eq!(names, vec!["beta".to_string()]);
+    }
+
+    #[test]
+    fn effective_publish_crates_implicit_all_walks_configured_crates() {
+        use anodizer_core::config::{CrateConfig, PublishConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let ctx = TestContextBuilder::new()
+            .crates(vec![
+                CrateConfig {
+                    name: "alpha".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "beta".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+                CrateConfig {
+                    name: "gamma".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            .build();
+        // Predicate matches `alpha` and `gamma` only — `beta` is filtered
+        // out so the implicit-all branch must skip it. Order matches the
+        // config crate order.
+        let names = effective_publish_crates(&ctx, |_, name| name == "alpha" || name == "gamma");
+        assert_eq!(names, vec!["alpha".to_string(), "gamma".to_string()]);
+    }
+
+    #[test]
+    fn effective_publish_crates_implicit_all_returns_empty_when_no_configured_crate() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let ctx = TestContextBuilder::new().build();
+        let names = effective_publish_crates(&ctx, |_, _| true);
+        assert!(
+            names.is_empty(),
+            "no crates configured → empty vec, got {names:?}"
+        );
     }
 
     #[test]
