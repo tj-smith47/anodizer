@@ -161,27 +161,40 @@ impl anodizer_core::Publisher for HomebrewPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        // Snapshot the rollback targets from config BEFORE the publish
-        // path runs. Config is read-only during publish so this could
-        // run after too, but capturing here keeps the `run` body
-        // symmetric for every Bundle B publisher.
-        let targets = collect_run_targets(ctx);
 
-        // Per-crate formulae (delegates to the existing entrypoint,
-        // body unchanged per the Bundle B contract).
+        // Per-crate formulae (delegates to the existing entrypoint).
+        // Each call returns `true` when it actually pushed to its tap,
+        // `false` when it skipped (skip_upload, dry-run, no config).
+        // Aggregate so the evidence only carries rollback targets for
+        // taps this run actually mutated — phantom evidence causes the
+        // orchestrator to git-revert HEAD in clones that were never
+        // touched, which both fails on missing identity AND would
+        // otherwise revert the wrong commit (`HEAD` = whatever was on
+        // remote before, NOT this run's work).
         let selected = ctx.options.selected_crates.clone();
+        let mut any_pushed = false;
         for crate_name in &selected {
             if !is_homebrew_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            super::publish_to_homebrew(ctx, crate_name, &log)?;
+            if super::publish_to_homebrew(ctx, crate_name, &log)? {
+                any_pushed = true;
+            }
         }
         // Top-level casks (single invocation; the entrypoint itself
         // iterates over `ctx.config.homebrew_casks`).
-        super::publish_top_level_homebrew_casks(ctx, &log)?;
+        if super::publish_top_level_homebrew_casks(ctx, &log)? {
+            any_pushed = true;
+        }
 
         let mut evidence = anodizer_core::PublishEvidence::new("homebrew");
-        evidence.extra = serde_json::json!({ "homebrew_targets": targets });
+        // Only record rollback targets when at least one push was made.
+        // The rollback path's existing empty-check then short-circuits
+        // correctly when nothing was published.
+        if any_pushed {
+            let targets = collect_run_targets(ctx);
+            evidence.extra = serde_json::json!({ "homebrew_targets": targets });
+        }
         Ok(evidence)
     }
 

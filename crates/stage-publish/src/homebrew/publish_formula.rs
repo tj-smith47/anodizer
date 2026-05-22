@@ -44,7 +44,16 @@ pub(crate) fn disambiguate_homebrew_archives(
         .collect())
 }
 
-pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+/// Render and push a Homebrew formula/cask for `crate_name`.
+///
+/// Returns `Ok(true)` when an actual git push was made to the tap repo;
+/// `Ok(false)` when the publish was skipped (skip_upload, dry-run, or
+/// any future early-exit guard). The caller (Publisher::run) uses the
+/// boolean to decide whether to record rollback evidence — if no push
+/// happened there's nothing to revert, and recording phantom evidence
+/// would cause the rollback orchestrator to attempt a git revert HEAD
+/// in a temp clone that has nothing this run actually changed.
+pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
     let hb_cfg = publish
@@ -63,7 +72,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
@@ -74,7 +83,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             "(dry-run) would update Homebrew tap {}/{} for '{}'",
             repo_owner, repo_name, crate_name
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let version = ctx.version();
@@ -458,5 +467,5 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         log,
     );
 
-    Ok(())
+    Ok(true)
 }

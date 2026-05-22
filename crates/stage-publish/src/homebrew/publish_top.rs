@@ -10,11 +10,18 @@ use super::formula::{build_conflicts_directives, build_depends_directives};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
-pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Result<()> {
+/// Render and push every entry in `homebrew_casks:`. Returns `Ok(true)`
+/// when at least one cask was actually pushed to its tap repo; `Ok(false)`
+/// when every entry skipped (no config, skip_upload, dry-run). The
+/// boolean feeds back into [`super::publisher::HomebrewPublisher::run`]
+/// so the rollback orchestrator doesn't trip git-revert on a tap that
+/// this run never touched.
+pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Result<bool> {
     let entries = match ctx.config.homebrew_casks {
         Some(ref v) if !v.is_empty() => v,
-        _ => return Ok(()),
+        _ => return Ok(false),
     };
+    let mut pushed_any = false;
 
     for cask_cfg in entries {
         let project_name = &ctx.config.project_name;
@@ -283,6 +290,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             "homebrew_casks",
             &commit_opts,
         )?;
+        pushed_any = true;
 
         log.status(&format!(
             "Homebrew tap {}/{} updated with cask '{}' in {}",
@@ -309,5 +317,5 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
         );
     }
 
-    Ok(())
+    Ok(pushed_any)
 }

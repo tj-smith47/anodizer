@@ -102,16 +102,27 @@ impl anodizer_core::Publisher for NixPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        let targets = collect_nix_run_targets(ctx);
         let selected = ctx.options.selected_crates.clone();
+        // Only record rollback targets for overlay repos this run
+        // actually mutated. See `HomebrewPublisher::run` for the
+        // long-form rationale: intent-driven evidence makes the
+        // rollback orchestrator git-revert HEAD in clones it never
+        // touched, which fails on missing identity AND would
+        // otherwise revert the wrong commit.
+        let mut any_pushed = false;
         for crate_name in &selected {
             if !is_nix_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            super::publish_to_nix(ctx, crate_name, &log)?;
+            if super::publish_to_nix(ctx, crate_name, &log)? {
+                any_pushed = true;
+            }
         }
         let mut evidence = anodizer_core::PublishEvidence::new("nix");
-        evidence.extra = serde_json::json!({ "nix_targets": targets });
+        if any_pushed {
+            let targets = collect_nix_run_targets(ctx);
+            evidence.extra = serde_json::json!({ "nix_targets": targets });
+        }
         Ok(evidence)
     }
 

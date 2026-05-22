@@ -12,7 +12,14 @@ use super::generate::{NixParams, SourceRootEntry, generate_nix_expression, nix_s
 use super::hashing::hex_sha256_to_nix_base32;
 use super::validate_nix_license;
 
-pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+/// Render and push the Nix derivation for `crate_name`.
+///
+/// Returns `Ok(true)` when an actual git push was made to the overlay
+/// repo; `Ok(false)` when the publish was skipped (skip, skip_upload,
+/// dry-run, or any future early-exit guard). The caller (Publisher::run)
+/// uses the boolean to decide whether to record rollback evidence — see
+/// `publish_to_homebrew` for the long-form rationale.
+pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "nix")?;
 
     let nix_cfg = publish
@@ -27,7 +34,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             .with_context(|| format!("nix: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!("nix: config skipped for '{}'", crate_name));
-            return Ok(());
+            return Ok(false);
         }
     }
     if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log) {
@@ -40,7 +47,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let (repo_owner_raw, repo_name_raw) =
@@ -62,7 +69,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             "(dry-run) would publish Nix expression for '{}' to {}/{}",
             crate_name, repo_owner, repo_name
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let version = ctx.version();
@@ -474,5 +481,5 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         repo_owner, repo_name, crate_name
     ));
 
-    Ok(())
+    Ok(true)
 }

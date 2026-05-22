@@ -214,7 +214,14 @@ pub(crate) fn disambiguate_arch_entries(
 // publish_to_scoop
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+/// Render and push the Scoop manifest for `crate_name`.
+///
+/// Returns `Ok(true)` when an actual git push was made to the bucket
+/// repo; `Ok(false)` when the publish was skipped (skip_upload, dry-run,
+/// or any future early-exit guard). The caller (Publisher::run) uses
+/// the boolean to decide whether to record rollback evidence — see
+/// `publish_to_homebrew` for the long-form rationale.
+pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "scoop")?;
 
     let scoop_cfg = publish
@@ -233,7 +240,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let (repo_owner, repo_name) =
@@ -245,7 +252,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
             "(dry-run) would update Scoop bucket {}/{} for '{}'",
             repo_owner, repo_name, crate_name
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let version = ctx.version();
@@ -540,7 +547,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         log,
     );
 
-    Ok(())
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -646,16 +653,27 @@ impl anodizer_core::Publisher for ScoopPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        let targets = collect_scoop_run_targets(ctx);
         let selected = ctx.options.selected_crates.clone();
+        // Only record rollback targets for buckets this run actually
+        // mutated. See `HomebrewPublisher::run` for the long-form
+        // rationale: intent-driven evidence makes the rollback
+        // orchestrator git-revert HEAD in clones it never touched,
+        // which fails on missing identity AND would otherwise revert
+        // the wrong commit.
+        let mut any_pushed = false;
         for crate_name in &selected {
             if !is_scoop_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            publish_to_scoop(ctx, crate_name, &log)?;
+            if publish_to_scoop(ctx, crate_name, &log)? {
+                any_pushed = true;
+            }
         }
         let mut evidence = anodizer_core::PublishEvidence::new("scoop");
-        evidence.extra = serde_json::json!({ "scoop_targets": targets });
+        if any_pushed {
+            let targets = collect_scoop_run_targets(ctx);
+            evidence.extra = serde_json::json!({ "scoop_targets": targets });
+        }
         Ok(evidence)
     }
 
