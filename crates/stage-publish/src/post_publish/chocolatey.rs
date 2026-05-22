@@ -25,8 +25,14 @@
 //!
 //! - **Not yet indexed**: server returns `404 Not Found` for a freshly
 //!   pushed version that hasn't been ingested. Treated as `Pending`
-//!   rather than `Error` for the first 5 minutes; promoted to `Error`
-//!   after that window so we don't sit on a wrong URL for 30 minutes.
+//!   throughout the poll budget — a just-submitted package sitting in
+//!   the human-moderator queue is the expected, normal state on a
+//!   single-shot release, and a chronic 404 there is not actionable for
+//!   the operator (moderation queues can sit for days). If the page
+//!   was previously observed as resolvable (any HTTP 200) in the same
+//!   run and then flipped to `404`, that IS a regression — the package
+//!   was delisted after appearing — and is promoted to `Error` with a
+//!   warning.
 //!
 //! - **Rejected**: per docs, rejected pages are not publicly visible
 //!   ("the maintainer will see a message, but no one else will see or be
@@ -51,11 +57,14 @@ use anodizer_core::config::PostPublishPollConfig;
 /// `interval` period.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Maximum time we'll tolerate consecutive `404 Not Found` responses
-/// before promoting the status to `Error`. The community feed normally
-/// indexes a fresh push within a couple of minutes; 5 minutes is a
-/// generous upper bound that catches a misspelled package name without
-/// burning the full 30-minute budget on it.
+/// Grace window after which the `404` diagnostic detail switches from
+/// "page not yet indexed" to "still not indexed after <duration>" so a
+/// debug operator reading verbose logs can tell at a glance how long
+/// the page has been missing. The status remains `Pending` in either
+/// case — moderation queues routinely sit for days, so a chronic `404`
+/// on a freshly-submitted package is the expected state and not
+/// promoted to `Error` unless the page was previously observed Approved
+/// (regression detection).
 const NOT_FOUND_GRACE_WINDOW: Duration = Duration::from_secs(5 * 60);
 
 /// Verdict of a single HTML scrape — either we resolved to a terminal
@@ -94,6 +103,13 @@ pub fn poll(
     let started = Instant::now();
     let mut not_found_since: Option<Instant> = None;
     let mut last_pending_detail: Option<String> = None;
+    // Track whether the page was ever observed as resolvable (HTTP 200
+    // with any classification) during this poll run. Distinguishes
+    // "never-yet-visible" (expected initial state on a fresh submission
+    // sitting in moderation — not actionable) from "was-visible-then-404"
+    // (a regression: the package was delisted or rejected after
+    // appearing, which IS actionable).
+    let mut ever_visible = false;
 
     log.verbose(&format!(
         "polling chocolatey moderation: {} (interval={:?}, timeout={:?})",
@@ -113,6 +129,7 @@ pub fn poll(
             }
             PageVerdict::Pending(detail) => {
                 not_found_since = None;
+                ever_visible = true;
                 last_pending_detail = Some(detail.clone());
                 log.verbose(&format!(
                     "chocolatey moderation: '{}-{}' pending — {} (polled {:?})",
@@ -122,19 +139,29 @@ pub fn poll(
             PageVerdict::NotFound => {
                 let nf_start = *not_found_since.get_or_insert_with(Instant::now);
                 let nf_elapsed = nf_start.elapsed();
-                if nf_elapsed >= NOT_FOUND_GRACE_WINDOW {
+                if ever_visible {
+                    // Regression: page resolved earlier in this run and
+                    // now returns 404. Surfaces as Error so the operator
+                    // sees the takedown.
                     let reason = format!(
-                        "community.chocolatey.org returned 404 for {} continuously for {:?} \
-                         — package may not exist, was rejected, or the page URL is wrong",
-                        url, nf_elapsed
+                        "community.chocolatey.org returned 404 for {} after the page was \
+                         previously visible in this run — package may have been delisted",
+                        url
                     );
                     log.warn(&format!("chocolatey moderation: {}", reason));
                     return PostPublishStatus::Error { reason };
                 }
-                last_pending_detail = Some("page not yet indexed (HTTP 404)".to_string());
+                last_pending_detail = Some(if nf_elapsed >= NOT_FOUND_GRACE_WINDOW {
+                    format!(
+                        "page still not indexed after {:?} (HTTP 404 — likely awaiting moderation)",
+                        nf_elapsed
+                    )
+                } else {
+                    "page not yet indexed (HTTP 404)".to_string()
+                });
                 log.verbose(&format!(
-                    "chocolatey moderation: '{}-{}' not yet indexed (404 for {:?}, grace window {:?})",
-                    package, version, nf_elapsed, NOT_FOUND_GRACE_WINDOW
+                    "chocolatey moderation: '{}-{}' not yet indexed (404 for {:?})",
+                    package, version, nf_elapsed
                 ));
             }
             PageVerdict::NetworkError(msg) => {
@@ -151,8 +178,14 @@ pub fn poll(
             let last_state = last_pending_detail
                 .clone()
                 .unwrap_or_else(|| "no terminal state observed".to_string());
-            log.warn(&format!(
-                "chocolatey moderation: '{}-{}' timed out after {:?} (last state: {})",
+            // Timeout-with-no-positive on chocolatey is the expected
+            // outcome for a single-shot release whose package is still
+            // sitting in the human-moderator queue (often multi-day).
+            // Log verbose only; the Timeout return variant still
+            // surfaces to the release summary so an operator who DOES
+            // want to follow up can see it.
+            log.verbose(&format!(
+                "chocolatey moderation: '{}-{}' poll budget elapsed after {:?} (last state: {})",
                 package, version, total_budget, last_state
             ));
             return PostPublishStatus::timeout(last_state, started.elapsed());

@@ -137,6 +137,71 @@ fn chocolatey_poller_times_out_on_persistent_pending() {
     }
 }
 
+#[test]
+fn chocolatey_poller_404_throughout_window_returns_timeout_not_error() {
+    // A package sitting in the human-moderator queue is invisible
+    // (HTTP 404) by design. A chronic 404 across the entire poll
+    // budget must NOT promote to Error — moderation queues routinely
+    // span days, so the 404 is the expected steady state on a fresh
+    // submission and is not actionable for the operator.
+    let nf = http_response("HTTP/1.1 404 Not Found", "<html>not found</html>");
+    let leaked: &'static str = Box::leak(nf.into_boxed_str());
+    let responses = vec![leaked; 200];
+    let (addr, _calls) = spawn_oneshot_http_responder(responses);
+    let base = format!("http://{}", addr);
+
+    let cfg = PostPublishPollConfig {
+        enabled: true,
+        interval: HumanDuration(Duration::from_millis(5)),
+        timeout: HumanDuration(Duration::from_millis(30)),
+    };
+    let status = super::chocolatey::poll(&base, "anodizer", "0.3.0", cfg, &quiet_log());
+    match status {
+        PostPublishStatus::Timeout { last_state, .. } => {
+            assert!(
+                last_state.contains("not indexed") || last_state.contains("404"),
+                "timeout must preserve 404 diagnostic in last_state: {last_state}"
+            );
+        }
+        other => panic!(
+            "expected Timeout for chronic 404 (not Error — moderation queue is expected state), \
+             got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn chocolatey_poller_visible_then_404_returns_error() {
+    // Regression detection: the page resolved (any 200 OK with a
+    // pending callout) earlier in the run and then went 404. That
+    // IS unexpected and surfaces as Error so the operator sees the
+    // takedown.
+    let visible = http_response(
+        "HTTP/1.1 200 OK",
+        r#"<div class="callout callout-warning">
+            <div class="callout-header">WARNING</div>
+            <p>awaiting moderation</p>
+           </div>"#,
+    );
+    let gone = http_response("HTTP/1.1 404 Not Found", "<html>not found</html>");
+    let visible: &'static str = Box::leak(visible.into_boxed_str());
+    let gone: &'static str = Box::leak(gone.into_boxed_str());
+    let (addr, _calls) = spawn_oneshot_http_responder(vec![visible, gone]);
+    let base = format!("http://{}", addr);
+
+    let status =
+        super::chocolatey::poll(&base, "anodizer", "0.3.0", tight_poll_cfg(), &quiet_log());
+    match status {
+        PostPublishStatus::Error { reason } => {
+            assert!(
+                reason.contains("previously visible") || reason.contains("delisted"),
+                "regression error must mention prior visibility: {reason}"
+            );
+        }
+        other => panic!("expected Error on visible→404 regression, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // WinGet poller
 // ---------------------------------------------------------------------------
@@ -243,6 +308,87 @@ fn winget_poller_times_out_when_pr_never_found() {
             );
         }
         other => panic!("expected Timeout, got {other:?}"),
+    }
+}
+
+#[test]
+fn winget_poller_found_then_search_empty_returns_error() {
+    // Regression detection: a matching PR was located on the first
+    // search, but a subsequent search returns empty (and the cached
+    // PR URL hits a NetworkError that forces a re-search). The
+    // disappearance is a regression and surfaces as Error.
+    let pr_body = r#"{"state":"open","merged":false,"labels":[{"name":"New-Manifest"}]}"#;
+    let (pr_addr, _pr_calls) = spawn_oneshot_http_responder(vec![
+        Box::leak(http_response("HTTP/1.1 200 OK", pr_body).into_boxed_str()),
+        // Second hit on the PR URL: 500 forces the poller to re-search.
+        Box::leak(http_response("HTTP/1.1 500 Internal Server Error", "boom").into_boxed_str()),
+    ]);
+    let pr_url = format!("http://{}/repos/microsoft/winget-pkgs/pulls/77", pr_addr);
+    let search_found = format!(
+        r#"{{"total_count":1,"items":[{{"number":77,"pull_request":{{"url":"{}"}}}}]}}"#,
+        pr_url
+    );
+    let search_empty = r#"{"total_count":0,"items":[]}"#.to_string();
+    let leaked_found: &'static str =
+        Box::leak(http_response("HTTP/1.1 200 OK", &search_found).into_boxed_str());
+    let leaked_empty: &'static str =
+        Box::leak(http_response("HTTP/1.1 200 OK", &search_empty).into_boxed_str());
+    let (search_addr, _) = spawn_oneshot_http_responder(vec![leaked_found, leaked_empty]);
+    let api_base = format!("http://{}", search_addr);
+
+    let status = super::winget::poll(
+        &api_base,
+        "TJSmith.Anodizer",
+        "0.3.0",
+        None,
+        tight_poll_cfg(),
+        &quiet_log(),
+    );
+    match status {
+        PostPublishStatus::Error { reason } => {
+            assert!(
+                reason.contains("previously located") || reason.contains("disappeared"),
+                "regression error must mention prior visibility: {reason}"
+            );
+        }
+        other => panic!("expected Error on found→search-empty regression, got {other:?}"),
+    }
+}
+
+#[test]
+fn winget_poller_closed_unmerged_returns_rejected() {
+    // Confirmed-rejection signal: PR closed without merge with a
+    // recognized rejection label. The poller must classify this as
+    // Rejected (an actionable terminal failure) and not Pending or
+    // Error — distinguishing it from the noise-suppressed
+    // "no PR found yet" path.
+    let pr_body = r#"{"state":"closed","merged":false,"labels":[{"name":"Needs-CLA"}]}"#;
+    let (pr_addr, _pr_calls) = spawn_oneshot_http_responder(vec![Box::leak(
+        http_response("HTTP/1.1 200 OK", pr_body).into_boxed_str(),
+    )]);
+    let pr_url = format!("http://{}/repos/microsoft/winget-pkgs/pulls/55", pr_addr);
+    let search_body = format!(
+        r#"{{"total_count":1,"items":[{{"number":55,"pull_request":{{"url":"{}"}}}}]}}"#,
+        pr_url
+    );
+    let leaked_search: &'static str =
+        Box::leak(http_response("HTTP/1.1 200 OK", &search_body).into_boxed_str());
+    let (search_addr, _) = spawn_oneshot_http_responder(vec![leaked_search]);
+    let api_base = format!("http://{}", search_addr);
+
+    let status = super::winget::poll(
+        &api_base,
+        "TJSmith.Anodizer",
+        "0.3.0",
+        None,
+        tight_poll_cfg(),
+        &quiet_log(),
+    );
+    match status {
+        PostPublishStatus::Rejected { detail } => {
+            assert!(detail.contains("Needs-CLA"), "got: {detail}");
+        }
+        other => panic!("expected Rejected on closed-without-merge, got {other:?}"),
     }
 }
 

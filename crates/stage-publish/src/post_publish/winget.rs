@@ -77,6 +77,13 @@ pub fn poll(
     let started = Instant::now();
     let mut last_pending_detail: Option<String> = None;
     let mut pr_url: Option<String> = None;
+    // Track whether a matching PR was ever located during this poll
+    // run. Distinguishes "PR not visible yet" (expected initial state
+    // while the upstream search index ingests a fresh PR — not
+    // actionable for the operator) from "PR was found then disappeared"
+    // (a regression: the PR was deleted/withdrawn after first appearing,
+    // which IS actionable).
+    let mut ever_found = false;
 
     log.verbose(&format!(
         "polling winget PR for {} {} (interval={:?}, timeout={:?})",
@@ -114,6 +121,7 @@ pub fn poll(
                 return PostPublishStatus::Rejected { detail };
             }
             PrVerdict::Pending(detail) => {
+                ever_found = true;
                 last_pending_detail = Some(detail.clone());
                 log.verbose(&format!(
                     "winget PR: {} {} pending — {}",
@@ -121,6 +129,19 @@ pub fn poll(
                 ));
             }
             PrVerdict::SearchEmpty => {
+                if ever_found {
+                    // Regression: a matching PR was visible earlier in
+                    // this run and has now disappeared from search.
+                    // Surfaces as Error so the operator sees the
+                    // takedown / withdrawal.
+                    let reason = format!(
+                        "winget PR for '{} {}' was previously located but has now disappeared \
+                         from search — PR may have been closed or deleted",
+                        package_identifier, version
+                    );
+                    log.warn(&format!("winget PR: {}", reason));
+                    return PostPublishStatus::Error { reason };
+                }
                 last_pending_detail = Some("no matching PR found yet".to_string());
                 log.verbose(&format!(
                     "winget PR: no PR matching '{} {}' visible yet",
@@ -140,8 +161,14 @@ pub fn poll(
             let last_state = last_pending_detail
                 .clone()
                 .unwrap_or_else(|| "no terminal state observed".to_string());
-            log.warn(&format!(
-                "winget PR: {} {} timed out after {:?} (last state: {})",
+            // Timeout-with-no-positive on winget is the expected
+            // outcome when the upstream validation pipeline is still
+            // running at budget exhaustion — moderator review and
+            // pipeline retries can stretch beyond a typical 30min
+            // budget. Log verbose only; the Timeout return variant
+            // still surfaces to the release summary for follow-up.
+            log.verbose(&format!(
+                "winget PR: {} {} poll budget elapsed after {:?} (last state: {})",
                 package_identifier, version, total_budget, last_state
             ));
             return PostPublishStatus::timeout(last_state, started.elapsed());
