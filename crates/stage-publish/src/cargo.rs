@@ -12,6 +12,22 @@ use std::process::Command;
 /// matters when the crate has dependents that need it published first.
 const DEFAULT_INDEX_TIMEOUT_SECS: u64 = 300;
 
+/// How many times to retry `cargo publish` when it fails with a signature
+/// that smells like sparse-index propagation lag (see
+/// [`is_index_propagation_failure`]). Three total attempts (the initial
+/// publish plus two retries) covers the common case where the dependent's
+/// `cargo publish` lands on a stale CDN edge a beat after [`poll_crates_io_index`]
+/// already saw the previous crate confirmed on a different edge. Higher
+/// attempt counts buy nothing: by then either Fastly has fanned out or the
+/// failure isn't propagation-related.
+const PUBLISH_PROPAGATION_RETRIES: u32 = 3;
+
+/// Backoff between propagation-retry attempts. Short by design — the outer
+/// [`poll_crates_io_index`] already burned the propagation budget waiting
+/// for OUR edge to confirm; this is just for inter-edge skew where cargo's
+/// invocation races against Fastly's broadcast.
+const PUBLISH_PROPAGATION_BACKOFF: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Walk `depends_on` from each crate in `seed` to produce a de-duplicated
 /// list containing every seed crate plus every transitive dependency that
 /// lives in the same config. The `all_crates` slice is searched by name;
@@ -354,6 +370,98 @@ fn poll_crates_io_index(
     }
 }
 
+/// Heuristic: does this cargo-publish stderr look like it failed because
+/// the sparse index hadn't caught up with a just-published dependency?
+///
+/// `poll_crates_io_index` already waits for the dep to appear on the edge
+/// anodizer queries, but cargo's own publish invocation may hit a different
+/// Fastly edge whose cache hasn't fanned out yet. The two cargo error
+/// signatures that show up in that race:
+///
+/// - `no matching package named '<crate>' found` — cargo couldn't locate
+///   the dep at all in its registry view (the historical signature; see
+///   the comment on `expand_with_transitive_deps`).
+/// - `failed to select a version for the requirement '<crate> = "^X.Y.Z"'`
+///   — cargo found the crate but not the just-published version; this is
+///   the exact line surfaced by v0.3.0's run 26266694891.
+/// - `failed to load source for dependency '<crate>'` — sparse-index
+///   transport error variant that cargo emits when the fetch itself fails
+///   mid-resolution (less common but seen during Fastly fan-out windows).
+///
+/// All three are recoverable by waiting a few seconds and retrying. Any
+/// other failure mode (auth, packaging, validation, network) does NOT
+/// benefit from retry and is left to bubble up unchanged.
+fn is_index_propagation_failure(stderr: &str) -> bool {
+    stderr.contains("no matching package")
+        || stderr.contains("failed to select a version")
+        || stderr.contains("failed to load source for dependency")
+}
+
+/// Run `cargo publish` with bounded retry on sparse-index propagation
+/// failures only.
+///
+/// This is defense-in-depth on top of [`poll_crates_io_index`]: even after
+/// our wait sees the just-published dep on the crates.io sparse index, the
+/// dependent crate's own `cargo publish` may race against Fastly's
+/// inter-edge fan-out and land on a stale edge. The wait function alone
+/// cannot guarantee cargo's HTTP client sees the same edge state we
+/// observed. By retrying exclusively on the narrow set of error signatures
+/// matched by [`is_index_propagation_failure`], we recover from the
+/// edge-skew window without masking real failures (auth, packaging,
+/// network).
+///
+/// Returns the successful `Output` or bubbles the last failure verbatim.
+/// Non-propagation failures fast-fail on the first attempt (no retry).
+fn run_cargo_publish_with_retry(
+    cmd: &[String],
+    label: &str,
+    log: &StageLogger,
+) -> Result<std::process::Output> {
+    let mut last_output: Option<std::process::Output> = None;
+    for attempt in 1..=PUBLISH_PROPAGATION_RETRIES {
+        let output = Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .output()
+            .with_context(|| format!("publish: spawn `{}`", cmd.join(" ")))?;
+
+        if output.status.success() {
+            return log.check_output(output, label);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        if !is_index_propagation_failure(&stderr) {
+            // Non-propagation failure — surface immediately. check_output
+            // performs redaction + error formatting consistently with the
+            // single-attempt path.
+            return log.check_output(output, label);
+        }
+
+        if attempt >= PUBLISH_PROPAGATION_RETRIES {
+            log.warn(&format!(
+                "{label}: propagation-style failure persists after {attempt} attempts; surfacing"
+            ));
+            last_output = Some(output);
+            break;
+        }
+
+        log.status(&format!(
+            "{label}: sparse-index propagation lag detected (attempt {}/{}); retrying in {}s",
+            attempt,
+            PUBLISH_PROPAGATION_RETRIES,
+            PUBLISH_PROPAGATION_BACKOFF.as_secs()
+        ));
+        std::thread::sleep(PUBLISH_PROPAGATION_BACKOFF);
+    }
+
+    // All retries exhausted — surface the last failure through check_output
+    // so the operator sees the same redacted error envelope as the
+    // single-attempt path.
+    log.check_output(
+        last_output.expect("loop exits with last_output set on exhaustion"),
+        label,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // publish_to_cargo
 // ---------------------------------------------------------------------------
@@ -548,12 +656,13 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         let cmd = publish_command(name, cargo_cfg);
         log.status(&format!("running: {}", cmd.join(" ")));
 
-        let output = Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .output()
-            .with_context(|| format!("publish: spawn `{}`", cmd.join(" ")))?;
-
-        log.check_output(output, &format!("cargo publish -p {}", name))?;
+        // Defense in depth: even though poll_crates_io_index already waits
+        // for the prior crate to land on the index edge anodizer queries,
+        // cargo's own resolution may hit a stale Fastly edge a beat later.
+        // run_cargo_publish_with_retry narrows retry exclusively to the
+        // sparse-index propagation failure signatures so real errors still
+        // fast-fail.
+        run_cargo_publish_with_retry(&cmd, &format!("cargo publish -p {}", name), log)?;
 
         log.status(&format!("published crate '{}'", name));
 
@@ -1433,5 +1542,158 @@ mod tests {
         // Non-empty cksum in index body: old code would have compared it and
         // potentially bailed; new code ignores the value entirely.
         assert_eq!(cksum, "deadbeef");
+    }
+
+    // -----------------------------------------------------------------------
+    // sparse-index propagation retry on cargo publish
+    //
+    // Defense in depth on top of poll_crates_io_index: even after our wait
+    // sees the just-published dep on the sparse index, cargo's own resolution
+    // may hit a stale Fastly edge a beat later. run_cargo_publish_with_retry
+    // narrows retry exclusively to the propagation-shaped error signatures
+    // so real failures (auth, packaging, network) still fast-fail.
+    // -----------------------------------------------------------------------
+
+    /// Discriminator: every known propagation-style cargo stderr must match
+    /// so the retry harness recognises it; non-propagation failures must NOT
+    /// match so retry doesn't mask genuine errors.
+    #[test]
+    fn is_index_propagation_failure_matches_known_signatures() {
+        // Historical signature from anodizer's older topo-sort era.
+        assert!(is_index_propagation_failure(
+            "error: no matching package named `cfgd-core` found"
+        ));
+        // v0.3.0's run 26266694891 failure mode.
+        assert!(is_index_propagation_failure(
+            "error: failed to select a version for the requirement \
+             `anodizer-stage-publish = \"^0.3.0\"`"
+        ));
+        // Sparse-index transport variant.
+        assert!(is_index_propagation_failure(
+            "error: failed to load source for dependency `anodizer-core`"
+        ));
+    }
+
+    #[test]
+    fn is_index_propagation_failure_rejects_unrelated_errors() {
+        // Auth failure — must NOT retry (token won't appear by waiting).
+        assert!(!is_index_propagation_failure(
+            "error: failed to publish to registry: 401 Unauthorized"
+        ));
+        // Validation failure — must NOT retry (broken Cargo.toml stays broken).
+        assert!(!is_index_propagation_failure(
+            "error: invalid character `_` in crate name `bad_name`"
+        ));
+        // Network failure — caller has its own transport retries; the
+        // propagation-retry path shouldn't double-count those.
+        assert!(!is_index_propagation_failure(
+            "error: failed to send HTTP request: connection refused"
+        ));
+        // Empty stderr (cargo crashed without saying anything) — don't retry.
+        assert!(!is_index_propagation_failure(""));
+    }
+
+    /// End-to-end retry behaviour: stub `cargo` with a shell script that
+    /// fails twice with a propagation-style stderr, then succeeds. The
+    /// retry harness must persist through the failures and surface success.
+    ///
+    /// Uses a counter file under tempdir so successive invocations of the
+    /// same script select different exit paths — keeps the test
+    /// deterministic without needing a global mutex.
+    #[cfg(unix)]
+    #[test]
+    fn run_cargo_publish_with_retry_recovers_from_propagation_lag() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = tmp.path().join("counter");
+        let stub = tmp.path().join("cargo");
+        let script = format!(
+            "#!/bin/sh\n\
+             n=$(cat {counter} 2>/dev/null || echo 0)\n\
+             n=$((n+1))\n\
+             echo $n > {counter}\n\
+             if [ $n -lt 3 ]; then\n\
+             echo 'error: failed to select a version for the requirement `dep = \"^1.0.0\"`' >&2\n\
+             exit 101\n\
+             fi\n\
+             echo 'published ok'\n\
+             exit 0\n",
+            counter = counter.display(),
+        );
+        std::fs::write(&stub, script).expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+
+        // Shadow PUBLISH_PROPAGATION_BACKOFF — the harness sleeps between
+        // attempts. We can't override the const from outside, so this test
+        // accepts the 15s/attempt cost (2 retries → ~30s real time). That's
+        // the price of testing the behavioural path end-to-end; a unit-only
+        // assertion on the discriminator covers fast-path coverage above.
+        //
+        // NOTE: this test is gated cfg(unix) because the shell-script stub
+        // path is unix-only; Windows CI relies on the discriminator tests.
+        let cmd = vec![stub.display().to_string(), "publish".to_string()];
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        let result = run_cargo_publish_with_retry(&cmd, "stub publish", &log)
+            .expect("retry harness must succeed after propagation lag");
+        assert!(result.status.success(), "final attempt must succeed");
+
+        // Counter file confirms the harness invoked the stub 3 times
+        // (initial + 2 retries).
+        let n: u32 = std::fs::read_to_string(&counter)
+            .expect("counter")
+            .trim()
+            .parse()
+            .expect("u32");
+        assert_eq!(n, 3, "expected 3 invocations (initial + 2 retries)");
+    }
+
+    /// Fast-fail behaviour: a non-propagation failure (auth) must NOT
+    /// trigger retry. The stub fails with a 401-style stderr; harness must
+    /// surface immediately without further invocations.
+    #[cfg(unix)]
+    #[test]
+    fn run_cargo_publish_with_retry_does_not_retry_unrelated_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = tmp.path().join("counter");
+        let stub = tmp.path().join("cargo");
+        let script = format!(
+            "#!/bin/sh\n\
+             n=$(cat {counter} 2>/dev/null || echo 0)\n\
+             n=$((n+1))\n\
+             echo $n > {counter}\n\
+             echo 'error: failed to publish: 401 Unauthorized' >&2\n\
+             exit 101\n",
+            counter = counter.display(),
+        );
+        std::fs::write(&stub, script).expect("write stub");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod stub");
+
+        let cmd = vec![stub.display().to_string(), "publish".to_string()];
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        let err = run_cargo_publish_with_retry(&cmd, "stub publish", &log)
+            .expect_err("non-propagation failure must surface");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("401") || chain.contains("Unauthorized") || chain.contains("exit code"),
+            "expected upstream error in chain: {chain}"
+        );
+
+        let n: u32 = std::fs::read_to_string(&counter)
+            .expect("counter")
+            .trim()
+            .parse()
+            .expect("u32");
+        assert_eq!(n, 1, "non-propagation failure must NOT retry");
     }
 }
