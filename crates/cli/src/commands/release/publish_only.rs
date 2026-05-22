@@ -230,6 +230,27 @@ pub(super) fn run(
     // produce double-emit confusion in SignStage / ReleaseStage.
     detect_duplicate_artifact_paths(ctx)?;
 
+    // ── Strip ephemeral signatures / certificates ──────────────────────
+    // Defensive: the harness skips SignStage when production keys are
+    // exported on the runner, so preserved-dist usually has no `.sig`
+    // / `.asc` files. But re-signing on top of an existing chain (e.g.
+    // operator ran the harness without prod keys, then brought them
+    // in) would emit `*.sig.sig` / `*.pem.sig` — corrupt checksums
+    // and confuse downstream verifiers. Strip up-front so `SignStage`
+    // always sees a clean input registry.
+    //
+    // Runs BEFORE `detect_missing_files`: any Signature / Certificate
+    // entry that lives under `.det-tmp/target/.../<bin>.sig` is a
+    // per-binary signature the harness produced when `binary_signs` was
+    // configured. `upload-artifact@v4` excludes hidden directories
+    // (`.det-tmp/`) by default, so those paths never reach the publish
+    // job's disk. Stripping the registry entries here makes them invisible
+    // to the existence check below — they'd otherwise trip a false
+    // "preserved dist is incomplete" bail. SignStage doesn't re-create
+    // binary signatures in publish-only mode (binary_signs is cleared
+    // above), which matches the action's hidden-files-excluded reality.
+    strip_ephemeral_signatures(ctx, log);
+
     // Filesystem vs manifest cross-check: every artifact path the
     // manifest references must actually exist on disk. Missing files
     // means the preserved dist is incomplete — running through to
@@ -239,14 +260,19 @@ pub(super) fn run(
     // dist tree carries metadata.json, harness logs, etc. that aren't
     // in the artifacts manifest).
     //
-    // Binary + UniversalBinary kinds register paths under
-    // `.det-tmp/target/...` (the harness's worktree), which are NOT
-    // preserved into `dist/`. The publishers that consume Binary
-    // artifacts (nix's DynamicallyLinked, winget's binary filename)
-    // read ONLY metadata, not the file itself, so the path mismatch
-    // is harmless. Skip them from the existence check so the rest of
-    // the dist (archives, nfpm packages, checksums, sboms) still gets
-    // cross-checked.
+    // Skipped artifact kinds:
+    //   * Binary + UniversalBinary — paths under `.det-tmp/target/...`
+    //     are intermediate raw cargo output, never preserved. Publishers
+    //     that consume Binary artifacts (nix's DynamicallyLinked,
+    //     winget's binary filename) read ONLY metadata, not the file
+    //     itself, so the path mismatch is harmless.
+    //   * Metadata — `dist/metadata.json` is renamed per-shard by the
+    //     action's preserve step (`metadata-<shard>.json`) before
+    //     upload, so the canonical un-suffixed path NEVER exists on the
+    //     publish job's disk pre-pipeline. `run_post_pipeline` rewrites
+    //     the canonical file at the end of publish-only from the merged
+    //     registry, so the existence check is trying to verify a file
+    //     this pipeline itself will produce — a layering violation.
     crate::commands::helpers::detect_missing_files(
         ctx.artifacts
             .all()
@@ -256,21 +282,12 @@ pub(super) fn run(
                     a.kind,
                     anodizer_core::artifact::ArtifactKind::Binary
                         | anodizer_core::artifact::ArtifactKind::UniversalBinary
+                        | anodizer_core::artifact::ArtifactKind::Metadata
                 )
             })
             .map(|a| a.path.as_path()),
         &dist,
     )?;
-
-    // ── Strip ephemeral signatures / certificates ──────────────────────
-    // Defensive: the harness skips SignStage when production keys are
-    // exported on the runner, so preserved-dist usually has no `.sig`
-    // / `.asc` files. But re-signing on top of an existing chain (e.g.
-    // operator ran the harness without prod keys, then brought them
-    // in) would emit `*.sig.sig` / `*.pem.sig` — corrupt checksums
-    // and confuse downstream verifiers. Strip up-front so `SignStage`
-    // always sees a clean input registry.
-    strip_ephemeral_signatures(ctx, log);
 
     // ── Run the extended publish pipeline ──────────────────────────────
     // `build_publish_only_pipeline` prepends `SignStage` ahead of the
