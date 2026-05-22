@@ -343,6 +343,30 @@ impl ArtifactRegistry {
         self.artifacts.push(artifact);
     }
 
+    /// Drop later duplicate-path entries that carry `target: None`.
+    ///
+    /// Used by the publish-only multi-shard rehydration: cross-target
+    /// artifacts (source archive, install.sh, release-level metadata)
+    /// have `target: None` and are produced identically by every shard's
+    /// harness run. After per-shard manifests are merged into a single
+    /// registry, those entries duplicate by path. `download-artifact
+    /// merge-multiple` collapses the on-disk copies to one file, so the
+    /// registry must follow suit or SignStage / ReleaseStage emits each
+    /// entry separately and races on the same on-disk path.
+    ///
+    /// Per-target duplicates (`target: Some(_)`) are left untouched —
+    /// those indicate a real shard-overlap bug and downstream
+    /// validators must surface them.
+    pub fn dedupe_targetless_duplicates(&mut self) {
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        self.artifacts.retain(|a| {
+            if a.target.is_some() {
+                return true;
+            }
+            seen.insert(a.path.clone())
+        });
+    }
+
     pub fn by_kind(&self, kind: ArtifactKind) -> Vec<&Artifact> {
         self.artifacts.iter().filter(|a| a.kind == kind).collect()
     }
@@ -723,6 +747,84 @@ mod tests {
     fn test_empty_query() {
         let registry = ArtifactRegistry::new();
         assert!(registry.by_kind(ArtifactKind::Binary).is_empty());
+    }
+
+    /// Multi-shard rehydration appends each shard's artifacts manifest
+    /// into one registry. Cross-target artifacts (source archive,
+    /// install.sh, metadata.json — `target: None`) appear N times
+    /// (once per shard). `dedupe_targetless_duplicates` must collapse
+    /// them to one entry per path while leaving per-target entries
+    /// intact.
+    #[test]
+    fn dedupe_targetless_duplicates_collapses_cross_shard_dups() {
+        let mut registry = ArtifactRegistry::new();
+        // Three shards each register the same cross-target source archive.
+        for _ in 0..3 {
+            registry.add(Artifact {
+                kind: ArtifactKind::SourceArchive,
+                name: "anodizer-0.3.0-source.tar.gz".to_string(),
+                path: PathBuf::from("dist/anodizer-0.3.0-source.tar.gz"),
+                target: None,
+                crate_name: "anodizer".to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+        // Plus a couple of per-target archives that are NOT duplicates
+        // (same crate, different target → different path expected, but
+        // we use the same path here to exercise the negative case:
+        // dedupe must leave target-Some duplicates alone for the
+        // downstream overlap-detection check).
+        for triple in &["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+            registry.add(Artifact {
+                kind: ArtifactKind::Archive,
+                name: format!("anodizer-0.3.0-{}.tar.gz", triple),
+                path: PathBuf::from(format!("dist/anodizer-0.3.0-{}.tar.gz", triple)),
+                target: Some((*triple).to_string()),
+                crate_name: "anodizer".to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        registry.dedupe_targetless_duplicates();
+
+        // Source archive collapsed from 3 → 1 entry.
+        let sources: Vec<_> = registry.by_kind(ArtifactKind::SourceArchive);
+        assert_eq!(
+            sources.len(),
+            1,
+            "cross-shard target-None duplicates must collapse to 1 entry"
+        );
+        // Per-target archives untouched.
+        assert_eq!(registry.by_kind(ArtifactKind::Archive).len(), 2);
+    }
+
+    /// Companion: dedupe must NOT touch per-target duplicates (target:
+    /// Some) since those signal real matrix overlap and must be caught
+    /// by the downstream `detect_duplicate_artifact_paths` validator.
+    #[test]
+    fn dedupe_targetless_duplicates_leaves_per_target_duplicates_intact() {
+        let mut registry = ArtifactRegistry::new();
+        for _ in 0..3 {
+            registry.add(Artifact {
+                kind: ArtifactKind::Archive,
+                name: "anodizer-x86_64.tar.gz".to_string(),
+                path: PathBuf::from("dist/anodizer-x86_64.tar.gz"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "anodizer".to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        registry.dedupe_targetless_duplicates();
+
+        assert_eq!(
+            registry.by_kind(ArtifactKind::Archive).len(),
+            3,
+            "per-target duplicates must remain so detect_duplicate_artifact_paths can flag them"
+        );
     }
 
     #[test]

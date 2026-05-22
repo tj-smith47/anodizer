@@ -189,9 +189,7 @@ pub(super) fn run(
     // ── Rehydrate ctx.artifacts ────────────────────────────────────────
     // Delegates to the same loader `anodize publish` uses so the two
     // entry points stay in lockstep (one parser to maintain). Each
-    // discovered manifest contributes its artifacts to the registry;
-    // duplicate paths across shards indicate the matrix overlapped on
-    // a target — surface as a hard error rather than silently de-dupe.
+    // shard's manifest contributes its artifacts to the registry.
     let artifact_manifests = discover_artifacts_manifests(&dist)?;
     for manifest_path in &artifact_manifests {
         helpers::load_artifacts_from_manifest(ctx, &dist, manifest_path).with_context(|| {
@@ -205,6 +203,17 @@ pub(super) fn run(
         })?;
     }
 
+    // Cross-shard cross-target artifacts (source archive, install.sh,
+    // metadata.json — all `target: None`) appear in every shard's
+    // manifest by design. Each shard's harness runs them identically;
+    // download-artifact merge-multiple collapses the on-disk copies to
+    // one. Drop the redundant registry entries here so SignStage /
+    // ReleaseStage don't try to re-sign or re-upload the same path
+    // multiple times. Per-target duplicates (matrix overlap bugs) are
+    // preserved so `detect_duplicate_artifact_paths` below still
+    // catches them.
+    ctx.artifacts.dedupe_targetless_duplicates();
+
     log.status(&format!(
         "publish-only: rehydrated {} artifact(s) from {} artifacts manifest(s)",
         ctx.artifacts.all().len(),
@@ -212,13 +221,13 @@ pub(super) fn run(
     ));
 
     // Fail closed on duplicate artifact paths across the merged
-    // manifests. Sharded determinism matrices partition the target
-    // set across shards, so a duplicate `path` after the union means
-    // two shards both claimed the same artifact — either the matrix
-    // overlapped or someone hand-edited a manifest. Re-signing
-    // duplicate entries would produce double-emit confusion in
-    // SignStage / ReleaseStage (the same file uploaded twice, or
-    // worse, the same sidecar overwritten in race).
+    // manifests. After dedup of cross-shard cross-target duplicates
+    // (source.tar.gz, install.sh, metadata.json — target: None,
+    // produced identically on every shard), any remaining same-path
+    // entry must come from a per-target overlap: two shards both
+    // claimed they built for the same target. That's a matrix bug or
+    // hand-edited manifest; re-signing duplicate entries would
+    // produce double-emit confusion in SignStage / ReleaseStage.
     detect_duplicate_artifact_paths(ctx)?;
 
     // Filesystem vs manifest cross-check: every artifact path the
