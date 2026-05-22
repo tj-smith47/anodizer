@@ -1164,6 +1164,62 @@ fn collect_winget_target(ctx: &Context, crate_name: &str) -> Option<WingetTarget
     })
 }
 
+/// Message emitted at publisher entry. Names how many crates the publisher
+/// is iterating over. Factored into a helper so tests can pin the exact
+/// substring an operator scans the log for ("winget: starting publish
+/// for ...").
+pub(crate) fn run_start_message(selected_total: usize) -> String {
+    format!(
+        "winget: starting publish for {} selected crate(s)",
+        selected_total
+    )
+}
+
+/// Message emitted when a selected crate has no `publish.winget` block.
+/// Replaces what used to be a silent `continue` — operators need to see
+/// why a per-crate publish was a no-op rather than guess from a blank
+/// log.
+pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
+    format!(
+        "winget: skipping crate '{}' — no winget config block",
+        crate_name
+    )
+}
+
+/// Message emitted just before delegating to `publish_to_winget`.
+/// Anchors the winget activity (manifest generation, fork clone, push,
+/// PR submission) to a specific crate in the log so multi-crate
+/// workspaces are disambiguatable.
+pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
+    format!("winget: starting per-crate publish for '{}'", crate_name)
+}
+
+/// Final summary emitted at publisher exit. `processed` is the count of
+/// crates the publisher actually invoked `publish_to_winget` on (not
+/// the count of successful PRs — `publish_to_winget` has its own skip
+/// paths for skip_upload/dry-run/etc., each of which logs its own status
+/// line, and the gh CLI submission helper logs its own success/warn).
+pub(crate) fn run_done_message(processed: usize) -> String {
+    format!("winget: completed — {} crate(s) processed", processed)
+}
+
+/// Warning emitted when the publisher was registered (at least one
+/// crate has a `publish.winget` block at the config level) but the
+/// run path processed zero crates. Covers both shapes:
+/// `selected_crates` is empty (the `ContextOptions` default), and
+/// `selected_crates` is non-empty but every entry was filtered out by
+/// the winget-config predicate. Operators must see this — otherwise the
+/// publisher's `succeeded` status hides the fact that nothing was
+/// pushed.
+pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
+    format!(
+        "winget: registered but 0 of {} selected crate(s) had a winget \
+         config block — nothing pushed. Check that --crate / --all selects a \
+         crate whose publish.winget block is set.",
+        selected_total
+    )
+}
+
 impl anodizer_core::Publisher for WingetPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -1182,8 +1238,10 @@ impl anodizer_core::Publisher for WingetPublisher {
         let log = ctx.logger("publish");
         let mut targets: Vec<WingetTarget> = Vec::new();
         let selected = ctx.options.selected_crates.clone();
+        log.status(&run_start_message(selected.len()));
         for crate_name in &selected {
             if !is_winget_per_crate_configured(ctx, crate_name) {
+                log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
             // Snapshot the target shape BEFORE the publish path runs so
@@ -1192,7 +1250,14 @@ impl anodizer_core::Publisher for WingetPublisher {
             if let Some(t) = collect_winget_target(ctx, crate_name) {
                 targets.push(t);
             }
+            log.status(&run_per_crate_start_message(crate_name));
             publish_to_winget(ctx, crate_name, &log)?;
+        }
+        let processed = targets.len();
+        if processed == 0 {
+            log.warn(&run_no_eligible_crates_warning(selected.len()));
+        } else {
+            log.status(&run_done_message(processed));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("winget");
         if let Some(first) = targets.first() {
@@ -1403,6 +1468,164 @@ mod publisher_tests {
         // Publisher "AcmeCo" + name "demo" → "AcmeCo.demo".
         assert_eq!(t.package_id, "AcmeCo.demo");
         assert!(t.branch.starts_with("AcmeCo.demo-"));
+    }
+
+    // Log-message helpers — the operator-facing log strings the publisher
+    // emits at each boundary. The failure mode these guard against: a
+    // publisher whose iteration loop hits only silently-`continue`d
+    // crates returns Ok with an empty evidence record, which the
+    // dispatch table then reports as "succeeded" — indistinguishable
+    // from a real PR push. Every helper below must produce a line the
+    // operator can grep the publish log for.
+
+    #[test]
+    fn run_start_message_names_selected_total() {
+        let msg = run_start_message(3);
+        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.contains("3 selected"), "{msg}");
+    }
+
+    #[test]
+    fn run_skip_unconfigured_message_names_crate() {
+        let msg = run_skip_unconfigured_message("demo");
+        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(msg.contains("no winget config block"), "{msg}");
+    }
+
+    #[test]
+    fn run_per_crate_start_message_names_crate() {
+        let msg = run_per_crate_start_message("demo");
+        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.contains("'demo'"), "{msg}");
+    }
+
+    #[test]
+    fn run_done_message_reports_processed_count() {
+        let msg = run_done_message(2);
+        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+    }
+
+    #[test]
+    fn run_no_eligible_crates_warning_names_remediation() {
+        let msg = run_no_eligible_crates_warning(5);
+        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.contains("0 of 5 selected"), "{msg}");
+        assert!(msg.contains("nothing pushed"), "{msg}");
+        // The warning must point the operator at the remediation surface
+        // (--crate / --all selection) — otherwise it's noise.
+        assert!(msg.contains("--crate"), "{msg}");
+        assert!(msg.contains("--all"), "{msg}");
+    }
+
+    #[test]
+    fn run_no_eligible_crates_warning_handles_empty_selection() {
+        // The empty-selected case (selected_crates = Vec::new() — the
+        // ContextOptions default) must produce the same remediation
+        // string, just with a 0/0 count. The warn helper must not panic
+        // or omit the remediation text in this shape.
+        let msg = run_no_eligible_crates_warning(0);
+        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.contains("0 of 0 selected"), "{msg}");
+        assert!(msg.contains("nothing pushed"), "{msg}");
+        assert!(msg.contains("--crate"), "{msg}");
+        assert!(msg.contains("--all"), "{msg}");
+    }
+
+    /// Run the publisher end-to-end in dry-run mode against a context
+    /// that selects a winget-configured crate. Verifies the run path is
+    /// wired (returns Ok, records target evidence). The log lines
+    /// themselves are written to stderr and asserted indirectly via the
+    /// helper-string tests above.
+    #[test]
+    fn winget_publisher_run_dry_run_records_target() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("demo")])
+            .selected_crates(vec!["demo".to_string()])
+            .dry_run(true)
+            .build();
+        let p = WingetPublisher::new();
+        let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
+        // primary_ref + extra.winget_targets must reflect that the run
+        // path actually visited the demo crate (not silently skipped).
+        // Without these the publisher would report "succeeded" with
+        // nothing recorded — the v0.3.0 symptom.
+        let primary = evidence
+            .primary_ref
+            .as_deref()
+            .expect("primary_ref must be set after a real run");
+        assert!(
+            primary.starts_with("https://github.com/microsoft/winget-pkgs/pulls?q=head%3Aacme%3A"),
+            "primary_ref shape: {primary}"
+        );
+        let targets = decode_winget_targets(&evidence.extra);
+        assert_eq!(targets.len(), 1, "{:?}", targets);
+        assert_eq!(targets[0].crate_name, "demo");
+    }
+
+    /// When the publisher is registered (a crate has a winget block) but
+    /// the selected-crates filter excludes every winget-configured
+    /// crate, the run path must still return Ok (so the dispatch chain
+    /// doesn't abort), but record no targets — and the operator-facing
+    /// warning helper must produce a remediation-pointing string.
+    #[test]
+    fn winget_publisher_run_no_eligible_crates_returns_empty_evidence() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                winget_crate("demo"),
+                CrateConfig {
+                    name: "other".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            // Select only the non-winget crate — the publisher should
+            // still be registered (because `demo` has a block) but its
+            // run path will iterate zero winget-configured crates.
+            .selected_crates(vec!["other".to_string()])
+            .dry_run(true)
+            .build();
+        let p = WingetPublisher::new();
+        let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        assert!(
+            evidence.primary_ref.is_none(),
+            "no winget-eligible crate selected, primary_ref must be unset"
+        );
+        let targets = decode_winget_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "no winget-eligible crate selected, targets must be empty"
+        );
+    }
+
+    /// Default-empty `selected_crates` (the `ContextOptions::default()`
+    /// shape) must take the same warn-on-zero-processed path — without
+    /// this guard the publisher would emit `run_done_message(0)` and
+    /// silently report success. This is the exact v0.3.0 failure mode:
+    /// the publisher reported `succeeded` with zero winget activity in
+    /// the publish log.
+    #[test]
+    fn winget_publisher_run_empty_selection_returns_empty_evidence() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("demo")])
+            // selected_crates intentionally left at the default Vec::new()
+            .dry_run(true)
+            .build();
+        let p = WingetPublisher::new();
+        let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        assert!(
+            evidence.primary_ref.is_none(),
+            "empty selection, primary_ref must be unset"
+        );
+        let targets = decode_winget_targets(&evidence.extra);
+        assert!(targets.is_empty(), "empty selection, targets must be empty");
     }
 }
 
