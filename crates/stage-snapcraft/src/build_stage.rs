@@ -149,6 +149,24 @@ impl Stage for SnapcraftStage {
                     }
                 }
 
+                // Warn early about the `icon:` Snap Store leak: the field
+                // round-trips through snap.yaml into snap.json, where the
+                // Store's schema rejects it ("Additional properties are
+                // not allowed ('icon' was unexpected)"). The supported
+                // path is `snap/gui/<name>.png` in the project tree.
+                // Surface this BEFORE snapcraft pack burns minutes only to
+                // have `snapcraft upload` blow up at validation.
+                if snap_cfg.icon.is_some() {
+                    log.warn(&format!(
+                        "snapcraft: 'icon' is set for crate '{}' — the Snap \
+                         Store rejects snap.json with this field. Move the \
+                         icon to snap/gui/<name>.png in your project tree \
+                         (which is not copied into snap.json) and remove \
+                         the 'icon:' key from the snapcrafts block",
+                        krate.name
+                    ));
+                }
+
                 // Filter binaries by ids if configured (C2)
                 let mut filtered_binaries = linux_binaries.clone();
                 if let Some(ref filter_ids) = snap_cfg.ids

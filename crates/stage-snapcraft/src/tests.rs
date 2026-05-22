@@ -293,6 +293,67 @@ fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
 }
 
 // -----------------------------------------------------------------------
+// Snap Store schema parity — `icon:` must NOT leak into snap.yaml unless
+// the user explicitly configured it. The Store's `snap.json` validator
+// rejects the field with "Additional properties are not allowed
+// ('icon' was unexpected)", so a stray top-level `icon:` line blocks
+// snap upload even though `snapcraft pack` accepts it locally. These
+// tests pin the omit-when-None behaviour so a future serde refactor
+// (e.g. dropping `skip_serializing_if`) can't silently regress us back
+// into the v0.3.0 upload failure mode.
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_generate_snap_yaml_omits_icon_when_none() {
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("A test snap".to_string()),
+        description: Some("A test description".to_string()),
+        // icon: None is the default — spelled out for clarity.
+        icon: None,
+        ..Default::default()
+    };
+    let yaml = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
+
+    // The strict assertion: no `icon:` line anywhere. A simple
+    // `contains("icon")` would false-trigger on hypothetical apps named
+    // `icon-utils` or a description that mentions icons, so anchor on
+    // the YAML key shape: line-start `icon:`. snap.yaml is line-oriented
+    // top-level keys, so this is sufficient.
+    let has_icon_key = yaml.lines().any(|l| {
+        let trimmed = l.trim_start();
+        trimmed == "icon:" || trimmed.starts_with("icon: ") || trimmed.starts_with("icon:\t")
+    });
+    assert!(
+        !has_icon_key,
+        "snap.yaml must NOT emit `icon:` when SnapcraftConfig.icon is None \
+         (Snap Store snap.json schema rejects the field). Got:\n{yaml}"
+    );
+}
+
+#[test]
+fn test_generate_snap_yaml_emits_icon_when_set() {
+    // Sanity check: when the user *does* set an icon, the field round-trips.
+    // This pins the existing leak path so reviewers can see what happens
+    // (the build stage emits a warning; the user has to move the icon to
+    // snap/gui/<name>.png to actually publish). Until we add a proper
+    // snap/gui/ writer, this test documents the failure-mode shape.
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("A test snap".to_string()),
+        description: Some("A test description".to_string()),
+        icon: Some("assets/logo.png".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
+    assert!(
+        yaml.contains("icon: assets/logo.png"),
+        "icon should round-trip when configured (build stage warns about \
+         Snap Store rejection). Got:\n{yaml}"
+    );
+}
+
+// -----------------------------------------------------------------------
 // snapcraft_command tests
 // -----------------------------------------------------------------------
 

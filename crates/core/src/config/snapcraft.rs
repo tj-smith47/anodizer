@@ -26,6 +26,19 @@ pub struct SnapcraftConfig {
     /// Extended description (user-facing in store).
     pub description: Option<String>,
     /// Path to icon image file.
+    ///
+    /// **Snap Store caveat**: setting this field causes `snap.yaml` to
+    /// emit an `icon:` key. `snapcraft pack` accepts it locally and the
+    /// resulting `.snap` builds fine, but the Snap Store's server-side
+    /// `snap.json` schema rejects the upload with
+    /// `Additional properties are not allowed ('icon' was unexpected)`.
+    /// The supported way to ship a snap icon is to place it at
+    /// `snap/gui/<name>.png` (or `snap/gui/icon.png`) inside the project
+    /// tree — that path is bundled by snapcraft via the GUI metadata
+    /// channel and does NOT propagate into `snap.json`.
+    /// When this field is left unset, no `icon:` line is emitted (the
+    /// option is `skip_serializing_if = "Option::is_none"` in the
+    /// renderer's serde model) and `snap.json` stays schema-clean.
     pub icon: Option<String>,
     /// Runtime base snap: core, core18, core20, core22, core24, bare.
     pub base: Option<String>,
