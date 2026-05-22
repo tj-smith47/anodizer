@@ -104,13 +104,13 @@ fn collect_chocolatey_target(ctx: &Context, crate_name: &str) -> Option<Chocolat
 }
 
 /// Message emitted at publisher entry. Names how many crates the publisher
-/// is iterating over and how many of those carry a `publish.chocolatey`
-/// block. Factored into a helper so tests can pin the exact substring an
-/// operator scans the log for ("chocolatey: starting publish for ...").
-pub(crate) fn run_start_message(selected_total: usize, choco_configured: usize) -> String {
+/// is iterating over. Factored into a helper so tests can pin the exact
+/// substring an operator scans the log for ("chocolatey: starting publish
+/// for ...").
+pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "chocolatey: starting publish for {} selected crate(s) ({} with chocolatey config)",
-        selected_total, choco_configured
+        "chocolatey: starting publish for {} selected crate(s)",
+        selected_total
     )
 }
 
@@ -147,14 +147,17 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 
 /// Warning emitted when the publisher was registered (at least one
 /// crate has a `publish.chocolatey` block at the config level) but the
-/// selected-crates filter excluded every choco-configured crate.
-/// Operators must see this — otherwise the publisher's `succeeded`
-/// status hides the fact that nothing was pushed.
+/// run path processed zero crates. Covers both shapes:
+/// `selected_crates` is empty (the `ContextOptions` default), and
+/// `selected_crates` is non-empty but every entry was filtered out by
+/// the choco-config predicate. Operators must see this — otherwise the
+/// publisher's `succeeded` status hides the fact that nothing was
+/// pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "chocolatey: registered but {} selected crate(s) had no chocolatey config — \
-         nothing pushed. Check that --crate / --all selects a crate whose \
-         publish.chocolatey block is set.",
+        "chocolatey: registered but 0 of {} selected crate(s) had a chocolatey \
+         config block — nothing pushed. Check that --crate / --all selects a \
+         crate whose publish.chocolatey block is set.",
         selected_total
     )
 }
@@ -177,20 +180,9 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         let log = ctx.logger("publish");
         let mut targets: Vec<ChocolateyTarget> = Vec::new();
         let selected = ctx.options.selected_crates.clone();
-        let choco_configured_count = selected
-            .iter()
-            .filter(|n| is_chocolatey_per_crate_configured(ctx, n))
-            .count();
-        log.status(&run_start_message(selected.len(), choco_configured_count));
-        let mut processed = 0usize;
+        log.status(&run_start_message(selected.len()));
         for crate_name in &selected {
             if !is_chocolatey_per_crate_configured(ctx, crate_name) {
-                // Emit an explicit skip line rather than `continue`-ing
-                // silently. Without this an iteration that hits only
-                // non-choco crates returns Ok with an empty target list
-                // and zero log activity, which the dispatch table then
-                // reports as "succeeded" — indistinguishable from a real
-                // push.
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
@@ -202,14 +194,9 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             }
             log.status(&run_per_crate_start_message(crate_name));
             super::publish::publish_to_chocolatey(ctx, crate_name, &log)?;
-            processed += 1;
         }
-        if processed == 0 && !selected.is_empty() {
-            // Registry registered us because *some* crate has a choco
-            // block, but the --crate / --all filter excluded every one.
-            // Warn so the operator sees that the "succeeded" status on
-            // the dispatch table reflects zero work, not a successful
-            // push.
+        let processed = targets.len();
+        if processed == 0 {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
@@ -403,12 +390,11 @@ mod publisher_tests {
     // operator can grep the publish log for.
 
     #[test]
-    fn run_start_message_names_counts() {
-        let msg = run_start_message(3, 1);
+    fn run_start_message_names_selected_total() {
+        let msg = run_start_message(3);
         assert!(msg.starts_with("chocolatey:"), "{msg}");
         assert!(msg.contains("starting publish"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
-        assert!(msg.contains("1 with chocolatey config"), "{msg}");
     }
 
     #[test]
@@ -440,10 +426,24 @@ mod publisher_tests {
         let msg = run_no_eligible_crates_warning(5);
         assert!(msg.starts_with("chocolatey:"), "{msg}");
         assert!(msg.contains("registered"), "{msg}");
-        assert!(msg.contains("5 selected"), "{msg}");
+        assert!(msg.contains("0 of 5 selected"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         // The warning must point the operator at the remediation surface
         // (--crate / --all selection) — otherwise it's noise.
+        assert!(msg.contains("--crate"), "{msg}");
+        assert!(msg.contains("--all"), "{msg}");
+    }
+
+    #[test]
+    fn run_no_eligible_crates_warning_handles_empty_selection() {
+        // The empty-selected case (selected_crates = Vec::new() — the
+        // ContextOptions default) must produce the same remediation
+        // string, just with a 0/0 count. The warn helper must not panic
+        // or omit the remediation text in this shape.
+        let msg = run_no_eligible_crates_warning(0);
+        assert!(msg.starts_with("chocolatey:"), "{msg}");
+        assert!(msg.contains("0 of 0 selected"), "{msg}");
+        assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
         assert!(msg.contains("--all"), "{msg}");
     }
@@ -526,5 +526,26 @@ mod publisher_tests {
             targets.is_empty(),
             "no choco-eligible crate selected, targets must be empty"
         );
+    }
+
+    /// Default-empty `selected_crates` (the `ContextOptions::default()`
+    /// shape) must take the same warn-on-zero-processed path — without
+    /// this guard the publisher would emit `run_done_message(0)` and
+    /// silently report success.
+    #[test]
+    fn chocolatey_publisher_run_empty_selection_returns_empty_evidence() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate("demo", None)])
+            // selected_crates intentionally left at the default Vec::new()
+            .dry_run(true)
+            .build();
+        let p = ChocolateyPublisher::new();
+        let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        assert!(
+            evidence.primary_ref.is_none(),
+            "empty selection, primary_ref must be unset"
+        );
+        let targets = decode_chocolatey_targets(&evidence.extra);
+        assert!(targets.is_empty(), "empty selection, targets must be empty");
     }
 }
