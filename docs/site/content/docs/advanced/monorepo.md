@@ -91,6 +91,10 @@ anodizer release --all
 
 This detects which crates have unreleased changes (commits since their last tag) and releases them in dependency order.
 
+### Per-crate publishers without `--crate` / `--all`
+
+When `release` (or `release --publish-only`) runs without `--crate` or `--all`, per-crate publishers (homebrew, scoop, nix, aur, krew, chocolatey, winget, cargo) iterate over **every crate whose publisher block is configured**. This matches the implicit-all behavior the determinism harness's `release --publish-only` step relies on: a single `release --publish-only` invocation publishes every configured crate to every configured publisher target, without an explicit selection flag. Pass `--crate <name>` (repeatable) to scope a run to a subset.
+
 ## Auto-tagging a monorepo
 
 Loop `anodizer tag --crate <name>` for each crate so each workspace gets its own release:
