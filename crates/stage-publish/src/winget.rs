@@ -1554,7 +1554,7 @@ mod publisher_tests {
         // primary_ref + extra.winget_targets must reflect that the run
         // path actually visited the demo crate (not silently skipped).
         // Without these the publisher would report "succeeded" with
-        // nothing recorded — the v0.3.0 symptom.
+        // nothing recorded.
         let primary = evidence
             .primary_ref
             .as_deref()
@@ -1608,9 +1608,7 @@ mod publisher_tests {
     /// Default-empty `selected_crates` (the `ContextOptions::default()`
     /// shape) must take the same warn-on-zero-processed path — without
     /// this guard the publisher would emit `run_done_message(0)` and
-    /// silently report success. This is the exact v0.3.0 failure mode:
-    /// the publisher reported `succeeded` with zero winget activity in
-    /// the publish log.
+    /// report `succeeded` with zero winget activity in the publish log.
     #[test]
     fn winget_publisher_run_empty_selection_returns_empty_evidence() {
         let mut ctx = TestContextBuilder::new()
