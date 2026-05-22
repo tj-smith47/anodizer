@@ -142,11 +142,15 @@ crates:
   - name: anodizer-stage-release
     path: crates/stage-release
     tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
+    # Real Cargo.toml deps: anodizer-core, anodizer-stage-checksum.
+    # Anodizer's cargo publisher topologically sorts on this list, so
+    # missing entries cause "no matching package" failures when an
+    # alphabetically-earlier crate is published before its dep.
+    depends_on: [anodizer-core, anodizer-stage-checksum]
   - name: anodizer-stage-publish
     path: crates/stage-publish
     tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
+    depends_on: [anodizer-core, anodizer-stage-release]
   - name: anodizer-stage-docker
     path: crates/stage-docker
     tag_template: "v{{ Version }}"
@@ -158,7 +162,7 @@ crates:
   - name: anodizer-stage-announce
     path: crates/stage-announce
     tag_template: "v{{ Version }}"
-    depends_on: [anodizer-core]
+    depends_on: [anodizer-core, anodizer-stage-publish]
   - name: anodizer-stage-source
     path: crates/stage-source
     tag_template: "v{{ Version }}"
@@ -518,7 +522,11 @@ crates:
       - id: default
         name: anodizer
         title: "Anodizer"
-        icon: "assets/logo.png"
+        # icon: omitted intentionally — Snap Store snap.json validation
+        # rejects the `icon` field with "Additional properties are not
+        # allowed". snapcraft pack still emits a valid snap, but upload
+        # fails. Place the icon at snap/gui/icon.png in the project tree
+        # instead (the recommended path that doesn't end up in snap.json).
         base: core24
         summary: "A Rust-native release automation tool"
         description: |
