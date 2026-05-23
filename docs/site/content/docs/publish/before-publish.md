@@ -30,10 +30,10 @@ before:
   hooks:
     - "cargo test --release"                       # shorthand: bare command string
     - cmd: "cargo build --release"                 # structured form
-      dir: "{{ .Env.PROJECT_ROOT }}"               # optional; working directory (template)
-      env:                                          # optional; extra env vars
+      dir: "{{ .Env.PROJECT_ROOT }}"
+      env:
         RUST_LOG: info
-      output: true                                  # optional; capture stdout/stderr
+      output: true
 
 after:
   hooks:
@@ -41,6 +41,15 @@ after:
       env:
         DEPLOY_TARGET: production
 ```
+
+### Structured hook fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cmd` | string | **required** | Command to execute. Rendered through the template engine before execution. |
+| `dir` | string | project root | Working directory for the command. Template-rendered. |
+| `env` | map | none | Additional environment variables (merged with inherited env). |
+| `output` | bool | `false` | Capture and log stdout/stderr (with secret redaction). |
 
 ## Authentication
 

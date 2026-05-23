@@ -23,7 +23,7 @@ No YAML changes required for the default behavior.
 
 ```yaml
 snapshot:
-  name_template: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}"  # optional; version suffix
+  version_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"  # optional; version suffix (alias: name_template)
 ```
 
 ## Authentication
@@ -32,9 +32,9 @@ Not applicable — snapshot mode never contacts external services. No tokens are
 
 ## Common gotchas
 
-- The default template appends `-SNAPSHOT` to the version; override via `snapshot.name_template`.
+- The default template appends `-SNAPSHOT` to the version; override via `snapshot.version_template` (or its deprecated alias `name_template`).
 - `--auto-snapshot` engages snapshot mode whenever the git repo has uncommitted changes — useful for safety in CI.
-- Snapshots intentionally fail closed: if any publisher is configured `required: true`, the snapshot still skips it without error (snapshots never publish).
+- Required publishers are silently skipped; snapshots never publish regardless of the `required` flag.
 
 ## Republish / update behavior
 

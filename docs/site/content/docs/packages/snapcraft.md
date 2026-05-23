@@ -71,14 +71,6 @@ Alternatively, run `snapcraft login` before releasing to authenticate interactiv
 
 Not applicable — once a snap revision is uploaded to the Snap Store, it cannot be removed. Already-installed snaps keep the revision they installed. Use a different `channel_templates` target (e.g., `edge`) for pre-release builds.
 
-## Required tools
-
-- `snapcraft` — must be installed and on `PATH`. Install via `sudo snap install snapcraft --classic`.
-
-## Platform
-
-Snapcraft only runs against Linux binary artifacts. Builds targeting other operating systems are ignored.
-
 ## Config fields
 
 | Field | Type | Default | Description |

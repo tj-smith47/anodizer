@@ -13,7 +13,7 @@ Anodizer publishes a [Model Context Protocol](https://modelcontextprotocol.io/) 
 |---|---|---|---|
 | Manager | false | warn-only (no programmatic unpublish; manual mark-deprecated via registry admin UI) | `MCP_GITHUB_TOKEN` or OIDC id-token (`id-token: write`) |
 
-See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Manager rollback semantics.
 
 ## Minimal config
 

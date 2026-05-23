@@ -23,9 +23,8 @@ No YAML changes required for the default behavior.
 
 ```yaml
 nightly:
-  name_template: "{{ Version }}-nightly.{{ Now | date(format='%Y%m%d') }}"  # optional
-  tag_name: nightly                  # optional; the rolling tag to replace each night
-  publish_release: true              # optional; create/update a GitHub Release
+  name_template: "{{ .ProjectName }}-nightly"  # optional; release-name template
+  tag_name: nightly                            # optional; the rolling tag to replace each night
 ```
 
 ## Authentication
