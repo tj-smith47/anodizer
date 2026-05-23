@@ -177,12 +177,6 @@ The token can also be set via `repository.token` in the config. Falls back to `A
 - **Validation pipeline lag**: WinGet PR validation runs in the `microsoft/winget-pkgs` CI pipeline, which can take hours to complete. Rollback is warn-only — the PR cannot be cancelled programmatically once validation has started.
 - **Duplicate PRs**: if a prior run pushed a PR for the same tag, use `update_existing_pr: true` to force-push the updated manifests instead of opening a second PR.
 
-## Republish / update behavior
-
-Set `update_existing_pr: true` to force-push an updated manifest to an existing open PR branch (using `--force-with-lease`) rather than skipping. This handles the case where a prior release attempt pushed stale manifests.
-
-Not applicable for version replacement — each version requires a separate PR. To re-submit a rejected version, open a new PR (bump the version or fix the manifest).
-
 ## Commit author
 
 | Field | Type | Description |

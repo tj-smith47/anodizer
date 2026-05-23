@@ -100,9 +100,9 @@ The token can also be set via `repository.token` in the config.
 
 ## Republish / update behavior
 
-Not applicable — formula files are updated in-place on each release. Re-cutting the same version overwrites the formula in the tap (prior commit stays in git history). The Manager group rollback reverts via `git revert HEAD --no-edit` + push.
+Formula files are updated in-place on each release; re-cutting the same version overwrites the formula in the tap (prior commit stays in git history). The Manager group rollback reverts via `git revert HEAD --no-edit` + push.
 
-For casks, set `update_existing_pr: true` to force-push to an existing open PR rather than opening a duplicate. See [Cask existing PR behavior](#cask-existing-pr-behavior).
+Casks open a PR per version. Set `update_existing_pr: true` on the cask config to force-push to an existing open PR rather than opening a duplicate — full detail in the next section.
 
 ## Cask existing PR behavior
 

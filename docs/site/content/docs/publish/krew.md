@@ -186,10 +186,6 @@ krew:
 - **krew-release-bot**: after initial merge, switch to krew-release-bot for automatic PR creation on new releases. Anodizer auto-detects when the bot is wired and writes `.krew.yaml` instead of opening a PR directly. See [Auto-promote to krew-release-bot](#auto-promote-to-krew-release-bot).
 - **Duplicate PRs**: if a prior run already opened a PR for the same tag, use `update_existing_pr: true` to force-push instead of opening a second PR.
 
-## Republish / update behavior
-
-Set `update_existing_pr: true` to force-push an updated manifest to an existing open PR branch (using `--force-with-lease`) rather than skipping. Rollback closes any open PR by PATCH `state=closed` against PRs with `head=<fork>:<branch>`.
-
 ## Custom URL templates
 
 Use `url_template` to override the default release download URLs:
