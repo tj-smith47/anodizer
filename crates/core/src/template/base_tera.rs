@@ -10,10 +10,6 @@ use sha3::Digest as Sha3Digest;
 
 // --- Helper functions for template engine ---
 
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
 /// Expand a leading `~/` to the user's home directory.
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/")
@@ -275,65 +271,65 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     register_hash_fn!(tera, "sha1", |b: &[u8]| {
         let mut h = sha1::Sha1::new();
         Sha1Digest::update(&mut h, b);
-        hex_encode(&Sha1Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha1Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha224", |b: &[u8]| {
         let mut h = sha2::Sha224::new();
         Sha2Digest::update(&mut h, b);
-        hex_encode(&Sha2Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha2Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha256", |b: &[u8]| {
         let mut h = sha2::Sha256::new();
         Sha2Digest::update(&mut h, b);
-        hex_encode(&Sha2Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha2Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha384", |b: &[u8]| {
         let mut h = sha2::Sha384::new();
         Sha2Digest::update(&mut h, b);
-        hex_encode(&Sha2Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha2Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha512", |b: &[u8]| {
         let mut h = sha2::Sha512::new();
         Sha2Digest::update(&mut h, b);
-        hex_encode(&Sha2Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha2Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha3_224", |b: &[u8]| {
         let mut h = sha3::Sha3_224::new();
         Sha3Digest::update(&mut h, b);
-        hex_encode(&Sha3Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha3Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha3_256", |b: &[u8]| {
         let mut h = sha3::Sha3_256::new();
         Sha3Digest::update(&mut h, b);
-        hex_encode(&Sha3Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha3Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha3_384", |b: &[u8]| {
         let mut h = sha3::Sha3_384::new();
         Sha3Digest::update(&mut h, b);
-        hex_encode(&Sha3Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha3Digest::finalize(h))
     });
     register_hash_fn!(tera, "sha3_512", |b: &[u8]| {
         let mut h = sha3::Sha3_512::new();
         Sha3Digest::update(&mut h, b);
-        hex_encode(&Sha3Digest::finalize(h))
+        crate::hashing::hex_lower(&Sha3Digest::finalize(h))
     });
     register_hash_fn!(tera, "blake2b", |b: &[u8]| {
         let mut h = blake2::Blake2b512::new();
         blake2::Digest::update(&mut h, b);
-        hex_encode(&blake2::Digest::finalize(h))
+        crate::hashing::hex_lower(&blake2::Digest::finalize(h))
     });
     register_hash_fn!(tera, "blake2s", |b: &[u8]| {
         let mut h = blake2::Blake2s256::new();
         blake2::Digest::update(&mut h, b);
-        hex_encode(&blake2::Digest::finalize(h))
+        crate::hashing::hex_lower(&blake2::Digest::finalize(h))
     });
     register_hash_fn!(tera, "blake3", |b: &[u8]| {
-        hex_encode(blake3::hash(b).as_bytes())
+        crate::hashing::hex_lower(blake3::hash(b).as_bytes())
     });
     register_hash_fn!(tera, "md5", |b: &[u8]| {
         let mut h = md5::Md5::new();
         md5::Digest::update(&mut h, b);
-        hex_encode(&md5::Digest::finalize(h))
+        crate::hashing::hex_lower(&md5::Digest::finalize(h))
     });
     register_hash_fn!(tera, "crc32", |b: &[u8]| {
         format!("{:08x}", crc32fast::hash(b))

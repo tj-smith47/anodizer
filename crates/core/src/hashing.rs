@@ -28,12 +28,22 @@ pub fn hash_file_with<D: Digest>(path: &Path, algo_name: &str) -> Result<String>
         Digest::update(&mut hasher, &buf[..n]);
     }
     let result = hasher.finalize();
-    Ok(result.iter().map(|b| format!("{:02x}", b)).collect())
+    Ok(hex_lower(&result))
 }
 
 /// Compute the hex-encoded SHA-256 digest of a file.
 pub fn sha256_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha256>(path, "sha256")
+}
+
+/// Encode bytes as lowercase hex with a pre-allocated output buffer.
+pub fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{:02x}", b);
+    }
+    out
 }
 
 /// Stream a file through `update`, calling it with each 8 KiB chunk.

@@ -48,17 +48,6 @@ fn detect_format(filename: &str) -> &str {
     }
 }
 
-/// Lowercase hex encoding used for the md5 checksum Cloudsmith's
-/// files/create API expects.
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{:02x}", b);
-    }
-    out
-}
-
 /// Outcome of checking whether a package already exists on Cloudsmith.
 /// Returned by [`check_cloudsmith_package_exists`].
 #[derive(Debug, PartialEq, Eq)]
@@ -421,7 +410,7 @@ pub(crate) fn publish_to_cloudsmith(
                 use md5::Digest as _;
                 let mut hasher = md5::Md5::new();
                 hasher.update(&file_bytes);
-                hex_lower(&hasher.finalize())
+                anodizer_core::hashing::hex_lower(&hasher.finalize())
             };
 
             // Pre-check: query Cloudsmith for an existing package with
