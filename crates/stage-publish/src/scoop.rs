@@ -530,7 +530,10 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
             ));
         }
         util::CommitOutcome::NoChanges => {
-            log.status("scoop: nothing to push, manifest already up to date");
+            log.status(&format!(
+                "scoop: nothing to push, manifest for '{}' already up to date",
+                manifest_name
+            ));
         }
     }
 
@@ -569,7 +572,15 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ctx.record_publisher_outcome(pr_outcome);
     }
 
-    Ok(matches!(outcome, util::CommitOutcome::Pushed))
+    Ok(any_pushed_from_outcome(outcome))
+}
+
+/// Translate a [`util::CommitOutcome`] into the bool fed into the
+/// `any_pushed` accumulator in `ScoopPublisher::run`. Extracted so the
+/// gating decision can be unit-tested without standing up a publish
+/// context.
+fn any_pushed_from_outcome(outcome: util::CommitOutcome) -> bool {
+    matches!(outcome, util::CommitOutcome::Pushed)
 }
 
 // ---------------------------------------------------------------------------
@@ -920,6 +931,18 @@ mod publisher_tests {
         assert!(!s.contains("\"private_key\":"), "{s}");
         // The env-var NAME is fine; values must never appear.
         assert!(s.contains("SCOOP_BUCKET_TOKEN"), "{s}");
+    }
+
+    /// NoChanges must not flip `any_pushed` — otherwise ScoopPublisher::run
+    /// records rollback targets for a bucket it never mutated.
+    #[test]
+    fn no_changes_outcome_yields_any_pushed_false() {
+        assert!(!any_pushed_from_outcome(util::CommitOutcome::NoChanges));
+    }
+
+    #[test]
+    fn pushed_outcome_yields_any_pushed_true() {
+        assert!(any_pushed_from_outcome(util::CommitOutcome::Pushed));
     }
 
     #[test]

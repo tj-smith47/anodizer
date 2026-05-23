@@ -496,7 +496,10 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
             ));
         }
         util::CommitOutcome::NoChanges => {
-            log.status("nix: nothing to push, expression already up to date");
+            log.status(&format!(
+                "nix: nothing to push, expression for '{}' already up to date",
+                crate_name
+            ));
         }
     }
 
@@ -505,5 +508,30 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         ctx.record_publisher_outcome(pr_outcome);
     }
 
-    Ok(matches!(outcome, util::CommitOutcome::Pushed))
+    Ok(any_pushed_from_outcome(outcome))
+}
+
+/// Translate a [`util::CommitOutcome`] into the bool fed into the
+/// `any_pushed` accumulator in `NixPublisher::run`. Extracted so the
+/// gating decision can be unit-tested without standing up a publish
+/// context.
+fn any_pushed_from_outcome(outcome: util::CommitOutcome) -> bool {
+    matches!(outcome, util::CommitOutcome::Pushed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NoChanges must not flip `any_pushed` — otherwise NixPublisher::run
+    /// records rollback targets for a repo it never mutated.
+    #[test]
+    fn no_changes_outcome_yields_any_pushed_false() {
+        assert!(!any_pushed_from_outcome(util::CommitOutcome::NoChanges));
+    }
+
+    #[test]
+    fn pushed_outcome_yields_any_pushed_true() {
+        assert!(any_pushed_from_outcome(util::CommitOutcome::Pushed));
+    }
 }

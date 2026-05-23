@@ -454,4 +454,99 @@ mod tests {
 
         assert_eq!(outcome, CommitOutcome::NoChanges);
     }
+
+    /// Anchors the idempotent-retry path used by versioned publisher
+    /// branches (winget, krew): a second invocation with the same
+    /// content and same target branch must observe matching remote /
+    /// staged tree hashes and short-circuit before committing.
+    #[test]
+    fn returns_no_changes_when_remote_tree_matches_staged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("remote");
+        let local_dir = tmp.path().join("local");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        init_bare_remote(&remote_dir);
+        init_local_with_remote(&local_dir, &remote_dir);
+
+        let test_file = local_dir.join("manifest.yaml");
+        std::fs::write(&test_file, "version: 1.0.0\n").unwrap();
+
+        let opts = CommitOptions {
+            author_name: Some("Test".to_string()),
+            author_email: Some("test@test.com".to_string()),
+            signing: None,
+            use_github_app_token: false,
+        };
+
+        // First push creates the versioned branch on the remote.
+        let first = commit_and_push_with_opts(
+            &local_dir,
+            &["manifest.yaml"],
+            "publish v1.0.0",
+            Some("publisher-v1.0.0"),
+            "test",
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(first, CommitOutcome::Pushed);
+
+        // Capture the head sha on the versioned branch before the retry —
+        // a successful no-op must leave it untouched.
+        let head_before = Cmd::new("git")
+            .args(["rev-parse", "refs/remotes/origin/publisher-v1.0.0"])
+            .current_dir(&local_dir)
+            .output()
+            .unwrap();
+        let sha_before = String::from_utf8(head_before.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        // Reset the local branch back to the default tip so the retry
+        // mirrors the real-world flow: each publisher run starts from a
+        // fresh clone where HEAD is the default branch tip, then writes
+        // the artifact. The remote-tree-match check fires only when the
+        // staged tree on top of HEAD equals the existing remote tree.
+        Cmd::new("git")
+            .args(["checkout", "main"])
+            .current_dir(&local_dir)
+            .status()
+            .unwrap();
+        Cmd::new("git")
+            .args(["branch", "-D", "publisher-v1.0.0"])
+            .current_dir(&local_dir)
+            .status()
+            .unwrap();
+        std::fs::write(&test_file, "version: 1.0.0\n").unwrap();
+
+        // Re-invoke with identical content + same target branch — the
+        // function fetches origin/publisher-v1.0.0, sees the tree matches
+        // the staged tree, and returns NoChanges before committing.
+        let retry = commit_and_push_with_opts(
+            &local_dir,
+            &["manifest.yaml"],
+            "publish v1.0.0",
+            Some("publisher-v1.0.0"),
+            "test",
+            &opts,
+        )
+        .unwrap();
+        assert_eq!(retry, CommitOutcome::NoChanges);
+
+        let head_after = Cmd::new("git")
+            .args(["rev-parse", "refs/remotes/origin/publisher-v1.0.0"])
+            .current_dir(&local_dir)
+            .output()
+            .unwrap();
+        let sha_after = String::from_utf8(head_after.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_eq!(
+            sha_before, sha_after,
+            "no-op retry must not create a new commit"
+        );
+    }
 }
