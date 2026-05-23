@@ -300,8 +300,8 @@ crates:
       mode: keep-existing
       target_commitish: "{{ .Commit }}"
       discussion_category_name: "Announcements"
-      replace_existing_draft: false
-      replace_existing_artifacts: false
+      replace_existing_draft: true
+      replace_existing_artifacts: true
       name_template: "{{ ProjectName }} {{ Tag }}"
       header: |
         ## What's new in {{ .Tag }}
@@ -388,6 +388,7 @@ crates:
           - release
           - automation
           - rust
+        republish_in_moderation: true
       winget:
         repository:
           owner: tj-smith47
@@ -419,6 +420,7 @@ crates:
         commit_author:
           name: TJ Smith
           email: tj@jarvispro.io
+        update_existing_pr: true
       aur:
         skip: true  # no AUR account registered yet
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
