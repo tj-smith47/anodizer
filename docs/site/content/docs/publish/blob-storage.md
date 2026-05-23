@@ -25,42 +25,27 @@ crates:
         bucket: my-release-bucket
 ```
 
-## Config fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `id` | string | | Unique identifier for referencing this config. |
-| `provider` | string | **required** | Storage provider: `s3`, `gcs` (or `gs`), `azblob` (or `azure`). |
-| `bucket` | string | **required** | Bucket or container name. Supports templates. |
-| `directory` | string | `{{ ProjectName }}/{{ Tag }}` | Object key prefix within the bucket. Supports templates. |
-| `region` | string | | AWS region (S3 only). Supports templates. |
-| `endpoint` | string | | Custom endpoint URL for S3-compatible backends. Supports templates. |
-| `disable_ssl` | bool | `false` | Disable TLS for the connection (S3 only). |
-| `s3_force_path_style` | bool | `true` when `endpoint` set | Use path-style addressing instead of virtual-hosted style. Automatically enabled when `endpoint` is set. |
-| `acl` | string | | Canned ACL for uploaded objects (e.g. `public-read`, `private`). |
-| `cache_control` | string or list | | HTTP `Cache-Control` header. Accepts a single string or a list joined with `, `. |
-| `content_disposition` | string | `attachment;filename={{Filename}}` | HTTP `Content-Disposition` header. Set to `-` to disable. Supports templates (includes `{{ Filename }}`). |
-| `kms_key` | string | | AWS KMS key ARN for server-side encryption (S3 only). |
-| `ids` | list | all | Filter to artifacts with these IDs. |
-| `disable` | bool or template | `false` | Skip this blob config. Accepts a bool or a template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"`). |
-| `include_meta` | bool | `false` | Also upload `metadata.json` and `artifacts.json`. |
-| `extra_files` | list | | Additional files to upload. Supports glob patterns and optional name templates. |
-| `extra_files_only` | bool | `false` | Upload only `extra_files`; skip all artifact uploads. |
-
-### Extra files
-
-Each entry under `extra_files` can have:
-
-| Field | Description |
-|-------|-------------|
-| `glob` | Glob pattern for files to upload (required). |
-| `name` / `name_template` | Override the upload filename. Supports templates including `{{ Filename }}`. |
+## Full config reference
 
 ```yaml
-extra_files:
-  - glob: dist/checksums.txt
-  - glob: "release-notes/*.md"
-    name: "release-notes-{{ Version }}.md"
+blobs:
+  - id: ""                                     # optional; unique identifier
+    provider: s3                               # required; s3 | gcs (gs) | azblob (azure)
+    bucket: "my-bucket"                        # required; supports templates
+    directory: "{{ ProjectName }}/{{ Tag }}"   # optional; key prefix (template)
+    region: us-east-1                          # optional; AWS region (template)
+    endpoint: ""                               # optional; custom endpoint for S3-compatible backends
+    disable_ssl: false                         # optional; disable TLS (S3 only)
+    s3_force_path_style: false                 # optional; auto-true when endpoint is set
+    acl: ""                                    # optional; e.g. public-read, private
+    cache_control: ""                          # optional; string or list
+    content_disposition: "attachment;filename={{Filename}}"  # optional; "-" to disable
+    kms_key: ""                                # optional; AWS KMS key ARN (S3 only)
+    ids: []                                    # optional; filter by artifact IDs
+    disable: false                             # optional; bool or template string
+    include_meta: false                        # optional; also upload metadata.json/artifacts.json
+    extra_files: []                            # optional; additional files to upload
+    extra_files_only: false                    # optional; skip artifacts, upload only extra_files
 ```
 
 ## Authentication
@@ -111,6 +96,44 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 
 Not applicable as a config field — re-uploading to the same object key overwrites the object (standard cloud object storage semantics for all three providers). No flag is required. Rollback deletes each object that was successfully written during the failed run, using an evidence snapshot taken post-upload.
 
+## Config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | | Unique identifier for referencing this config. |
+| `provider` | string | **required** | Storage provider: `s3`, `gcs` (or `gs`), `azblob` (or `azure`). |
+| `bucket` | string | **required** | Bucket or container name. Supports templates. |
+| `directory` | string | `{{ ProjectName }}/{{ Tag }}` | Object key prefix within the bucket. Supports templates. |
+| `region` | string | | AWS region (S3 only). Supports templates. |
+| `endpoint` | string | | Custom endpoint URL for S3-compatible backends. Supports templates. |
+| `disable_ssl` | bool | `false` | Disable TLS for the connection (S3 only). |
+| `s3_force_path_style` | bool | `true` when `endpoint` set | Use path-style addressing instead of virtual-hosted style. Automatically enabled when `endpoint` is set. |
+| `acl` | string | | Canned ACL for uploaded objects (e.g. `public-read`, `private`). |
+| `cache_control` | string or list | | HTTP `Cache-Control` header. Accepts a single string or a list joined with `, `. |
+| `content_disposition` | string | `attachment;filename={{Filename}}` | HTTP `Content-Disposition` header. Set to `-` to disable. Supports templates (includes `{{ Filename }}`). |
+| `kms_key` | string | | AWS KMS key ARN for server-side encryption (S3 only). |
+| `ids` | list | all | Filter to artifacts with these IDs. |
+| `disable` | bool or template | `false` | Skip this blob config. Accepts a bool or a template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"`). |
+| `include_meta` | bool | `false` | Also upload `metadata.json` and `artifacts.json`. |
+| `extra_files` | list | | Additional files to upload. Supports glob patterns and optional name templates. |
+| `extra_files_only` | bool | `false` | Upload only `extra_files`; skip all artifact uploads. |
+
+### Extra files
+
+Each entry under `extra_files` can have:
+
+| Field | Description |
+|-------|-------------|
+| `glob` | Glob pattern for files to upload (required). |
+| `name` / `name_template` | Override the upload filename. Supports templates including `{{ Filename }}`. |
+
+```yaml
+extra_files:
+  - glob: dist/checksums.txt
+  - glob: "release-notes/*.md"
+    name: "release-notes-{{ Version }}.md"
+```
+
 ## S3-compatible backends
 
 Any S3-compatible service can be used by setting `endpoint`. When `endpoint` is set, `s3_force_path_style` defaults to `true` because most compatible services (MinIO, Cloudflare R2, DigitalOcean Spaces) require path-style addressing.
@@ -143,29 +166,6 @@ blobs:
     bucket: my-space
     endpoint: https://nyc3.digitaloceanspaces.com
     region: nyc3
-```
-
-## Full config reference
-
-```yaml
-blobs:
-  - id: ""                                     # optional; unique identifier
-    provider: s3                               # required; s3 | gcs (gs) | azblob (azure)
-    bucket: "my-bucket"                        # required; supports templates
-    directory: "{{ ProjectName }}/{{ Tag }}"   # optional; key prefix (template)
-    region: us-east-1                          # optional; AWS region (template)
-    endpoint: ""                               # optional; custom endpoint for S3-compatible backends
-    disable_ssl: false                         # optional; disable TLS (S3 only)
-    s3_force_path_style: false                 # optional; auto-true when endpoint is set
-    acl: ""                                    # optional; e.g. public-read, private
-    cache_control: ""                          # optional; string or list
-    content_disposition: "attachment;filename={{Filename}}"  # optional; "-" to disable
-    kms_key: ""                                # optional; AWS KMS key ARN (S3 only)
-    ids: []                                    # optional; filter by artifact IDs
-    disable: false                             # optional; bool or template string
-    include_meta: false                        # optional; also upload metadata.json/artifacts.json
-    extra_files: []                            # optional; additional files to upload
-    extra_files_only: false                    # optional; skip artifacts, upload only extra_files
 ```
 
 ## Full example

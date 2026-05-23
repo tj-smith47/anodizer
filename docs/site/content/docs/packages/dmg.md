@@ -11,6 +11,44 @@ The DMG stage creates `.dmg` disk images from your macOS binaries. Images are pl
 
 Packager — creates macOS disk images from Darwin binaries. Required: not a publisher; macOS only.
 
+## Minimal config
+
+```yaml
+crates:
+  - name: myapp
+    dmgs:
+      - {}
+```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    dmgs:
+      - id: ""                        # optional; unique identifier
+        ids: []                       # optional; filter by build IDs
+        name: ""                      # optional; output filename template
+        extra_files: []               # optional; additional files inside the disk image
+        replace: false                # optional; remove archive artifacts, keep DMG only
+        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
+        disable: false                # optional
+```
+
+## Authentication
+
+Not applicable — DMG creation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **macOS only**: the stage ignores non-Darwin artifacts.
+- **Tool selection**: `hdiutil` (macOS), then `genisoimage`, then `mkisofs`. The stage fails if none is found.
+- **Cross-compilation**: `genisoimage`/`mkisofs` allow Linux hosts to produce DMGs, but the resulting image may not be pixel-perfect compared to `hdiutil`-produced images.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## Required tools
 
 One of the following must be available:
@@ -27,15 +65,6 @@ Tool selection is automatic: `hdiutil` is tried first, then `genisoimage`, then 
 
 DMG only processes binary artifacts targeting Darwin (macOS). Binaries for other operating systems are ignored.
 
-## Minimal config
-
-```yaml
-crates:
-  - name: myapp
-    dmgs:
-      - {}
-```
-
 ## Config fields
 
 | Field | Type | Default | Description |
@@ -47,20 +76,6 @@ crates:
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the DMG. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds (e.g. `{{ .CommitTimestamp }}`). |
 | `disable` | bool | `false` | Skip this DMG config. |
-
-## Authentication
-
-Not applicable — DMG creation is a local build step with no external service calls.
-
-## Common gotchas
-
-- **macOS only**: the stage ignores non-Darwin artifacts.
-- **Tool selection**: `hdiutil` (macOS), then `genisoimage`, then `mkisofs`. The stage fails if none is found.
-- **Cross-compilation**: `genisoimage`/`mkisofs` allow Linux hosts to produce DMGs, but the resulting image may not be pixel-perfect compared to `hdiutil`-produced images.
-
-## Republish / update behavior
-
-Not applicable — this is a local packaging stage, not a publisher.
 
 ## Volume name
 
@@ -82,21 +97,6 @@ crates:
           - README.md
         replace: true
         mod_timestamp: "{{ .CommitTimestamp }}"
-```
-
-## Full config reference
-
-```yaml
-crates:
-  - name: myapp
-    dmgs:
-      - id: ""                        # optional; unique identifier
-        ids: []                       # optional; filter by build IDs
-        name: ""                      # optional; output filename template
-        extra_files: []               # optional; additional files inside the disk image
-        replace: false                # optional; remove archive artifacts, keep DMG only
-        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
-        disable: false                # optional
 ```
 
 ## Multiple configs

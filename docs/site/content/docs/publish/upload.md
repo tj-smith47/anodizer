@@ -23,6 +23,51 @@ uploads:
     target: "https://files.example.com/releases/{{ .Version }}/"
 ```
 
+## Full config reference
+
+```yaml
+uploads:
+  - name: upload                       # optional; identifier used for env-var lookup
+    target: "https://files.example.com/releases/{{ .Version }}/"  # required (template)
+    mode: archive                      # optional; archive | binary
+    method: PUT                        # optional; PUT | POST
+    username: ""                       # optional; falls back to UPLOAD_{NAME}_USERNAME
+    password: ""                       # optional; falls back to UPLOAD_{NAME}_SECRET
+    ids: []                            # optional; filter by build IDs
+    exts: []                           # optional; filter by file extensions
+    checksum_header: ""                # optional; HTTP header name for SHA-256
+    custom_headers: {}                 # optional; extra HTTP headers (template-rendered)
+    checksum: false                    # optional; also upload checksum files
+    signature: false                   # optional; also upload signature files
+    meta: false                        # optional; also upload metadata.json + artifacts.json
+    custom_artifact_name: false        # optional; do not append artifact name to target URL
+    extra_files: []                    # optional; additional files to upload
+    extra_files_only: false            # optional; skip artifact uploads
+    client_x509_cert: ""               # optional; client TLS cert path
+    client_x509_key: ""                # optional; client TLS private key path
+    trusted_certificates: ""           # optional; CA bundle path
+    disable: false                     # optional
+```
+
+## Authentication
+
+| Variable | Fallback |
+|----------|----------|
+| Username | config value, then `UPLOAD_{NAME}_USERNAME` |
+| Password | `UPLOAD_{NAME}_SECRET`, then config value |
+
+Where `{NAME}` is the uppercased `name` field.
+
+## Common gotchas
+
+- Same caveats as Artifactory: `PUT` is the default method; some servers require `POST`. Set `method: POST` if uploads fail with a 405.
+- `custom_artifact_name: true` uses the artifact filename as-is instead of appending it to the `target` URL.
+- No programmatic rollback — the upload publisher does not attempt HTTP DELETE on rollback. Use `after:` hooks for custom cleanup if needed.
+
+## Republish / update behavior
+
+Not applicable as a config field — re-uploading to the same `target` URL typically overwrites the object (PUT semantics). Server-specific behavior varies; check your target server's overwrite policy.
+
 ## Upload config fields
 
 | Field | Type | Default | Description |
@@ -48,15 +93,6 @@ uploads:
 | `trusted_certificates` | string | none | Path to CA certificate bundle |
 | `disable` | string/bool | none | Disable this config |
 
-## Authentication
-
-| Variable | Fallback |
-|----------|----------|
-| Username | config value, then `UPLOAD_{NAME}_USERNAME` |
-| Password | `UPLOAD_{NAME}_SECRET`, then config value |
-
-Where `{NAME}` is the uppercased `name` field.
-
 ## Target URL templating
 
 The `target` URL supports artifact-specific template variables:
@@ -70,16 +106,6 @@ The `target` URL supports artifact-specific template variables:
 | `{{ .Target }}` | Rust target triple |
 
 When `custom_artifact_name` is `false` (default), the artifact filename is automatically appended to the target URL.
-
-## Common gotchas
-
-- Same caveats as Artifactory: `PUT` is the default method; some servers require `POST`. Set `method: POST` if uploads fail with a 405.
-- `custom_artifact_name: true` uses the artifact filename as-is instead of appending it to the `target` URL.
-- No programmatic rollback — the upload publisher does not attempt HTTP DELETE on rollback. Use `after:` hooks for custom cleanup if needed.
-
-## Republish / update behavior
-
-Not applicable as a config field — re-uploading to the same `target` URL typically overwrites the object (PUT semantics). Server-specific behavior varies; check your target server's overwrite policy.
 
 ## Full example
 

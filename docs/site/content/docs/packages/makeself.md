@@ -18,6 +18,42 @@ makeselfs:
   - script: ./install.sh
 ```
 
+## Full config reference
+
+```yaml
+makeselfs:
+  - id: default                      # optional; unique identifier
+    ids: []                          # optional; filter by build IDs
+    name_template: ""                # optional; output filename template
+    name: ""                         # optional; display name embedded in archive
+    script: ./scripts/install.sh     # required; startup script path (template)
+    description: ""                  # optional; LSM metadata description
+    maintainer: ""                   # optional; LSM metadata maintainer
+    keywords: []                     # optional; LSM metadata keywords
+    homepage: ""                     # optional; LSM metadata homepage URL
+    license: ""                      # optional; LSM metadata license
+    compression: ""                  # optional; gzip | bzip2 | xz | lzo | compress | none
+    extra_args: []                   # optional; extra makeself CLI arguments
+    files: []                        # optional; additional files to include
+    goos: ["linux", "darwin"]        # optional; target OS filter
+    goarch: []                       # optional; target architecture filter
+    disable: false                   # optional
+```
+
+## Authentication
+
+Not applicable — makeself archive creation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **`makeself` must be on `PATH`**: the stage errors if `makeself` is not found.
+- **One `.run` per platform**: artifacts are grouped by OS + arch; each group produces one self-extracting archive. Use `goos` and `goarch` to restrict which targets are packaged.
+- **Artifact ordering**: the makeself stage uses a `BTreeMap` (sorted by platform key) internally to ensure the artifact registration order is deterministic across builds, preventing drift in `dist/artifacts.json`.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## Makeself config fields
 
 | Field | Type | Default | Description |
@@ -53,20 +89,6 @@ Each entry in `files` can specify:
 
 The `makeself` command must be installed and available on PATH.
 
-## Authentication
-
-Not applicable — makeself archive creation is a local build step with no external service calls.
-
-## Common gotchas
-
-- **`makeself` must be on `PATH`**: the stage errors if `makeself` is not found.
-- **One `.run` per platform**: artifacts are grouped by OS + arch; each group produces one self-extracting archive. Use `goos` and `goarch` to restrict which targets are packaged.
-- **Artifact ordering**: the makeself stage uses a `BTreeMap` (sorted by platform key) internally to ensure the artifact registration order is deterministic across builds, preventing drift in `dist/artifacts.json`.
-
-## Republish / update behavior
-
-Not applicable — this is a local packaging stage, not a publisher.
-
 ## Behavior
 
 - Groups binary artifacts by platform (os + arch), creating one `.run` per platform
@@ -83,28 +105,6 @@ Override the default compression method:
 makeselfs:
   - script: ./install.sh
     compression: xz
-```
-
-## Full config reference
-
-```yaml
-makeselfs:
-  - id: default                      # optional; unique identifier
-    ids: []                          # optional; filter by build IDs
-    name_template: ""                # optional; output filename template
-    name: ""                         # optional; display name embedded in archive
-    script: ./scripts/install.sh     # required; startup script path (template)
-    description: ""                  # optional; LSM metadata description
-    maintainer: ""                   # optional; LSM metadata maintainer
-    keywords: []                     # optional; LSM metadata keywords
-    homepage: ""                     # optional; LSM metadata homepage URL
-    license: ""                      # optional; LSM metadata license
-    compression: ""                  # optional; gzip | bzip2 | xz | lzo | compress | none
-    extra_args: []                   # optional; extra makeself CLI arguments
-    files: []                        # optional; additional files to include
-    goos: ["linux", "darwin"]        # optional; target OS filter
-    goarch: []                       # optional; target architecture filter
-    disable: false                   # optional
 ```
 
 ## Full example

@@ -7,51 +7,57 @@ template = "docs.html"
 
 Anodizer supports running arbitrary shell commands before the pipeline starts and after it completes. These are the same hooks documented in [Global Hooks](/docs/general/hooks/), but this page focuses on their use around the publish phase.
 
-## Config
+## Classification
+
+Not applicable — this is a workflow page, not a publisher. Hooks run arbitrary user commands; classification depends on what those commands do.
+
+## Minimal config
 
 ```yaml
 before:
   hooks:
     - "echo 'Starting release'"
-    - "cargo test --release"
 
 after:
   hooks:
     - "echo 'Release complete'"
-    - "./scripts/deploy.sh"
 ```
 
-## Structured hooks
-
-For more control, use the structured hook format:
+## Full config reference
 
 ```yaml
 before:
   hooks:
-    - cmd: "cargo test --release"
-      dir: "{{ .Env.PROJECT_ROOT }}"
-      env:
+    - "cargo test --release"                       # shorthand: bare command string
+    - cmd: "cargo build --release"                 # structured form
+      dir: "{{ .Env.PROJECT_ROOT }}"               # optional; working directory (template)
+      env:                                          # optional; extra env vars
         RUST_LOG: info
-      output: true
+      output: true                                  # optional; capture stdout/stderr
+
+after:
+  hooks:
+    - cmd: "./scripts/deploy.sh"
+      env:
+        DEPLOY_TARGET: production
 ```
 
-### Structured hook fields
+## Authentication
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `cmd` | string | **required** | Command to execute |
-| `dir` | string | project root | Working directory (template) |
-| `env` | map | none | Additional environment variables |
-| `output` | bool | none | Capture and log stdout/stderr |
+Not applicable — this is a workflow page, not a publisher. Any credentials your hook commands need must be present in the environment at hook runtime.
 
-## Behavior
+## Common gotchas
 
-- Hook commands are rendered through the template engine before execution
-- The process environment is inherited; pipeline environment variables (`VERSION`, `TAG`, etc.) are available
-- Secrets are automatically redacted from stdout/stderr
-- `hooks` is accepted as an alias for `pre` (GoReleaser compatibility)
-- Before hooks run sequentially; a failing hook aborts the pipeline
-- After hooks run after all stages complete successfully
+- Hook commands are rendered through the template engine before execution. Escape literal `{{` braces if needed.
+- The process environment is inherited; pipeline environment variables (`VERSION`, `TAG`, etc.) are available.
+- Secrets are automatically redacted from stdout/stderr.
+- `hooks` is accepted as an alias for `pre` (GoReleaser compatibility).
+- Before hooks run sequentially; a failing hook aborts the pipeline.
+- After hooks only run if all stages complete successfully — they are not a cleanup mechanism for failed runs.
+
+## Republish / update behavior
+
+Not applicable — this is a workflow page, not a publisher. Hook behavior across re-runs depends entirely on the commands you configure.
 
 ## Use cases
 

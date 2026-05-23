@@ -7,6 +7,10 @@ template = "docs.html"
 
 Anodizer can automatically close milestones on GitHub, GitLab, or Gitea after a release completes.
 
+## Classification
+
+Manager — closes a milestone via the upstream forge API after a successful release. Required: false (no-op when `close: false`).
+
 ## Minimal config
 
 ```yaml
@@ -14,22 +18,27 @@ milestones:
   - close: true
 ```
 
-## Milestone config fields
+## Full config reference
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `close` | bool | `false` | Close the matching milestone |
-| `name_template` | string | `{{ .Tag }}` | Milestone name to match (template) |
-| `repo` | object | auto-detected | Override the repository (`owner`, `name`) |
-| `fail_on_error` | bool | `false` | Fail the pipeline if milestone closing fails |
+```yaml
+milestones:
+  - close: false                       # optional; only acts when true
+    name_template: "{{ .Tag }}"        # optional; milestone name to match (template)
+    repo:                              # optional; override the repository
+      owner: ""
+      name: ""
+    fail_on_error: false               # optional; make milestone errors fatal
+```
 
-## Behavior
+## Authentication
 
-- Only acts when `close: true`
-- The milestone name template is rendered and matched against open milestones
-- Repository is auto-detected from the first crate's release config (GitHub/GitLab/Gitea)
-- Provider is auto-detected from the release config
-- Errors are logged as warnings by default; set `fail_on_error: true` to make them fatal
+Re-uses the release publisher's credentials. The same token used to create the GitHub/GitLab/Gitea release closes the milestone — no separate config field is needed.
+
+## Common gotchas
+
+- The milestone name template is rendered and matched against open milestones. A name mismatch silently no-ops.
+- Repository is auto-detected from the first crate's release config (GitHub/GitLab/Gitea).
+- Errors are logged as warnings by default; set `fail_on_error: true` to make them fatal.
 
 ### Provider-specific behavior
 
@@ -38,6 +47,10 @@ milestones:
 | GitHub | Paginated listing (100/page), title match | PATCH `state: "closed"` |
 | GitLab | API filter by title | PUT `state_event: "close"` |
 | Gitea | API filter by name | PATCH `state: "closed"` |
+
+## Republish / update behavior
+
+Idempotent — closing an already-closed milestone is a no-op on all three providers. Re-running the milestone stage after a successful close has no effect.
 
 ## Custom milestone name
 

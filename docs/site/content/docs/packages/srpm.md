@@ -18,6 +18,52 @@ srpm:
   enabled: true
 ```
 
+## Full config reference
+
+```yaml
+srpm:
+  enabled: false                     # required; opt-in (disabled by default)
+  package_name: ""                   # optional; RPM package name (default: project name)
+  file_name_template: ""             # optional; output filename template
+  spec_file: ""                      # optional; path to .spec template (auto-generated if omitted)
+  epoch: ""                          # optional; RPM epoch
+  section: ""                        # optional; RPM section
+  maintainer: ""                     # optional
+  vendor: ""                         # optional
+  summary: ""                        # optional
+  group: ""                          # optional
+  description: ""                    # optional
+  license: MIT                       # optional; license identifier
+  license_file_name: ""              # optional; license file to include
+  url: ""                            # optional; homepage URL
+  packager: ""                       # optional; RPM packager field
+  compression: ""                    # optional; gzip | xz | zstd | none
+  docs: []                           # optional; documentation files to include
+  contents: []                       # optional; additional contents
+  signature:                         # optional; RPM signing config
+    key_file: ""
+    passphrase: ""                   # optional; falls back to SRPM_PASSPHRASE env var
+  disable: false                     # optional
+```
+
+## Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `SRPM_PASSPHRASE` | GPG passphrase for signing (or set `signature.passphrase` in config) |
+
+No authentication is required when `signature` is not configured.
+
+## Common gotchas
+
+- **`rpmbuild` must be on `PATH`**: install via `sudo dnf install rpm-build` or `sudo apt-get install rpm`.
+- **Exactly one source archive required**: the stage errors if zero or more than one source archive artifact exists. Ensure the archive stage runs first with a compatible format.
+- **Signing**: `signature` requires a GPG key on the build machine. Ensure the key is imported before releasing.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## SRPM config fields
 
 | Field | Type | Default | Description |
@@ -49,24 +95,6 @@ srpm:
 |-------|------|-------------|
 | `key_file` | string | Path to GPG key file |
 | `passphrase` | string | GPG passphrase (falls back to `SRPM_PASSPHRASE` env var) |
-
-## Authentication
-
-| Variable | Description |
-|----------|-------------|
-| `SRPM_PASSPHRASE` | GPG passphrase for signing (or set `signature.passphrase` in config) |
-
-No authentication is required when `signature` is not configured.
-
-## Common gotchas
-
-- **`rpmbuild` must be on `PATH`**: install via `sudo dnf install rpm-build` or `sudo apt-get install rpm`.
-- **Exactly one source archive required**: the stage errors if zero or more than one source archive artifact exists. Ensure the archive stage runs first with a compatible format.
-- **Signing**: `signature` requires a GPG key on the build machine. Ensure the key is imported before releasing.
-
-## Republish / update behavior
-
-Not applicable — this is a local packaging stage, not a publisher.
 
 ## Prerequisites
 
@@ -103,34 +131,6 @@ The spec file is rendered through the template engine with additional variables:
 - The `.src.rpm` extension is auto-appended if not present
 - Respects global `--skip-sign` — signature config is cleared when signing is skipped
 - Skippable with `--skip srpm`
-
-## Full config reference
-
-```yaml
-srpm:
-  enabled: false                     # required; opt-in (disabled by default)
-  package_name: ""                   # optional; RPM package name (default: project name)
-  file_name_template: ""             # optional; output filename template
-  spec_file: ""                      # optional; path to .spec template (auto-generated if omitted)
-  epoch: ""                          # optional; RPM epoch
-  section: ""                        # optional; RPM section
-  maintainer: ""                     # optional
-  vendor: ""                         # optional
-  summary: ""                        # optional
-  group: ""                          # optional
-  description: ""                    # optional
-  license: MIT                       # optional; license identifier
-  license_file_name: ""              # optional; license file to include
-  url: ""                            # optional; homepage URL
-  packager: ""                       # optional; RPM packager field
-  compression: ""                    # optional; gzip | xz | zstd | none
-  docs: []                           # optional; documentation files to include
-  contents: []                       # optional; additional contents
-  signature:                         # optional; RPM signing config
-    key_file: ""
-    passphrase: ""                   # optional; falls back to SRPM_PASSPHRASE env var
-  disable: false                     # optional
-```
 
 ## Full example
 

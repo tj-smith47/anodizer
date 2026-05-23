@@ -30,64 +30,34 @@ mcp:
 
 This publishes anonymously (`auth.type: none`) to the default registry. For server names under the `io.github.<owner>` namespace you almost always want `auth.type: github-oidc` so the registry can verify ownership of the GitHub repo. See [Authentication](#authentication).
 
-## MCP config fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `name` | string | **required** | Fully-qualified server name (e.g. `io.github.OWNER/PROJECT`). Supports templates |
-| `title` | string | none | Human-readable title shown in registry UIs. Supports templates |
-| `description` | string | none | One-line description. Supports templates |
-| `homepage` | string | none | Project homepage URL. Supports templates |
-| `skip` | string or bool | `false` | Skip this publisher. Tera template that evaluates to a truthy value (e.g. `"{{ true }}"`) also skips. Accepts the legacy `disable:` spelling for back-compat with imported GoReleaser configs |
-| `repository` | object | inferred | Source repository metadata. See [Repository](#repository) |
-| `packages` | object[] | **required** | One or more distribution packages. See [Packages](#packages) |
-| `transports` | object[] | none | Top-level transport list. Parsed for GoReleaser config-portability (silently ignored — see [note below](#top-level-transports)); the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry |
-| `auth` | object | `{type: none}` | Registry authentication. See [Authentication](#authentication) |
-| `registry` | string | `https://registry.modelcontextprotocol.io` | Override the registry endpoint (for staging or a private mirror) |
-
-The top-level `retry:` config applies: `POST /v0/publish` calls inherit anodizer's standard retry policy (backoff, max attempts, retryable status codes).
-
-### Repository
+## Full config reference
 
 ```yaml
-repository:
-  url: https://github.com/myorg/myapp
-  source: github          # github | gitlab | gitea
-  id: ""                  # optional, source-specific repo ID
-  subfolder: ""           # optional, e.g. "servers/myapp" inside a monorepo
+mcp:
+  name: io.github.myorg/myapp       # required; fully-qualified server name (template)
+  title: ""                          # optional; human-readable title (template)
+  description: ""                    # optional; one-line description (template)
+  homepage: ""                       # optional; project URL (template)
+  skip: false                        # optional; bool or template string
+  registry: "https://registry.modelcontextprotocol.io"  # optional; override endpoint
+  repository:                        # optional; inferred from release context if omitted
+    url: "https://github.com/myorg/myapp"
+    source: github                   # github | gitlab | gitea
+    id: ""                           # optional; source-specific repo ID
+    subfolder: ""                    # optional; monorepo subfolder
+  packages:                          # required; one or more distribution packages
+    - registry_type: oci             # oci | npm | pypi | nuget | mcpb
+      identifier: ghcr.io/myorg/myapp  # package coordinate (template)
+      transport:
+        type: stdio                  # stdio | streamable-http | sse
+  transports:                        # optional; accepted for GoReleaser portability
+    - type: stdio
+  auth:
+    type: none                       # none | bearer | github-oidc
+    # For bearer:
+    # token: "{{ .Env.MCP_TOKEN }}"
+    # For github-oidc: no extra fields needed; token is auto-obtained from Actions
 ```
-
-All fields support Tera templates. If omitted, anodizer infers `url` and `source` from the release context.
-
-### Packages
-
-Each entry describes one downloadable form of the server. List all the ones you publish; clients pick the best match for their host.
-
-```yaml
-packages:
-  - registry_type: oci            # oci | npm | pypi | nuget | mcpb
-    identifier: ghcr.io/myorg/myapp
-    transport:
-      type: stdio                 # stdio | streamable-http | sse
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `registry_type` | string | One of `oci`, `npm`, `pypi`, `nuget`, `mcpb` |
-| `identifier` | string | Package coordinate. Supports templates. For OCI: `ghcr.io/owner/img`. For npm: `@scope/name`. For PyPI: distribution name. For NuGet: package ID. For mcpb: download URL |
-| `transport.type` | string | `stdio`, `streamable-http`, or `sse` |
-
-When `registry_type: oci`, the published manifest carries an empty `version` field on the package entry (the registry resolves the image tag itself). Other registry types receive the release version verbatim. This mirrors GoReleaser's `mcp_registries` behavior.
-
-### Top-level transports
-
-```yaml
-transports:
-  - type: stdio
-  - type: streamable-http
-```
-
-Optional. The `transports:` list is accepted for GoReleaser config-portability (so a migrated `.goreleaser.yaml` doesn't error on `deny_unknown_fields`); the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry.
 
 ## Authentication
 
@@ -170,6 +140,65 @@ Anodizer reads the OIDC request URL and token from the standard GHA env vars, re
 
 Not applicable as a config flag — the MCP registry accepts re-posting the same server name and version; the manifest is updated in-place on the registry. Rollback is warn-only because the registry has no programmatic unpublish endpoint; deprecated servers must be marked manually via the registry admin UI.
 
+## MCP config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | **required** | Fully-qualified server name (e.g. `io.github.OWNER/PROJECT`). Supports templates |
+| `title` | string | none | Human-readable title shown in registry UIs. Supports templates |
+| `description` | string | none | One-line description. Supports templates |
+| `homepage` | string | none | Project homepage URL. Supports templates |
+| `skip` | string or bool | `false` | Skip this publisher. Tera template that evaluates to a truthy value (e.g. `"{{ true }}"`) also skips. Accepts the legacy `disable:` spelling for back-compat with imported GoReleaser configs |
+| `repository` | object | inferred | Source repository metadata. See [Repository](#repository) |
+| `packages` | object[] | **required** | One or more distribution packages. See [Packages](#packages) |
+| `transports` | object[] | none | Top-level transport list. Parsed for GoReleaser config-portability (silently ignored — see [note below](#top-level-transports)); the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry |
+| `auth` | object | `{type: none}` | Registry authentication. See [Authentication](#authentication) |
+| `registry` | string | `https://registry.modelcontextprotocol.io` | Override the registry endpoint (for staging or a private mirror) |
+
+The top-level `retry:` config applies: `POST /v0/publish` calls inherit anodizer's standard retry policy (backoff, max attempts, retryable status codes).
+
+### Repository
+
+```yaml
+repository:
+  url: https://github.com/myorg/myapp
+  source: github          # github | gitlab | gitea
+  id: ""                  # optional, source-specific repo ID
+  subfolder: ""           # optional, e.g. "servers/myapp" inside a monorepo
+```
+
+All fields support Tera templates. If omitted, anodizer infers `url` and `source` from the release context.
+
+### Packages
+
+Each entry describes one downloadable form of the server. List all the ones you publish; clients pick the best match for their host.
+
+```yaml
+packages:
+  - registry_type: oci            # oci | npm | pypi | nuget | mcpb
+    identifier: ghcr.io/myorg/myapp
+    transport:
+      type: stdio                 # stdio | streamable-http | sse
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `registry_type` | string | One of `oci`, `npm`, `pypi`, `nuget`, `mcpb` |
+| `identifier` | string | Package coordinate. Supports templates. For OCI: `ghcr.io/owner/img`. For npm: `@scope/name`. For PyPI: distribution name. For NuGet: package ID. For mcpb: download URL |
+| `transport.type` | string | `stdio`, `streamable-http`, or `sse` |
+
+When `registry_type: oci`, the published manifest carries an empty `version` field on the package entry (the registry resolves the image tag itself). Other registry types receive the release version verbatim. This mirrors GoReleaser's `mcp_registries` behavior.
+
+### Top-level transports
+
+```yaml
+transports:
+  - type: stdio
+  - type: streamable-http
+```
+
+Optional. The `transports:` list is accepted for GoReleaser config-portability (so a migrated `.goreleaser.yaml` doesn't error on `deny_unknown_fields`); the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry.
+
 ## Skipping per release
 
 `skip` accepts either a bool or a Tera template:
@@ -187,35 +216,6 @@ Common patterns:
 | Always skip | `skip: true` or `skip: "{{ true }}"` |
 | Skip pre-releases | `skip: "{{ if .Prerelease }}true{{ endif }}"` |
 | Skip snapshot builds | `skip: "{{ if .IsSnapshot }}true{{ endif }}"` |
-
-## Full config reference
-
-```yaml
-mcp:
-  name: io.github.myorg/myapp       # required; fully-qualified server name (template)
-  title: ""                          # optional; human-readable title (template)
-  description: ""                    # optional; one-line description (template)
-  homepage: ""                       # optional; project URL (template)
-  skip: false                        # optional; bool or template string
-  registry: "https://registry.modelcontextprotocol.io"  # optional; override endpoint
-  repository:                        # optional; inferred from release context if omitted
-    url: "https://github.com/myorg/myapp"
-    source: github                   # github | gitlab | gitea
-    id: ""                           # optional; source-specific repo ID
-    subfolder: ""                    # optional; monorepo subfolder
-  packages:                          # required; one or more distribution packages
-    - registry_type: oci             # oci | npm | pypi | nuget | mcpb
-      identifier: ghcr.io/myorg/myapp  # package coordinate (template)
-      transport:
-        type: stdio                  # stdio | streamable-http | sse
-  transports:                        # optional; accepted for GoReleaser portability
-    - type: stdio
-  auth:
-    type: none                       # none | bearer | github-oidc
-    # For bearer:
-    # token: "{{ .Env.MCP_TOKEN }}"
-    # For github-oidc: no extra fields needed; token is auto-obtained from Actions
-```
 
 ## Full example
 

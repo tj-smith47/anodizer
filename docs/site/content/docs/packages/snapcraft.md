@@ -11,14 +11,6 @@ The snapcraft stage builds `.snap` packages from your Linux binaries and optiona
 
 Packager + optional Submitter — builds snap packages from Linux binaries and, when `publish: true` is set, uploads them to the Snap Store. The Snap Store upload is a Submitter-group operation (no rollback; already-installed snaps keep the revision).
 
-## Required tools
-
-- `snapcraft` — must be installed and on `PATH`. Install via `sudo snap install snapcraft --classic`.
-
-## Platform
-
-Snapcraft only runs against Linux binary artifacts. Builds targeting other operating systems are ignored.
-
 ## Minimal config
 
 ```yaml
@@ -28,6 +20,64 @@ crates:
       - summary: "My application"
         description: "A longer description shown in the Snap Store."
 ```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    snapcrafts:
+      - id: ""                         # optional; unique identifier
+        ids: []                        # optional; filter by build IDs
+        name: ""                       # optional; snap package name (default: binary name)
+        title: ""                      # optional; user-facing application title
+        summary: ""                    # optional; single-line description (max 79 chars)
+        description: ""                # optional; extended description
+        icon: ""                       # optional; path to .png or .svg icon
+        base: core22                   # optional; core | core18 | core20 | core22 | core24 | bare
+        grade: ""                      # optional; stable | devel
+        license: ""                    # optional; SPDX identifier
+        confinement: strict            # optional; strict | devmode | classic
+        plugs: {}                      # optional; interface plug definitions
+        slots: []                      # optional; shared interface slots
+        assumes: []                    # optional; required snapd features
+        apps: {}                       # optional; named app entries (auto-generated if omitted)
+        layouts: {}                    # optional; filesystem layout mappings
+        extra_files: []                # optional; additional static files to bundle
+        name_template: ""              # optional; output filename template
+        publish: false                 # optional; upload to Snap Store after building
+        channel_templates: []          # optional; store channels to release to
+        replace: false                 # optional; remove archive artifacts, keep snap only
+        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
+        disable: false                 # optional
+```
+
+## Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `SNAPCRAFT_STORE_CREDENTIALS` | Snapcraft login credentials (base64-encoded). Obtain via `snapcraft export-login --snaps myapp --channels stable -`. |
+
+Alternatively, run `snapcraft login` before releasing to authenticate interactively.
+
+## Common gotchas
+
+- **`snapcraft` must be on `PATH`**: install via `sudo snap install snapcraft --classic`.
+- **Linux only**: the stage ignores non-Linux artifacts. Ensure at least one Linux build target is configured.
+- **Icon auto-write**: the `icon` field copies the file to `meta/gui/<name>.<ext>` inside the staged prime directory before `snapcraft pack` runs. The source path may be absolute or relative to the project root. The icon does NOT appear in `snap.json`.
+- **`grade: stable` + `confinement: devmode`**: snapcraft will warn that `devmode` snaps cannot be published to the `stable` channel.
+
+## Republish / update behavior
+
+Not applicable — once a snap revision is uploaded to the Snap Store, it cannot be removed. Already-installed snaps keep the revision they installed. Use a different `channel_templates` target (e.g., `edge`) for pre-release builds.
+
+## Required tools
+
+- `snapcraft` — must be installed and on `PATH`. Install via `sudo snap install snapcraft --classic`.
+
+## Platform
+
+Snapcraft only runs against Linux binary artifacts. Builds targeting other operating systems are ignored.
 
 ## Config fields
 
@@ -102,59 +152,9 @@ Target triple components are mapped to Snapcraft architecture names:
 | `ppc64le` | `ppc64el` |
 | `riscv64` | `riscv64` |
 
-## Authentication
-
-| Variable | Description |
-|----------|-------------|
-| `SNAPCRAFT_STORE_CREDENTIALS` | Snapcraft login credentials (base64-encoded). Obtain via `snapcraft export-login --snaps myapp --channels stable -`. |
-
-Alternatively, run `snapcraft login` before releasing to authenticate interactively.
-
-## Common gotchas
-
-- **`snapcraft` must be on `PATH`**: install via `sudo snap install snapcraft --classic`.
-- **Linux only**: the stage ignores non-Linux artifacts. Ensure at least one Linux build target is configured.
-- **Icon auto-write**: the `icon` field copies the file to `meta/gui/<name>.<ext>` inside the staged prime directory before `snapcraft pack` runs. The source path may be absolute or relative to the project root. The icon does NOT appear in `snap.json`.
-- **`grade: stable` + `confinement: devmode`**: snapcraft will warn that `devmode` snaps cannot be published to the `stable` channel.
-
-## Republish / update behavior
-
-Not applicable — once a snap revision is uploaded to the Snap Store, it cannot be removed. Already-installed snaps keep the revision they installed. Use a different `channel_templates` target (e.g., `edge`) for pre-release builds.
-
 ## Publishing to the Snap Store
 
 Set `publish: true` and authenticate with `snapcraft login` (or set `SNAPCRAFT_STORE_CREDENTIALS`) before running anodizer. When `channel_templates` is provided, the snap is released to those channels automatically via `snapcraft upload --release`.
-
-## Full config reference
-
-```yaml
-crates:
-  - name: myapp
-    snapcrafts:
-      - id: ""                         # optional; unique identifier
-        ids: []                        # optional; filter by build IDs
-        name: ""                       # optional; snap package name (default: binary name)
-        title: ""                      # optional; user-facing application title
-        summary: ""                    # optional; single-line description (max 79 chars)
-        description: ""                # optional; extended description
-        icon: ""                       # optional; path to .png or .svg icon
-        base: core22                   # optional; core | core18 | core20 | core22 | core24 | bare
-        grade: ""                      # optional; stable | devel
-        license: ""                    # optional; SPDX identifier
-        confinement: strict            # optional; strict | devmode | classic
-        plugs: {}                      # optional; interface plug definitions
-        slots: []                      # optional; shared interface slots
-        assumes: []                    # optional; required snapd features
-        apps: {}                       # optional; named app entries (auto-generated if omitted)
-        layouts: {}                    # optional; filesystem layout mappings
-        extra_files: []                # optional; additional static files to bundle
-        name_template: ""              # optional; output filename template
-        publish: false                 # optional; upload to Snap Store after building
-        channel_templates: []          # optional; store channels to release to
-        replace: false                 # optional; remove archive artifacts, keep snap only
-        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
-        disable: false                 # optional
-```
 
 ## Full example
 

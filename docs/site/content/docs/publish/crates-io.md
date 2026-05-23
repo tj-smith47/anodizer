@@ -32,6 +32,49 @@ publish:
     skip: true
 ```
 
+## Full config reference
+
+```yaml
+publish:
+  cargo:
+    index_timeout: 300        # seconds to wait for crates.io index update
+    registry: ""              # alternative registry name from ~/.cargo/config.toml
+    index: ""                 # alternative registry index URL
+    no_verify: false          # skip local cargo build verification
+    allow_dirty: true         # default true (anodize tag dirties the tree)
+    features: []              # features to enable
+    all_features: false
+    no_default_features: false
+    target: ""                # target triple override
+    target_dir: ""            # cargo target directory override
+    jobs: 0                   # parallelism (0 = cargo default)
+    keep_going: false
+    manifest_path: ""         # Cargo.toml path override
+    locked: false
+    offline: false
+    frozen: false
+    skip: false               # bool, "true"/"false", or "auto"
+```
+
+## Authentication
+
+Set `CARGO_REGISTRY_TOKEN`:
+
+```bash
+export CARGO_REGISTRY_TOKEN="cio_..."
+anodizer release
+```
+
+## Common gotchas
+
+- **Version slot burned permanently**: once a version is published to crates.io it cannot be deleted — only yanked. A yanked version stays reserved; consumers with an explicit version pin can still install it, but `cargo add` and `cargo update` will not select it. Plan releases carefully before pushing.
+- **Index lag**: crates.io's index update can take 30–120 seconds after publish. Anodizer waits up to `index_timeout` seconds (default 300) before publishing dependent crates in the workspace ordering chain.
+- **`allow_dirty: true`** is the default because `anodize tag` writes a version bump commit that leaves the tree dirty. Set `allow_dirty: false` only if you manage version bumps externally.
+
+## Republish / update behavior
+
+Not applicable — crates.io does not allow re-publishing a version once it has been published. Each release must use a new version number. Use `cargo yank` (via the rollback path) to prevent new installs of a broken version.
+
 ## Config options
 
 ```yaml
@@ -69,49 +112,6 @@ publish:
     skip: false               # template-aware: bool, "true"/"false", or "auto"
 ```
 
-## Full config reference
-
-```yaml
-publish:
-  cargo:
-    index_timeout: 300        # seconds to wait for crates.io index update
-    registry: ""              # alternative registry name from ~/.cargo/config.toml
-    index: ""                 # alternative registry index URL
-    no_verify: false          # skip local cargo build verification
-    allow_dirty: true         # default true (anodize tag dirties the tree)
-    features: []              # features to enable
-    all_features: false
-    no_default_features: false
-    target: ""                # target triple override
-    target_dir: ""            # cargo target directory override
-    jobs: 0                   # parallelism (0 = cargo default)
-    keep_going: false
-    manifest_path: ""         # Cargo.toml path override
-    locked: false
-    offline: false
-    frozen: false
-    skip: false               # bool, "true"/"false", or "auto"
-```
-
-## Common gotchas
-
-- **Version slot burned permanently**: once a version is published to crates.io it cannot be deleted — only yanked. A yanked version stays reserved; consumers with an explicit version pin can still install it, but `cargo add` and `cargo update` will not select it. Plan releases carefully before pushing.
-- **Index lag**: crates.io's index update can take 30–120 seconds after publish. Anodizer waits up to `index_timeout` seconds (default 300) before publishing dependent crates in the workspace ordering chain.
-- **`allow_dirty: true`** is the default because `anodize tag` writes a version bump commit that leaves the tree dirty. Set `allow_dirty: false` only if you manage version bumps externally.
-
-## Republish / update behavior
-
-Not applicable — crates.io does not allow re-publishing a version once it has been published. Each release must use a new version number. Use `cargo yank` (via the rollback path) to prevent new installs of a broken version.
-
 ## Workspace ordering
 
 When publishing multiple workspace crates, anodizer resolves dependency order using topological sorting. If crate `B` depends on crate `A`, `A` is published first and anodizer waits for the crates.io index to update before publishing `B`.
-
-## Authentication
-
-Set `CARGO_REGISTRY_TOKEN`:
-
-```bash
-export CARGO_REGISTRY_TOKEN="cio_..."
-anodizer release
-```

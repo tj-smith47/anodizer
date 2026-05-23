@@ -19,26 +19,19 @@ Anodizer generates Arch Linux `PKGBUILD` and `.SRCINFO` files and pushes them to
 
 See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
 
-## Authentication
+## Minimal config
 
-AUR publishing requires SSH access to the AUR git server. See [SSH key setup](#ssh-key-setup) below for setup instructions.
+Pick one or both. Binary packages distribute prebuilt artifacts; source packages build via `cargo`.
 
-| Config field | Env var | Description |
-|---|---|---|
-| `private_key` | — | Path to SSH private key file |
-| `git_ssh_command` | — | Override the full SSH invocation |
-| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ .Env.AUR_SSH_KEY }}"`) |
-
-## Common gotchas
-
-- **Version string hyphens**: AUR `pkgver` does not allow hyphens. Anodizer replaces hyphens with underscores (e.g. `1.0.0-rc1` → `1.0.0_rc1`). Ensure your PKGBUILD validators account for this.
-- **`.SRCINFO` generated automatically**: anodizer generates `.SRCINFO` alongside the PKGBUILD without running `makepkg --printsrcinfo`. If you maintain additional AUR metadata outside anodizer, ensure the committed `.SRCINFO` stays in sync.
-- **No `git_url`**: if `git_url` is omitted for source packages, PKGBUILD files are generated in `dist/` but not pushed. Useful for local inspection before AUR submission.
-- **Force-push upstream AUR**: upstream AUR push is a force-push that overwrites the branch; it is classified as Submitter because it cannot be rolled back programmatically.
-
-## Republish / update behavior
-
-Not applicable as a config flag — AUR publishing is always a push (binary packages) or force-push (upstream AUR). Re-cutting a version overwrites the previous PKGBUILD commit. For our-AUR-repos (Manager group), rollback reverts the commit via `git revert` + push.
+```yaml
+crates:
+  - name: myapp
+    publish:
+      aur:           # binary package — uses release archive
+        git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"
+      aur_source:    # source package — builds via cargo
+        git_url: "ssh://aur@aur.archlinux.org/myapp.git"
+```
 
 ## Full config reference
 
@@ -115,6 +108,27 @@ crates:
         arches: []                   # optional; architecture filter
         disable: false               # optional
 ```
+
+## Authentication
+
+AUR publishing requires SSH access to the AUR git server. See [SSH key setup](#ssh-key-setup) below for setup instructions.
+
+| Config field | Env var | Description |
+|---|---|---|
+| `private_key` | — | Path to SSH private key file |
+| `git_ssh_command` | — | Override the full SSH invocation |
+| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ .Env.AUR_SSH_KEY }}"`) |
+
+## Common gotchas
+
+- **Version string hyphens**: AUR `pkgver` does not allow hyphens. Anodizer replaces hyphens with underscores (e.g. `1.0.0-rc1` → `1.0.0_rc1`). Ensure your PKGBUILD validators account for this.
+- **`.SRCINFO` generated automatically**: anodizer generates `.SRCINFO` alongside the PKGBUILD without running `makepkg --printsrcinfo`. If you maintain additional AUR metadata outside anodizer, ensure the committed `.SRCINFO` stays in sync.
+- **No `git_url`**: if `git_url` is omitted for source packages, PKGBUILD files are generated in `dist/` but not pushed. Useful for local inspection before AUR submission.
+- **Force-push upstream AUR**: upstream AUR push is a force-push that overwrites the branch; it is classified as Submitter because it cannot be rolled back programmatically.
+
+## Republish / update behavior
+
+Not applicable as a config flag — AUR publishing is always a push (binary packages) or force-push (upstream AUR). Re-cutting a version overwrites the previous PKGBUILD commit. For our-AUR-repos (Manager group), rollback reverts the commit via `git revert` + push.
 
 ## Binary packages (`publish.aur`)
 

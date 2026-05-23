@@ -391,6 +391,33 @@ build output, eliminating a recompile pass. `shard-label` is required
 because `merge-multiple: true` would otherwise collide each shard's
 `context.json` / `artifacts.json` on the consumer side.
 
+### Multi-shard hash-verify tolerance
+
+Each shard hash-verifies only the artifacts produced by its own targets.
+Hashes from shard A are never compared against shard B's `dist/` — there is
+no cross-shard hash comparison at all. The invariant the harness enforces is:
+
+> Within a single shard, two runs of the same target list must produce
+> byte-identical artifacts.
+
+This is what makes 3-way (and 4-way, in anodizer's own case) matrix
+sharding possible. A Linux runner can never natively build the
+`*-pc-windows-msvc` triples; a macOS runner can't produce
+`x86_64-unknown-linux-musl`. If the harness required all shards to
+agree on every artifact's hash, sharding would be impossible — every
+shard would either need a complete toolchain (defeating the wall-clock
+win) or be forced into emulated cross-compilation (which is not
+byte-stable across rebuild hosts).
+
+The tolerance is intentionally one-directional: it relaxes the
+*cross-shard* comparison while keeping the *per-shard* contract
+strict. A single shard that produces drifting hashes between run-0
+and run-1 of its own target subset still fails the harness exactly
+as a single-shard run would. The downstream `release:` job that
+merges every shard's `dist/` and runs `--publish-only` doesn't
+re-verify either — it trusts that each shard already validated its
+own outputs and treats the merged tree as authoritative.
+
 PR builds run the same harness with a fast advisory subset
 (`--stages=archive,sbom,sign,checksum`) on a single Linux shard via the
 action's `determinism-stages` input.

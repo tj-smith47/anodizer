@@ -22,15 +22,19 @@ fury:
   - account: myorg
 ```
 
-## Gemfury config fields
+## Full config reference
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `account` | string | **required** | Gemfury account name (template) |
-| `ids` | list | none | Filter by build IDs |
-| `formats` | list | `["apk", "deb", "rpm"]` | Package format filter |
-| `secret_name` | string | `FURY_TOKEN` | Environment variable name for the API token |
-| `disable` | string/bool | none | Disable this config |
+```yaml
+fury:
+  - account: myorg                   # required; Gemfury account name (template)
+    ids: []                          # optional; filter by build IDs
+    formats:                         # optional; defaults to ["apk", "deb", "rpm"]
+      - deb
+      - rpm
+      - apk
+    secret_name: FURY_TOKEN          # optional; env var name for the push token
+    disable: false                   # optional; skip this entry
+```
 
 ## Authentication
 
@@ -48,26 +52,22 @@ fury:
 
 Not applicable as a config field — Gemfury allows re-pushing the same version file (the PUT endpoint overwrites). No flag is required. Rollback is warn-only because Gemfury has no delete API in anodizer's scope.
 
+## Gemfury config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `account` | string | **required** | Gemfury account name (template) |
+| `ids` | list | none | Filter by build IDs |
+| `formats` | list | `["apk", "deb", "rpm"]` | Package format filter |
+| `secret_name` | string | `FURY_TOKEN` | Environment variable name for the API token |
+| `disable` | string/bool | none | Disable this config |
+
 ## Behavior
 
 - Pushes matching `linux_package` and `archive` artifacts via HTTP PUT to `https://push.fury.io/v1/{account}/`
 - Authenticates with Bearer token
 - Matches artifacts by file extension against the format filter
 - Supports multiple entries and ID filtering
-
-## Full config reference
-
-```yaml
-fury:
-  - account: myorg                   # required; Gemfury account name (template)
-    ids: []                          # optional; filter by build IDs
-    formats:                         # optional; defaults to ["apk", "deb", "rpm"]
-      - deb
-      - rpm
-      - apk
-    secret_name: FURY_TOKEN          # optional; env var name for the push token
-    disable: false                   # optional; skip this entry
-```
 
 ## Full example
 

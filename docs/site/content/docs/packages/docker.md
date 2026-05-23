@@ -23,6 +23,37 @@ crates:
         dockerfile: Dockerfile
 ```
 
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    docker:
+      - image_templates:              # required; Docker image tags (templates supported)
+          - "myorg/myapp:{{ Version }}"
+        dockerfile: Dockerfile        # optional; path to Dockerfile
+        platforms: []                 # optional; e.g. linux/amd64, linux/arm64
+        binaries: []                  # optional; binaries to copy (default: all)
+        build_flag_templates: []      # optional; additional docker buildx build flags
+        skip_push: false              # optional; build but don't push
+        extra_files: []               # optional; extra files to copy into build context
+        push_flags: []                # optional; additional push flags
+```
+
+## Authentication
+
+Docker registry credentials are resolved from the host Docker configuration (`~/.docker/config.json`). Run `docker login` before releasing or set `DOCKER_USERNAME` / `DOCKER_PASSWORD` and call `docker login` in a `before:` hook.
+
+## Common gotchas
+
+- **`docker buildx` required**: multi-architecture builds require Docker Buildx. Ensure the buildx plugin is installed and a builder with multi-arch support is configured.
+- **`skip_push: true`**: builds the image locally but does not push. Useful for testing the build without publishing.
+- **Platform strings**: use Docker platform notation (`linux/amd64`, `linux/arm64`), not Rust target triples.
+
+## Republish / update behavior
+
+Not applicable as a config flag — pushing the same tag to a registry overwrites the previous image. Re-running the docker stage with the same `image_templates` re-pushes the image.
+
 ## Docker config fields
 
 | Field | Type | Default | Description |
@@ -59,37 +90,6 @@ docker:
     build_flag_templates:
       - "--build-arg=VERSION={{ Version }}"
       - "--label=org.opencontainers.image.version={{ Version }}"
-```
-
-## Authentication
-
-Docker registry credentials are resolved from the host Docker configuration (`~/.docker/config.json`). Run `docker login` before releasing or set `DOCKER_USERNAME` / `DOCKER_PASSWORD` and call `docker login` in a `before:` hook.
-
-## Common gotchas
-
-- **`docker buildx` required**: multi-architecture builds require Docker Buildx. Ensure the buildx plugin is installed and a builder with multi-arch support is configured.
-- **`skip_push: true`**: builds the image locally but does not push. Useful for testing the build without publishing.
-- **Platform strings**: use Docker platform notation (`linux/amd64`, `linux/arm64`), not Rust target triples.
-
-## Republish / update behavior
-
-Not applicable as a config flag — pushing the same tag to a registry overwrites the previous image. Re-running the docker stage with the same `image_templates` re-pushes the image.
-
-## Full config reference
-
-```yaml
-crates:
-  - name: myapp
-    docker:
-      - image_templates:              # required; Docker image tags (templates supported)
-          - "myorg/myapp:{{ Version }}"
-        dockerfile: Dockerfile        # optional; path to Dockerfile
-        platforms: []                 # optional; e.g. linux/amd64, linux/arm64
-        binaries: []                  # optional; binaries to copy (default: all)
-        build_flag_templates: []      # optional; additional docker buildx build flags
-        skip_push: false              # optional; build but don't push
-        extra_files: []               # optional; extra files to copy into build context
-        push_flags: []                # optional; additional push flags
 ```
 
 ## Full example

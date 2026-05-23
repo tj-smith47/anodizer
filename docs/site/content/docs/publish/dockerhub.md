@@ -25,6 +25,42 @@ dockerhub:
     description: "A fast CLI tool"
 ```
 
+## Full config reference
+
+```yaml
+dockerhub:
+  - username: myuser                 # required
+    secret_name: DOCKER_PASSWORD     # optional; env var for the password
+    images:                          # optional; repo names to update
+      - myorg/myapp
+    description: ""                  # optional; short description (max 100 chars)
+    full_description:                # optional; long description source
+      from_file:
+        path: README.md              # local file path
+      # or:
+      # from_url:
+      #   url: "https://..."
+      #   headers:
+      #     Authorization: "token {{ .Env.GITHUB_TOKEN }}"
+    disable: false                   # optional; skip this entry
+```
+
+## Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `DOCKER_PASSWORD` | Docker Hub password (or custom name via `secret_name`) |
+
+## Common gotchas
+
+- **Description only**: this publisher updates repository metadata (short and full description) only. It does not build or push Docker images. Use the [Docker packages stage](/docs/packages/docker/) for image builds.
+- **Short description limit**: Docker Hub truncates short descriptions to 100 characters. Anodizer emits a warning when the configured value exceeds this limit.
+- **`from_file` precedence**: when both `from_file` and `from_url` are set on `full_description`, `from_file` wins.
+
+## Republish / update behavior
+
+Not applicable — description updates are idempotent. Each release PATCHes the description in-place. Running the publisher twice with the same content is a no-op from Docker Hub's perspective. Rollback is warn-only because the prior description is not snapshotted before the PATCH.
+
 ## Docker Hub config fields
 
 | Field | Type | Default | Description |
@@ -59,22 +95,6 @@ full_description:
 | `from_file` | `path` — local file path |
 | `from_url` | `url` — HTTP URL; `headers` — optional HTTP headers |
 
-## Authentication
-
-| Variable | Description |
-|----------|-------------|
-| `DOCKER_PASSWORD` | Docker Hub password (or custom name via `secret_name`) |
-
-## Common gotchas
-
-- **Description only**: this publisher updates repository metadata (short and full description) only. It does not build or push Docker images. Use the [Docker packages stage](/docs/packages/docker/) for image builds.
-- **Short description limit**: Docker Hub truncates short descriptions to 100 characters. Anodizer emits a warning when the configured value exceeds this limit.
-- **`from_file` precedence**: when both `from_file` and `from_url` are set on `full_description`, `from_file` wins.
-
-## Republish / update behavior
-
-Not applicable — description updates are idempotent. Each release PATCHes the description in-place. Running the publisher twice with the same content is a no-op from Docker Hub's perspective. Rollback is warn-only because the prior description is not snapshotted before the PATCH.
-
 ## Behavior
 
 - Authenticates via Docker Hub API (`hub.docker.com/v2/users/login/`)
@@ -82,26 +102,6 @@ Not applicable — description updates are idempotent. Each release PATCHes the 
 - Short descriptions longer than 100 characters trigger a warning (Docker Hub truncates)
 - `from_file` takes precedence over `from_url` when both are set
 - Skips the PATCH when both `description` and `full_description` are empty
-
-## Full config reference
-
-```yaml
-dockerhub:
-  - username: myuser                 # required
-    secret_name: DOCKER_PASSWORD     # optional; env var for the password
-    images:                          # optional; repo names to update
-      - myorg/myapp
-    description: ""                  # optional; short description (max 100 chars)
-    full_description:                # optional; long description source
-      from_file:
-        path: README.md              # local file path
-      # or:
-      # from_url:
-      #   url: "https://..."
-      #   headers:
-      #     Authorization: "token {{ .Env.GITHUB_TOKEN }}"
-    disable: false                   # optional; skip this entry
-```
 
 ## Full example
 

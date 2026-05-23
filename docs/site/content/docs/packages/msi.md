@@ -11,6 +11,45 @@ The MSI stage builds `.msi` Windows installer packages from your Windows binarie
 
 Packager — builds Windows MSI installers from Windows binaries. Required: not a publisher; runs only on Windows targets.
 
+## Minimal config
+
+```yaml
+crates:
+  - name: myapp
+    msis:
+      - wxs: installer/myapp.wxs
+```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    msis:
+      - wxs: installer/myapp.wxs     # required; path to .wxs file (template)
+        id: ""                        # optional; unique identifier
+        ids: []                       # optional; filter by build IDs
+        name: ""                      # optional; output filename template
+        version: ""                   # optional; v3 | v4 (auto-detected if omitted)
+        replace: false                # optional; remove archive artifacts, keep MSI only
+        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
+        disable: false                # optional
+```
+
+## Authentication
+
+Not applicable — MSI generation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **WiX must be on `PATH`**: the stage probes for `wix` (v4) then `candle` (v3). If neither is found, the stage errors immediately.
+- **`.wxs` template rendering**: the WiX source file is rendered through Tera before being passed to WiX. Ensure any `{{ ... }}` expressions in the `.wxs` are valid Tera.
+- **Architecture mapping**: `amd64` → `x64`, `386`/`i686` → `x86`, `arm64`/`aarch64` → `arm64`. WiX build commands vary by arch.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## Required tools
 
 | Tool | Version | Notes |
@@ -31,15 +70,6 @@ The WiX version is determined in this order:
 1. **`version` field** — if set in config (`v3` or `v4`), that version is used.
 2. **`.wxs` content** — if the file contains `http://schemas.microsoft.com/wix/2006/wi`, WiX v3 is selected; the `http://wixtoolset.org/schemas/v4/wxs` namespace or no namespace defaults to v4.
 3. **Installed tools** — checks for `wix` (v4) then `candle` (v3) on `PATH`.
-
-## Minimal config
-
-```yaml
-crates:
-  - name: myapp
-    msis:
-      - wxs: installer/myapp.wxs
-```
 
 ## Config fields
 
@@ -87,36 +117,6 @@ wix build installer/myapp.wxs -o dist/windows/myapp_1.0.0_x64.msi
 ```
 candle -nologo installer/myapp.wxs -o dist/windows/myapp_1.0.0_x64.wixobj
 light  -nologo dist/windows/myapp_1.0.0_x64.wixobj -o dist/windows/myapp_1.0.0_x64.msi
-```
-
-## Authentication
-
-Not applicable — MSI generation is a local build step with no external service calls.
-
-## Common gotchas
-
-- **WiX must be on `PATH`**: the stage probes for `wix` (v4) then `candle` (v3). If neither is found, the stage errors immediately.
-- **`.wxs` template rendering**: the WiX source file is rendered through Tera before being passed to WiX. Ensure any `{{ ... }}` expressions in the `.wxs` are valid Tera.
-- **Architecture mapping**: `amd64` → `x64`, `386`/`i686` → `x86`, `arm64`/`aarch64` → `arm64`. WiX build commands vary by arch.
-
-## Republish / update behavior
-
-Not applicable — this is a local packaging stage, not a publisher.
-
-## Full config reference
-
-```yaml
-crates:
-  - name: myapp
-    msis:
-      - wxs: installer/myapp.wxs     # required; path to .wxs file (template)
-        id: ""                        # optional; unique identifier
-        ids: []                       # optional; filter by build IDs
-        name: ""                      # optional; output filename template
-        version: ""                   # optional; v3 | v4 (auto-detected if omitted)
-        replace: false                # optional; remove archive artifacts, keep MSI only
-        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
-        disable: false                # optional
 ```
 
 ## Full example
