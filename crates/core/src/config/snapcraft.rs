@@ -25,20 +25,17 @@ pub struct SnapcraftConfig {
     pub summary: Option<String>,
     /// Extended description (user-facing in store).
     pub description: Option<String>,
-    /// Path to icon image file.
+    /// Path to the snap icon image (`.png` or `.svg`).
     ///
-    /// **Snap Store caveat**: setting this field causes `snap.yaml` to
-    /// emit an `icon:` key. `snapcraft pack` accepts it locally and the
-    /// resulting `.snap` builds fine, but the Snap Store's server-side
-    /// `snap.json` schema rejects the upload with
-    /// `Additional properties are not allowed ('icon' was unexpected)`.
-    /// The supported way to ship a snap icon is to place it at
-    /// `snap/gui/<name>.png` (or `snap/gui/icon.png`) inside the project
-    /// tree — that path is bundled by snapcraft via the GUI metadata
-    /// channel and does NOT propagate into `snap.json`.
-    /// When this field is left unset, no `icon:` line is emitted (the
-    /// option is `skip_serializing_if = "Option::is_none"` in the
-    /// renderer's serde model) and `snap.json` stays schema-clean.
+    /// When set, anodizer copies the file to `meta/gui/<name>.<ext>` inside
+    /// the staged prime directory before `snapcraft pack` runs. The icon is
+    /// delivered to the Snap Store via snapcraft's GUI metadata channel and
+    /// never appears in `snap.json`, keeping uploads schema-clean. (The Snap
+    /// Store rejects `snap.json` that contains an `icon:` key with
+    /// "Additional properties are not allowed ('icon' was unexpected)".)
+    ///
+    /// The source path may be absolute or relative to the project root.
+    /// Anodizer errors before staging if the file does not exist.
     pub icon: Option<String>,
     /// Runtime base snap: core, core18, core20, core22, core24, bare.
     pub base: Option<String>,

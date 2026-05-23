@@ -35,7 +35,7 @@ crates:
 | `title` | string | | User-facing application title. |
 | `summary` | string | `"<name> snap package"` | Single-line description (max 79 characters). |
 | `description` | string | | Extended description shown in the store. |
-| `icon` | string | | Path to the snap icon image file. **Snap Store rejects uploads when this field is set** — `snapcraft pack` builds locally but `snap.json` validation fails with `Additional properties are not allowed ('icon' was unexpected)`. Leave unset and place the icon at `snap/gui/<name>.png` (or `snap/gui/icon.png`) in the project tree; snapcraft bundles it via GUI metadata and it never reaches `snap.json`. Anodizer emits a warning during the snapcraft stage when this field is set. |
+| `icon` | string | | Path to the snap icon image (`.png` or `.svg`). Anodizer copies the file to `meta/gui/<name>.<ext>` inside the staged prime directory before `snapcraft pack` runs. The icon is picked up by snapcraft via the GUI metadata channel and does NOT appear in `snap.json`, keeping uploads schema-clean. The source path may be absolute or relative to the project root. |
 | `base` | string | `core22` | Base snap: `core`, `core18`, `core20`, `core22`, `core24`, `bare`. |
 | `grade` | string | | Release quality: `stable` or `devel`. |
 | `license` | string | | SPDX license identifier. |

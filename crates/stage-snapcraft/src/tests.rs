@@ -13,6 +13,7 @@ use anodizer_core::context::{Context, ContextOptions};
 use anodizer_core::stage::Stage;
 use tempfile::TempDir;
 
+use crate::build_stage::copy_snap_icon;
 use crate::command::{
     is_retriable_snap_push, resolve_effective_channels, snapcraft_command, snapcraft_upload_command,
 };
@@ -332,12 +333,12 @@ fn test_generate_snap_yaml_omits_icon_when_none() {
 }
 
 #[test]
-fn test_generate_snap_yaml_emits_icon_when_set() {
-    // Sanity check: when the user *does* set an icon, the field round-trips.
-    // This pins the existing leak path so reviewers can see what happens:
-    // the build stage emits a warning, and the user must place the icon at
-    // snap/gui/<name>.png manually for the Snap Store to accept the upload
-    // (anodizer does not write to snap/gui/ on the user's behalf).
+fn test_generate_snap_yaml_never_emits_icon_even_when_set() {
+    // When `icon` is configured, the build stage copies the file to
+    // `meta/gui/<name>.<ext>` inside the prime dir before `snapcraft pack`.
+    // `generate_snap_yaml` must NEVER emit `icon:` because the Snap Store
+    // rejects `snap.json` with "Additional properties are not allowed
+    // ('icon' was unexpected)".
     let cfg = SnapcraftConfig {
         name: Some("mysnap".to_string()),
         summary: Some("A test snap".to_string()),
@@ -346,11 +347,184 @@ fn test_generate_snap_yaml_emits_icon_when_set() {
         ..Default::default()
     };
     let yaml = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
+    let has_icon_key = yaml.lines().any(|l| {
+        let trimmed = l.trim_start();
+        trimmed == "icon:" || trimmed.starts_with("icon: ") || trimmed.starts_with("icon:\t")
+    });
     assert!(
-        yaml.contains("icon: assets/logo.png"),
-        "icon should round-trip when configured (build stage warns about \
-         Snap Store rejection). Got:\n{yaml}"
+        !has_icon_key,
+        "generate_snap_yaml must NEVER emit `icon:` — the Snap Store \
+         rejects snap.json with that field. The icon is delivered via \
+         meta/gui/ instead. Got:\n{yaml}"
     );
+}
+
+// -----------------------------------------------------------------------
+// copy_snap_icon tests
+// -----------------------------------------------------------------------
+
+/// icon set + valid source file: copied to meta/gui/<name>.<ext> with correct bytes.
+#[test]
+fn test_copy_snap_icon_png_copies_bytes_to_meta_gui() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("icon.png");
+    let icon_bytes: &[u8] = b"\x89PNG\r\n\x1a\n"; // PNG magic bytes
+    std::fs::write(&src, icon_bytes).unwrap();
+
+    let meta_dir = tmp.path().join("meta");
+    std::fs::create_dir_all(&meta_dir).unwrap();
+
+    let dest_rel = copy_snap_icon(&src, &meta_dir, "mysnap").unwrap();
+
+    assert_eq!(dest_rel, "meta/gui/mysnap.png");
+    let dest = meta_dir.join("gui").join("mysnap.png");
+    assert!(dest.exists(), "icon must be copied to meta/gui/mysnap.png");
+    assert_eq!(
+        std::fs::read(&dest).unwrap(),
+        icon_bytes,
+        "bytes must match"
+    );
+
+    // The generated snap.yaml must NOT contain `icon:` — confirmed via
+    // generate_snap_yaml which always returns icon: None.
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test".to_string()),
+        description: Some("Test snap".to_string()),
+        icon: Some(src.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_snap_yaml(&cfg, "1.0.0", &["mysnap"], None, None).unwrap();
+    let has_icon_key = yaml
+        .lines()
+        .any(|l| l.trim_start().starts_with("icon:") || l.trim_start() == "icon:");
+    assert!(
+        !has_icon_key,
+        "snap.yaml must not contain `icon:`. Got:\n{yaml}"
+    );
+}
+
+/// icon set with .svg source: extension is preserved in the destination filename.
+#[test]
+fn test_copy_snap_icon_preserves_svg_extension() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("logo.svg");
+    std::fs::write(&src, b"<svg/>").unwrap();
+
+    let meta_dir = tmp.path().join("meta");
+    std::fs::create_dir_all(&meta_dir).unwrap();
+
+    let dest_rel = copy_snap_icon(&src, &meta_dir, "myapp").unwrap();
+    assert_eq!(dest_rel, "meta/gui/myapp.svg");
+    assert!(meta_dir.join("gui").join("myapp.svg").exists());
+}
+
+/// icon set + missing source file: build stage must error BEFORE pack runs.
+#[test]
+fn test_stage_icon_missing_source_errors_before_pack() {
+    let tmp = TempDir::new().unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        icon: Some("/nonexistent/path/icon.png".to_string()),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from("/tmp/myapp"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let stage = SnapcraftStage;
+    let err = stage.run(&mut ctx).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("does not exist") || msg.contains("icon"),
+        "error should mention missing icon path, got: {msg}"
+    );
+    assert!(
+        msg.contains("nonexistent") || msg.contains("/nonexistent/path/icon.png"),
+        "error should name the missing path, got: {msg}"
+    );
+}
+
+/// icon not set: no copy, no error, build proceeds normally.
+#[test]
+fn test_stage_icon_not_set_is_noop() {
+    let tmp = TempDir::new().unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        icon: None,
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from("/tmp/myapp"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let stage = SnapcraftStage;
+    // Must succeed with no errors when icon is None.
+    stage.run(&mut ctx).unwrap();
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(snaps.len(), 1, "should register one snap artifact");
 }
 
 // -----------------------------------------------------------------------

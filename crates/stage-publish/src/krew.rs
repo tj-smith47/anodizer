@@ -552,7 +552,7 @@ fn artifacts_to_platforms(
 // publish_to_krew
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "krew")?;
 
     let krew_cfg = publish
@@ -573,7 +573,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
                 "krew: skipping config for '{}' (skip=true)",
                 crate_name
             ));
-            return Ok(());
+            return Ok(false);
         }
     }
     if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log) {
@@ -586,7 +586,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     // Resolve repository owner/name from `repository:` (RepositoryConfig).
@@ -604,7 +604,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
             "(dry-run) would submit Krew plugin manifest for '{}' to {}/{}",
             crate_name, repo_owner, repo_name
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let version = ctx.version();
@@ -790,7 +790,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
             plugin_name,
             template_path.display()
         ));
-        return Ok(());
+        return Ok(false);
     }
     if matches!(mode, KrewMode::PrDirectWithHint) {
         log.status(&format!(
@@ -841,7 +841,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
     let commit_opts = util::resolve_commit_opts(ctx, krew_cfg.commit_author.as_ref());
     // Always create a versioned branch for Krew PRs.
     let branch = Some(branch_name.as_str());
-    let outcome = util::commit_and_push_with_opts(
+    let push_outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],
         &commit_msg,
@@ -849,20 +849,22 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
         "krew",
         &commit_opts,
     )?;
-    match outcome {
+    let pushed = match push_outcome {
         util::CommitOutcome::Pushed => {
             log.status(&format!(
                 "Krew manifest pushed to {}/{} branch '{}'",
                 repo_owner, repo_name, branch_name
             ));
+            true
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
                 "krew: nothing to push, manifest for '{}' already up to date",
                 plugin_name
             ));
+            false
         }
-    }
+    };
 
     // Submit a PR. When `repository.pull_request` is configured, use the
     // unified PR helper (which respects `base`, `draft`, `body`); otherwise
@@ -944,7 +946,7 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
         ctx.record_publisher_outcome(outcome);
     }
 
-    Ok(())
+    Ok(pushed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1789,12 +1791,11 @@ impl anodizer_core::Publisher for KrewPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        // Snapshot rollback targets from config BEFORE the publish path runs.
-        let targets = collect_krew_run_targets(ctx);
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_krew_per_crate_configured);
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
+        let mut any_pushed = false;
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -1804,7 +1805,9 @@ impl anodizer_core::Publisher for KrewPublisher {
             }
             processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
-            publish_to_krew(ctx, crate_name, &log)?;
+            if publish_to_krew(ctx, crate_name, &log)? {
+                any_pushed = true;
+            }
         }
         if should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
@@ -1812,7 +1815,13 @@ impl anodizer_core::Publisher for KrewPublisher {
             log.status(&run_done_message(processed));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("krew");
-        evidence.extra = serde_json::json!({ "krew_targets": targets });
+        // Only record rollback targets when at least one branch push was made.
+        // Phantom evidence causes rollback to close PRs that were never opened
+        // (dry-run, skip_upload, no-op NoChanges, bot-template mode).
+        if any_pushed {
+            let targets = collect_krew_run_targets(ctx);
+            evidence.extra = serde_json::json!({ "krew_targets": targets });
+        }
         Ok(evidence)
     }
 
@@ -2004,7 +2013,9 @@ impl anodizer_core::Publisher for KrewPublisher {
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
-    use anodizer_core::config::{CrateConfig, KrewConfig, PublishConfig, RepositoryConfig};
+    use anodizer_core::config::{
+        CrateConfig, KrewConfig, PublishConfig, RepositoryConfig, StringOrBool,
+    };
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
 
@@ -2256,9 +2267,13 @@ mod publisher_tests {
             .build();
         let p = KrewPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
-        // dry-run publish_to_krew short-circuits; evidence is still
-        // populated from collect_krew_run_targets. We only assert no error.
-        let _ = decode_krew_targets(&evidence.extra);
+        // dry-run publish_to_krew short-circuits before branch push; no actual
+        // push occurred so evidence.extra must be empty (no phantom targets).
+        let targets = decode_krew_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "dry-run must not record rollback targets: {targets:?}"
+        );
     }
 
     /// When the publisher is registered (a crate has a krew block) but the
@@ -2285,5 +2300,27 @@ mod publisher_tests {
         let p = KrewPublisher::new();
         // Must return Ok even when no krew-configured crate is selected.
         p.run(&mut ctx).expect("publisher.run ok");
+    }
+
+    /// skip_upload path must produce empty evidence — no branch push occurred.
+    #[test]
+    fn krew_publisher_run_skip_upload_produces_empty_evidence() {
+        let mut crate_with_skip = krew_crate("demo");
+        if let Some(ref mut publish) = crate_with_skip.publish
+            && let Some(ref mut krew) = publish.krew
+        {
+            krew.skip_upload = Some(StringOrBool::Bool(true));
+        }
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_with_skip])
+            .selected_crates(vec!["demo".to_string()])
+            .build();
+        let p = KrewPublisher::new();
+        let evidence = p.run(&mut ctx).expect("skip_upload publisher.run");
+        let targets = decode_krew_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "skip_upload must not record rollback targets: {targets:?}"
+        );
     }
 }

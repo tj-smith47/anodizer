@@ -166,18 +166,13 @@ pub fn generate_snap_yaml(
         license: config.license.clone(),
         title: config.title.clone(),
         // The Snap Store's `snap.json` schema rejects `icon:` with
-        // "Additional properties are not allowed ('icon' was unexpected)",
-        // so any user-configured icon path will block snap upload even
-        // though `snapcraft pack` accepts it locally. The field is still
-        // emitted when set (round-trip / GR-config-import fidelity) and
-        // the build stage warns; the supported icon placement is
-        // `snap/gui/<name>.png` in the project tree, which never
-        // propagates into `snap.json`. When `config.icon` is `None`,
-        // `skip_serializing_if = "Option::is_none"` on `SnapcraftYaml.icon`
-        // omits the line entirely — this is what keeps anodizer's own
-        // releases schema-clean (see `.anodizer.yaml` snapcrafts block,
-        // which intentionally omits `icon:`).
-        icon: config.icon.clone(),
+        // "Additional properties are not allowed ('icon' was unexpected)".
+        // When `config.icon` is set, the build stage copies the icon file to
+        // `snap/gui/<name>.<ext>` before `snapcraft pack`; the Store picks it
+        // up via the GUI metadata channel and it never reaches `snap.json`.
+        // Always omit `icon:` here so the generated snap.yaml stays schema-clean
+        // regardless of whether the user configured the field.
+        icon: None,
         assumes: if has_apps {
             config.assumes.clone().unwrap_or_default()
         } else {

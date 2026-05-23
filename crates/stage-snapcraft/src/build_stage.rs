@@ -31,6 +31,44 @@ fn clear_snapcraft_cache() {
 }
 
 // ---------------------------------------------------------------------------
+// Icon copy helper
+// ---------------------------------------------------------------------------
+
+/// Copy a snap icon source file into `<meta_dir>/gui/<snap_name>.<ext>`.
+///
+/// `icon_src` is the resolved (absolute) path to the source image.
+/// `meta_dir` is the `prime/meta/` directory that snapcraft reads from
+/// when packing a pre-staged prime dir. `snap_name` is the snap's name
+/// field — the destination filename matches the name so the Store's GUI
+/// metadata channel picks up the correct icon.
+///
+/// Extension is preserved from the source so `.svg` icons round-trip
+/// correctly alongside `.png`.
+pub(crate) fn copy_snap_icon(
+    icon_src: &std::path::Path,
+    meta_dir: &std::path::Path,
+    snap_name: &str,
+) -> anyhow::Result<String> {
+    let ext = icon_src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png");
+    let gui_dir = meta_dir.join("gui");
+    fs::create_dir_all(&gui_dir)
+        .with_context(|| format!("snapcraft: create meta/gui dir: {}", gui_dir.display()))?;
+    let dest_name = format!("{}.{}", snap_name, ext);
+    let icon_dest = gui_dir.join(&dest_name);
+    fs::copy(icon_src, &icon_dest).with_context(|| {
+        format!(
+            "snapcraft: copy icon {} to {}",
+            icon_src.display(),
+            icon_dest.display()
+        )
+    })?;
+    Ok(format!("meta/gui/{}", dest_name))
+}
+
+// ---------------------------------------------------------------------------
 // SnapcraftStage
 // ---------------------------------------------------------------------------
 
@@ -149,22 +187,31 @@ impl Stage for SnapcraftStage {
                     }
                 }
 
-                // Warn early about the `icon:` Snap Store leak: the field
-                // round-trips through snap.yaml into snap.json, where the
-                // Store's schema rejects it ("Additional properties are
-                // not allowed ('icon' was unexpected)"). The supported
-                // path is `snap/gui/<name>.png` in the project tree.
-                // Surface this BEFORE snapcraft pack burns minutes only to
-                // have `snapcraft upload` blow up at validation.
-                if snap_cfg.icon.is_some() {
-                    log.warn(&format!(
-                        "snapcraft: 'icon' is set for crate '{}' — the Snap \
-                         Store rejects snap.json with this field. Move the \
-                         icon to snap/gui/<name>.png in your project tree \
-                         (which is not copied into snap.json) and remove \
-                         the 'icon:' key from the snapcrafts block",
-                        krate.name
-                    ));
+                // Icon validation: when `icon` is set, check the source file
+                // exists before spending time staging binaries. Fail early so
+                // the error names the missing path rather than surfacing a
+                // confusing snapcraft failure later.
+                if let Some(ref icon_src_str) = snap_cfg.icon {
+                    let icon_src = if std::path::Path::new(icon_src_str).is_absolute() {
+                        std::path::PathBuf::from(icon_src_str)
+                    } else {
+                        ctx.options
+                            .project_root
+                            .as_deref()
+                            .map(std::path::Path::new)
+                            .unwrap_or(std::path::Path::new("."))
+                            .join(icon_src_str)
+                    };
+                    if !icon_src.exists() {
+                        anyhow::bail!(
+                            "snapcraft: icon '{}' configured for crate '{}' does not exist \
+                             (resolved to '{}'). Create the file or correct the path in \
+                             the snapcrafts.icon config field.",
+                            icon_src_str,
+                            krate.name,
+                            icon_src.display()
+                        );
+                    }
                 }
 
                 // Filter binaries by ids if configured (C2)
@@ -396,6 +443,27 @@ impl Stage for SnapcraftStage {
                     let yaml_path = meta_dir.join("snap.yaml");
                     fs::write(&yaml_path, &yaml_content)
                         .with_context(|| format!("write snap.yaml to {}", yaml_path.display()))?;
+
+                    // Copy icon into meta/gui/ so snapcraft picks it up via
+                    // the GUI metadata channel without touching snap.yaml.
+                    // The Snap Store rejects snap.json with an `icon:` key,
+                    // so the field is intentionally omitted from snap.yaml
+                    // (see generate_snap_yaml). The meta/gui/ path is the
+                    // supported delivery mechanism for snap icons.
+                    if let Some(ref icon_src_str) = snap_cfg.icon {
+                        let icon_src = if std::path::Path::new(icon_src_str).is_absolute() {
+                            std::path::PathBuf::from(icon_src_str)
+                        } else {
+                            ctx.options
+                                .project_root
+                                .as_deref()
+                                .map(std::path::Path::new)
+                                .unwrap_or(std::path::Path::new("."))
+                                .join(icon_src_str)
+                        };
+                        let dest_rel = copy_snap_icon(&icon_src, &meta_dir, snap_name)?;
+                        log.status(&format!("snapcraft: wrote snap icon to {}", dest_rel));
+                    }
 
                     // copy binaries
                     // directly into the prime directory root with mode 0555.

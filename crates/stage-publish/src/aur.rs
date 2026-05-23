@@ -371,7 +371,7 @@ pub(crate) fn aur_resolve_defaults(
 // publish_to_aur
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "aur")?;
 
     let aur_cfg = publish
@@ -386,7 +386,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!("aur: skipped for '{}'", crate_name));
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -401,7 +401,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let git_url = aur_cfg
@@ -414,7 +414,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             "(dry-run) would push AUR PKGBUILD for '{}' to {}",
             crate_name, git_url
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     // AUR pkgver does not allow hyphens; replace with underscores.
@@ -662,22 +662,24 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         "aur",
         &commit_opts,
     )?;
-    match outcome {
+    let pushed = match outcome {
         util::CommitOutcome::Pushed => {
             log.status(&format!(
                 "AUR package '{}' pushed to {}",
                 package_name, git_url
             ));
+            true
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
                 "aur: nothing to push, package '{}' already up to date",
                 package_name
             ));
+            false
         }
-    }
+    };
 
-    Ok(())
+    Ok(pushed)
 }
 
 // ---------------------------------------------------------------------------
@@ -918,11 +920,11 @@ impl anodizer_core::Publisher for AurOurPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        let targets = collect_aur_our_run_targets(ctx);
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_aur_per_crate_configured);
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
+        let mut any_pushed = false;
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -932,7 +934,9 @@ impl anodizer_core::Publisher for AurOurPublisher {
             }
             processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
-            publish_to_aur(ctx, crate_name, &log)?;
+            if publish_to_aur(ctx, crate_name, &log)? {
+                any_pushed = true;
+            }
         }
         if should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
@@ -940,7 +944,13 @@ impl anodizer_core::Publisher for AurOurPublisher {
             log.status(&run_done_message(processed));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("aur");
-        evidence.extra = serde_json::json!({ "aur_our_targets": targets });
+        // Only record rollback targets when at least one push was made.
+        // Phantom evidence causes rollback to git-revert in repos that
+        // were never touched (dry-run, skip_upload, no-op NoChanges).
+        if any_pushed {
+            let targets = collect_aur_our_run_targets(ctx);
+            evidence.extra = serde_json::json!({ "aur_our_targets": targets });
+        }
         Ok(evidence)
     }
 
@@ -1000,7 +1010,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
-    use anodizer_core::config::{AurConfig, CrateConfig, PublishConfig};
+    use anodizer_core::config::{AurConfig, CrateConfig, PublishConfig, StringOrBool};
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
 
@@ -1298,10 +1308,13 @@ mod publisher_tests {
             .build();
         let p = AurOurPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
-        // dry-run publish_to_aur short-circuits before git push; evidence
-        // is still populated from collect_aur_our_run_targets. We only
-        // assert the run did not error.
-        let _ = decode_aur_our_targets(&evidence.extra);
+        // dry-run publish_to_aur short-circuits before git push; no actual
+        // push occurred so evidence.extra must be empty (no phantom targets).
+        let targets = decode_aur_our_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "dry-run must not record rollback targets: {targets:?}"
+        );
     }
 
     /// When the publisher is registered (a crate has an aur block) but the
@@ -1328,6 +1341,28 @@ mod publisher_tests {
         let p = AurOurPublisher::new();
         // Must return Ok even when no aur-configured crate is selected.
         p.run(&mut ctx).expect("publisher.run ok");
+    }
+
+    /// skip_upload path must produce empty evidence — no push occurred.
+    #[test]
+    fn aur_publisher_run_skip_upload_produces_empty_evidence() {
+        let mut crate_with_skip = aur_crate("demo");
+        if let Some(ref mut publish) = crate_with_skip.publish
+            && let Some(ref mut aur) = publish.aur
+        {
+            aur.skip_upload = Some(StringOrBool::Bool(true));
+        }
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_with_skip])
+            .selected_crates(vec!["demo".to_string()])
+            .build();
+        let p = AurOurPublisher::new();
+        let evidence = p.run(&mut ctx).expect("skip_upload publisher.run");
+        let targets = decode_aur_our_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "skip_upload must not record rollback targets: {targets:?}"
+        );
     }
 }
 
@@ -1817,7 +1852,8 @@ mod tests {
         );
         let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_aur(&ctx, "mytool", &log).is_ok());
+        let pushed = publish_to_aur(&ctx, "mytool", &log).expect("dry-run ok");
+        assert!(!pushed, "dry-run must return false (not pushed)");
     }
 
     /// Regression for parity with GoReleaser's `ErrNoArchivesFound`: an empty
