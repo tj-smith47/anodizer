@@ -5,7 +5,7 @@ use super::commit_msg::render_commit_msg;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
-pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
     let hb_cfg = publish
@@ -115,9 +115,14 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
                 .unwrap_or(false)
         })
         .unwrap_or(false);
-    crate::util::maybe_submit_pr(
+    // Clone the repository config so the `maybe_submit_pr` call no
+    // longer borrows from `ctx.config` (via `hb_cfg`). NLL then drops
+    // the immutable borrow, making the subsequent `&mut ctx` call legal.
+    let repo_for_pr = hb_cfg.repository.clone();
+
+    let pr_outcome = crate::util::maybe_submit_pr(
         repo_path,
-        hb_cfg.repository.as_ref(),
+        repo_for_pr.as_ref(),
         &crate::util::PrOrigin {
             repo_owner: &repo_owner,
             repo_name: &repo_name,
@@ -132,6 +137,11 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         "homebrew cask",
         log,
     );
+
+    // Surface PR-already-exists skips to the dispatch summary table.
+    if let Some(outcome) = pr_outcome {
+        ctx.record_publisher_outcome(outcome);
+    }
 
     Ok(())
 }

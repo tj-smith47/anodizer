@@ -488,7 +488,7 @@ pub fn generate_manifests(params: &WingetManifestParams<'_>) -> Result<(String, 
 // publish_to_winget
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "winget")?;
 
     let winget_cfg = publish
@@ -972,10 +972,16 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         })
         .unwrap_or(false);
 
-    if has_pr_config {
+    // Clone the repository config so the PR submission helpers no
+    // longer borrow from `ctx.config` (via `winget_cfg`). NLL then
+    // drops the immutable borrow, making the subsequent `&mut ctx`
+    // call legal.
+    let repo_for_pr = winget_cfg.repository.clone();
+
+    let pr_outcome = if has_pr_config {
         util::maybe_submit_pr(
             repo_path,
-            winget_cfg.repository.as_ref(),
+            repo_for_pr.as_ref(),
             &util::PrOrigin {
                 repo_owner: &repo_owner,
                 repo_name: &repo_name,
@@ -989,11 +995,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             ),
             "winget",
             log,
-        );
+        )
     } else {
         // Legacy path: always submit a PR to microsoft/winget-pkgs.
-        let upstream_slug = winget_cfg
-            .repository
+        let upstream_slug = repo_for_pr
             .as_ref()
             .and_then(|r| r.pull_request.as_ref())
             .and_then(|pr| pr.base.as_ref())
@@ -1016,7 +1021,14 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             "winget",
             log,
             util::SubmitPrOpts { update_existing_pr },
-        );
+        )
+    };
+
+    // Surface PR-already-exists skips to the dispatch summary table.
+    // Without this the row reads `succeeded` even though we did not
+    // create or update a PR — see `Context::record_publisher_outcome`.
+    if let Some(outcome) = pr_outcome {
+        ctx.record_publisher_outcome(outcome);
     }
 
     Ok(())
@@ -1833,7 +1845,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let ctx = Context::new(
+        let mut ctx = Context::new(
             config,
             ContextOptions {
                 dry_run: true,
@@ -1843,7 +1855,7 @@ mod tests {
         let log = StageLogger::new("publish", Verbosity::Normal);
 
         // Should fail because there's no winget config
-        assert!(publish_to_winget(&ctx, "mytool", &log).is_err());
+        assert!(publish_to_winget(&mut ctx, "mytool", &log).is_err());
     }
 
     #[test]
@@ -1868,7 +1880,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let ctx = Context::new(
+        let mut ctx = Context::new(
             config,
             ContextOptions {
                 dry_run: true,
@@ -1878,7 +1890,7 @@ mod tests {
         let log = StageLogger::new("publish", Verbosity::Normal);
 
         // Should fail because manifests_repo is missing
-        assert!(publish_to_winget(&ctx, "mytool", &log).is_err());
+        assert!(publish_to_winget(&mut ctx, "mytool", &log).is_err());
     }
 
     #[test]

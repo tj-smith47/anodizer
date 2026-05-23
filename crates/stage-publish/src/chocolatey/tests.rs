@@ -290,7 +290,7 @@ fn test_publish_to_chocolatey_rejects_arm64_only() {
         size: None,
     });
     let log = StageLogger::new("publish", Verbosity::Normal);
-    let res = publish_to_chocolatey(&ctx, "mytool", &log);
+    let res = publish_to_chocolatey(&mut ctx, "mytool", &log);
     assert!(
         res.is_err(),
         "arm64-only must fail with errNoWindowsArchive equivalent"
@@ -326,7 +326,7 @@ fn test_publish_to_chocolatey_dry_run() {
         }),
         ..Default::default()
     }];
-    let ctx = Context::new(
+    let mut ctx = Context::new(
         config,
         ContextOptions {
             dry_run: true,
@@ -334,7 +334,7 @@ fn test_publish_to_chocolatey_dry_run() {
         },
     );
     let log = StageLogger::new("publish", Verbosity::Normal);
-    assert!(publish_to_chocolatey(&ctx, "mytool", &log).is_ok());
+    assert!(publish_to_chocolatey(&mut ctx, "mytool", &log).is_ok());
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn test_publish_to_chocolatey_missing_config() {
         publish: Some(PublishConfig::default()),
         ..Default::default()
     }];
-    let ctx = Context::new(
+    let mut ctx = Context::new(
         config,
         ContextOptions {
             dry_run: true,
@@ -358,7 +358,7 @@ fn test_publish_to_chocolatey_missing_config() {
         },
     );
     let log = StageLogger::new("publish", Verbosity::Normal);
-    assert!(publish_to_chocolatey(&ctx, "mytool", &log).is_err());
+    assert!(publish_to_chocolatey(&mut ctx, "mytool", &log).is_err());
 }
 
 #[test]
@@ -384,7 +384,7 @@ fn test_publish_to_chocolatey_missing_repository_is_now_optional() {
         }),
         ..Default::default()
     }];
-    let ctx = Context::new(
+    let mut ctx = Context::new(
         config,
         ContextOptions {
             dry_run: true,
@@ -392,7 +392,8 @@ fn test_publish_to_chocolatey_missing_repository_is_now_optional() {
         },
     );
     let log = StageLogger::new("publish", Verbosity::Normal);
-    publish_to_chocolatey(&ctx, "mytool", &log).expect("dry-run must succeed without repository");
+    publish_to_chocolatey(&mut ctx, "mytool", &log)
+        .expect("dry-run must succeed without repository");
 }
 
 #[test]

@@ -13,7 +13,7 @@ use super::package::{
     FeedHashResult, compute_nupkg_hash, create_nupkg, package_feed_hash, push_nupkg,
 };
 
-pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "chocolatey")?;
 
     let choco_cfg = publish
@@ -448,6 +448,13 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
                          until it transitions to Approved.",
                         pkg_name, version, reason, status_label, published_label
                     ));
+                    // Tell dispatch this run is "pending moderation", not
+                    // a clean success. Without this the summary table
+                    // reports `succeeded` and the operator never sees
+                    // that the push was actually skipped.
+                    ctx.record_publisher_outcome(
+                        anodizer_core::PublisherOutcome::PendingModeration,
+                    );
                     return Ok(());
                 }
             }

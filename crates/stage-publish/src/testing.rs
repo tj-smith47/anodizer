@@ -7,7 +7,7 @@
 //! use. NOT a stable public API.
 
 use anodizer_core::context::Context;
-use anodizer_core::{PublishEvidence, Publisher, PublisherGroup};
+use anodizer_core::{PublishEvidence, Publisher, PublisherGroup, PublisherOutcome};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -155,6 +155,54 @@ pub fn fake_counting(
         rollback_calls: counter.clone(),
     });
     (publisher, counter)
+}
+
+/// Minimal [`Publisher`] whose `run()` returns `Ok` but records an
+/// override [`PublisherOutcome`] on the context via
+/// [`Context::record_publisher_outcome`]. Used by dispatch-level tests
+/// that verify the override is respected (instead of the default
+/// `Succeeded` mapping) — mirrors how chocolatey's moderation skip
+/// and winget/krew/homebrew-cask's PR-already-exists skip report
+/// `PendingModeration` / `PendingValidation` from a successful `run`.
+pub struct FakeOutcomePublisher {
+    pub name: String,
+    pub group: PublisherGroup,
+    pub required: bool,
+    pub pending_outcome: PublisherOutcome,
+}
+
+impl Publisher for FakeOutcomePublisher {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn group(&self) -> PublisherGroup {
+        self.group
+    }
+    fn required(&self) -> bool {
+        self.required
+    }
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+        ctx.record_publisher_outcome(self.pending_outcome.clone());
+        Ok(PublishEvidence::new(self.name.clone()))
+    }
+    fn rollback(&self, _ctx: &mut Context, _evidence: &PublishEvidence) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// Convenience constructor for [`FakeOutcomePublisher`].
+pub fn fake_with_pending_outcome(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    pending_outcome: PublisherOutcome,
+) -> Box<dyn Publisher> {
+    Box::new(FakeOutcomePublisher {
+        name: name.to_string(),
+        group,
+        required,
+        pending_outcome,
+    })
 }
 
 /// Like [`fake`] but declares a non-`None` `rollback_scope_needed`. Use

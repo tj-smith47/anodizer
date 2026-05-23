@@ -16,14 +16,19 @@ use anyhow::{Context as _, Result};
 /// boolean feeds back into [`super::publisher::HomebrewPublisher::run`]
 /// so the rollback orchestrator doesn't trip git-revert on a tap that
 /// this run never touched.
-pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Result<bool> {
+pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) -> Result<bool> {
+    // Clone the entries so the loop body can call `&mut Context`
+    // helpers (e.g. `ctx.record_publisher_outcome`) without holding
+    // an immutable borrow on `ctx.config.homebrew_casks` across the
+    // mutation. The top-level cask list is bounded (a handful of
+    // entries per release) so the clone cost is negligible.
     let entries = match ctx.config.homebrew_casks {
-        Some(ref v) if !v.is_empty() => v,
+        Some(ref v) if !v.is_empty() => v.clone(),
         _ => return Ok(false),
     };
     let mut pushed_any = false;
 
-    for cask_cfg in entries {
+    for cask_cfg in &entries {
         let project_name = &ctx.config.project_name;
         let cask_name = cask_cfg.name.as_deref().unwrap_or(project_name);
         let version = ctx.version();
@@ -307,7 +312,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
                     .unwrap_or(false)
             })
             .unwrap_or(false);
-        crate::util::maybe_submit_pr(
+        let pr_outcome = crate::util::maybe_submit_pr(
             repo_path,
             repo_cfg,
             &crate::util::PrOrigin {
@@ -324,6 +329,11 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             "homebrew_casks",
             log,
         );
+
+        // Surface PR-already-exists skips to the dispatch summary table.
+        if let Some(outcome) = pr_outcome {
+            ctx.record_publisher_outcome(outcome);
+        }
     }
 
     Ok(pushed_any)

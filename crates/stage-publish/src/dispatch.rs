@@ -106,8 +106,21 @@ pub fn dispatch(
                     None,
                 )
             } else {
+                // Drain any stale override before invoking `run` so a
+                // prior publisher cannot bleed its outcome forward.
+                let _ = ctx.take_pending_outcome();
                 match p.run(ctx) {
-                    Ok(evidence) => (PublisherOutcome::Succeeded, Some(evidence)),
+                    Ok(evidence) => {
+                        // If `run` recorded an outcome override (e.g.
+                        // chocolatey moderation skip or PR-already-exists
+                        // skip) use it instead of the default `Succeeded`
+                        // mapping so the summary table reflects the real
+                        // terminal state.
+                        let outcome = ctx
+                            .take_pending_outcome()
+                            .unwrap_or(PublisherOutcome::Succeeded);
+                        (outcome, Some(evidence))
+                    }
                     Err(err) => (PublisherOutcome::Failed(err.to_string()), None),
                 }
             };
@@ -295,6 +308,112 @@ mod tests {
         let names: Vec<&str> = report.results.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["m1", "m2"], "m3 must not have run");
         assert!(report.results.iter().all(|r| r.name != "m3"));
+    }
+
+    #[test]
+    fn dispatch_records_pending_moderation_when_run_recorded_override() {
+        // Mirrors chocolatey's in-moderation skip path: `run()` returns
+        // `Ok(evidence)` but the publisher's actual terminal state is
+        // `PendingModeration` because the push was skipped. Dispatch
+        // must surface that on the per-publisher row instead of the
+        // default `Succeeded` mapping, or the summary table silently
+        // misreports the skip as success.
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![fake_with_pending_outcome(
+            "chocolatey",
+            PublisherGroup::Submitter,
+            false,
+            PublisherOutcome::PendingModeration,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let result = report
+            .results
+            .iter()
+            .find(|r| r.name == "chocolatey")
+            .expect("chocolatey entry present");
+        assert!(
+            matches!(result.outcome, PublisherOutcome::PendingModeration),
+            "expected PendingModeration, got {:?}",
+            result.outcome
+        );
+        assert!(
+            result.evidence.is_some(),
+            "evidence from run() should still be recorded alongside the override"
+        );
+    }
+
+    #[test]
+    fn dispatch_records_pending_validation_when_run_recorded_override() {
+        // Mirrors winget/krew/homebrew-cask's PR-already-exists skip
+        // path: `run()` returns `Ok(evidence)` but the actual terminal
+        // state is `PendingValidation` because the PR could not be
+        // created or updated. Dispatch must surface that override.
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![fake_with_pending_outcome(
+            "winget",
+            PublisherGroup::Submitter,
+            false,
+            PublisherOutcome::PendingValidation,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let result = report
+            .results
+            .iter()
+            .find(|r| r.name == "winget")
+            .expect("winget entry present");
+        assert!(
+            matches!(result.outcome, PublisherOutcome::PendingValidation),
+            "expected PendingValidation, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[test]
+    fn dispatch_drains_stale_override_between_publishers() {
+        // The override slot is single-shot: an earlier publisher's
+        // override must not bleed into a later publisher whose `run`
+        // recorded nothing. Without the drain at the top of every
+        // `run` invocation, a chocolatey moderation skip would
+        // contaminate the next publisher's row.
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![
+            fake_with_pending_outcome(
+                "first",
+                PublisherGroup::Manager,
+                false,
+                PublisherOutcome::PendingModeration,
+            ),
+            fake(
+                "second",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let first = report
+            .results
+            .iter()
+            .find(|r| r.name == "first")
+            .expect("first entry present");
+        assert!(matches!(first.outcome, PublisherOutcome::PendingModeration));
+
+        let second = report
+            .results
+            .iter()
+            .find(|r| r.name == "second")
+            .expect("second entry present");
+        assert!(
+            matches!(second.outcome, PublisherOutcome::Succeeded),
+            "second publisher recorded no override; must default to Succeeded, got {:?}",
+            second.outcome
+        );
     }
 
     #[test]

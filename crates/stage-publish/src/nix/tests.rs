@@ -391,7 +391,7 @@ fn test_publish_to_nix_dry_run() {
         ..Default::default()
     };
 
-    let ctx = Context::new(
+    let mut ctx = Context::new(
         config,
         ContextOptions {
             dry_run: true,
@@ -399,5 +399,5 @@ fn test_publish_to_nix_dry_run() {
         },
     );
     let log = StageLogger::new("publish", Verbosity::Normal);
-    assert!(publish_to_nix(&ctx, "mytool", &log).is_ok());
+    assert!(publish_to_nix(&mut ctx, "mytool", &log).is_ok());
 }

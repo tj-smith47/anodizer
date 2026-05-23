@@ -311,6 +311,16 @@ pub struct Context {
     /// deterministic timestamps. Lazy-init by design: tests and snapshot
     /// runs without a clean commit can still proceed.
     pub determinism: Option<crate::DeterminismState>,
+    /// Per-publisher outcome override published by `Publisher::run` when
+    /// the artifact reached a non-`Succeeded` terminal state but `run`
+    /// still returned `Ok` (e.g. chocolatey moderation skip,
+    /// winget/krew/homebrew PR-already-exists skip). Dispatch consumes
+    /// this slot via `take_pending_outcome()` immediately after `run`
+    /// returns Ok so the per-publisher row in the summary table reads
+    /// `pending-moderation` / `pending-validation` instead of
+    /// `succeeded`. The slot is single-shot: any unread value is
+    /// cleared at the start of every `run` call.
+    pub pending_outcome: Option<crate::PublisherOutcome>,
 }
 
 impl Context {
@@ -328,7 +338,26 @@ impl Context {
             skip_memento: crate::pipe_skip::SkipMemento::new(),
             publish_report: None,
             determinism: None,
+            pending_outcome: None,
         }
+    }
+
+    /// Publisher-facing override: when `Publisher::run` returns `Ok`
+    /// but the terminal outcome is something other than `Succeeded`
+    /// (chocolatey moderation skip, winget/krew/homebrew
+    /// PR-already-exists skip, …) call this before returning so
+    /// dispatch records the correct `PublisherOutcome` on the report.
+    /// Without this, dispatch defaults to `Succeeded` on any Ok and
+    /// the summary table silently misreports the skip as success.
+    pub fn record_publisher_outcome(&mut self, outcome: crate::PublisherOutcome) {
+        self.pending_outcome = Some(outcome);
+    }
+
+    /// Dispatch-side consumer: take the pending outcome override (if
+    /// any) recorded by the publisher's `run`. Single-shot — the slot
+    /// is empty after this call.
+    pub fn take_pending_outcome(&mut self) -> Option<crate::PublisherOutcome> {
+        self.pending_outcome.take()
     }
 
     /// Borrow the publisher dispatch report set by `PublishStage::run`,

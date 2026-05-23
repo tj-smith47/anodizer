@@ -221,7 +221,7 @@ pub(crate) fn disambiguate_arch_entries(
 /// or any future early-exit guard). The caller (Publisher::run) uses
 /// the boolean to decide whether to record rollback evidence — see
 /// `publish_to_homebrew` for the long-form rationale.
-pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "scoop")?;
 
     let scoop_cfg = publish
@@ -530,9 +530,14 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
     // Submit a PR if pull_request.enabled is set.
     let pr_branch = branch.unwrap_or("main");
-    util::maybe_submit_pr(
+    // Clone the repository config so the `maybe_submit_pr` call no
+    // longer borrows from `ctx.config` (via `scoop_cfg`). NLL then
+    // drops the immutable borrow, making the subsequent `&mut ctx`
+    // call legal.
+    let repo_for_pr = scoop_cfg.repository.clone();
+    let pr_outcome = util::maybe_submit_pr(
         repo_path,
-        scoop_cfg.repository.as_ref(),
+        repo_for_pr.as_ref(),
         &util::PrOrigin {
             repo_owner: &repo_owner,
             repo_name: &repo_name,
@@ -547,6 +552,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         "scoop",
         log,
     );
+
+    // Surface PR-already-exists skips to the dispatch summary table.
+    if let Some(outcome) = pr_outcome {
+        ctx.record_publisher_outcome(outcome);
+    }
 
     Ok(true)
 }

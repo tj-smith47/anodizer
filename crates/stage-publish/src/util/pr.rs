@@ -9,6 +9,7 @@
 //! and best-effort rebases the fork against upstream when the PR
 //! crosses repos.
 
+use anodizer_core::PublisherOutcome;
 use anodizer_core::config::RepositoryConfig;
 use anodizer_core::log::StageLogger;
 use std::path::Path;
@@ -118,13 +119,22 @@ pub(crate) struct Upstream<'a> {
 }
 
 /// Submit a pull request via the GitHub CLI (`gh pr create`).
+///
+/// Returns `Some(PublisherOutcome::PendingValidation)` when the call hit
+/// the "PR already exists" branch and `update_existing_pr` was false —
+/// the caller threads that back to dispatch via
+/// `Context::record_publisher_outcome` so the summary table reads
+/// `pending-validation` instead of `succeeded`. Returns `None` in every
+/// other case (success, transport failure, transient retry budget
+/// exhausted). Transport failures already emit a `log.warn` so the
+/// operator sees them; they are not modeled as a distinct outcome.
 fn create_pr_via_gh_cli(
     repo_path: &Path,
     upstream_repo: &str,
     spec: &PrSpec<'_>,
     label: &str,
     log: &StageLogger,
-) {
+) -> Option<PublisherOutcome> {
     let PrSpec {
         title,
         body,
@@ -167,7 +177,7 @@ fn create_pr_via_gh_cli(
         match pr_result {
             Ok(output) if output.status.success() => {
                 log.status(&format!("{label}: PR submitted via gh CLI"));
-                return;
+                return None;
             }
             Ok(output) => {
                 last_stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -191,13 +201,14 @@ fn create_pr_via_gh_cli(
                                 "{label}: PR for '{head}' already exists — updated in place"
                             ));
                         }
+                        return None;
                     } else {
                         log.warn(&format!(
                             "{label}: PR for '{head}' already exists — skipping \
                              (set update_existing_pr: true to update the PR in place)"
                         ));
+                        return Some(PublisherOutcome::PendingValidation);
                     }
-                    return;
                 }
                 let transient = last_stderr.contains("No commits between")
                     || last_stderr.contains("Head sha can't be blank")
@@ -215,7 +226,7 @@ fn create_pr_via_gh_cli(
                 log.warn(&format!(
                     "{label}: could not run gh to create PR: {} -- you may need to create the PR manually", e
                 ));
-                return;
+                return None;
             }
         }
     }
@@ -230,19 +241,28 @@ fn create_pr_via_gh_cli(
             format!("\n{}", last_stderr)
         }
     ));
+    None
 }
 
 /// Submit a pull request via the GitHub REST API (native fallback when `gh`
 /// CLI is not installed).
 ///
 /// Uses `POST /repos/{owner}/{repo}/pulls` with token-based auth.
+///
+/// Returns `Some(PublisherOutcome::PendingValidation)` when the API
+/// returns 422 with a body that names the existing-PR case and the
+/// caller did not opt into `update_existing_pr`. The API transport
+/// cannot force-push (no working tree handy), so `update_existing_pr =
+/// true` is a no-op here — we still warn but the outcome is treated as
+/// the normal in-place success path (`None`). Returns `None` for every
+/// other outcome (success, transport failure).
 fn create_pr_via_api(
     upstream: &Upstream<'_>,
     spec: &PrSpec<'_>,
     token: &str,
     label: &str,
     log: &StageLogger,
-) {
+) -> Option<PublisherOutcome> {
     let Upstream { owner, name } = *upstream;
     let PrSpec {
         title,
@@ -250,7 +270,7 @@ fn create_pr_via_api(
         head,
         base_branch,
         draft,
-        update_existing_pr: _,
+        update_existing_pr,
     } = *spec;
     let url = format!("https://api.github.com/repos/{}/{}/pulls", owner, name);
     let payload = serde_json::json!({
@@ -260,7 +280,7 @@ fn create_pr_via_api(
         Ok(c) => c,
         Err(e) => {
             log.warn(&format!("{label}: build HTTP client: {e}"));
-            return;
+            return None;
         }
     };
     let result = client
@@ -272,18 +292,40 @@ fn create_pr_via_api(
     match result {
         Ok(resp) if resp.status().is_success() => {
             log.status(&format!("{label}: PR submitted via GitHub API"));
+            None
         }
         Ok(resp) => {
             let status = resp.status();
             let body_text = anodizer_core::http::body_of_blocking(resp);
+            // GitHub returns 422 Unprocessable Entity with a body that
+            // mentions "A pull request already exists" when head/base
+            // collide. Treat that as PendingValidation so the summary
+            // table tells the truth — `succeeded` would be a lie.
+            if status.as_u16() == 422 && body_text.contains("already exists") {
+                if update_existing_pr {
+                    log.warn(&format!(
+                        "{label}: PR for '{head}' already exists and update_existing_pr=true \
+                         was requested, but the API transport cannot force-push; \
+                         install `gh` CLI to update the PR in place"
+                    ));
+                } else {
+                    log.warn(&format!(
+                        "{label}: PR for '{head}' already exists — skipping \
+                         (set update_existing_pr: true to update the PR in place)"
+                    ));
+                }
+                return Some(PublisherOutcome::PendingValidation);
+            }
             log.warn(&format!(
                 "{label}: GitHub API PR creation returned {status} -- you may need to create the PR manually\n{body_text}"
             ));
+            None
         }
         Err(e) => {
             log.warn(&format!(
                 "{label}: GitHub API PR creation failed: {e} -- you may need to create the PR manually"
             ));
+            None
         }
     }
 }
@@ -317,7 +359,7 @@ pub(crate) fn maybe_submit_pr(
     body: &str,
     label: &str,
     log: &StageLogger,
-) {
+) -> Option<PublisherOutcome> {
     let PrOrigin {
         repo_owner,
         repo_name,
@@ -326,7 +368,7 @@ pub(crate) fn maybe_submit_pr(
     } = *origin;
     let pr_cfg = match repo.and_then(|r| r.pull_request.as_ref()) {
         Some(pr) if pr.enabled == Some(true) => pr,
-        _ => return,
+        _ => return None,
     };
     let (upstream_owner, upstream_name) = if let Some(ref base) = pr_cfg.base {
         (
@@ -385,13 +427,14 @@ pub(crate) fn maybe_submit_pr(
 
     // PR creation: try gh CLI first, fall back to GitHub API.
     if gh_is_available() {
-        create_pr_via_gh_cli(repo_path, &upstream_slug, &spec, label, log);
+        create_pr_via_gh_cli(repo_path, &upstream_slug, &spec, label, log)
     } else if let Some(ref tok) = token {
-        create_pr_via_api(&upstream, &spec, tok, label, log);
+        create_pr_via_api(&upstream, &spec, tok, label, log)
     } else {
         log.warn(&format!(
             "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
         ));
+        None
     }
 }
 
@@ -421,7 +464,7 @@ pub(crate) fn submit_pr_via_gh_with_opts(
     label: &str,
     log: &StageLogger,
     opts: SubmitPrOpts,
-) {
+) -> Option<PublisherOutcome> {
     let token = std::env::var("ANODIZER_GITHUB_TOKEN")
         .ok()
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
@@ -447,20 +490,22 @@ pub(crate) fn submit_pr_via_gh_with_opts(
     };
 
     if gh_is_available() {
-        create_pr_via_gh_cli(repo_path, upstream_repo, &spec, label, log);
+        create_pr_via_gh_cli(repo_path, upstream_repo, &spec, label, log)
     } else if let Some(ref tok) = token {
         if let Some((owner, name)) = upstream_repo.split_once('/') {
             let upstream = Upstream { owner, name };
-            create_pr_via_api(&upstream, &spec, tok, label, log);
+            create_pr_via_api(&upstream, &spec, tok, label, log)
         } else {
             log.warn(&format!(
                 "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"
             ));
+            None
         }
     } else {
         log.warn(&format!(
             "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
         ));
+        None
     }
 }
 

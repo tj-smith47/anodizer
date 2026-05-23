@@ -552,7 +552,7 @@ fn artifacts_to_platforms(
 // publish_to_krew
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "krew")?;
 
     let krew_cfg = publish
@@ -868,10 +868,16 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         })
         .unwrap_or(false);
 
-    if has_pr_config {
+    // Clone the repository config so the PR submission helpers no
+    // longer borrow from `ctx.config` (via `krew_cfg`). NLL then
+    // drops the immutable borrow, making the subsequent `&mut ctx`
+    // call legal.
+    let repo_for_pr = krew_cfg.repository.clone();
+
+    let pr_outcome = if has_pr_config {
         util::maybe_submit_pr(
             repo_path,
-            krew_cfg.repository.as_ref(),
+            repo_for_pr.as_ref(),
             &util::PrOrigin {
                 repo_owner: &repo_owner,
                 repo_name: &repo_name,
@@ -885,15 +891,14 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             ),
             "krew",
             log,
-        );
+        )
     } else {
         // No `repository.pull_request:` block — always submit a PR against the
         // canonical kubernetes-sigs/krew-index slug (or the override in
         // `repository.pull_request.base`). Submitting against the user's own
         // fork would silently create useless intra-fork PRs against the user's
         // empty `main` branch instead of against the real upstream.
-        let upstream_slug = krew_cfg
-            .repository
+        let upstream_slug = repo_for_pr
             .as_ref()
             .and_then(|r| r.pull_request.as_ref())
             .and_then(|pr| pr.base.as_ref())
@@ -915,7 +920,12 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             "krew",
             log,
             util::SubmitPrOpts { update_existing_pr },
-        );
+        )
+    };
+
+    // Surface PR-already-exists skips to the dispatch summary table.
+    if let Some(outcome) = pr_outcome {
+        ctx.record_publisher_outcome(outcome);
     }
 
     Ok(())
@@ -1382,7 +1392,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let ctx = Context::new(
+        let mut ctx = Context::new(
             config,
             ContextOptions {
                 dry_run: true,
@@ -1391,7 +1401,7 @@ mod tests {
         );
         let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_krew(&ctx, "mytool", &log).is_err());
+        assert!(publish_to_krew(&mut ctx, "mytool", &log).is_err());
     }
 
     #[test]
@@ -1415,7 +1425,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let ctx = Context::new(
+        let mut ctx = Context::new(
             config,
             ContextOptions {
                 dry_run: true,
@@ -1424,7 +1434,7 @@ mod tests {
         );
         let log = StageLogger::new("publish", Verbosity::Normal);
 
-        assert!(publish_to_krew(&ctx, "mytool", &log).is_err());
+        assert!(publish_to_krew(&mut ctx, "mytool", &log).is_err());
     }
 
     // -----------------------------------------------------------------------
@@ -1538,7 +1548,7 @@ mod tests {
         ctx.template_vars_mut().set("IsSnapshot", "true");
 
         let log = StageLogger::new("publish", Verbosity::Normal);
-        publish_to_krew(&ctx, "mytool", &log).expect(
+        publish_to_krew(&mut ctx, "mytool", &log).expect(
             "skip_upload='{{ .IsSnapshot }}' on snapshot must short-circuit \
              to Ok(()) before the repository-missing check (GR cba5b9f)",
         );

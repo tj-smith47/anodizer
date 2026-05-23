@@ -161,4 +161,31 @@ mod tests {
         let p = MinimalPublisher;
         assert!(p.rollback_scope_needed().is_none());
     }
+
+    #[test]
+    fn pending_outcome_round_trips_through_context() {
+        // The slot is single-shot: write once, drain once, then empty.
+        // Without single-shot semantics, a chocolatey moderation skip
+        // would bleed into the next publisher's row at dispatch time.
+        let mut ctx = Context::test_fixture();
+        assert!(ctx.take_pending_outcome().is_none());
+
+        ctx.record_publisher_outcome(crate::PublisherOutcome::PendingModeration);
+        assert!(matches!(
+            ctx.take_pending_outcome(),
+            Some(crate::PublisherOutcome::PendingModeration)
+        ));
+        assert!(
+            ctx.take_pending_outcome().is_none(),
+            "slot must be empty after take"
+        );
+
+        // Overwrite semantics: last writer wins (no implicit accumulation).
+        ctx.record_publisher_outcome(crate::PublisherOutcome::PendingModeration);
+        ctx.record_publisher_outcome(crate::PublisherOutcome::PendingValidation);
+        assert!(matches!(
+            ctx.take_pending_outcome(),
+            Some(crate::PublisherOutcome::PendingValidation)
+        ));
+    }
 }

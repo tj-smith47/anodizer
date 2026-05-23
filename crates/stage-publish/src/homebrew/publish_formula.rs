@@ -53,7 +53,7 @@ pub(crate) fn disambiguate_homebrew_archives(
 /// happened there's nothing to revert, and recording phantom evidence
 /// would cause the rollback orchestrator to attempt a git revert HEAD
 /// in a temp clone that has nothing this run actually changed.
-pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
     let hb_cfg = publish
@@ -453,9 +453,16 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             ),
         )
     };
-    crate::util::maybe_submit_pr(
+    // Clone the repository config so the `maybe_submit_pr` call no
+    // longer borrows from `ctx.config` (via `hb_cfg`). NLL then drops
+    // the `hb_cfg` / `publish` immutable borrows, which makes the
+    // subsequent `&mut ctx` call legal. The config is a handful of
+    // strings — clone cost is trivial.
+    let repo_for_pr = hb_cfg.repository.clone();
+
+    let pr_outcome = crate::util::maybe_submit_pr(
         repo_path,
-        hb_cfg.repository.as_ref(),
+        repo_for_pr.as_ref(),
         &crate::util::PrOrigin {
             repo_owner: &repo_owner,
             repo_name: &repo_name,
@@ -467,6 +474,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         "homebrew",
         log,
     );
+
+    // Surface PR-already-exists skips to the dispatch summary table.
+    if let Some(outcome) = pr_outcome {
+        ctx.record_publisher_outcome(outcome);
+    }
 
     Ok(true)
 }

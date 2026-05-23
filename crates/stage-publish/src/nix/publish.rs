@@ -19,7 +19,7 @@ use super::validate_nix_license;
 /// dry-run, or any future early-exit guard). The caller (Publisher::run)
 /// uses the boolean to decide whether to record rollback evidence — see
 /// `publish_to_homebrew` for the long-form rationale.
-pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "nix")?;
 
     let nix_cfg = publish
@@ -459,13 +459,19 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     )?;
 
     // Submit PR if configured.
-    util::maybe_submit_pr(
+    // Clone the repository config so the `maybe_submit_pr` call no
+    // longer borrows from `ctx.config` (via `nix_cfg`). NLL then
+    // drops the immutable borrow, making the subsequent `&mut ctx`
+    // call legal.
+    let repo_for_pr = nix_cfg.repository.clone();
+    let pr_branch = branch.unwrap_or("main").to_string();
+    let pr_outcome = util::maybe_submit_pr(
         repo_path,
-        nix_cfg.repository.as_ref(),
+        repo_for_pr.as_ref(),
         &util::PrOrigin {
             repo_owner: &repo_owner,
             repo_name: &repo_name,
-            branch_name: branch.unwrap_or("main"),
+            branch_name: &pr_branch,
             update_existing_pr: false,
         },
         &format!("Update {} to {}", name, version),
@@ -481,6 +487,11 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         "Nix expression pushed to {}/{} for '{}'",
         repo_owner, repo_name, crate_name
     ));
+
+    // Surface PR-already-exists skips to the dispatch summary table.
+    if let Some(outcome) = pr_outcome {
+        ctx.record_publisher_outcome(outcome);
+    }
 
     Ok(true)
 }
