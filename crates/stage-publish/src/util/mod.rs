@@ -52,7 +52,7 @@ pub(crate) use artifacts::{
 };
 pub(crate) use branch::resolve_branch;
 pub(crate) use clone::{clone_repo, clone_repo_ssh, clone_repo_with_auth};
-pub(crate) use commit::{commit_and_push_with_opts, resolve_commit_opts};
+pub(crate) use commit::{CommitOutcome, commit_and_push_with_opts, resolve_commit_opts};
 pub(crate) use config::{
     all_crates, get_publish_config, resolve_artifact_kind, resolve_repo_owner_name,
     resolve_repo_token, resolve_secret_name, should_skip_publisher, should_skip_upload,

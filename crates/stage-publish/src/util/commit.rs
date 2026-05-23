@@ -9,6 +9,21 @@ use std::process::Command;
 
 use super::cmd::run_cmd_in;
 
+/// Outcome of a `commit_and_push_with_opts` call.
+///
+/// Callers must distinguish these to avoid recording evidence or logging
+/// "pushed" after a genuine no-op.  When the remote already matches the
+/// staged tree (idempotent retry) or the staged index has no delta vs HEAD
+/// (writer produced identical content), no git objects were created and
+/// nothing was pushed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommitOutcome {
+    /// A commit was created and pushed to the remote.
+    Pushed,
+    /// The remote or local state was already up to date; nothing was committed or pushed.
+    NoChanges,
+}
+
 /// Optional overrides for the git commit step.
 #[derive(Default)]
 pub(crate) struct CommitOptions<'a> {
@@ -137,7 +152,7 @@ pub(crate) fn commit_and_push_with_opts(
     branch: Option<&str>,
     label: &str,
     opts: &CommitOptions<'_>,
-) -> Result<()> {
+) -> Result<CommitOutcome> {
     // Pre-fetch the target branch (if any) so `origin/<branch>` is populated
     // in the local ref store. We must use an explicit refspec: `clone
     // --depth=1` implies `--single-branch`, which restricts the remote's
@@ -209,7 +224,7 @@ pub(crate) fn commit_and_push_with_opts(
         if let (Some(r), Some(s)) = (remote_tree, staged_tree)
             && r == s
         {
-            return Ok(());
+            return Ok(CommitOutcome::NoChanges);
         }
     }
 
@@ -222,7 +237,7 @@ pub(crate) fn commit_and_push_with_opts(
     if let Ok(status) = diff_output
         && status.success()
     {
-        return Ok(());
+        return Ok(CommitOutcome::NoChanges);
     }
 
     // Build commit args, optionally injecting -c user.name / -c user.email / signing.
@@ -303,5 +318,140 @@ pub(crate) fn commit_and_push_with_opts(
         (Some(branch_name), None) => vec!["push", "-u", "origin", branch_name],
         (None, _) => vec!["push"],
     };
-    run_cmd_in(repo_path, "git", &push_args, &format!("{label}: git push"))
+    run_cmd_in(repo_path, "git", &push_args, &format!("{label}: git push"))?;
+    Ok(CommitOutcome::Pushed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command as Cmd;
+
+    fn init_bare_remote(dir: &std::path::Path) {
+        Cmd::new("git")
+            .args(["init", "--bare"])
+            .current_dir(dir)
+            .status()
+            .unwrap();
+    }
+
+    fn init_local_with_remote(local: &std::path::Path, remote: &std::path::Path) {
+        Cmd::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(local)
+            .status()
+            .unwrap();
+        Cmd::new("git")
+            .args([
+                "-c",
+                "user.email=test@test.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "init",
+            ])
+            .current_dir(local)
+            .status()
+            .unwrap();
+        Cmd::new("git")
+            .args(["remote", "add", "origin", &remote.to_string_lossy()])
+            .current_dir(local)
+            .status()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push", "-u", "origin", "main"])
+            .current_dir(local)
+            .status()
+            .unwrap();
+    }
+
+    #[test]
+    fn returns_pushed_when_staged_change_is_committed_and_pushed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("remote");
+        let local_dir = tmp.path().join("local");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        init_bare_remote(&remote_dir);
+        init_local_with_remote(&local_dir, &remote_dir);
+
+        let test_file = local_dir.join("data.txt");
+        std::fs::write(&test_file, "hello").unwrap();
+
+        let opts = CommitOptions {
+            author_name: Some("Test".to_string()),
+            author_email: Some("test@test.com".to_string()),
+            signing: None,
+            use_github_app_token: false,
+        };
+        let outcome =
+            commit_and_push_with_opts(&local_dir, &["data.txt"], "add data", None, "test", &opts)
+                .unwrap();
+
+        assert_eq!(outcome, CommitOutcome::Pushed);
+    }
+
+    #[test]
+    fn returns_no_changes_when_nothing_staged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote_dir = tmp.path().join("remote");
+        let local_dir = tmp.path().join("local");
+        std::fs::create_dir_all(&remote_dir).unwrap();
+        std::fs::create_dir_all(&local_dir).unwrap();
+
+        init_bare_remote(&remote_dir);
+        init_local_with_remote(&local_dir, &remote_dir);
+
+        // Write and commit the file first so it's tracked with identical content.
+        let test_file = local_dir.join("data.txt");
+        std::fs::write(&test_file, "same content").unwrap();
+        Cmd::new("git")
+            .args([
+                "-c",
+                "user.email=test@test.com",
+                "-c",
+                "user.name=Test",
+                "add",
+                "data.txt",
+            ])
+            .current_dir(&local_dir)
+            .status()
+            .unwrap();
+        Cmd::new("git")
+            .args([
+                "-c",
+                "user.email=test@test.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                "pre",
+            ])
+            .current_dir(&local_dir)
+            .status()
+            .unwrap();
+        Cmd::new("git")
+            .args(["push"])
+            .current_dir(&local_dir)
+            .status()
+            .unwrap();
+
+        // Rewrite with identical content — diff --cached will be empty.
+        std::fs::write(&test_file, "same content").unwrap();
+
+        let opts = CommitOptions {
+            author_name: Some("Test".to_string()),
+            author_email: Some("test@test.com".to_string()),
+            signing: None,
+            use_github_app_token: false,
+        };
+        let outcome =
+            commit_and_push_with_opts(&local_dir, &["data.txt"], "no-op", None, "test", &opts)
+                .unwrap();
+
+        assert_eq!(outcome, CommitOutcome::NoChanges);
+    }
 }

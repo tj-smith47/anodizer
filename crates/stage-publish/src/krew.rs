@@ -841,12 +841,28 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
     let commit_opts = util::resolve_commit_opts(ctx, krew_cfg.commit_author.as_ref());
     // Always create a versioned branch for Krew PRs.
     let branch = Some(branch_name.as_str());
-    util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, branch, "krew", &commit_opts)?;
-
-    log.status(&format!(
-        "Krew manifest pushed to {}/{} branch '{}'",
-        repo_owner, repo_name, branch_name
-    ));
+    let outcome = util::commit_and_push_with_opts(
+        repo_path,
+        &["."],
+        &commit_msg,
+        branch,
+        "krew",
+        &commit_opts,
+    )?;
+    match outcome {
+        util::CommitOutcome::Pushed => {
+            log.status(&format!(
+                "Krew manifest pushed to {}/{} branch '{}'",
+                repo_owner, repo_name, branch_name
+            ));
+        }
+        util::CommitOutcome::NoChanges => {
+            log.status(&format!(
+                "krew: nothing to push, manifest for '{}' already up to date",
+                plugin_name
+            ));
+        }
+    }
 
     // Submit a PR. When `repository.pull_request` is configured, use the
     // unified PR helper (which respects `base`, `draft`, `body`); otherwise

@@ -939,7 +939,7 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
     let auto_branch = format!("{}-{}", package_id, version);
     let branch_name = util::resolve_branch(winget_cfg.repository.as_ref()).unwrap_or(&auto_branch);
     let commit_opts = util::resolve_commit_opts(ctx, winget_cfg.commit_author.as_ref());
-    util::commit_and_push_with_opts(
+    let outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],
         &commit_msg,
@@ -947,11 +947,20 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         "winget",
         &commit_opts,
     )?;
-
-    log.status(&format!(
-        "WinGet manifest pushed to {}/{} branch '{}'",
-        repo_owner, repo_name, branch_name
-    ));
+    match outcome {
+        util::CommitOutcome::Pushed => {
+            log.status(&format!(
+                "WinGet manifest pushed to {}/{} branch '{}'",
+                repo_owner, repo_name, branch_name
+            ));
+        }
+        util::CommitOutcome::NoChanges => {
+            log.status(&format!(
+                "winget: nothing to push, manifest for '{}' already up to date",
+                package_id
+            ));
+        }
+    }
 
     // Submit a PR.  When `repository.pull_request` is configured and enabled,
     // use the unified PR helper (which respects `base`, `draft`, `body`).

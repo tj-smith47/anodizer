@@ -449,7 +449,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     );
     let commit_opts = util::resolve_commit_opts(ctx, nix_cfg.commit_author.as_ref());
     let branch = util::resolve_branch(nix_cfg.repository.as_ref());
-    util::commit_and_push_with_opts(
+    let outcome = util::commit_and_push_with_opts(
         repo_path,
         &[&nix_path],
         &commit_msg,
@@ -488,15 +488,22 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         log,
     );
 
-    log.status(&format!(
-        "Nix expression pushed to {}/{} for '{}'",
-        repo_owner, repo_name, crate_name
-    ));
-
-    // Surface PR-already-exists skips to the dispatch summary table.
-    if let Some(outcome) = pr_outcome {
-        ctx.record_publisher_outcome(outcome);
+    match outcome {
+        util::CommitOutcome::Pushed => {
+            log.status(&format!(
+                "Nix expression pushed to {}/{} for '{}'",
+                repo_owner, repo_name, crate_name
+            ));
+        }
+        util::CommitOutcome::NoChanges => {
+            log.status("nix: nothing to push, expression already up to date");
+        }
     }
 
-    Ok(true)
+    // Surface PR-already-exists skips to the dispatch summary table.
+    if let Some(pr_outcome) = pr_outcome {
+        ctx.record_publisher_outcome(pr_outcome);
+    }
+
+    Ok(matches!(outcome, util::CommitOutcome::Pushed))
 }

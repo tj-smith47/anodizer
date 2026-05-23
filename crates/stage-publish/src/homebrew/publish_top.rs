@@ -287,7 +287,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
         let cask_lossy = cask_path.to_string_lossy();
         let commit_opts = crate::util::resolve_commit_opts(ctx, cask_cfg.commit_author.as_ref());
         let branch = crate::util::resolve_branch(repo_cfg);
-        crate::util::commit_and_push_with_opts(
+        let outcome = crate::util::commit_and_push_with_opts(
             repo_path,
             &[&cask_lossy],
             &commit_msg,
@@ -295,12 +295,21 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             "homebrew_casks",
             &commit_opts,
         )?;
-        pushed_any = true;
-
-        log.status(&format!(
-            "Homebrew tap {}/{} updated with cask '{}' in {}",
-            repo_owner, repo_name, cask_name, directory
-        ));
+        match outcome {
+            crate::util::CommitOutcome::Pushed => {
+                pushed_any = true;
+                log.status(&format!(
+                    "Homebrew tap {}/{} updated with cask '{}' in {}",
+                    repo_owner, repo_name, cask_name, directory
+                ));
+            }
+            crate::util::CommitOutcome::NoChanges => {
+                log.status(&format!(
+                    "homebrew_casks: nothing to push, cask '{}' already up to date",
+                    cask_name
+                ));
+            }
+        }
 
         // Submit a PR if pull_request.enabled is set.
         let pr_branch = branch.unwrap_or("main");

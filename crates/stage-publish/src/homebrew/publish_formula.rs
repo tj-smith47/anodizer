@@ -410,7 +410,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
 
     let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
-    crate::util::commit_and_push_with_opts(
+    let outcome = crate::util::commit_and_push_with_opts(
         repo_path,
         &files_to_commit,
         &commit_msg,
@@ -418,17 +418,23 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         "homebrew",
         &commit_opts,
     )?;
-
-    if let Some(ref cask_name) = cask_name_for_log {
-        log.status(&format!(
-            "Homebrew tap {}/{} updated with formula '{}' and cask '{}'",
-            repo_owner, repo_name, formula_name, cask_name
-        ));
-    } else {
-        log.status(&format!(
-            "Homebrew tap {}/{} updated for '{}'",
-            repo_owner, repo_name, crate_name
-        ));
+    match outcome {
+        crate::util::CommitOutcome::Pushed => {
+            if let Some(ref cask_name) = cask_name_for_log {
+                log.status(&format!(
+                    "Homebrew tap {}/{} updated with formula '{}' and cask '{}'",
+                    repo_owner, repo_name, formula_name, cask_name
+                ));
+            } else {
+                log.status(&format!(
+                    "Homebrew tap {}/{} updated for '{}'",
+                    repo_owner, repo_name, crate_name
+                ));
+            }
+        }
+        crate::util::CommitOutcome::NoChanges => {
+            log.status("homebrew: nothing to push, formula already up to date");
+        }
     }
 
     // Submit a PR if pull_request.enabled is set.
@@ -484,5 +490,5 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         ctx.record_publisher_outcome(outcome);
     }
 
-    Ok(true)
+    Ok(matches!(outcome, crate::util::CommitOutcome::Pushed))
 }

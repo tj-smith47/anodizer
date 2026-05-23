@@ -514,7 +514,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     let manifest_lossy = manifest_path.to_string_lossy();
     let commit_opts = util::resolve_commit_opts(ctx, scoop_cfg.commit_author.as_ref());
     let branch = util::resolve_branch(scoop_cfg.repository.as_ref());
-    util::commit_and_push_with_opts(
+    let outcome = util::commit_and_push_with_opts(
         repo_path,
         &[&manifest_lossy],
         &commit_msg,
@@ -522,11 +522,17 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         "scoop",
         &commit_opts,
     )?;
-
-    log.status(&format!(
-        "Scoop bucket {}/{} updated for '{}'",
-        repo_owner, repo_name, crate_name
-    ));
+    match outcome {
+        util::CommitOutcome::Pushed => {
+            log.status(&format!(
+                "Scoop bucket {}/{} updated for '{}'",
+                repo_owner, repo_name, crate_name
+            ));
+        }
+        util::CommitOutcome::NoChanges => {
+            log.status("scoop: nothing to push, manifest already up to date");
+        }
+    }
 
     // Submit a PR if pull_request.enabled is set.
     let pr_branch = branch.unwrap_or("main");
@@ -559,11 +565,11 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     );
 
     // Surface PR-already-exists skips to the dispatch summary table.
-    if let Some(outcome) = pr_outcome {
-        ctx.record_publisher_outcome(outcome);
+    if let Some(pr_outcome) = pr_outcome {
+        ctx.record_publisher_outcome(pr_outcome);
     }
 
-    Ok(true)
+    Ok(matches!(outcome, util::CommitOutcome::Pushed))
 }
 
 // ---------------------------------------------------------------------------

@@ -234,12 +234,28 @@ fn publish_aur_source_entry(
             "package",
         );
         let commit_opts = util::resolve_commit_opts(ctx, cfg.commit_author.as_ref());
-        util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, label, &commit_opts)?;
-
-        log.status(&format!(
-            "{}: package '{}' pushed to {}",
-            label, pkg_name, git_url
-        ));
+        let outcome = util::commit_and_push_with_opts(
+            repo_path,
+            &["."],
+            &commit_msg,
+            None,
+            label,
+            &commit_opts,
+        )?;
+        match outcome {
+            util::CommitOutcome::Pushed => {
+                log.status(&format!(
+                    "{}: package '{}' pushed to {}",
+                    label, pkg_name, git_url
+                ));
+            }
+            util::CommitOutcome::NoChanges => {
+                log.status(&format!(
+                    "{}: nothing to push, package '{}' already up to date",
+                    label, pkg_name
+                ));
+            }
+        }
     }
 
     log.status(&format!("{}: published '{}'", label, pkg_name));

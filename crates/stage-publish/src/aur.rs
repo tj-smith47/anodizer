@@ -654,7 +654,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // shared [`AUR_REPO_BRANCH`] constant so the publish and rollback
     // paths can never drift (e.g. one renamed to `main`). Matches
     // GoReleaser `internal/pipe/aur/aur.go`.
-    util::commit_and_push_with_opts(
+    let outcome = util::commit_and_push_with_opts(
         repo_path,
         &["."],
         &commit_msg,
@@ -662,11 +662,20 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         "aur",
         &commit_opts,
     )?;
-
-    log.status(&format!(
-        "AUR package '{}' pushed to {}",
-        package_name, git_url
-    ));
+    match outcome {
+        util::CommitOutcome::Pushed => {
+            log.status(&format!(
+                "AUR package '{}' pushed to {}",
+                package_name, git_url
+            ));
+        }
+        util::CommitOutcome::NoChanges => {
+            log.status(&format!(
+                "aur: nothing to push, package '{}' already up to date",
+                package_name
+            ));
+        }
+    }
 
     Ok(())
 }
