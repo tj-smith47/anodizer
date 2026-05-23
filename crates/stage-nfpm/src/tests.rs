@@ -4503,7 +4503,7 @@ fn test_nfpm_if_truthy_runs_config() {
 #[test]
 fn test_nfpm_if_render_failure_is_hard_error() {
     // A render failure (undefined var / bad function) must bail with
-    // a clear message — NOT silently skip (W1 silent-skip footgun).
+    // a clear message — NOT silently skip (silent-skip would hide missing packages).
     let mut ctx = nfpm_if_test_ctx(Some("{{ undefined_function 42 }}"));
     let err = NfpmStage
         .run(&mut ctx)

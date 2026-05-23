@@ -256,7 +256,6 @@ fn publish_aur_source_entry(
                 ));
             }
         }
-        log.status(&format!("{}: published '{}'", label, pkg_name));
         return Ok(outcome.is_pushed());
     }
 
@@ -751,6 +750,7 @@ impl anodizer_core::Publisher for AurSourcePublisher {
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<AurSourceTarget> = Vec::new();
+        let mut any_pushed = false;
         let selected = ctx.options.selected_crates.clone();
         // Per-crate aur_source blocks.
         for crate_name in &selected {
@@ -760,13 +760,16 @@ impl anodizer_core::Publisher for AurSourcePublisher {
             if let Some(t) = collect_aur_source_per_crate_target(ctx, crate_name) {
                 targets.push(t);
             }
-            publish_to_aur_source(ctx, crate_name, &log)?;
+            any_pushed |= publish_to_aur_source(ctx, crate_name, &log)?;
         }
         // Top-level aur_sources array (project-wide).
         let top_level_targets = collect_aur_source_top_level_targets(ctx);
         if !top_level_targets.is_empty() {
             targets.extend(top_level_targets);
-            publish_top_level_aur_sources(ctx, &log)?;
+            any_pushed |= publish_top_level_aur_sources(ctx, &log)?;
+        }
+        if !any_pushed {
+            targets.clear();
         }
         let mut evidence = anodizer_core::PublishEvidence::new("upstream-aur");
         if let Some(first) = targets.first() {
