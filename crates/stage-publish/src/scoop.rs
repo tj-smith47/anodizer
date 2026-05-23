@@ -673,6 +673,20 @@ pub(crate) fn run_done_message(processed: usize) -> String {
     format!("scoop: completed — {} crate(s) processed", processed)
 }
 
+/// Decision predicate for the no-eligible-crates warning. True when the
+/// publisher walked the selection but the configured-predicate filtered
+/// every crate out — distinct from "ran successfully in dry-run mode".
+///
+/// `processed` is the count of crates whose `is_scoop_per_crate_configured`
+/// check passed. `selected_len` is the size of the implicit-all-resolved
+/// selection. The dry-run / skip_upload paths inside `publish_to_scoop`
+/// return Ok(false) without pushing — `processed` must still increment
+/// for them, otherwise this predicate fires a false-positive warning even
+/// though the correct code path ran. See `homebrew::publisher::should_warn_no_eligible`.
+pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
+    processed == 0 && selected_len > 0
+}
+
 /// Warning emitted when the publisher was registered (at least one crate
 /// has a `publish.scoop` block at the config level) but the run path
 /// processed zero crates.
@@ -712,30 +726,35 @@ impl anodizer_core::Publisher for ScoopPublisher {
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_scoop_per_crate_configured);
         log.status(&run_start_message(selected.len()));
-        // Only record rollback targets for buckets this run actually
-        // mutated. See `HomebrewPublisher::run` for the long-form
-        // rationale: intent-driven evidence makes the rollback
-        // orchestrator git-revert HEAD in clones it never touched,
-        // which fails on missing identity AND would otherwise revert
-        // the wrong commit.
+        // `processed` counts crates whose configured predicate passed and
+        // whose `publish_to_scoop` invocation was reached — NOT crates
+        // that pushed. The dry-run / skip_upload paths inside
+        // `publish_to_scoop` return Ok(false) without pushing; that's
+        // still a successful run of the correct code path, so it must
+        // not trigger the no-eligible-crates warning. `any_pushed` (below)
+        // tracks the orthogonal "did we mutate a bucket" question used
+        // to gate evidence recording — see `HomebrewPublisher::run` for
+        // the long-form rationale on intent-driven evidence.
         let mut processed = 0usize;
+        let mut any_pushed = false;
         for crate_name in &selected {
             if !is_scoop_per_crate_configured(ctx, crate_name) {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
+            processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
             if publish_to_scoop(ctx, crate_name, &log)? {
-                processed += 1;
+                any_pushed = true;
             }
         }
-        if processed == 0 && !selected.is_empty() {
+        if should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("scoop");
-        if processed > 0 {
+        if any_pushed {
             let targets = collect_scoop_run_targets(ctx);
             evidence.extra = serde_json::json!({ "scoop_targets": targets });
         }
@@ -1010,10 +1029,27 @@ mod publisher_tests {
         assert!(msg.contains("--all"), "{msg}");
     }
 
+    /// Regression for Bug 1 (Task 1 spec review): the no-eligible-crates
+    /// warning must fire only when the iteration loop's configured-predicate
+    /// filtered every selected crate out — NOT when `publish_to_scoop`
+    /// returned `Ok(false)` because of dry-run / skip_upload short-circuits.
+    #[test]
+    fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
+        // Dry-run with one configured crate: `processed` increments on
+        // crate-entry (1), so warning must not fire.
+        assert!(!should_warn_no_eligible(1, 1));
+        // True positive: none configured.
+        assert!(should_warn_no_eligible(0, 3));
+        // Empty selection → no warning.
+        assert!(!should_warn_no_eligible(0, 0));
+        // Partial-skip → no warning.
+        assert!(!should_warn_no_eligible(1, 3));
+    }
+
     /// Run the publisher end-to-end in dry-run mode against a context that
     /// selects a scoop-configured crate. Verifies the run path is wired
-    /// (returns Ok). The log lines are written to stderr and asserted
-    /// indirectly via the helper-string tests above.
+    /// (returns Ok). The bug-1 regression is anchored by
+    /// `should_warn_no_eligible_only_fires_when_predicate_filtered_everything`.
     #[test]
     fn scoop_publisher_run_dry_run_returns_ok() {
         let mut ctx = TestContextBuilder::new()

@@ -179,6 +179,24 @@ pub(crate) fn run_done_message(processed: usize) -> String {
     format!("homebrew: completed — {} crate(s) processed", processed)
 }
 
+/// Decision predicate for the no-eligible-crates warning. True when the
+/// publisher walked the selection but the configured-predicate filtered
+/// every crate out — distinct from "ran successfully in dry-run mode".
+///
+/// `processed` is the count of crates whose `is_homebrew_per_crate_configured`
+/// check passed (i.e. crates the publisher actually iterated). `selected_len`
+/// is the size of the implicit-all-resolved selection.
+///
+/// The dry-run / skip_upload paths inside `publish_to_homebrew` return
+/// Ok(false) without pushing — `processed` must still increment for them,
+/// otherwise this predicate fires a false-positive warning even though the
+/// correct code path ran. Bug 1 (Task 1 spec review): incrementing only on
+/// push-success would short-circuit this predicate to `true` in dry-run with
+/// a configured crate.
+pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
+    processed == 0 && selected_len > 0
+}
+
 /// Warning emitted when the publisher was registered (at least one crate
 /// has a `publish.homebrew` block at the config level) but the run path
 /// processed zero crates.
@@ -234,23 +252,34 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             is_homebrew_per_crate_configured,
         );
         log.status(&run_start_message(selected.len()));
+        // `processed` counts crates whose configured predicate passed and
+        // whose `publish_to_homebrew` invocation was reached — NOT crates
+        // that pushed. The dry-run / skip_upload paths inside
+        // `publish_to_homebrew` return Ok(false) without pushing; that's
+        // still a successful run of the correct code path, so it must
+        // not trigger the no-eligible-crates warning. `any_pushed` (below)
+        // tracks the orthogonal "did we mutate a tap" question used to
+        // gate evidence recording.
         let mut processed = 0usize;
+        let mut any_pushed = false;
         for crate_name in &selected {
             if !is_homebrew_per_crate_configured(ctx, crate_name) {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
+            processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
             if super::publish_to_homebrew(ctx, crate_name, &log)? {
-                processed += 1;
+                any_pushed = true;
             }
         }
         // Top-level casks (single invocation; the entrypoint itself
         // iterates over `ctx.config.homebrew_casks`).
-        let top_pushed = super::publish_top_level_homebrew_casks(ctx, &log)?;
-        let any_pushed = processed > 0 || top_pushed;
+        if super::publish_top_level_homebrew_casks(ctx, &log)? {
+            any_pushed = true;
+        }
 
-        if processed == 0 && !selected.is_empty() {
+        if should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
@@ -618,11 +647,36 @@ mod publisher_tests {
         assert!(msg.contains("--all"), "{msg}");
     }
 
+    /// Regression for Bug 1 (Task 1 spec review): the no-eligible-crates
+    /// warning must fire only when the iteration loop's configured-predicate
+    /// filtered every selected crate out — NOT when `publish_to_homebrew`
+    /// returned `Ok(false)` because of dry-run / skip_upload short-circuits.
+    /// The bug shape was incrementing `processed` only on push-success, which
+    /// made this predicate return `true` in dry-run with a configured crate,
+    /// emitting a spurious warning for an otherwise-correct run.
+    #[test]
+    fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
+        // Bug shape: dry-run with one configured crate. After the fix,
+        // `processed` increments on crate-entry (1), so the warning must
+        // not fire.
+        assert!(!should_warn_no_eligible(1, 1));
+        // True positive: 3 crates selected, none configured for homebrew.
+        // `processed` stays 0 → warning fires.
+        assert!(should_warn_no_eligible(0, 3));
+        // Boundary: empty selection (no crates configured at all) → no
+        // warning. The warn would be noise when there's nothing the
+        // operator could change about --crate/--all to fix it.
+        assert!(!should_warn_no_eligible(0, 0));
+        // Partial-skip: 2 of 3 selected crates were unconfigured, 1 ran
+        // → no warning.
+        assert!(!should_warn_no_eligible(1, 3));
+    }
+
     /// Run the publisher end-to-end in dry-run mode against a context that
     /// selects a homebrew-configured crate. Verifies the run path is wired
-    /// (returns Ok, records target evidence). The log lines themselves are
-    /// written to stderr and asserted indirectly via the helper-string tests
-    /// above.
+    /// (returns Ok). The bug-1 regression is anchored by the
+    /// `should_warn_no_eligible_only_fires_when_predicate_filtered_everything`
+    /// test above, which covers the predicate the run path uses.
     #[test]
     fn homebrew_publisher_run_dry_run_records_target() {
         let mut ctx = TestContextBuilder::new()
