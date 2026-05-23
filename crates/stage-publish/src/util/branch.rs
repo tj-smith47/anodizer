@@ -2,8 +2,8 @@
 //! the upstream default-branch via the GitHub REST API.
 //!
 //! `fetch_default_branch` is `pub(super)` because the only caller is
-//! `super::pr::submit_pr_via_gh`; keeping it out of `pub(crate)` keeps
-//! the surface tight.
+//! `super::pr::submit_pr_via_gh_with_opts`; keeping it out of
+//! `pub(crate)` keeps the surface tight.
 
 use anodizer_core::config::RepositoryConfig;
 

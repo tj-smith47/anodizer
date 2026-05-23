@@ -3,7 +3,8 @@
 //! Two public entry points:
 //! - [`maybe_submit_pr`] — gated on `repo.pull_request.enabled`, used by
 //!   the homebrew/scoop/winget/chocolatey/aur publishers.
-//! - [`submit_pr_via_gh`] — unconditional submission used by krew.
+//! - [`submit_pr_via_gh_with_opts`] — unconditional submission used by
+//!   krew's legacy path and winget's `microsoft/winget-pkgs` fallback.
 //!
 //! Internally tries `gh` CLI first, falls back to the GitHub REST API,
 //! and best-effort rebases the fork against upstream when the PR
@@ -84,6 +85,30 @@ fn gh_is_available() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Shared messages — single source of truth for the PR-already-exists
+// branch so both transports and the unit tests assert on the same
+// string. Mirrors the `run_*_message` pattern used elsewhere in
+// stage-publish.
+// ---------------------------------------------------------------------------
+
+/// Warn message rendered when the gh CLI / API reports the PR already
+/// exists and `update_existing_pr` is false. Operators see this in
+/// the publish log and the actionable remediation pointer at the end.
+pub(crate) fn pr_exists_skip_warn_message(label: &str, head: &str) -> String {
+    format!(
+        "{label}: PR for '{head}' already exists — skipping \
+         (set update_existing_pr: true to update the PR in place)"
+    )
+}
+
+/// Status message rendered when the gh CLI reports the PR already
+/// exists, `update_existing_pr` is true, and the force-push to the
+/// existing branch succeeded.
+pub(crate) fn pr_exists_update_status_message(label: &str, head: &str) -> String {
+    format!("{label}: PR for '{head}' already exists — updated in place")
 }
 
 // ---------------------------------------------------------------------------
@@ -197,16 +222,11 @@ fn create_pr_via_gh_cli(
                                 "{label}: update_existing_pr=true but force-push failed: {e}"
                             ));
                         } else {
-                            log.status(&format!(
-                                "{label}: PR for '{head}' already exists — updated in place"
-                            ));
+                            log.status(&pr_exists_update_status_message(label, head));
                         }
                         return None;
                     } else {
-                        log.warn(&format!(
-                            "{label}: PR for '{head}' already exists — skipping \
-                             (set update_existing_pr: true to update the PR in place)"
-                        ));
+                        log.warn(&pr_exists_skip_warn_message(label, head));
                         return Some(PublisherOutcome::PendingValidation);
                     }
                 }
@@ -309,10 +329,7 @@ fn create_pr_via_api(
                          install `gh` CLI to update the PR in place"
                     ));
                 } else {
-                    log.warn(&format!(
-                        "{label}: PR for '{head}' already exists — skipping \
-                         (set update_existing_pr: true to update the PR in place)"
-                    ));
+                    log.warn(&pr_exists_skip_warn_message(label, head));
                 }
                 return Some(PublisherOutcome::PendingValidation);
             }
@@ -351,6 +368,14 @@ pub(crate) struct PrOrigin<'a> {
 ///
 /// Tries `gh` CLI first; if unavailable, falls back to the GitHub REST API
 /// using the token from the RepositoryConfig (or `GITHUB_TOKEN` env var).
+///
+/// Returns `Some(PublisherOutcome::PendingValidation)` when the PR
+/// already exists and could not be updated; callers MUST forward the
+/// value to `Context::record_publisher_outcome` or the dispatch
+/// summary table will misreport the skip as `succeeded`.
+#[must_use = "the returned outcome override must be forwarded to \
+              Context::record_publisher_outcome — dropping it silently \
+              misreports a PR-already-exists skip as `succeeded`"]
 pub(crate) fn maybe_submit_pr(
     repo_path: &Path,
     repo: Option<&RepositoryConfig>,
@@ -438,8 +463,8 @@ pub(crate) fn maybe_submit_pr(
     }
 }
 
-/// Options for [`submit_pr_via_gh`]. Bundles infrequently-varying knobs so
-/// the function stays within the argument-count lint budget.
+/// Options for [`submit_pr_via_gh_with_opts`]. Bundles infrequently-varying
+/// knobs so the function stays within the argument-count lint budget.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct SubmitPrOpts {
     /// When true, force-push to an existing PR branch rather than skipping.
@@ -454,7 +479,15 @@ pub(crate) struct SubmitPrOpts {
 ///
 /// Falls back to the GitHub REST API when `gh` is unavailable and a token
 /// can be resolved from the environment.
+///
+/// Returns `Some(PublisherOutcome::PendingValidation)` when the PR
+/// already exists and could not be updated; callers MUST forward the
+/// value to `Context::record_publisher_outcome` or the dispatch
+/// summary table will misreport the skip as `succeeded`.
 #[allow(clippy::too_many_arguments)]
+#[must_use = "the returned outcome override must be forwarded to \
+              Context::record_publisher_outcome — dropping it silently \
+              misreports a PR-already-exists skip as `succeeded`"]
 pub(crate) fn submit_pr_via_gh_with_opts(
     repo_path: &Path,
     upstream_repo: &str,
@@ -568,22 +601,19 @@ mod tests {
     /// Skip warn message contains guidance when update_existing_pr=false.
     #[test]
     fn pr_exists_skip_warn_contains_guidance() {
-        let head = "owner:my-app-1.2.3";
-        let label = "winget";
-        let msg = format!(
-            "{label}: PR for '{head}' already exists — skipping \
-             (set update_existing_pr: true to update the PR in place)"
-        );
+        let msg = super::pr_exists_skip_warn_message("winget", "owner:my-app-1.2.3");
         assert!(msg.contains("already exists"), "{msg}");
         assert!(msg.contains("update_existing_pr: true"), "{msg}");
+        assert!(msg.contains("winget"), "{msg}");
+        assert!(msg.contains("owner:my-app-1.2.3"), "{msg}");
     }
 
     /// Update-in-place status message contains correct indicator.
     #[test]
     fn pr_exists_update_status_contains_updated_in_place() {
-        let head = "owner:my-app-1.2.3";
-        let label = "winget";
-        let msg = format!("{label}: PR for '{head}' already exists — updated in place");
+        let msg = super::pr_exists_update_status_message("winget", "owner:my-app-1.2.3");
         assert!(msg.contains("updated in place"), "{msg}");
+        assert!(msg.contains("winget"), "{msg}");
+        assert!(msg.contains("owner:my-app-1.2.3"), "{msg}");
     }
 }

@@ -472,6 +472,11 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
             repo_owner: &repo_owner,
             repo_name: &repo_name,
             branch_name: &pr_branch,
+            // Nix publishes commit directly to the expression repo
+            // branch; the optional PR is informational. The
+            // winget/krew/cask `update_existing_pr:` flag has no
+            // analogue on `NixConfig` because there's no real
+            // "blocked queue" to recover from here.
             update_existing_pr: false,
         },
         &format!("Update {} to {}", name, version),

@@ -467,6 +467,10 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
             repo_owner: &repo_owner,
             repo_name: &repo_name,
             branch_name: pr_branch,
+            // Homebrew formula publishes commit directly to the tap
+            // branch; the optional PR is informational. The cask/winget/krew
+            // `update_existing_pr:` flag has no analogue on `HomebrewConfig`
+            // because there's no real "blocked queue" to recover from here.
             update_existing_pr: false,
         },
         &pr_title,

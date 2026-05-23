@@ -330,11 +330,81 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
             log,
         );
 
-        // Surface PR-already-exists skips to the dispatch summary table.
+        // Sticky-pending: once any cask in this top-level group
+        // records a Pending outcome (e.g. PR-already-exists skip), a
+        // subsequent successful cask must NOT clear it. The dispatch
+        // row reports the most cautious status across the entire
+        // group — "succeeded" would be a lie if even one cask
+        // skipped. Implementation: only call `record_publisher_outcome`
+        // on the `Some(outcome)` arm; the `None` (success) arm leaves
+        // the slot untouched. Iteration order across casks is
+        // therefore irrelevant.
         if let Some(outcome) = pr_outcome {
             ctx.record_publisher_outcome(outcome);
         }
     }
 
     Ok(pushed_any)
+}
+
+#[cfg(test)]
+mod tests {
+    use anodizer_core::PublisherOutcome;
+    use anodizer_core::context::Context;
+
+    /// Sticky-pending semantic: a cask that records `PendingValidation`
+    /// followed by a cask that records nothing must leave the slot at
+    /// `PendingValidation`. Models "cask A's PR already exists; cask B
+    /// pushed cleanly" — the group row must still read pending.
+    #[test]
+    fn sticky_pending_preserves_pending_when_next_cask_succeeds() {
+        let mut ctx = Context::test_fixture();
+        // Cask A: PR already exists → records PendingValidation.
+        if let Some(outcome) = Some(PublisherOutcome::PendingValidation) {
+            ctx.record_publisher_outcome(outcome);
+        }
+        // Cask B: succeeded → returns None; loop does not call
+        // `record_publisher_outcome`, so the slot stays at Pending.
+        let pr_outcome_b: Option<PublisherOutcome> = None;
+        if let Some(outcome) = pr_outcome_b {
+            ctx.record_publisher_outcome(outcome);
+        }
+        assert!(matches!(
+            ctx.take_pending_outcome(),
+            Some(PublisherOutcome::PendingValidation)
+        ));
+    }
+
+    /// Converse: a cask that records nothing followed by a cask that
+    /// records `PendingValidation` must leave the slot at
+    /// `PendingValidation`. Order across casks is irrelevant —
+    /// any single pending cask wins.
+    #[test]
+    fn sticky_pending_records_pending_when_later_cask_skips() {
+        let mut ctx = Context::test_fixture();
+        let pr_outcome_a: Option<PublisherOutcome> = None;
+        if let Some(outcome) = pr_outcome_a {
+            ctx.record_publisher_outcome(outcome);
+        }
+        if let Some(outcome) = Some(PublisherOutcome::PendingValidation) {
+            ctx.record_publisher_outcome(outcome);
+        }
+        assert!(matches!(
+            ctx.take_pending_outcome(),
+            Some(PublisherOutcome::PendingValidation)
+        ));
+    }
+
+    /// Baseline: when every cask succeeds (no Pending arm fires) the
+    /// slot remains empty and dispatch defaults to Succeeded. Guards
+    /// against accidentally clearing-then-recording None.
+    #[test]
+    fn sticky_pending_leaves_slot_empty_when_all_casks_succeed() {
+        let mut ctx = Context::test_fixture();
+        let outcomes: [Option<PublisherOutcome>; 2] = [None, None];
+        for outcome in outcomes.into_iter().flatten() {
+            ctx.record_publisher_outcome(outcome);
+        }
+        assert!(ctx.take_pending_outcome().is_none());
+    }
 }
