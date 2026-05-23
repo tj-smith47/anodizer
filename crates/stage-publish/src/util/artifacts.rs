@@ -5,28 +5,9 @@
 //! to canonical short forms (`linux`/`darwin`/`windows`, `amd64`/`arm64`),
 //! then publisher-specific mapping at each call-site (e.g. `krew_os`).
 
+use anodizer_core::artifact::matches_id_filter;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
-use anyhow::Result;
-
-use anodizer_core::artifact::matches_id_filter;
-
-/// Find a Windows Archive artifact and return `(url, sha256)`, or bail with a
-/// descriptive error.
-#[allow(dead_code)]
-pub(crate) fn require_windows_artifact(
-    ctx: &Context,
-    crate_name: &str,
-    label: &str,
-) -> Result<(String, String)> {
-    find_windows_artifact(ctx, crate_name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "{}: no Windows archive artifact found for crate '{}'",
-            label,
-            crate_name
-        )
-    })
-}
 
 // ---------------------------------------------------------------------------
 // OS / architecture inference from target triples
@@ -76,7 +57,9 @@ pub(crate) struct OsArtifact {
     pub sha256: String,
     pub os: String,
     pub arch: String,
-    #[allow(dead_code)]
+    /// Artifact ID from metadata (matches the `id:` field in archive configs).
+    /// Used by publishers such as `nix` to correlate artifacts to their
+    /// per-archive configuration entries.
     pub id: Option<String>,
     /// amd64 microarchitecture variant (e.g. "v1", "v2", "v3", "v4").
     /// Populated from artifact metadata when present.
@@ -129,28 +112,6 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
     }
 }
 
-/// Filter a vec of `OsArtifact` by IDs: when `ids` is `Some`, keep only
-/// artifacts whose `id` field matches one of the given IDs.  When `ids` is
-/// `None`, all artifacts pass through.
-#[allow(dead_code)]
-pub(crate) fn filter_os_artifacts_by_ids(
-    artifacts: Vec<OsArtifact>,
-    ids: Option<&[String]>,
-) -> Vec<OsArtifact> {
-    if let Some(ids) = ids {
-        artifacts
-            .into_iter()
-            .filter(|a| {
-                a.id.as_ref()
-                    .map(|id| ids.iter().any(|i| i == id))
-                    .unwrap_or(false)
-            })
-            .collect()
-    } else {
-        artifacts
-    }
-}
-
 /// Filter artifacts by IDs using the canonical `matches_id_filter` semantics.
 pub(crate) fn filter_by_ids<'a>(
     artifacts: Vec<&'a Artifact>,
@@ -160,31 +121,6 @@ pub(crate) fn filter_by_ids<'a>(
         .into_iter()
         .filter(|a| matches_id_filter(a, ids))
         .collect()
-}
-
-/// Find all Archive artifacts for the given crate whose target or path
-/// matches `os_needle` (e.g. "linux", "darwin", "windows").
-///
-/// Returns a vec of `OsArtifact` with the URL, SHA256, and inferred
-/// os/arch strings extracted from the target triple.
-#[allow(dead_code)]
-pub(crate) fn find_artifacts_by_os(
-    ctx: &Context,
-    crate_name: &str,
-    os_needle: &str,
-) -> Vec<OsArtifact> {
-    find_artifacts_by_os_filtered(ctx, crate_name, os_needle, None)
-}
-
-/// Find all Archive artifacts for the given crate whose target or path
-/// matches `os_needle`, with optional IDs filter.
-pub(crate) fn find_artifacts_by_os_filtered(
-    ctx: &Context,
-    crate_name: &str,
-    os_needle: &str,
-    ids: Option<&[String]>,
-) -> Vec<OsArtifact> {
-    find_artifacts_by_os_with_variant(ctx, crate_name, os_needle, ids, None, None)
 }
 
 /// Find artifacts by OS with optional amd64_variant/arm_variant microarchitecture filtering.
@@ -233,25 +169,6 @@ pub(crate) fn find_artifacts_by_os_with_variant(
         .map(|a| artifact_to_os_artifact(a, os_needle))
         .collect();
     filter_by_variant(os_artifacts, amd64_variant, arm_variant)
-}
-
-/// Find all Archive artifacts for the given crate across all platforms.
-///
-/// Returns a vec of `OsArtifact` with the URL, SHA256, and inferred
-/// os/arch strings extracted from the target triple.
-#[allow(dead_code)]
-pub(crate) fn find_all_platform_artifacts(ctx: &Context, crate_name: &str) -> Vec<OsArtifact> {
-    find_all_platform_artifacts_filtered(ctx, crate_name, None)
-}
-
-/// Find all Archive and Binary artifacts for the given crate across all platforms,
-/// with optional IDs filter.
-pub(crate) fn find_all_platform_artifacts_filtered(
-    ctx: &Context,
-    crate_name: &str,
-    ids: Option<&[String]>,
-) -> Vec<OsArtifact> {
-    find_all_platform_artifacts_with_variant(ctx, crate_name, ids, None, None)
 }
 
 /// Find all platform artifacts with optional amd64_variant/arm_variant microarchitecture
@@ -323,15 +240,4 @@ pub(super) fn filter_by_variant(
             true
         })
         .collect()
-}
-
-/// Find a Windows Archive artifact for the given crate and return `(url, sha256)`.
-///
-/// Returns `None` when no matching artifact exists.
-#[allow(dead_code)]
-pub(crate) fn find_windows_artifact(ctx: &Context, crate_name: &str) -> Option<(String, String)> {
-    let a = find_artifacts_by_os(ctx, crate_name, "windows")
-        .into_iter()
-        .next()?;
-    Some((a.url, a.sha256))
 }

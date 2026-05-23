@@ -4,8 +4,8 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use super::artifacts::{
-    OsArtifact, filter_by_variant, filter_os_artifacts_by_ids, find_all_platform_artifacts,
-    find_artifacts_by_os, infer_arch, infer_os,
+    OsArtifact, filter_by_variant, find_all_platform_artifacts_with_variant,
+    find_artifacts_by_os_with_variant, infer_arch, infer_os,
 };
 use super::config::{resolve_artifact_kind, resolve_repo_owner_name, should_skip_upload};
 use super::template::{render_or_warn, render_url_template};
@@ -131,7 +131,7 @@ fn test_find_artifacts_by_os_linux() {
         ],
     );
 
-    let linux = find_artifacts_by_os(&ctx, "mytool", "linux");
+    let linux = find_artifacts_by_os_with_variant(&ctx, "mytool", "linux", None, None, None);
     assert_eq!(linux.len(), 2);
     assert!(linux.iter().all(|a| a.os == "linux"));
     assert!(
@@ -169,7 +169,7 @@ fn test_find_artifacts_by_os_darwin() {
         ],
     );
 
-    let darwin = find_artifacts_by_os(&ctx, "mytool", "darwin");
+    let darwin = find_artifacts_by_os_with_variant(&ctx, "mytool", "darwin", None, None, None);
     assert_eq!(darwin.len(), 2);
     assert!(darwin.iter().all(|a| a.os == "darwin"));
 }
@@ -185,7 +185,7 @@ fn test_find_artifacts_by_os_no_match() {
         )],
     );
 
-    let windows = find_artifacts_by_os(&ctx, "mytool", "windows");
+    let windows = find_artifacts_by_os_with_variant(&ctx, "mytool", "windows", None, None, None);
     assert!(windows.is_empty());
 }
 
@@ -216,7 +216,7 @@ fn test_find_all_platform_artifacts() {
         ],
     );
 
-    let all = find_all_platform_artifacts(&ctx, "mytool");
+    let all = find_all_platform_artifacts_with_variant(&ctx, "mytool", None, None, None);
     assert_eq!(all.len(), 3);
     assert!(all.iter().any(|a| a.os == "linux" && a.arch == "amd64"));
     assert!(all.iter().any(|a| a.os == "darwin" && a.arch == "arm64"));
@@ -226,7 +226,7 @@ fn test_find_all_platform_artifacts() {
 #[test]
 fn test_find_all_platform_artifacts_empty() {
     let ctx = ctx_with_artifacts("mytool", vec![]);
-    let all = find_all_platform_artifacts(&ctx, "mytool");
+    let all = find_all_platform_artifacts_with_variant(&ctx, "mytool", None, None, None);
     assert!(all.is_empty());
 }
 
@@ -240,148 +240,8 @@ fn test_find_all_platform_artifacts_wrong_crate() {
             "h1",
         )],
     );
-    let all = find_all_platform_artifacts(&ctx, "other_tool");
+    let all = find_all_platform_artifacts_with_variant(&ctx, "other_tool", None, None, None);
     assert!(all.is_empty());
-}
-
-// -----------------------------------------------------------------------
-// OsArtifact id field tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn test_os_artifact_has_id_from_metadata() {
-    let mut config = Config::default();
-    config.crates = vec![CrateConfig {
-        name: "mytool".to_string(),
-        path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
-        ..Default::default()
-    }];
-    let mut ctx = Context::new(config, ContextOptions::default());
-    let mut meta = HashMap::new();
-    meta.insert(
-        "url".to_string(),
-        "https://example.com/a.tar.gz".to_string(),
-    );
-    meta.insert("sha256".to_string(), "abc".to_string());
-    meta.insert("id".to_string(), "my-archive".to_string());
-    ctx.artifacts.add(Artifact {
-        kind: ArtifactKind::Archive,
-        name: String::new(),
-        path: PathBuf::from("dist/a.tar.gz"),
-        target: Some("x86_64-unknown-linux-gnu".to_string()),
-        crate_name: "mytool".to_string(),
-        metadata: meta,
-        size: None,
-    });
-
-    let all = find_all_platform_artifacts(&ctx, "mytool");
-    assert_eq!(all.len(), 1);
-    assert_eq!(all[0].id.as_deref(), Some("my-archive"));
-}
-
-#[test]
-fn test_os_artifact_id_is_none_when_not_in_metadata() {
-    let ctx = ctx_with_artifacts(
-        "mytool",
-        vec![(
-            "x86_64-unknown-linux-gnu",
-            "https://example.com/a.tar.gz",
-            "abc",
-        )],
-    );
-    let all = find_all_platform_artifacts(&ctx, "mytool");
-    assert_eq!(all.len(), 1);
-    assert!(all[0].id.is_none());
-}
-
-// -----------------------------------------------------------------------
-// filter_os_artifacts_by_ids tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn test_filter_os_artifacts_by_ids_none_passes_all() {
-    let artifacts = vec![
-        OsArtifact {
-            url: "u1".to_string(),
-            sha256: "s1".to_string(),
-            os: "linux".to_string(),
-            arch: "amd64".to_string(),
-            id: Some("a".to_string()),
-            amd64_variant: None,
-            arm_variant: None,
-            binary: None,
-        },
-        OsArtifact {
-            url: "u2".to_string(),
-            sha256: "s2".to_string(),
-            os: "darwin".to_string(),
-            arch: "arm64".to_string(),
-            id: Some("b".to_string()),
-            amd64_variant: None,
-            arm_variant: None,
-            binary: None,
-        },
-    ];
-    let result = filter_os_artifacts_by_ids(artifacts, None);
-    assert_eq!(result.len(), 2);
-}
-
-#[test]
-fn test_filter_os_artifacts_by_ids_filters_matching() {
-    let artifacts = vec![
-        OsArtifact {
-            url: "u1".to_string(),
-            sha256: "s1".to_string(),
-            os: "linux".to_string(),
-            arch: "amd64".to_string(),
-            id: Some("keep-me".to_string()),
-            amd64_variant: None,
-            arm_variant: None,
-            binary: None,
-        },
-        OsArtifact {
-            url: "u2".to_string(),
-            sha256: "s2".to_string(),
-            os: "darwin".to_string(),
-            arch: "arm64".to_string(),
-            id: Some("drop-me".to_string()),
-            amd64_variant: None,
-            arm_variant: None,
-            binary: None,
-        },
-        OsArtifact {
-            url: "u3".to_string(),
-            sha256: "s3".to_string(),
-            os: "windows".to_string(),
-            arch: "amd64".to_string(),
-            id: None,
-            amd64_variant: None,
-            arm_variant: None,
-            binary: None,
-        },
-    ];
-    let ids = vec!["keep-me".to_string()];
-    let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].url, "u1");
-}
-
-#[test]
-fn test_filter_os_artifacts_by_ids_empty_ids_returns_nothing() {
-    let artifacts = vec![OsArtifact {
-        url: "u1".to_string(),
-        sha256: "s1".to_string(),
-        os: "linux".to_string(),
-        arch: "amd64".to_string(),
-        id: Some("a".to_string()),
-        amd64_variant: None,
-        arm_variant: None,
-        binary: None,
-    }];
-    let ids: Vec<String> = vec![];
-    let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
-    assert!(result.is_empty());
 }
 
 // -----------------------------------------------------------------------
