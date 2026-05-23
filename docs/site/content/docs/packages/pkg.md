@@ -7,6 +7,10 @@ template = "docs.html"
 
 The PKG stage builds macOS `.pkg` installer packages from your Darwin binaries using the native `pkgbuild` tool. Installers are placed in `dist/macos/`.
 
+## Classification
+
+Packager — creates macOS PKG installers from Darwin binaries. Required: not a publisher; macOS only.
+
 ## Required tools
 
 - `pkgbuild` — part of Xcode Command Line Tools on macOS. Install with `xcode-select --install`.
@@ -39,6 +43,20 @@ crates:
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds (e.g. `{{ .CommitTimestamp }}`). |
 | `disable` | bool | `false` | Skip this PKG config. |
 
+## Authentication
+
+Not applicable — PKG creation is a local build step using the native `pkgbuild` tool. Distribution/notarization requires a separate signing step (see [Signing](#signing)).
+
+## Common gotchas
+
+- **macOS only**: `pkgbuild` is not available on Linux. Cross-compilation is not supported.
+- **Signing**: `pkgbuild` does not sign packages. For distribution outside the Mac App Store, sign with `productsign` and notarize with `xcrun notarytool` as a post-processing step.
+- **`install_location`**: the default `/usr/local/bin` requires admin privileges. Use `/usr/local/bin` for CLI tools; use a user-writable path only for user-space tools.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## How it works
 
 For each macOS binary artifact, the stage:
@@ -62,6 +80,24 @@ Place a `preinstall` and/or `postinstall` shell script in the directory specifie
 scripts/
   preinstall
   postinstall
+```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    pkgs:
+      - identifier: com.example.myapp  # required; reverse-domain bundle identifier
+        id: ""                          # optional; unique identifier
+        ids: []                         # optional; filter by build IDs
+        name: ""                        # optional; output filename template
+        install_location: /usr/local/bin  # optional; installation path on target system
+        scripts: ""                     # optional; directory with preinstall/postinstall scripts
+        extra_files: []                 # optional; additional files in the package payload
+        replace: false                  # optional; remove archive artifacts, keep PKG only
+        mod_timestamp: ""               # optional; fixed timestamp for reproducible builds
+        disable: false                  # optional
 ```
 
 ## Full example

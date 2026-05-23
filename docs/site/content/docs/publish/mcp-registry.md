@@ -7,6 +7,14 @@ template = "docs.html"
 
 Anodizer publishes a [Model Context Protocol](https://modelcontextprotocol.io/) server manifest to the public registry at [registry.modelcontextprotocol.io](https://registry.modelcontextprotocol.io), letting MCP-capable clients discover and install your server. The manifest describes how to fetch the server (OCI image, npm tarball, PyPI wheel, NuGet package, or `.mcpb` bundle) and which transport(s) it speaks. Configured under a top-level `mcp:` key, mirroring GoReleaser's `mcp_registries` pipe.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Manager | false | warn-only (no programmatic unpublish; manual mark-deprecated via registry admin UI) | `MCP_GITHUB_TOKEN` or OIDC id-token (`id-token: write`) |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -151,6 +159,17 @@ jobs:
 
 Anodizer reads the OIDC request URL and token from the standard GHA env vars, requests an id-token scoped to the registry's audience, exchanges it for a short-lived registry bearer, and publishes.
 
+## Common gotchas
+
+- **`packages` is required**: omitting `packages` causes a config validation error; an empty list is rejected by the registry.
+- **OCI version field**: OCI packages get an empty `version` field in the published manifest — the registry resolves the version from the image tag. Other registry types get the release version verbatim.
+- **`top-level transports`**: the `transports:` list is accepted for GoReleaser config-portability but is not emitted to the registry. Transports are per-package via `packages[].transport`.
+- **Ownership verification**: for server names under `io.github.<owner>/...`, use `auth.type: github-oidc` (in GHA) or `auth.type: github` (PAT). The registry uses this to verify you own the GitHub repository.
+
+## Republish / update behavior
+
+Not applicable as a config flag — the MCP registry accepts re-posting the same server name and version; the manifest is updated in-place on the registry. Rollback is warn-only because the registry has no programmatic unpublish endpoint; deprecated servers must be marked manually via the registry admin UI.
+
 ## Skipping per release
 
 `skip` accepts either a bool or a Tera template:
@@ -168,6 +187,35 @@ Common patterns:
 | Always skip | `skip: true` or `skip: "{{ true }}"` |
 | Skip pre-releases | `skip: "{{ if .Prerelease }}true{{ endif }}"` |
 | Skip snapshot builds | `skip: "{{ if .IsSnapshot }}true{{ endif }}"` |
+
+## Full config reference
+
+```yaml
+mcp:
+  name: io.github.myorg/myapp       # required; fully-qualified server name (template)
+  title: ""                          # optional; human-readable title (template)
+  description: ""                    # optional; one-line description (template)
+  homepage: ""                       # optional; project URL (template)
+  skip: false                        # optional; bool or template string
+  registry: "https://registry.modelcontextprotocol.io"  # optional; override endpoint
+  repository:                        # optional; inferred from release context if omitted
+    url: "https://github.com/myorg/myapp"
+    source: github                   # github | gitlab | gitea
+    id: ""                           # optional; source-specific repo ID
+    subfolder: ""                    # optional; monorepo subfolder
+  packages:                          # required; one or more distribution packages
+    - registry_type: oci             # oci | npm | pypi | nuget | mcpb
+      identifier: ghcr.io/myorg/myapp  # package coordinate (template)
+      transport:
+        type: stdio                  # stdio | streamable-http | sse
+  transports:                        # optional; accepted for GoReleaser portability
+    - type: stdio
+  auth:
+    type: none                       # none | bearer | github-oidc
+    # For bearer:
+    # token: "{{ .Env.MCP_TOKEN }}"
+    # For github-oidc: no extra fields needed; token is auto-obtained from Actions
+```
 
 ## Full example
 

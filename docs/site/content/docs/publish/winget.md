@@ -7,6 +7,14 @@ template = "docs.html"
 
 Anodizer generates [WinGet](https://learn.microsoft.com/en-us/windows/package-manager/) YAML manifests and submits pull requests to the winget-pkgs community repository (or your own fork) via the GitHub API. WinGet is the official Windows Package Manager, allowing users to install your tool with `winget install Publisher.AppName`.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Submitter | false | warn-only (manual PR close against `microsoft/winget-pkgs`; upstream validation cannot be cancelled mid-flight) | `GITHUB_TOKEN pull_request:write` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -101,6 +109,79 @@ You can configure the target repository with either the legacy `manifests_repo` 
 | `repository.pull_request.base.owner` | string | Upstream repo owner to PR against |
 | `repository.pull_request.base.name` | string | Upstream repo name to PR against |
 | `repository.pull_request.base.branch` | string | Upstream base branch to target |
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      winget:
+        name: ""                           # override package name
+        package_name: ""                   # display name in gallery
+        package_identifier: "Org.App"     # required; 2–8 dot-separated segments
+        publisher: "My Org"               # required
+        publisher_url: ""
+        publisher_support_url: ""
+        privacy_url: ""
+        author: ""
+        copyright: ""
+        copyright_url: ""
+        license: MIT                       # required; SPDX
+        license_url: ""
+        short_description: ""             # max 256 chars
+        description: ""
+        homepage: ""
+        url_template: ""
+        ids: []
+        skip_upload: false               # bool | "auto" | template
+        commit_msg_template: ""
+        path: ""                         # custom manifest path in repo
+        release_notes: ""
+        release_notes_url: ""
+        installation_notes: ""
+        tags: []
+        dependencies: []
+        product_code: ""
+        use: archive                     # archive | msi | nsis
+        amd64_variant: v1                # v1 | v2 | v3 | v4
+        update_existing_pr: false
+        repository:
+          owner: myorg
+          name: winget-pkgs
+          token: ""                      # falls back to GITHUB_TOKEN
+          branch: ""
+          pull_request:
+            enabled: true
+            base:
+              owner: microsoft
+              name: winget-pkgs
+              branch: master
+        commit_author:
+          name: ""
+          email: ""
+```
+
+## Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_TOKEN` | Token with push access to your winget-pkgs fork and `pull_request:write` scope for the upstream PR |
+
+The token can also be set via `repository.token` in the config. Falls back to `ANODIZER_FORCE_TOKEN` if `GITHUB_TOKEN` is not set.
+
+## Common gotchas
+
+- **Non-zip archives**: WinGet only accepts `.zip` format for archive installers. `.tar.gz`, `.7z`, and other formats are rejected with a clear error.
+- **Mixed artifact types**: cannot mix zip archives and portable binaries in the same manifest. Anodizer errors if both types are detected.
+- **Validation pipeline lag**: WinGet PR validation runs in the `microsoft/winget-pkgs` CI pipeline, which can take hours to complete. Rollback is warn-only — the PR cannot be cancelled programmatically once validation has started.
+- **Duplicate PRs**: if a prior run pushed a PR for the same tag, use `update_existing_pr: true` to force-push the updated manifests instead of opening a second PR.
+
+## Republish / update behavior
+
+Set `update_existing_pr: true` to force-push an updated manifest to an existing open PR branch (using `--force-with-lease`) rather than skipping. This handles the case where a prior release attempt pushed stale manifests.
+
+Not applicable for version replacement — each version requires a separate PR. To re-submit a rejected version, open a new PR (bump the version or fix the manifest).
 
 ## Commit author
 

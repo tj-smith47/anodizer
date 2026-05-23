@@ -7,6 +7,14 @@ template = "docs.html"
 
 The Nix publisher generates a Nix derivation expression for your release and commits it to a nixpkgs-style repository. It is configured under `publish.nix` within a crate's config.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Manager | false | git revert + push | `GITHUB_TOKEN contents:write` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -142,10 +150,66 @@ The `license` field must be a valid `lib.licenses` attribute from nixpkgs. Commo
 
 Run `anodizer check` to validate the license identifier before releasing.
 
+## Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_TOKEN` | Token with push access to your nixpkgs-style repository |
+
+The token can also be set via `repository.token` in the config.
+
+## Common gotchas
+
+- **Linux/macOS only**: only Linux and Darwin artifacts are included. Windows artifacts are ignored.
+- **License identifier**: the `license` field must be a valid `lib.licenses` attribute (e.g. `mit`, not `MIT`). Run `anodizer check` to validate before releasing.
+- **SHA256 format**: checksums are automatically converted from hex to Nix SRI format (`sha256-<base64>`). Do not manually convert.
+- **`formatter`**: if `alejandra` or `nixfmt` is set but not on `PATH`, the derivation is written without formatting (no error). Ensure the formatter is available in CI.
+
+## Republish / update behavior
+
+Not applicable as a config flag — the derivation file is updated in-place on each release (previous commit stays in git history). The Manager group rollback reverts the commit via `git revert HEAD --no-edit` + push.
+
 ## Skipping prereleases
 
 ```yaml
 skip_upload: auto   # skip for prereleases; publish stable releases
+```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      nix:
+        name: myapp                          # optional; derivation pname (default: crate name)
+        path: pkgs/myapp/default.nix         # optional; output path in the repo
+        description: ""                      # optional; meta.description
+        homepage: ""                         # optional; meta.homepage
+        license: mit                         # optional; lib.licenses attribute (lowercase)
+        ids: []                              # optional; filter by build IDs
+        url_template: ""                     # optional; override download URL
+        skip_upload: false                   # optional; "auto" skips prereleases
+        install: ""                          # optional; custom install commands
+        extra_install: ""                    # optional; appended after main install
+        post_install: ""                     # optional; postInstall phase commands
+        formatter: ""                        # optional; alejandra | nixfmt
+        commit_msg_template: ""             # optional
+        commit_author:
+          name: ""
+          email: ""
+        repository:
+          owner: my-org                      # optional; inferred if omitted
+          name: nixpkgs                      # optional
+          branch: main                       # optional
+          token: "{{ .Env.GITHUB_TOKEN }}"   # optional
+          pull_request:
+            enabled: false                   # optional; open PR instead of direct push
+            base: master                     # optional
+        dependencies:                        # optional; runtime deps as Nix attr paths
+          - name: openssl                    # Nix attribute path
+          - name: libiconv
+            os: darwin                       # optional; restrict to linux | darwin
 ```
 
 ## Full example

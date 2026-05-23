@@ -7,6 +7,14 @@ template = "docs.html"
 
 Anodizer generates Chocolatey `.nuspec` manifests and `chocolateyInstall.ps1` PowerShell scripts, packs them into `.nupkg` files, and pushes them to the [Chocolatey](https://chocolatey.org/) community repository (or a custom source). Chocolatey is the leading package manager for Windows, letting users install your tool with `choco install myapp`.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Submitter | false | warn-only (manual withdraw via community gallery) | n/a |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -64,7 +72,7 @@ Each entry in the `dependencies` array has:
 | `id` | string | Chocolatey package ID of the dependency |
 | `version` | string | Optional version constraint (e.g., `[1.0.0,)`) |
 
-## API key setup
+## Authentication
 
 Anodizer needs a Chocolatey API key to push packages. You can provide it in two ways:
 
@@ -72,6 +80,13 @@ Anodizer needs a Chocolatey API key to push packages. You can provide it in two 
 2. **Config field**: set `api_key` in the chocolatey config. This field supports template rendering, so you can reference environment variables or other context values.
 
 The environment variable is used as a fallback when `api_key` is not set in the config. To obtain an API key, sign in to [chocolatey.org/account](https://community.chocolatey.org/account) and generate one from your account page.
+
+## Common gotchas
+
+- **No Windows artifacts**: if no Windows build artifacts exist, anodizer falls back to a placeholder GitHub release download URL and logs a warning. Ensure your build matrix includes at least one `*-pc-windows-*` target.
+- **Rejected versions**: a version rejected by Chocolatey moderation cannot be replaced; the version must be bumped before re-pushing. `republish_in_moderation` does not apply to rejected packages.
+- **Moderation queue lag**: the Chocolatey flat API (`/api/v2/Packages`) only returns approved packages. Checking for an in-moderation version requires scraping `community.chocolatey.org/packages/<name>`.
+- **`skip_publish: true`** skips the entire publisher early — no nuspec is generated. Use `disable: true` if you want to disable without suppressing config validation.
 
 ## How nuspec and nupkg files are generated
 
@@ -91,7 +106,7 @@ When `skip_publish: true` is set, Anodizer skips the entire publish function ear
 
 In dry-run mode (`--dry-run`), Anodizer logs what it would do without generating any files or running any commands.
 
-## Moderation queue behavior
+## Republish / update behavior
 
 When a version is already in the Chocolatey community moderation queue
 (`PackageStatus=Submitted`, `IsApproved=false`), Anodizer's default behavior
@@ -115,6 +130,48 @@ chocolatey:
 Rejected versions (`PackageStatus=Rejected`) always return an error regardless
 of this flag — a rejected version cannot be replaced, and the version must be
 bumped before re-pushing.
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      chocolatey:
+        name: myapp                         # optional; package name (default: crate name)
+        ids: []                             # optional; build ID filter
+        repository:
+          owner: myorg                      # required
+          name: myapp                       # required
+        title: "My App"                     # optional; display title (template)
+        authors: "My Org"                   # optional
+        description: "A CLI tool"           # optional (template)
+        summary: "A CLI tool"               # optional (template)
+        license: MIT                        # optional; SPDX identifier
+        license_url: ""                     # optional; falls back to opensource.org
+        require_license_acceptance: false   # optional
+        project_url: ""                     # optional; defaults to GitHub repo URL
+        project_source_url: ""             # optional
+        icon_url: ""                        # optional; package icon URL
+        copyright: ""                       # optional (template)
+        docs_url: ""                        # optional
+        bug_tracker_url: ""                 # optional
+        package_source_url: ""             # optional
+        owners: ""                          # optional; Chocolatey gallery owner
+        tags: []                            # optional; array or space-separated string
+        release_notes: ""                   # optional (template)
+        url_template: ""                    # optional; override download URL
+        api_key: "{{ .Env.CHOCOLATEY_API_KEY }}"  # optional; defaults to env var
+        source_repo: "https://push.chocolatey.org/"  # optional
+        skip_publish: false                 # optional; skip push without disabling
+        use: archive                        # optional; archive | msi | nsis
+        amd64_variant: v1                   # optional; v1 | v2 | v3 | v4
+        republish_in_moderation: false      # optional; re-push in-moderation copies
+        dependencies:                       # optional
+          - id: dotnet-runtime
+            version: "[6.0,)"
+        disable: false                      # optional
+```
 
 ## Full example
 

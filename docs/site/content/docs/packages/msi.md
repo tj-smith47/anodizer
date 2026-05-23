@@ -7,6 +7,10 @@ template = "docs.html"
 
 The MSI stage builds `.msi` Windows installer packages from your Windows binaries using the [WiX Toolset](https://wixtoolset.org/). Installers are placed in `dist/windows/`.
 
+## Classification
+
+Packager — builds Windows MSI installers from Windows binaries. Required: not a publisher; runs only on Windows targets.
+
 ## Required tools
 
 | Tool | Version | Notes |
@@ -83,6 +87,36 @@ wix build installer/myapp.wxs -o dist/windows/myapp_1.0.0_x64.msi
 ```
 candle -nologo installer/myapp.wxs -o dist/windows/myapp_1.0.0_x64.wixobj
 light  -nologo dist/windows/myapp_1.0.0_x64.wixobj -o dist/windows/myapp_1.0.0_x64.msi
+```
+
+## Authentication
+
+Not applicable — MSI generation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **WiX must be on `PATH`**: the stage probes for `wix` (v4) then `candle` (v3). If neither is found, the stage errors immediately.
+- **`.wxs` template rendering**: the WiX source file is rendered through Tera before being passed to WiX. Ensure any `{{ ... }}` expressions in the `.wxs` are valid Tera.
+- **Architecture mapping**: `amd64` → `x64`, `386`/`i686` → `x86`, `arm64`/`aarch64` → `arm64`. WiX build commands vary by arch.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    msis:
+      - wxs: installer/myapp.wxs     # required; path to .wxs file (template)
+        id: ""                        # optional; unique identifier
+        ids: []                       # optional; filter by build IDs
+        name: ""                      # optional; output filename template
+        version: ""                   # optional; v3 | v4 (auto-detected if omitted)
+        replace: false                # optional; remove archive artifacts, keep MSI only
+        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
+        disable: false                # optional
 ```
 
 ## Full example

@@ -294,6 +294,26 @@ A non-zero `drift_count` (or any `deterministic: false` without a matching
 `--stages=<offending-stage>` to bisect, then fix the underlying source of
 drift (timestamp embed, file-order non-determinism, embedded GUID).
 
+### `--publish-only` auto-enables `resume_release`
+
+When `anodize release --publish-only` runs, `resume_release` is automatically
+set to `true`. This lets the publish-only job proceed even when the release
+stage previously uploaded some assets (the prior determinism-harness run on the
+same tag left a partial release on disk). Without this implicit flag, the release
+stage would refuse to continue after detecting leftover assets and bail with a
+"prior report.json exists" error.
+
+Operators do not need to pass `--resume-release` manually for the standard
+determinism → preserve-dist → `--publish-only` pattern.
+
+### Makeself artifact ordering
+
+The makeself stage groups artifacts by platform before registering them with
+the artifact store. The grouping uses `BTreeMap` (sorted, deterministic) rather
+than `HashMap` (randomized per process). This ensures the per-platform iteration
+order is identical across determinism runs and does not introduce drift into
+`dist/artifacts.json`. The same fix applies to the snapcraft stage.
+
 In CI, the determinism check runs as a fan-out matrix that doubles as
 the build step. Each shard validates one platform's targets and
 uploads its byte-stable `dist/` under `dist-<shard>`; the downstream

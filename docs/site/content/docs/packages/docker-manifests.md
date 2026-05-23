@@ -7,6 +7,10 @@ template = "docs.html"
 
 Docker manifests combine platform-specific images into a single multi-architecture reference, so users can `docker pull` and get the right image for their platform automatically.
 
+## Classification
+
+Packager + publisher — creates and pushes Docker manifest lists combining multi-arch images. Required: false (optional stage).
+
 ## Minimal config
 
 ```yaml
@@ -41,6 +45,20 @@ crates:
 | `delay` | string | `10s` | Base delay between retries |
 | `max_delay` | string | `5m` | Maximum delay cap |
 
+## Authentication
+
+Docker registry credentials are resolved from the host Docker configuration (`~/.docker/config.json`). Run `docker login` before releasing.
+
+## Common gotchas
+
+- **Image references must exist**: all `image_templates` must already be pushed before the manifest stage runs. Anodizer cross-checks the list against pushed images and emits "did you mean?" suggestions for near-misses.
+- **Digest pinning**: anodizer pins image references to their sha256 digest when available. If a digest is missing (e.g., the docker-digests stage was skipped), a tag reference is used with a warning.
+- **Retry**: manifest push may fail transiently on busy registries. The built-in retry (default 10 attempts, 10s base delay) handles most transient errors.
+
+## Republish / update behavior
+
+Not applicable as a config flag — the stage removes any existing manifest before recreating it. Re-running is idempotent (the old manifest is deleted first, preventing stale manifest errors).
+
 ## Behavior
 
 - Runs during the publishing phase, after images are pushed
@@ -61,6 +79,28 @@ docker_manifests:
       - "ghcr.io/myorg/myapp:{{ .Version }}-amd64"
       - "ghcr.io/myorg/myapp:{{ .Version }}-arm64"
     skip_push: auto  # skip push for pre-release versions
+```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    docker_manifests:
+      - name_template: "myorg/myapp:{{ Version }}"  # required; manifest tag (template)
+        image_templates:             # required; image references to include (templates)
+          - "myorg/myapp:{{ Version }}-amd64"
+          - "myorg/myapp:{{ Version }}-arm64"
+        create_flags: []             # optional; extra flags for docker manifest create
+        push_flags: []               # optional; extra flags for docker manifest push
+        skip_push: false             # optional; true | false | "auto"
+        id: ""                       # optional; unique identifier
+        use: docker                  # optional; docker | podman
+        retry:
+          attempts: 10               # optional; default 10
+          delay: 10s                 # optional; base delay
+          max_delay: 5m              # optional; delay cap
+        disable: false               # optional
 ```
 
 ## Full example

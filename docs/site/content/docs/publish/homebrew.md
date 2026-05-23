@@ -39,6 +39,35 @@ crates:
 | `install` | string | auto | Custom install block (Ruby) |
 | `test` | string | none | Custom test block (Ruby) |
 
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        repository:
+          owner: myorg          # required
+          name: homebrew-tap    # required
+          token: ""             # falls back to GITHUB_TOKEN
+          branch: ""            # default: repo default branch
+          pull_request:
+            enabled: false
+            draft: false
+            base:
+              owner: ""
+              name: ""
+              branch: ""
+        folder: Formula         # subdirectory in the tap
+        description: ""
+        license: ""
+        install: ""             # custom Ruby install block
+        test: ""                # custom Ruby test block
+        skip_upload: false      # bool or "auto" (skip prereleases)
+        cask:                   # per-crate cask config (same shape as homebrew_casks[])
+          update_existing_pr: false
+```
+
 ## Homebrew Cask config fields
 
 Casks are configured under `publish.homebrew.cask:` (per-crate) or `homebrew_casks:` (top-level array). Both axes use the same `HomebrewCaskConfig` shape.
@@ -54,6 +83,26 @@ Casks are configured under `publish.homebrew.cask:` (per-crate) or `homebrew_cas
 | `homepage` | string | none | Project homepage |
 | `skip_upload` | bool or string | `false` | Skip publishing; `true` always skips, `"auto"` skips for prereleases |
 | `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Cask existing PR behavior](#cask-existing-pr-behavior). |
+
+## Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_TOKEN` | Token with push access to your tap repository (and `pull_request:write` for cask PR mode) |
+
+The token can also be set via `repository.token` in the config.
+
+## Common gotchas
+
+- **Branch protection**: if your tap repo has branch protection enabled, direct push will fail. Use a fork + PR workflow via `repository.pull_request`.
+- **Multiple platforms**: anodizer auto-generates `on_macos` / `on_linux` / `on_intel` / `on_arm` stanzas from the build targets. If your build only produces one platform, the formula contains a single `url` block instead of the multi-platform form.
+- **Cask vs formula**: formulae install from archives; casks install macOS `.app` bundles. A crate can have both if `publish.homebrew` (formula) and `publish.homebrew.cask` (or top-level `homebrew_casks:`) are both configured.
+
+## Republish / update behavior
+
+Not applicable — formula files are updated in-place on each release. Re-cutting the same version overwrites the formula in the tap (prior commit stays in git history). The Manager group rollback reverts via `git revert HEAD --no-edit` + push.
+
+For casks, set `update_existing_pr: true` to force-push to an existing open PR rather than opening a duplicate. See [Cask existing PR behavior](#cask-existing-pr-behavior).
 
 ## Cask existing PR behavior
 

@@ -5,6 +5,55 @@ weight = 5
 template = "docs.html"
 +++
 
+## Classification
+
+Packager — generates source archives and software bill of materials (SBOM) files from the repository. Required: not a publisher; both stages are disabled by default.
+
+## Authentication
+
+Not applicable — source archive and SBOM generation are local build steps with no external service calls.
+
+## Common gotchas
+
+- **Source archives**: extra `files` beyond git-tracked files must exist at the path specified (after template rendering). Missing files cause a build error.
+- **SBOM built-in mode**: requires `Cargo.lock` to be present and up-to-date. If the lock file is absent, anodizer errors.
+- **SBOM external mode**: the external command (e.g., `syft`) must be on `PATH`. Anodizer does not install it.
+- **SDE compliance**: built-in CycloneDX/SPDX output embeds `SOURCE_DATE_EPOCH` as the document timestamp, making the SBOM byte-stable across determinism runs.
+
+## Republish / update behavior
+
+Not applicable — these are local packaging stages, not publishers.
+
+## Full config reference
+
+### Source archive
+
+```yaml
+source:
+  enabled: false                     # required; opt-in (disabled by default)
+  format: tar.gz                     # optional; tar.gz | tgz | tar | zip
+  name_template: ""                  # optional; archive filename without extension (template)
+  prefix_template: ""                # optional; directory prefix inside archive (template)
+  files: []                          # optional; extra files beyond git-tracked files
+```
+
+### SBOM generation
+
+```yaml
+sbom:
+  enabled: false                     # required; opt-in (disabled by default)
+  id: default                        # optional; unique identifier
+  cmd: ""                            # optional; external command (e.g. syft); omit for built-in
+  args: []                           # optional; command-line arguments
+  env: {}                            # optional; environment variables for the command
+  documents: []                      # optional; output document path templates
+  artifacts: archive                 # optional; source | archive | binary | package | diskimage | installer | any
+  ids: []                            # optional; filter by artifact IDs
+  disable: false                     # optional; bool or template string
+```
+
+---
+
 ## Source archives
 
 The source stage creates a distributable archive of your repository's tracked source files using `git archive`. Only files tracked by git are included (untracked and gitignored files are automatically excluded). The resulting archive is registered as a release artifact.

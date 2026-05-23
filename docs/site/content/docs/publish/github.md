@@ -45,6 +45,28 @@ If `github.owner` and `github.name` are omitted, anodizer auto-detects them from
 | `replace_existing_draft` | bool | `false` | Replace existing draft release |
 | `replace_existing_artifacts` | bool | `false` | Overwrite existing assets |
 
+## Full config reference
+
+```yaml
+release:
+  github:
+    owner: myorg              # auto-detected from git remote if omitted
+    name: myapp
+  draft: false
+  prerelease: auto            # auto | true | false
+  make_latest: auto           # auto | true | false
+  name_template: "{{ Tag }}"
+  header: ""                  # text prepended to release body
+  footer: ""                  # text appended to release body
+  extra_files: []             # glob patterns for additional uploads
+  skip_upload: false          # bool or template string
+  replace_existing_draft: false
+  replace_existing_artifacts: false
+  mode: ""                    # keep-existing | append | prepend | replace
+  ids: []
+  skip: false
+```
+
 ## Authentication
 
 Set `GITHUB_TOKEN` as an environment variable or pass it via `--token`:
@@ -53,6 +75,24 @@ Set `GITHUB_TOKEN` as an environment variable or pass it via `--token`:
 export GITHUB_TOKEN="ghp_..."
 anodizer release
 ```
+
+## Common gotchas
+
+- **Draft vs published**: a draft release is only visible to repo collaborators. Set `draft: false` (the default) for publicly visible releases.
+- **`make_latest: auto`**: by default, anodizer marks a release as latest only when the version is not a prerelease. Override with `make_latest: true` or `make_latest: false`.
+- **Asset name collisions**: if two artifacts have the same filename, the second upload returns a 422. Set `replace_existing_artifacts: true` on the `release:` block to overwrite.
+
+## Republish / update behavior
+
+Use `replace_existing_draft: true` and `replace_existing_artifacts: true` on the `release:` block for re-runnable workflows:
+
+```yaml
+release:
+  replace_existing_draft: true       # re-run replaces an existing draft
+  replace_existing_artifacts: true   # re-uploaded assets overwrite existing ones
+```
+
+See [Release resilience → Release-stage retry flags](../advanced/release-resilience.md#release-stage-retry-flags) for full semantics.
 
 ## Draft releases
 

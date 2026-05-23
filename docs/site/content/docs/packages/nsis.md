@@ -7,6 +7,10 @@ template = "docs.html"
 
 Anodizer can create Windows `.exe` installers using [NSIS (Nullsoft Scriptable Install System)](https://nsis.sourceforge.io/).
 
+## Classification
+
+Packager — creates Windows `.exe` installers from Windows binaries. Required: not a publisher; `makensis` must be on PATH.
+
 ## Minimal config
 
 ```yaml
@@ -60,6 +64,20 @@ crates:
 
 Custom scripts are rendered through the template engine, so all template variables are available.
 
+## Authentication
+
+Not applicable — NSIS installer creation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **`makensis` must be on `PATH`**: install via `sudo apt-get install nsis` (Linux) or download from the NSIS website (Windows).
+- **Windows only**: the stage ignores non-Windows binary artifacts.
+- **Custom script template rendering**: custom `.nsi` scripts are rendered through Tera before being passed to `makensis`. Ensure any template expressions are valid.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## Behavior
 
 - Only processes Windows binary artifacts
@@ -67,6 +85,23 @@ Custom scripts are rendered through the template engine, so all template variabl
 - Output is placed in `dist/windows/`
 - `mod_timestamp` is applied to the staging directory and final output
 - Skippable with `--skip nsis`
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    nsis:
+      - id: ""                        # optional; unique identifier
+        ids: []                       # optional; filter by build IDs
+        name: ""                      # optional; output installer filename template
+        script: ""                    # optional; custom .nsi script (template)
+        extra_files: []               # optional; additional files to include
+        templated_extra_files: []     # optional; template-rendered extra files
+        replace: false                # optional; remove archive artifacts, keep installer only
+        mod_timestamp: ""             # optional; reproducible build timestamp
+        disable: false                # optional
+```
 
 ## Full example
 

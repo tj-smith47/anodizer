@@ -7,6 +7,14 @@ template = "docs.html"
 
 The generic upload publisher lets you upload artifacts to any HTTP server. It works the same way as the [Artifactory](/docs/publish/artifactory/) publisher but with different environment variable naming.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Assets | false | warn-only (no standard HTTP DELETE; implement rollback via `after:` hooks if needed) | `UPLOAD_{NAME}_SECRET` or basic auth |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -40,7 +48,7 @@ uploads:
 | `trusted_certificates` | string | none | Path to CA certificate bundle |
 | `disable` | string/bool | none | Disable this config |
 
-## Environment variables
+## Authentication
 
 | Variable | Fallback |
 |----------|----------|
@@ -62,6 +70,16 @@ The `target` URL supports artifact-specific template variables:
 | `{{ .Target }}` | Rust target triple |
 
 When `custom_artifact_name` is `false` (default), the artifact filename is automatically appended to the target URL.
+
+## Common gotchas
+
+- Same caveats as Artifactory: `PUT` is the default method; some servers require `POST`. Set `method: POST` if uploads fail with a 405.
+- `custom_artifact_name: true` uses the artifact filename as-is instead of appending it to the `target` URL.
+- No programmatic rollback — the upload publisher does not attempt HTTP DELETE on rollback. Use `after:` hooks for custom cleanup if needed.
+
+## Republish / update behavior
+
+Not applicable as a config field — re-uploading to the same `target` URL typically overwrites the object (PUT semantics). Server-specific behavior varies; check your target server's overwrite policy.
 
 ## Full example
 

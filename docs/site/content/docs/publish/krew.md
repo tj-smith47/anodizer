@@ -7,6 +7,14 @@ template = "docs.html"
 
 Anodizer generates [Krew](https://krew.sigs.k8s.io/) plugin manifest YAML files and pushes them to your krew-index fork repository. Krew is the plugin manager for `kubectl`, and publishing to the Krew index lets users install your plugin with `kubectl krew install <name>`.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Manager | false | close PR (list open PRs by head=`<fork>:<branch>`, PATCH `state=closed` per match) | `GITHUB_TOKEN pull_request:write` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -66,6 +74,43 @@ krew:
         branch: master
   short_description: "A kubectl plugin"
   description: "Full description of the plugin"
+```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: kubectl-mytool
+    publish:
+      krew:
+        name: ""                          # override plugin name (default: crate name)
+        short_description: "..."          # required; max 255 chars
+        description: "..."               # required; full description
+        homepage: ""                     # falls back to github.com/<owner>/<repo>
+        url_template: ""                 # override download URL template
+        caveats: ""                      # post-install message
+        ids: []
+        amd64_variant: "v1"             # v1 | v2 | v3 | v4
+        arm_variant: ""                  # "6" | "7"
+        repository:
+          owner: myorg                   # required
+          name: krew-index               # required
+          token: ""                      # falls back to GITHUB_TOKEN
+          branch: ""
+          pull_request:
+            enabled: true
+            draft: false
+            base:
+              owner: kubernetes-sigs
+              name: krew-index
+              branch: master
+        commit_author:
+          name: ""
+          email: ""
+        commit_msg_template: ""
+        update_existing_pr: false        # force-push to existing PR branch
+        skip: false
+        skip_upload: false               # bool | "auto"
 ```
 
 ## Authentication
@@ -133,6 +178,17 @@ up the new content without creating a duplicate PR:
 krew:
   update_existing_pr: true
 ```
+
+## Common gotchas
+
+- **`repository` and `short_description` are required**: omitting either causes a hard error.
+- **PR-based submission**: the krew-index is managed via PR, not direct push. Anodizer creates a PR against `kubernetes-sigs/krew-index` from your fork. PR review and merge are manual.
+- **krew-release-bot**: after initial merge, switch to krew-release-bot for automatic PR creation on new releases. Anodizer auto-detects when the bot is wired and writes `.krew.yaml` instead of opening a PR directly. See [Auto-promote to krew-release-bot](#auto-promote-to-krew-release-bot).
+- **Duplicate PRs**: if a prior run already opened a PR for the same tag, use `update_existing_pr: true` to force-push instead of opening a second PR.
+
+## Republish / update behavior
+
+Set `update_existing_pr: true` to force-push an updated manifest to an existing open PR branch (using `--force-with-lease`) rather than skipping. Rollback closes any open PR by PATCH `state=closed` against PRs with `head=<fork>:<branch>`.
 
 ## Custom URL templates
 

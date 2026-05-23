@@ -10,6 +10,112 @@ Anodizer generates Arch Linux `PKGBUILD` and `.SRCINFO` files and pushes them to
 - **Binary packages** (`-bin`) install prebuilt binaries from your release archives. Configured via `publish.aur`.
 - **Source packages** build from source using `cargo build`. Configured via `publish.aur_source` (per-crate) or the top-level `aur_sources` array (project-wide).
 
+## Classification
+
+| Package type | Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|---|
+| our-AUR-repos (binary / source) | Manager | false | git revert + push | `AUR_SSH_KEY write` |
+| upstream-AUR (force-push) | Submitter | false | none | `AUR_SSH_KEY write` |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
+## Authentication
+
+AUR publishing requires SSH access to the AUR git server. See [SSH key setup](#ssh-key-setup) below for setup instructions.
+
+| Config field | Env var | Description |
+|---|---|---|
+| `private_key` | — | Path to SSH private key file |
+| `git_ssh_command` | — | Override the full SSH invocation |
+| — | `AUR_SSH_KEY` | SSH key content (used via `private_key: "{{ .Env.AUR_SSH_KEY }}"`) |
+
+## Common gotchas
+
+- **Version string hyphens**: AUR `pkgver` does not allow hyphens. Anodizer replaces hyphens with underscores (e.g. `1.0.0-rc1` → `1.0.0_rc1`). Ensure your PKGBUILD validators account for this.
+- **`.SRCINFO` generated automatically**: anodizer generates `.SRCINFO` alongside the PKGBUILD without running `makepkg --printsrcinfo`. If you maintain additional AUR metadata outside anodizer, ensure the committed `.SRCINFO` stays in sync.
+- **No `git_url`**: if `git_url` is omitted for source packages, PKGBUILD files are generated in `dist/` but not pushed. Useful for local inspection before AUR submission.
+- **Force-push upstream AUR**: upstream AUR push is a force-push that overwrites the branch; it is classified as Submitter because it cannot be rolled back programmatically.
+
+## Republish / update behavior
+
+Not applicable as a config flag — AUR publishing is always a push (binary packages) or force-push (upstream AUR). Re-cutting a version overwrites the previous PKGBUILD commit. For our-AUR-repos (Manager group), rollback reverts the commit via `git revert` + push.
+
+## Full config reference
+
+### Binary package (`publish.aur`)
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      aur:
+        git_url: "ssh://aur@aur.archlinux.org/myapp-bin.git"  # required
+        name: myapp-bin              # optional; default: <crate>-bin
+        description: ""              # optional
+        homepage: ""                 # optional
+        license: ""                  # optional; SPDX identifier
+        depends: []                  # optional; runtime deps
+        optdepends: []               # optional
+        conflicts: []                # optional; default: [<base_name>]
+        provides: []                 # optional; default: [<base_name>]
+        replaces: []                 # optional
+        backup: []                   # optional; config files to preserve
+        maintainers: []              # optional
+        contributors: []             # optional
+        rel: "1"                     # optional; pkgrel
+        ids: []                      # optional; filter by build IDs
+        amd64_variant: v1            # optional; v1 | v2 | v3 | v4
+        url_template: ""             # optional; override download URL
+        package: ""                  # optional; custom package() body
+        install: ""                  # optional; .install file content
+        directory: ""                # optional; subdirectory in AUR repo
+        private_key: ""              # optional; SSH key path (template)
+        git_ssh_command: ""          # optional; custom SSH invocation
+        commit_author:
+          name: ""
+          email: ""
+        commit_msg_template: ""      # optional
+        skip_upload: false           # optional; true | false | "auto"
+        disable: false               # optional
+```
+
+### Source package (`publish.aur_source`)
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      aur_source:
+        git_url: "ssh://aur@aur.archlinux.org/myapp.git"  # optional; write to dist/ if omitted
+        name: myapp                  # optional; default: crate name
+        description: ""              # optional
+        homepage: ""                 # optional
+        license: MIT                 # optional
+        maintainers: []              # optional
+        contributors: []             # optional
+        provides: []                 # optional
+        conflicts: []                # optional
+        depends: []                  # optional
+        optdepends: []               # optional
+        makedepends: ["rust", "cargo"]  # optional
+        backup: []                   # optional
+        rel: "1"                     # optional
+        prepare: ""                  # optional; custom prepare() body
+        build: ""                    # optional; default: cargo build --release --locked
+        package: ""                  # optional; custom package() body
+        url_template: ""             # optional; source archive URL
+        git_ssh_command: ""          # optional
+        private_key: ""              # optional
+        directory: ""                # optional
+        skip_upload: false           # optional; "auto" skips prereleases
+        commit_author:
+          name: ""
+          email: ""
+        commit_msg_template: ""      # optional
+        arches: []                   # optional; architecture filter
+        disable: false               # optional
+```
+
 ## Binary packages (`publish.aur`)
 
 Binary packages download a prebuilt archive from your release and install the binary. The package name defaults to `<crate>-bin` following AUR convention.

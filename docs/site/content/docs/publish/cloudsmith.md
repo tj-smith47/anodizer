@@ -68,6 +68,51 @@ cloudsmiths:
     component: main
 ```
 
+## Common gotchas
+
+- If `distributions` is omitted, packages are uploaded without a distribution tag; some Cloudsmith repo configurations require a valid distribution to index the package.
+- The `component` field only affects deb packages. Setting it for rpm or apk has no effect.
+- Format detection is by file extension: `.apk` maps to `alpine` (not `apk`) in the config.
+
+## Republish / update behavior
+
+Set `republish: true` when your release flow may re-cut a version — for example, after a CI failure mid-publish, a hotfix, or a rollback-and-retry. Without it, re-uploading a package with the same version and filename fails with an MD5 conflict.
+
+```yaml
+cloudsmiths:
+  - organization: myorg
+    repository: releases
+    republish: true   # prevents MD5 conflict on version re-cut
+```
+
+By default (`republish: false`), Cloudsmith rejects any upload whose filename+version already exists in the repository.
+
+## Authentication
+
+| Variable | Description |
+|----------|-------------|
+| `CLOUDSMITH_TOKEN` | Cloudsmith API key (or custom name via `secret_name`) |
+
+## Full config reference
+
+```yaml
+cloudsmiths:
+  - organization: myorg          # required
+    repository: releases         # required
+    formats:                     # default: [apk, deb, rpm]
+      - deb
+      - rpm
+    distributions:               # per-format distribution tag
+      deb: "ubuntu/jammy"
+      rpm: "el/8"
+      alpine: "alpine/any-version"
+    component: main              # deb only
+    secret_name: CLOUDSMITH_TOKEN
+    republish: true              # allow overwriting existing versions
+    ids: []                      # filter by build IDs
+    skip: false                  # skip this config
+```
+
 ## Full example
 
 ```yaml

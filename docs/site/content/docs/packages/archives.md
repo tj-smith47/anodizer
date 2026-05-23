@@ -7,6 +7,10 @@ template = "docs.html"
 
 The archive stage packages your compiled binaries into distributable archives.
 
+## Classification
+
+Packager — builds distributable archives from compiled binaries. Required: not a publisher; always runs unless disabled.
+
 ## Minimal config
 
 ```yaml
@@ -67,6 +71,36 @@ archives:
 crates:
   - name: myapp
     archives: false    # skip archiving entirely
+```
+
+## Authentication
+
+Not applicable — archive generation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **Format overrides**: `format_overrides` is matched by OS name (`linux`, `darwin`, `windows`). An unmatched override is silently ignored.
+- **`wrap_in_directory`**: wrapping in a subdirectory changes the extraction path. Consumers expecting a flat archive will need to adjust their install scripts.
+- **`archives: false`**: disables archiving entirely; binaries are distributed as raw files.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    archives:
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"  # optional
+        format: tar.gz                  # optional; tar.gz | tar.xz | tar.zst | zip | binary
+        format_overrides:               # optional; per-OS format overrides
+          - os: windows
+            format: zip
+        files: []                       # optional; extra files to include
+        binaries: []                    # optional; specific binaries (default: all)
+        wrap_in_directory: ""           # optional; wrap contents in a subdirectory
 ```
 
 ## Full example

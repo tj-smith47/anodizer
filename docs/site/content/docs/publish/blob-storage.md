@@ -7,6 +7,14 @@ template = "docs.html"
 
 The blob storage stage uploads release artifacts to cloud object storage. It supports Amazon S3 (and compatible backends), Google Cloud Storage, and Azure Blob Storage.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Assets | false | delete each object written (post-upload evidence snapshot) | backend credentials (see Authentication) |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -93,6 +101,16 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 | `AZURE_CLIENT_SECRET` | Service principal client secret. |
 | `AZURE_TENANT_ID` | Azure AD tenant ID. |
 
+## Common gotchas
+
+- **`s3_force_path_style`** defaults to `true` when `endpoint` is set. Virtual-hosted style (`https://<bucket>.s3.amazonaws.com`) is only valid for AWS proper — S3-compatible backends (MinIO, R2, Spaces) require path style.
+- **`disable` template**: the `disable` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ endif }}"` skips blob upload for snapshot builds.
+- **`content_disposition: "-"`**: set to the literal string `"-"` to disable the `Content-Disposition` header entirely (useful for direct-browser-download use cases).
+
+## Republish / update behavior
+
+Not applicable as a config field — re-uploading to the same object key overwrites the object (standard cloud object storage semantics for all three providers). No flag is required. Rollback deletes each object that was successfully written during the failed run, using an evidence snapshot taken post-upload.
+
 ## S3-compatible backends
 
 Any S3-compatible service can be used by setting `endpoint`. When `endpoint` is set, `s3_force_path_style` defaults to `true` because most compatible services (MinIO, Cloudflare R2, DigitalOcean Spaces) require path-style addressing.
@@ -125,6 +143,29 @@ blobs:
     bucket: my-space
     endpoint: https://nyc3.digitaloceanspaces.com
     region: nyc3
+```
+
+## Full config reference
+
+```yaml
+blobs:
+  - id: ""                                     # optional; unique identifier
+    provider: s3                               # required; s3 | gcs (gs) | azblob (azure)
+    bucket: "my-bucket"                        # required; supports templates
+    directory: "{{ ProjectName }}/{{ Tag }}"   # optional; key prefix (template)
+    region: us-east-1                          # optional; AWS region (template)
+    endpoint: ""                               # optional; custom endpoint for S3-compatible backends
+    disable_ssl: false                         # optional; disable TLS (S3 only)
+    s3_force_path_style: false                 # optional; auto-true when endpoint is set
+    acl: ""                                    # optional; e.g. public-read, private
+    cache_control: ""                          # optional; string or list
+    content_disposition: "attachment;filename={{Filename}}"  # optional; "-" to disable
+    kms_key: ""                                # optional; AWS KMS key ARN (S3 only)
+    ids: []                                    # optional; filter by artifact IDs
+    disable: false                             # optional; bool or template string
+    include_meta: false                        # optional; also upload metadata.json/artifacts.json
+    extra_files: []                            # optional; additional files to upload
+    extra_files_only: false                    # optional; skip artifacts, upload only extra_files
 ```
 
 ## Full example

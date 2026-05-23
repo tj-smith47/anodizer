@@ -7,6 +7,14 @@ template = "docs.html"
 
 Anodizer can upload release artifacts to JFrog Artifactory repositories.
 
+## Classification
+
+| Group | Required (default) | Rollback | Token scope |
+|---|---|---|---|
+| Assets | false | parallel HTTP DELETE per uploaded URL (404/410 treated as already-absent) | `ARTIFACTORY_{NAME}_SECRET` delete |
+
+See [Release resilience](../advanced/release-resilience.md) for the full classification table and the Submitter gate semantics.
+
 ## Minimal config
 
 ```yaml
@@ -40,7 +48,33 @@ artifactories:
 | `trusted_certificates` | string | none | Path to CA certificate bundle |
 | `skip` | string/bool | none | Skip this config |
 
-## Environment variables
+## Full config reference
+
+```yaml
+artifactories:
+  - name: production          # required; sets ARTIFACTORY_{NAME}_SECRET env lookup
+    target: "https://artifactory.example.com/repo/{{ .Version }}/{{ .ArtifactName }}"
+    mode: archive             # archive | binary
+    method: PUT               # PUT | POST
+    username: ""              # falls back to ARTIFACTORY_{NAME}_USERNAME
+    password: ""              # falls back to ARTIFACTORY_{NAME}_SECRET
+    ids: []
+    exts: []
+    checksum_header: "X-Checksum-SHA256"
+    custom_headers: {}        # template-rendered
+    checksum: false
+    signature: false
+    meta: false
+    custom_artifact_name: false
+    extra_files: []
+    extra_files_only: false
+    client_x509_cert: ""
+    client_x509_key: ""
+    trusted_certificates: ""
+    skip: false
+```
+
+## Authentication
 
 Credentials are resolved in this order:
 
@@ -50,6 +84,16 @@ Credentials are resolved in this order:
 | Password | `ARTIFACTORY_{NAME}_SECRET`, then `ARTIFACTORY_SECRET`, then config value |
 
 Where `{NAME}` is the uppercased `name` field.
+
+## Common gotchas
+
+- **`PUT` vs `POST`**: the default method is `PUT`. Some Artifactory configurations require `POST` for initial upload and reject `PUT` with a 405. Set `method: POST` if uploads fail with a 405.
+- **Credential resolution order**: username and password are tried in config value → env var order (see Authentication above). An empty config value falls through to the env var.
+- **`custom_artifact_name: true`**: uses the artifact filename as-is instead of appending it to the `target` URL. Use this when `target` already includes the full artifact path.
+
+## Republish / update behavior
+
+Not applicable as a config field — re-uploading an artifact to the same `target` URL overwrites it by default (Artifactory's standard PUT semantics). No flag is required. Rollback issues parallel HTTP DELETE requests for each uploaded URL; a 404 or 410 response is treated as already-absent (idempotent).
 
 ## Target URL templating
 

@@ -7,6 +7,10 @@ template = "docs.html"
 
 The checksum stage computes cryptographic hashes for all artifacts and writes them to a checksum file.
 
+## Classification
+
+Packager — generates a checksum file alongside release artifacts. Required: not a publisher; always runs unless disabled.
+
 ## Minimal config
 
 Checksums are enabled by default with SHA-256. No config needed for basic usage.
@@ -47,6 +51,31 @@ defaults:
   checksum:
     name_template: "{{ ProjectName }}_{{ Version }}_SHA512SUMS"
     algorithm: sha512
+```
+
+## Authentication
+
+Not applicable — checksum generation is a local build step with no external service calls.
+
+## Common gotchas
+
+- The checksum file aggregates hashes for all artifacts produced up to this stage. Stages that run after checksums (e.g., signing) produce additional artifacts that are not covered unless the checksum stage is configured to run after signing.
+- `extra_files` adds files to the checksum file without uploading them; ensure they exist at the path specified.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
+## Full config reference
+
+```yaml
+defaults:
+  checksum:
+    name_template: "{{ ProjectName }}_{{ Version }}_checksums.txt"  # optional
+    algorithm: sha256                   # optional; sha256 | sha512 | sha1 | blake2b | etc.
+    disable: false                      # optional; skip checksum generation
+    extra_files: []                     # optional; additional files to checksum
+    ids: []                             # optional; only checksum artifacts matching these IDs
 ```
 
 ## Disabling checksums

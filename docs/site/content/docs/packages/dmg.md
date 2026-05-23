@@ -7,6 +7,10 @@ template = "docs.html"
 
 The DMG stage creates `.dmg` disk images from your macOS binaries. Images are placed in `dist/macos/`.
 
+## Classification
+
+Packager — creates macOS disk images from Darwin binaries. Required: not a publisher; macOS only.
+
 ## Required tools
 
 One of the following must be available:
@@ -44,6 +48,20 @@ crates:
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds (e.g. `{{ .CommitTimestamp }}`). |
 | `disable` | bool | `false` | Skip this DMG config. |
 
+## Authentication
+
+Not applicable — DMG creation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **macOS only**: the stage ignores non-Darwin artifacts.
+- **Tool selection**: `hdiutil` (macOS), then `genisoimage`, then `mkisofs`. The stage fails if none is found.
+- **Cross-compilation**: `genisoimage`/`mkisofs` allow Linux hosts to produce DMGs, but the resulting image may not be pixel-perfect compared to `hdiutil`-produced images.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## Volume name
 
 The volume label is set to the project name. This is the name the user sees when they mount the image in Finder.
@@ -64,6 +82,21 @@ crates:
           - README.md
         replace: true
         mod_timestamp: "{{ .CommitTimestamp }}"
+```
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    dmgs:
+      - id: ""                        # optional; unique identifier
+        ids: []                       # optional; filter by build IDs
+        name: ""                      # optional; output filename template
+        extra_files: []               # optional; additional files inside the disk image
+        replace: false                # optional; remove archive artifacts, keep DMG only
+        mod_timestamp: ""             # optional; fixed timestamp for reproducible builds
+        disable: false                # optional
 ```
 
 ## Multiple configs

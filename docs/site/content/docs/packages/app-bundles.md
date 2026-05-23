@@ -7,6 +7,10 @@ template = "docs.html"
 
 Anodizer can package your macOS binaries into `.app` bundles with a proper directory structure, `Info.plist`, and optional icon.
 
+## Classification
+
+Packager — creates macOS `.app` bundle directories from Darwin binaries. Required: not a publisher; runs only on macOS targets.
+
 ## Minimal config
 
 ```yaml
@@ -63,6 +67,20 @@ Anodizer auto-generates `Info.plist` with:
 | `LSMinimumSystemVersion` | `10.13` |
 | `CFBundleIconFile` | Icon filename (when `icon` is set) |
 
+## Authentication
+
+Not applicable — app bundle creation is a local build step with no external service calls.
+
+## Common gotchas
+
+- **macOS only**: the stage only processes Darwin binary artifacts. Non-macOS targets are ignored.
+- **`.app` extension**: auto-appended if not present in `name`.
+- **`icon` must be `.icns`**: other formats (`.png`, `.svg`) are not accepted by macOS for the `CFBundleIconFile` key.
+
+## Republish / update behavior
+
+Not applicable — this is a local packaging stage, not a publisher.
+
 ## Behavior
 
 - Only processes macOS (darwin) binary artifacts
@@ -70,6 +88,24 @@ Anodizer auto-generates `Info.plist` with:
 - Output is placed in `dist/macos/`
 - `mod_timestamp` is applied recursively to the entire `.app` tree
 - Skippable with `--skip appbundle`
+
+## Full config reference
+
+```yaml
+crates:
+  - name: myapp
+    app_bundles:
+      - bundle: com.example.myapp    # required; reverse-DNS bundle identifier
+        id: ""                        # optional; unique identifier
+        ids: []                       # optional; filter by build IDs
+        name: ""                      # optional; output .app name template
+        icon: ""                      # optional; path to .icns icon file (template)
+        extra_files: []               # optional; additional files to include in Resources
+        templated_extra_files: []     # optional; template-rendered extra files
+        mod_timestamp: ""             # optional; override mtime for reproducible builds
+        replace: false                # optional; remove source archives, keep app bundle
+        disable: false                # optional; bool or template string
+```
 
 ## Full example
 

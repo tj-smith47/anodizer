@@ -22,6 +22,37 @@ This guide walks through:
 - `--summary-json=<path>` for capturing the audit trail.
 - A worked partial-failure example.
 
+## Release-stage retry flags
+
+Two config fields on the `release:` block make individual release-stage runs
+idempotent without requiring a full rollback:
+
+```yaml
+release:
+  replace_existing_draft: true       # re-run replaces an existing draft release
+  replace_existing_artifacts: true   # re-uploaded assets overwrite same-named ones
+```
+
+| Field | Default | Semantics |
+|---|---|---|
+| `replace_existing_draft` | `false` | When the release stage runs against a tag that already has a draft release, replace it instead of erroring. No-op when the existing release is already published. |
+| `replace_existing_artifacts` | `false` | When uploading assets, overwrite any already-uploaded artifact with the same filename. Without this, a second upload of the same artifact name returns a 422 from the GitHub API. |
+
+Both are needed for a robust retry flow:
+
+```yaml
+# Recommended for retry-able release workflows:
+release:
+  replace_existing_draft: true
+  replace_existing_artifacts: true
+```
+
+Without `replace_existing_draft`, retrying after a partial release failure fails
+immediately because the draft already exists. Without `replace_existing_artifacts`,
+every already-uploaded artifact causes a 422 even when the content is identical.
+These flags are safe to set permanently — a fresh first-run has no existing draft
+or assets, so they are no-ops on the happy path.
+
 ## Publisher groups
 
 Every publisher is classified into exactly one group, based on how recoverable
