@@ -82,9 +82,9 @@ enum PageVerdict {
 ///
 /// `page_base_url` is normally `https://community.chocolatey.org` —
 /// exposed as a parameter so tests can point at a local TCP listener.
-#[allow(unused_assignments)] // `last_pending_detail = None` initializer is
-// dead code once the loop's first iteration overwrites it; the compiler
-// can't prove the loop always executes ≥1 time so the warning fires.
+#[allow(unused_assignments)] // initial `None` is overwritten by every match arm before the
+// timeout exit reads `last_pending_detail`; the compiler cannot prove the
+// loop body runs at least once, so the initial assignment triggers the lint.
 pub fn poll(
     page_base_url: &str,
     package: &str,
@@ -174,6 +174,12 @@ pub fn poll(
                 ));
             }
             PageVerdict::NetworkError(msg) => {
+                // A network error means we couldn't reach the gallery at all,
+                // so we can no longer discriminate "404 = not yet indexed"
+                // from "network is down". Reset the not-found timer so the
+                // elapsed counter doesn't over-count periods where the gallery
+                // was unreachable rather than genuinely returning 404.
+                not_found_since = None;
                 last_pending_detail = Some(format!("transient network error: {}", msg));
                 log.verbose(&format!(
                     "chocolatey moderation: transient error scraping {}: {}",

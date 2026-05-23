@@ -392,6 +392,22 @@ fn poll_crates_io_index(
 /// All three are recoverable by waiting a few seconds and retrying. Any
 /// other failure mode (auth, packaging, validation, network) does NOT
 /// benefit from retry and is left to bubble up unchanged.
+///
+/// # Brittleness
+///
+/// These substrings are scraped from cargo's human-readable stderr. Cargo
+/// does NOT guarantee stable error message wording across minor versions:
+/// past Rust releases have renamed resolution-failure messages without a
+/// deprecation period. If cargo restructures any of these strings the
+/// discriminator silently stops firing, causing spurious publish failures
+/// that look like hard errors instead of retryable propagation lag.
+///
+/// The unit tests below pin the cargo version against which these strings
+/// were last verified (`cargo_version_matches_pinned_strings`). If CI
+/// upgrades cargo to a different major.minor, that test fails and the
+/// maintainer must re-verify the substrings against the new cargo output
+/// before updating the pinned version. The strings were last verified
+/// against **cargo 1.95.x** (rustc 1.95.0, 2026-04-14).
 fn is_index_propagation_failure(stderr: &str) -> bool {
     stderr.contains("no matching package")
         || stderr.contains("failed to select a version")
@@ -411,12 +427,17 @@ fn is_index_propagation_failure(stderr: &str) -> bool {
 /// edge-skew window without masking real failures (auth, packaging,
 /// network).
 ///
+/// `backoff` is the sleep between retry attempts. Production callers pass
+/// [`PUBLISH_PROPAGATION_BACKOFF`]; tests pass a short `Duration` so the
+/// retry path is exercised without incurring real wall-clock cost.
+///
 /// Returns the successful `Output` or bubbles the last failure verbatim.
 /// Non-propagation failures fast-fail on the first attempt (no retry).
 fn run_cargo_publish_with_retry(
     cmd: &[String],
     label: &str,
     log: &StageLogger,
+    backoff: std::time::Duration,
 ) -> Result<std::process::Output> {
     let mut last_output: Option<std::process::Output> = None;
     for attempt in 1..=PUBLISH_PROPAGATION_RETRIES {
@@ -449,9 +470,9 @@ fn run_cargo_publish_with_retry(
             "{label}: sparse-index propagation lag detected (attempt {}/{}); retrying in {}s",
             attempt,
             PUBLISH_PROPAGATION_RETRIES,
-            PUBLISH_PROPAGATION_BACKOFF.as_secs()
+            backoff.as_secs()
         ));
-        std::thread::sleep(PUBLISH_PROPAGATION_BACKOFF);
+        std::thread::sleep(backoff);
     }
 
     // All retries exhausted — surface the last failure through check_output
@@ -663,7 +684,12 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         // run_cargo_publish_with_retry narrows retry exclusively to the
         // sparse-index propagation failure signatures so real errors still
         // fast-fail.
-        run_cargo_publish_with_retry(&cmd, &format!("cargo publish -p {}", name), log)?;
+        run_cargo_publish_with_retry(
+            &cmd,
+            &format!("cargo publish -p {}", name),
+            log,
+            PUBLISH_PROPAGATION_BACKOFF,
+        )?;
 
         log.status(&format!("published crate '{}'", name));
 
@@ -1595,6 +1621,45 @@ mod tests {
         assert!(!is_index_propagation_failure(""));
     }
 
+    /// Pin the cargo major.minor version against which the discriminator
+    /// substrings in [`is_index_propagation_failure`] were last verified.
+    ///
+    /// If CI upgrades to a different cargo major.minor this test fails,
+    /// signalling that a maintainer must re-run `cargo publish` against a
+    /// fixture that triggers each error substring and confirm the wording
+    /// matches before bumping `VERIFIED_CARGO_MINOR` below.
+    ///
+    /// The substrings were last verified against cargo 1.95.x (rustc 1.95.0,
+    /// released 2026-04-14). Bump `VERIFIED_CARGO_MINOR` only after
+    /// manually confirming all three substrings still appear verbatim in
+    /// the new cargo's publish output.
+    #[test]
+    fn cargo_version_matches_pinned_discriminator_strings() {
+        // Last-verified cargo minor. Update together with re-verification.
+        const VERIFIED_CARGO_MINOR: u64 = 95;
+
+        let output = std::process::Command::new("cargo")
+            .arg("--version")
+            .output()
+            .expect("cargo --version must succeed");
+        let version_str = String::from_utf8_lossy(&output.stdout);
+        // Format: "cargo X.Y.Z (hash date)"
+        let minor: Option<u64> = version_str
+            .split_whitespace()
+            .nth(1)
+            .and_then(|v| v.split('.').nth(1))
+            .and_then(|s| s.parse().ok());
+        let minor =
+            minor.unwrap_or_else(|| panic!("could not parse cargo minor from: {version_str}"));
+        assert_eq!(
+            minor, VERIFIED_CARGO_MINOR,
+            "cargo minor version changed from {VERIFIED_CARGO_MINOR} to {minor}. \
+             Re-verify the is_index_propagation_failure substrings against \
+             `cargo publish` output on the new version, then bump \
+             VERIFIED_CARGO_MINOR in this test."
+        );
+    }
+
     /// End-to-end retry behaviour: stub `cargo` with a shell script that
     /// fails twice with a propagation-style stderr, then succeeds. The
     /// retry harness must persist through the failures and surface success.
@@ -1627,21 +1692,20 @@ mod tests {
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755))
             .expect("chmod stub");
 
-        // Shadow PUBLISH_PROPAGATION_BACKOFF — the harness sleeps between
-        // attempts. We can't override the const from outside, so this test
-        // accepts the 15s/attempt cost (2 retries → ~30s real time). That's
-        // the price of testing the behavioural path end-to-end; a unit-only
-        // assertion on the discriminator covers fast-path coverage above.
-        //
-        // NOTE: this test is gated cfg(unix) because the shell-script stub
-        // path is unix-only; Windows CI relies on the discriminator tests.
         let cmd = vec![stub.display().to_string(), "publish".to_string()];
         let log = anodizer_core::log::StageLogger::new(
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
         );
-        let result = run_cargo_publish_with_retry(&cmd, "stub publish", &log)
-            .expect("retry harness must succeed after propagation lag");
+        // Use a tiny backoff so the retry path exercises the full counter/sleep/error
+        // envelope without incurring real wall-clock cost.
+        let result = run_cargo_publish_with_retry(
+            &cmd,
+            "stub publish",
+            &log,
+            std::time::Duration::from_millis(1),
+        )
+        .expect("retry harness must succeed after propagation lag");
         assert!(result.status.success(), "final attempt must succeed");
 
         // Counter file confirms the harness invoked the stub 3 times
@@ -1683,8 +1747,165 @@ mod tests {
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
         );
-        let err = run_cargo_publish_with_retry(&cmd, "stub publish", &log)
-            .expect_err("non-propagation failure must surface");
+        let err = run_cargo_publish_with_retry(
+            &cmd,
+            "stub publish",
+            &log,
+            std::time::Duration::from_millis(1),
+        )
+        .expect_err("non-propagation failure must surface");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("401") || chain.contains("Unauthorized") || chain.contains("exit code"),
+            "expected upstream error in chain: {chain}"
+        );
+
+        let n: u32 = std::fs::read_to_string(&counter)
+            .expect("counter")
+            .trim()
+            .parse()
+            .expect("u32");
+        assert_eq!(n, 1, "non-propagation failure must NOT retry");
+    }
+
+    /// Cross-platform variant of the retry recovery test. Instead of a shell
+    /// script stub (unix-only), this variant compiles a minimal Rust binary
+    /// whose behaviour is controlled by a counter file — same contract as the
+    /// unix shell stub, but works on Windows CI where /bin/sh is absent.
+    ///
+    /// Gated on `cfg(not(unix))` so only one of the two variants runs per
+    /// platform; the shell-script path is preferred on unix (faster compile).
+    #[cfg(not(unix))]
+    #[test]
+    fn run_cargo_publish_with_retry_recovers_from_propagation_lag_windows() {
+        // Build the counter stub from an in-test source string. We write
+        // a tiny Rust program to a tempdir and compile it with `rustc`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = tmp.path().join("counter.txt");
+        let src_path = tmp.path().join("stub.rs");
+        let exe_path = if cfg!(windows) {
+            tmp.path().join("stub.exe")
+        } else {
+            tmp.path().join("stub")
+        };
+
+        // Counter file path passed via env var so the compiled binary can
+        // locate it at runtime without baking in a temp path at compile time.
+        let src = r#"
+use std::fs;
+use std::io::{Read, Write};
+
+fn main() {
+    let counter_path = std::env::var("STUB_COUNTER").expect("STUB_COUNTER not set");
+    let n: u32 = fs::read_to_string(&counter_path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+        + 1;
+    fs::write(&counter_path, n.to_string()).expect("write counter");
+    if n < 3 {
+        eprintln!("error: failed to select a version for the requirement `dep = \"^1.0.0\"`");
+        std::process::exit(101);
+    }
+    println!("published ok");
+}
+"#;
+        std::fs::write(&src_path, src).expect("write stub source");
+
+        let compile = std::process::Command::new("rustc")
+            .arg(&src_path)
+            .arg("-o")
+            .arg(&exe_path)
+            .output()
+            .expect("rustc spawn");
+        if !compile.status.success() {
+            panic!(
+                "stub compile failed: {}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+        }
+
+        let cmd = vec![exe_path.display().to_string(), "publish".to_string()];
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        // Inject counter path so the stub can find it.
+        std::env::set_var("STUB_COUNTER", counter.display().to_string());
+        let result = run_cargo_publish_with_retry(
+            &cmd,
+            "stub publish",
+            &log,
+            std::time::Duration::from_millis(1),
+        )
+        .expect("retry harness must succeed after propagation lag");
+        std::env::remove_var("STUB_COUNTER");
+        assert!(result.status.success(), "final attempt must succeed");
+
+        let n: u32 = std::fs::read_to_string(&counter)
+            .expect("counter")
+            .trim()
+            .parse()
+            .expect("u32");
+        assert_eq!(n, 3, "expected 3 invocations (initial + 2 retries)");
+    }
+
+    /// Cross-platform fast-fail variant: non-propagation failure must NOT
+    /// retry. Windows CI exercises this path because the unix shell-script
+    /// variants are excluded on non-unix platforms.
+    #[cfg(not(unix))]
+    #[test]
+    fn run_cargo_publish_with_retry_does_not_retry_unrelated_failure_windows() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = tmp.path().join("counter.txt");
+        let src_path = tmp.path().join("stub_auth.rs");
+        let exe_path = if cfg!(windows) {
+            tmp.path().join("stub_auth.exe")
+        } else {
+            tmp.path().join("stub_auth")
+        };
+
+        let src = r#"
+fn main() {
+    let counter_path = std::env::var("STUB_COUNTER").expect("STUB_COUNTER not set");
+    let n: u32 = std::fs::read_to_string(&counter_path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+        + 1;
+    std::fs::write(&counter_path, n.to_string()).expect("write counter");
+    eprintln!("error: failed to publish: 401 Unauthorized");
+    std::process::exit(101);
+}
+"#;
+        std::fs::write(&src_path, src).expect("write stub source");
+        let compile = std::process::Command::new("rustc")
+            .arg(&src_path)
+            .arg("-o")
+            .arg(&exe_path)
+            .output()
+            .expect("rustc spawn");
+        if !compile.status.success() {
+            panic!(
+                "stub compile failed: {}",
+                String::from_utf8_lossy(&compile.stderr)
+            );
+        }
+
+        let cmd = vec![exe_path.display().to_string(), "publish".to_string()];
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        std::env::set_var("STUB_COUNTER", counter.display().to_string());
+        let err = run_cargo_publish_with_retry(
+            &cmd,
+            "stub publish",
+            &log,
+            std::time::Duration::from_millis(1),
+        )
+        .expect_err("non-propagation failure must surface");
+        std::env::remove_var("STUB_COUNTER");
         let chain = format!("{err:#}");
         assert!(
             chain.contains("401") || chain.contains("Unauthorized") || chain.contains("exit code"),

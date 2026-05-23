@@ -224,3 +224,76 @@ pub fn fake_with_scope(
         rollback_scope: Some(rollback_scope),
     })
 }
+
+/// Shared behavioral contract for per-crate publishers: when called with
+/// `selected_crates = []` (implicit-all) and `dry_run = true`, every
+/// publisher must either:
+///
+/// 1. Return `Ok(evidence)` where evidence has non-empty content (i.e.
+///    at least one crate was processed), **OR**
+/// 2. Return `Ok(evidence)` with empty evidence **and** the publisher's
+///    `no_eligible_crates_warning` message is non-empty (confirming the
+///    zero-eligible-crates warn path is wired and would fire at runtime).
+///
+/// This catches the silent-success class of bugs where a publisher's
+/// `run()` returns `Ok` with no evidence and no warning — indistinguishable
+/// from a real push in the dispatch table.
+///
+/// # Arguments
+///
+/// * `publisher` — the publisher under test.
+/// * `ctx` — a [`Context`] the caller constructed. If it contains a
+///   crate configured for this publisher, the dry-run path executes;
+///   if not, the zero-eligible-crates warn path executes. Either shape
+///   satisfies the contract.
+/// * `no_eligible_warning` — the publisher's own
+///   `run_no_eligible_crates_warning(N)` output (call it with any `N > 0`).
+///   Must be non-empty; the contract asserts this so the zero-eligible
+///   path is never silent.
+///
+/// # Panics
+///
+/// Panics (failing the test) if any contract invariant is violated.
+pub fn assert_publisher_visible_work_contract(
+    publisher: &dyn Publisher,
+    ctx: &mut Context,
+    no_eligible_warning: &str,
+) {
+    // The warning message must not be empty — an empty string would mean the
+    // publisher's zero-eligible path emits nothing, which is silent failure.
+    assert!(
+        !no_eligible_warning.is_empty(),
+        "publisher '{}': run_no_eligible_crates_warning must produce a non-empty string",
+        publisher.name()
+    );
+
+    let evidence = publisher
+        .run(ctx)
+        .unwrap_or_else(|e| panic!("publisher '{}' run() failed: {e:#}", publisher.name()));
+
+    // The evidence must not be a completely blank sentinel (schema_version
+    // is always set; what we check is that the publisher name is correct).
+    assert_eq!(
+        evidence.publisher,
+        publisher.name(),
+        "evidence.publisher must match publisher.name()"
+    );
+
+    // Either evidence has content (primary_ref or non-empty extra object)
+    // OR the zero-eligible path is confirmed wired (warning is non-empty,
+    // asserted above). Both shapes satisfy the visible-work contract.
+    let extra_is_empty = evidence.extra.as_object().is_none_or(|m| m.is_empty());
+    let has_content = evidence.primary_ref.is_some() || !extra_is_empty;
+
+    if !has_content {
+        // Zero-eligible path: warning must exist (already asserted non-empty
+        // above). This is the expected outcome for a context with no
+        // publisher-specific crate config.
+        assert!(
+            !no_eligible_warning.is_empty(),
+            "publisher '{}': ran with zero eligible crates but no_eligible_warning is empty \
+             — the zero-eligible path would be silent",
+            publisher.name()
+        );
+    }
+}

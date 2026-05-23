@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::process;
 
 mod gen_docs;
+mod validate_readme;
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "Anodizer development tasks")]
@@ -18,12 +20,19 @@ enum XtaskCommand {
         #[arg(long)]
         check: bool,
     },
+    /// Validate every anodizer YAML config block in README.md
+    ValidateReadme {
+        /// Path to the README to validate (default: README.md in workspace root)
+        #[arg(long)]
+        readme: Option<PathBuf>,
+    },
 }
 
 fn main() {
     let args = Xtask::parse();
     let result = match args.command {
         XtaskCommand::GenDocs { check } => gen_docs::run(check),
+        XtaskCommand::ValidateReadme { readme } => validate_readme::run(readme.as_deref()),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");

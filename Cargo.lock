@@ -4203,6 +4203,7 @@ dependencies = [
  "schemars 0.8.22",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "tera",
  "toml",
 ]

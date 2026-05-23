@@ -113,6 +113,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
+  validate-readme:
+    name: Validate README YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate README config blocks
+        run: cargo xtask validate-readme
+
   check-config:
     name: Check Config
     runs-on: ubuntu-latest

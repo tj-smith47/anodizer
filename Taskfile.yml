@@ -98,6 +98,11 @@ tasks:
     cmds:
       - cargo xtask gen-docs --check
 
+  docs:validate-readme:
+    desc: Validate anodizer YAML config blocks in README.md against the current schema
+    cmds:
+      - cargo xtask validate-readme
+
   package:
     desc: Dry-run package all publishable crates
     deps: [_check:tmp-headroom]

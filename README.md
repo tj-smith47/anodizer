@@ -162,10 +162,9 @@ crates:
         owner: myorg
         name: myapp
     publish:
-      crates:
-        enabled: true
+      cargo: {}
       homebrew:
-        tap:
+        repository:
           owner: myorg
           name: homebrew-tap
 ```
