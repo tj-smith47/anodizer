@@ -859,6 +859,15 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .and_then(|pr| pr.enabled)
         .unwrap_or(false);
 
+    let update_existing_pr = krew_cfg
+        .update_existing_pr
+        .as_ref()
+        .map(|v| {
+            v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
     if has_pr_config {
         util::maybe_submit_pr(
             repo_path,
@@ -867,6 +876,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
                 repo_owner: &repo_owner,
                 repo_name: &repo_name,
                 branch_name: &branch_name,
+                update_existing_pr,
             },
             &format!("Add/update {} plugin to v{}", crate_name, version),
             &format!(
@@ -893,7 +903,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             })
             .unwrap_or_else(|| "kubernetes-sigs/krew-index".to_string());
 
-        util::submit_pr_via_gh(
+        util::submit_pr_via_gh_with_opts(
             repo_path,
             &upstream_slug,
             &format!("{}:{}", repo_owner, branch_name),
@@ -904,6 +914,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             ),
             "krew",
             log,
+            util::SubmitPrOpts { update_existing_pr },
         );
     }
 
@@ -1759,6 +1770,8 @@ impl anodizer_core::Publisher for KrewPublisher {
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
         for crate_name in &selected {
+            // Defensive guard for explicit `--crate=X` selection when X has no
+            // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_krew_per_crate_configured(ctx, crate_name) {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;

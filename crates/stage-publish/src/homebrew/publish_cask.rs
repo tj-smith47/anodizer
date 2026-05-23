@@ -107,6 +107,14 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
 
     // Submit a PR if pull_request.enabled is set.
     let pr_branch = branch.unwrap_or("main");
+    let update_existing_pr = cask_cfg
+        .update_existing_pr
+        .as_ref()
+        .map(|v| {
+            v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
     crate::util::maybe_submit_pr(
         repo_path,
         hb_cfg.repository.as_ref(),
@@ -114,6 +122,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
             repo_owner: &repo_owner,
             repo_name: &repo_name,
             branch_name: pr_branch,
+            update_existing_pr,
         },
         &format!("Update {} cask to {}", cask_result.cask_name, version),
         &format!(

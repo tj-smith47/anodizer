@@ -40,6 +40,7 @@ Both `repository` and `short_description` are required. The publisher will error
 | `skip_upload` | bool or string | `false` | Generate the manifest but skip the upload step; `true` always skips, `"auto"` skips for pre-releases |
 | `amd64_variant` | string | `"v1"` | amd64 microarchitecture variant filter (`"v1"`, `"v2"`, `"v3"`, `"v4"`) |
 | `arm_variant` | string | none | ARM version filter (`"6"`, `"7"`) |
+| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior). |
 
 All string fields support Tera template rendering (e.g. `{{ ProjectName }}`, `{{ Version }}`).
 
@@ -113,6 +114,25 @@ spec:
 ```
 
 The manifest is written to `plugins/<name>.yaml` in the krew-index repository.
+
+## Existing PR behavior
+
+When `gh pr create` reports that a PR for the same head branch already exists,
+Anodizer's default is to **skip and emit a warning**:
+
+```
+krew: PR for 'owner:kubectl-mytool-v1.2.3' already exists — skipping
+      (set update_existing_pr: true to update the PR in place)
+```
+
+Setting `update_existing_pr: true` force-pushes the updated manifest to the
+existing branch using `--force-with-lease`, so the open PR automatically picks
+up the new content without creating a duplicate PR:
+
+```yaml
+krew:
+  update_existing_pr: true
+```
 
 ## Custom URL templates
 

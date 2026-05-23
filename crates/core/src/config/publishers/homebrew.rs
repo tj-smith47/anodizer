@@ -229,6 +229,13 @@ pub struct HomebrewCaskConfig {
     /// for prerelease versions. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
+    /// When true, force-push the updated cask file to the existing PR branch
+    /// when a PR for the same head branch already exists. The PR content is
+    /// updated in place rather than creating a duplicate. When false (default),
+    /// the push is skipped and a warning is emitted so the operator sees that
+    /// the publisher did not update the PR.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub update_existing_pr: Option<StringOrBool>,
 }
 
 /// Structured URL configuration for Homebrew Cask downloads.

@@ -537,6 +537,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
             repo_owner: &repo_owner,
             repo_name: &repo_name,
             branch_name: pr_branch,
+            update_existing_pr: false,
         },
         &format!("Update {} manifest to {}", manifest_name, version),
         &format!(
@@ -737,6 +738,8 @@ impl anodizer_core::Publisher for ScoopPublisher {
         let mut processed = 0usize;
         let mut any_pushed = false;
         for crate_name in &selected {
+            // Defensive guard for explicit `--crate=X` selection when X has no
+            // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_scoop_per_crate_configured(ctx, crate_name) {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;

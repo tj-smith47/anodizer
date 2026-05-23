@@ -189,6 +189,8 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         );
         log.status(&run_start_message(selected.len()));
         for crate_name in &selected {
+            // Defensive guard for explicit `--crate=X` selection when X has no
+            // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_chocolatey_per_crate_configured(ctx, crate_name) {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;

@@ -2977,6 +2977,18 @@
             }
           ]
         },
+        "republish_in_moderation": {
+          "description": "When true, re-push the nupkg even when a version is already in the community moderation queue (PackageStatus=Submitted). Chocolatey's API accepts re-pushes of in-moderation versions; the new nupkg replaces the queued one. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not push.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "require_license_acceptance": {
           "description": "Require license acceptance before install.",
           "default": null,
@@ -5617,6 +5629,18 @@
             }
           ]
         },
+        "update_existing_pr": {
+          "description": "When true, force-push the updated cask file to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "url": {
           "description": "Structured download URL configuration (top-level axis).",
           "default": null,
@@ -6480,6 +6504,18 @@
         },
         "skip_upload": {
           "description": "Skip publishing. `\"true\"` always skips; `\"auto\"` skips for prereleases. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "update_existing_pr": {
+          "description": "When true, force-push the updated plugin manifest to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR.",
           "default": null,
           "anyOf": [
             {
@@ -12793,6 +12829,18 @@
           "items": {
             "type": "string"
           }
+        },
+        "update_existing_pr": {
+          "description": "When true, force-push the updated manifest to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "url_template": {
           "description": "Custom URL template for download URLs (overrides release URL).",

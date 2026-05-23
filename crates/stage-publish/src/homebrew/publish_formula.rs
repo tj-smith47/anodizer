@@ -460,6 +460,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             repo_owner: &repo_owner,
             repo_name: &repo_name,
             branch_name: pr_branch,
+            update_existing_pr: false,
         },
         &pr_title,
         &pr_body,

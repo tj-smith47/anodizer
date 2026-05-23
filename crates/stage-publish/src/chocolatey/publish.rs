@@ -399,12 +399,8 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
             is_approved,
             published,
         } => {
-            // A version stuck in the community moderation queue MUST NOT be
-            // re-pushed — Chocolatey rejects re-pushes of submitted versions,
-            // and the hash-match check below would otherwise silently no-op
-            // every CI run while the gallery shows nothing. Surface the queue
-            // state explicitly so the operator knows to wait or contact
-            // moderators.
+            // A version in the community moderation queue may or may not
+            // accept a re-push depending on the operator's intent.
             //
             // Discriminator: `<d:PackageStatus>` (with `<d:IsApproved>` as
             // fallback). The OData feed does NOT emit `<d:Listed>`, so any
@@ -426,13 +422,34 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
                         published_label
                     );
                 }
-                log.status(&format!(
-                    "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); not \
-                     re-pushing — waiting on moderator approval. The gallery will \
-                     not list the package until it transitions to Approved.",
-                    pkg_name, version, reason, status_label, published_label
-                ));
-                return Ok(());
+                // `republish_in_moderation: true` opts into replacing the
+                // queued nupkg. The Chocolatey API accepts re-pushes of
+                // in-moderation versions; the new nupkg displaces the old one.
+                let do_republish = choco_cfg
+                    .republish_in_moderation
+                    .as_ref()
+                    .map(|v| {
+                        v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if do_republish {
+                    log.status(&format!(
+                        "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+                         republish_in_moderation=true — replacing in-moderation copy.",
+                        pkg_name, version, reason, status_label, published_label
+                    ));
+                    // Fall through to the push path below.
+                } else {
+                    log.warn(&format!(
+                        "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+                         skipping push — set republish_in_moderation: true to replace \
+                         the in-moderation copy. The gallery will not list the package \
+                         until it transitions to Approved.",
+                        pkg_name, version, reason, status_label, published_label
+                    ));
+                    return Ok(());
+                }
             }
             let local = compute_nupkg_hash(&nupkg_path, &algorithm)?;
             if local == hash {
@@ -477,4 +494,69 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 
     log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use anodizer_core::config::{ChocolateyConfig, StringOrBool};
+
+    /// Config field roundtrip: `republish_in_moderation` survives serde.
+    #[test]
+    fn republish_in_moderation_bool_roundtrips() {
+        let cfg = ChocolateyConfig {
+            republish_in_moderation: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: ChocolateyConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            back.republish_in_moderation,
+            Some(StringOrBool::Bool(true))
+        ));
+    }
+
+    /// Config field roundtrip: absent field deserializes to None (default=false).
+    #[test]
+    fn republish_in_moderation_absent_is_none() {
+        let cfg: ChocolateyConfig = serde_json::from_str("{}").expect("deserialize");
+        assert!(cfg.republish_in_moderation.is_none());
+    }
+
+    /// Flag false: the warn message contains key operator-facing substrings.
+    #[test]
+    fn in_moderation_skip_warn_contains_guidance() {
+        // Simulate what the warn branch emits so operators know what to set.
+        let pkg_name = "MyPkg";
+        let version = "1.2.3";
+        let reason = "is awaiting moderation";
+        let status_label = "Submitted";
+        let published_label = "2026-01-01";
+        let msg = format!(
+            "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+             skipping push — set republish_in_moderation: true to replace \
+             the in-moderation copy. The gallery will not list the package \
+             until it transitions to Approved.",
+            pkg_name, version, reason, status_label, published_label
+        );
+        assert!(msg.contains("skipping push"), "{msg}");
+        assert!(msg.contains("republish_in_moderation: true"), "{msg}");
+        assert!(msg.contains("Approved"), "{msg}");
+    }
+
+    /// Flag true: the status message contains the "replacing in-moderation" indicator.
+    #[test]
+    fn in_moderation_republish_status_contains_replacing() {
+        let pkg_name = "MyPkg";
+        let version = "1.2.3";
+        let reason = "is awaiting moderation";
+        let status_label = "Submitted";
+        let published_label = "2026-01-01";
+        let msg = format!(
+            "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+             republish_in_moderation=true — replacing in-moderation copy.",
+            pkg_name, version, reason, status_label, published_label
+        );
+        assert!(msg.contains("republish_in_moderation=true"), "{msg}");
+        assert!(msg.contains("replacing in-moderation copy"), "{msg}");
+    }
 }

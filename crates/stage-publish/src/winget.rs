@@ -963,6 +963,15 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         .and_then(|pr| pr.enabled)
         .unwrap_or(false);
 
+    let update_existing_pr = winget_cfg
+        .update_existing_pr
+        .as_ref()
+        .map(|v| {
+            v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
     if has_pr_config {
         util::maybe_submit_pr(
             repo_path,
@@ -971,6 +980,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
                 repo_owner: &repo_owner,
                 repo_name: &repo_name,
                 branch_name,
+                update_existing_pr,
             },
             &format!("New version: {} version {}", package_id, version),
             &format!(
@@ -994,7 +1004,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             })
             .unwrap_or_else(|| "microsoft/winget-pkgs".to_string());
 
-        util::submit_pr_via_gh(
+        util::submit_pr_via_gh_with_opts(
             repo_path,
             &upstream_slug,
             &format!("{}:{}", repo_owner, branch_name),
@@ -1005,6 +1015,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             ),
             "winget",
             log,
+            util::SubmitPrOpts { update_existing_pr },
         );
     }
 
@@ -1245,6 +1256,8 @@ impl anodizer_core::Publisher for WingetPublisher {
             crate::publisher_helpers::effective_publish_crates(ctx, is_winget_per_crate_configured);
         log.status(&run_start_message(selected.len()));
         for crate_name in &selected {
+            // Defensive guard for explicit `--crate=X` selection when X has no
+            // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_winget_per_crate_configured(ctx, crate_name) {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;

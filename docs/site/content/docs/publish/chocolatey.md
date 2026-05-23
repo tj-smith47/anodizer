@@ -53,6 +53,7 @@ crates:
 | `disable` | bool or string | `false` | Disable this publisher entirely. Accepts a bool or a template string that evaluates to a truthy value |
 | `use` | string | `archive` | Artifact type to package: `archive`, `msi`, or `nsis` |
 | `amd64_variant` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
+| `republish_in_moderation` | bool or string | `false` | Re-push the nupkg when a version is already in the community moderation queue. See [Moderation queue behavior](#moderation-queue-behavior). |
 
 ### Dependencies
 
@@ -89,6 +90,31 @@ If no Windows artifacts are found, Anodizer falls back to a placeholder GitHub r
 When `skip_publish: true` is set, Anodizer skips the entire publish function early -- no nuspec is generated, no `choco pack` is run, and no push occurs. This is useful when you want to define the Chocolatey config for future use without actually publishing, or when another system handles the push step.
 
 In dry-run mode (`--dry-run`), Anodizer logs what it would do without generating any files or running any commands.
+
+## Moderation queue behavior
+
+When a version is already in the Chocolatey community moderation queue
+(`PackageStatus=Submitted`, `IsApproved=false`), Anodizer's default behavior
+is to **skip the push and emit a warning**. The warning names the package,
+its status, and the flag to set if you want to replace it:
+
+```
+chocolatey: 'MyPkg-1.2.3' is awaiting moderation (PackageStatus=Submitted, Published=...);
+skipping push — set republish_in_moderation: true to replace the in-moderation copy.
+```
+
+Setting `republish_in_moderation: true` opts into replacing the queued nupkg.
+The Chocolatey API accepts re-pushes of in-moderation versions — the new nupkg
+displaces the queued one without creating a duplicate.
+
+```yaml
+chocolatey:
+  republish_in_moderation: true   # replace the in-moderation nupkg
+```
+
+Rejected versions (`PackageStatus=Rejected`) always return an error regardless
+of this flag — a rejected version cannot be replaced, and the version must be
+bumped before re-pushing.
 
 ## Full example
 

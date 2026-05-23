@@ -466,6 +466,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             repo_owner: &repo_owner,
             repo_name: &repo_name,
             branch_name: branch.unwrap_or("main"),
+            update_existing_pr: false,
         },
         &format!("Update {} to {}", name, version),
         &format!(

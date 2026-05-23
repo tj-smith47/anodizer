@@ -86,6 +86,13 @@ pub struct ChocolateyConfig {
     /// runs with defaults (enabled, 30s interval, 30m timeout). Polling can
     /// be disabled globally via `--no-post-publish-poll`.
     pub post_publish_poll: Option<PostPublishPollConfig>,
+    /// When true, re-push the nupkg even when a version is already in the
+    /// community moderation queue (PackageStatus=Submitted). Chocolatey's API
+    /// accepts re-pushes of in-moderation versions; the new nupkg replaces the
+    /// queued one. When false (default), the push is skipped and a warning is
+    /// emitted so the operator sees that the publisher did not push.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub republish_in_moderation: Option<StringOrBool>,
 }
 
 /// Chocolatey package dependency with optional version constraint.

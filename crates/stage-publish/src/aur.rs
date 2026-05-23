@@ -915,6 +915,8 @@ impl anodizer_core::Publisher for AurOurPublisher {
         log.status(&run_start_message(selected.len()));
         let mut processed = 0usize;
         for crate_name in &selected {
+            // Defensive guard for explicit `--crate=X` selection when X has no
+            // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_aur_per_crate_configured(ctx, crate_name) {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;

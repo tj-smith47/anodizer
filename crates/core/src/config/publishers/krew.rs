@@ -51,4 +51,11 @@ pub struct KrewConfig {
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
     /// variant are included.
     pub arm_variant: Option<String>,
+    /// When true, force-push the updated plugin manifest to the existing PR
+    /// branch when a PR for the same head branch already exists. The PR content
+    /// is updated in place rather than creating a duplicate. When false
+    /// (default), the push is skipped and a warning is emitted so the operator
+    /// sees that the publisher did not update the PR.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub update_existing_pr: Option<StringOrBool>,
 }

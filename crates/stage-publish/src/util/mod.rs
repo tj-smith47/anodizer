@@ -72,5 +72,5 @@ pub(crate) use github_pr::{CloseOutcome, close_pr_via_api, find_open_pr_numbers_
 pub(crate) use parallelism::{
     ROLLBACK_PARALLELISM, join_or_warn, lock_recover, run_revert_targets_parallel,
 };
-pub(crate) use pr::{PrOrigin, maybe_submit_pr, submit_pr_via_gh};
+pub(crate) use pr::{PrOrigin, SubmitPrOpts, maybe_submit_pr, submit_pr_via_gh_with_opts};
 pub(crate) use template::{render_or_warn, render_url_template, render_url_template_with_ctx};

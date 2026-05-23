@@ -101,6 +101,9 @@ pub(crate) struct PrSpec<'a> {
     pub head: &'a str,
     pub base_branch: &'a str,
     pub draft: bool,
+    /// When true, force-push the branch to update an existing PR in place
+    /// rather than skipping when `gh pr create` reports "already exists".
+    pub update_existing_pr: bool,
 }
 
 /// Upstream repository identity (owner + name).
@@ -128,7 +131,10 @@ fn create_pr_via_gh_cli(
         head,
         base_branch,
         draft,
+        update_existing_pr,
     } = *spec;
+    // `head` is "owner:branch"; extract just the branch name for push.
+    let branch_name = head.split_once(':').map(|(_, b)| b).unwrap_or(head);
     let mut args = vec![
         "pr",
         "create",
@@ -166,13 +172,31 @@ fn create_pr_via_gh_cli(
             Ok(output) => {
                 last_stderr = String::from_utf8_lossy(&output.stderr).to_string();
                 last_status = Some(output.status);
-                // Idempotent success: an open PR with identical head/base
-                // already exists. `gh` emits this after the fork was synced
-                // by a prior publish attempt.
+                // An open PR with identical head/base already exists.
                 if last_stderr.contains("already exists") {
-                    log.status(&format!(
-                        "{label}: PR for '{head}' already exists — skipping"
-                    ));
+                    if update_existing_pr {
+                        // Force-push to the existing branch so the open PR
+                        // picks up the new manifest without needing a new PR.
+                        if let Err(e) = run_cmd_in(
+                            repo_path,
+                            "git",
+                            &["push", "--force-with-lease", "origin", branch_name],
+                            &format!("{label}: git push --force-with-lease (update existing PR)"),
+                        ) {
+                            log.warn(&format!(
+                                "{label}: update_existing_pr=true but force-push failed: {e}"
+                            ));
+                        } else {
+                            log.status(&format!(
+                                "{label}: PR for '{head}' already exists — updated in place"
+                            ));
+                        }
+                    } else {
+                        log.warn(&format!(
+                            "{label}: PR for '{head}' already exists — skipping \
+                             (set update_existing_pr: true to update the PR in place)"
+                        ));
+                    }
                     return;
                 }
                 let transient = last_stderr.contains("No commits between")
@@ -226,6 +250,7 @@ fn create_pr_via_api(
         head,
         base_branch,
         draft,
+        update_existing_pr: _,
     } = *spec;
     let url = format!("https://api.github.com/repos/{}/{}/pulls", owner, name);
     let payload = serde_json::json!({
@@ -269,6 +294,8 @@ pub(crate) struct PrOrigin<'a> {
     pub repo_owner: &'a str,
     pub repo_name: &'a str,
     pub branch_name: &'a str,
+    /// When true, force-push to an existing PR branch rather than skipping.
+    pub update_existing_pr: bool,
 }
 
 /// Submit a pull request if `repo.pull_request.enabled` is true.
@@ -295,6 +322,7 @@ pub(crate) fn maybe_submit_pr(
         repo_owner,
         repo_name,
         branch_name,
+        update_existing_pr,
     } = *origin;
     let pr_cfg = match repo.and_then(|r| r.pull_request.as_ref()) {
         Some(pr) if pr.enabled == Some(true) => pr,
@@ -348,6 +376,7 @@ pub(crate) fn maybe_submit_pr(
         head: &head,
         base_branch,
         draft: is_draft,
+        update_existing_pr,
     };
     let upstream = Upstream {
         owner: upstream_owner,
@@ -366,12 +395,24 @@ pub(crate) fn maybe_submit_pr(
     }
 }
 
+/// Options for [`submit_pr_via_gh`]. Bundles infrequently-varying knobs so
+/// the function stays within the argument-count lint budget.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct SubmitPrOpts {
+    /// When true, force-push to an existing PR branch rather than skipping.
+    pub update_existing_pr: bool,
+}
+
 /// Submit a pull request via the GitHub CLI. Logs a warning instead of failing
 /// if `gh` is not available or the command exits non-zero.
 ///
+/// Supports `opts.update_existing_pr` to force-push to an existing PR branch
+/// rather than skipping when a PR already exists.
+///
 /// Falls back to the GitHub REST API when `gh` is unavailable and a token
 /// can be resolved from the environment.
-pub(crate) fn submit_pr_via_gh(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn submit_pr_via_gh_with_opts(
     repo_path: &Path,
     upstream_repo: &str,
     head: &str,
@@ -379,6 +420,7 @@ pub(crate) fn submit_pr_via_gh(
     body: &str,
     label: &str,
     log: &StageLogger,
+    opts: SubmitPrOpts,
 ) {
     let token = std::env::var("ANODIZER_GITHUB_TOKEN")
         .ok()
@@ -401,6 +443,7 @@ pub(crate) fn submit_pr_via_gh(
         head,
         base_branch: &base_branch,
         draft: false,
+        update_existing_pr: opts.update_existing_pr,
     };
 
     if gh_is_available() {
@@ -418,5 +461,84 @@ pub(crate) fn submit_pr_via_gh(
         log.warn(&format!(
             "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anodizer_core::config::{HomebrewCaskConfig, KrewConfig, StringOrBool, WingetConfig};
+
+    /// Config field roundtrip: `update_existing_pr` on WingetConfig survives serde.
+    #[test]
+    fn winget_update_existing_pr_bool_roundtrips() {
+        let cfg = WingetConfig {
+            update_existing_pr: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: WingetConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            back.update_existing_pr,
+            Some(StringOrBool::Bool(true))
+        ));
+    }
+
+    /// Config field roundtrip: `update_existing_pr` absent defaults to None.
+    #[test]
+    fn winget_update_existing_pr_absent_is_none() {
+        let cfg: WingetConfig = serde_json::from_str("{}").expect("deserialize");
+        assert!(cfg.update_existing_pr.is_none());
+    }
+
+    /// Config field roundtrip: `update_existing_pr` on KrewConfig survives serde.
+    #[test]
+    fn krew_update_existing_pr_bool_roundtrips() {
+        let cfg = KrewConfig {
+            update_existing_pr: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: KrewConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            back.update_existing_pr,
+            Some(StringOrBool::Bool(true))
+        ));
+    }
+
+    /// Config field roundtrip: `update_existing_pr` on HomebrewCaskConfig survives serde.
+    #[test]
+    fn homebrew_cask_update_existing_pr_bool_roundtrips() {
+        let cfg = HomebrewCaskConfig {
+            update_existing_pr: Some(StringOrBool::Bool(false)),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialize");
+        let back: HomebrewCaskConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(matches!(
+            back.update_existing_pr,
+            Some(StringOrBool::Bool(false))
+        ));
+    }
+
+    /// Skip warn message contains guidance when update_existing_pr=false.
+    #[test]
+    fn pr_exists_skip_warn_contains_guidance() {
+        let head = "owner:my-app-1.2.3";
+        let label = "winget";
+        let msg = format!(
+            "{label}: PR for '{head}' already exists — skipping \
+             (set update_existing_pr: true to update the PR in place)"
+        );
+        assert!(msg.contains("already exists"), "{msg}");
+        assert!(msg.contains("update_existing_pr: true"), "{msg}");
+    }
+
+    /// Update-in-place status message contains correct indicator.
+    #[test]
+    fn pr_exists_update_status_contains_updated_in_place() {
+        let head = "owner:my-app-1.2.3";
+        let label = "winget";
+        let msg = format!("{label}: PR for '{head}' already exists — updated in place");
+        assert!(msg.contains("updated in place"), "{msg}");
     }
 }

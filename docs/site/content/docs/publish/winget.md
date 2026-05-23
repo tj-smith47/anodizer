@@ -71,6 +71,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `product_code` | string | none | Product code for Add/Remove Programs |
 | `use` | string | `archive` | Artifact type: `archive`, `msi`, or `nsis` |
 | `amd64_variant` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
+| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior). |
 
 ## Repository config
 
@@ -149,6 +150,28 @@ Anodizer supports two installer types:
 - **portable** -- Bare binary artifacts. Each binary gets a `Commands` entry.
 
 You cannot mix archive and portable binary artifacts in the same manifest. Anodizer will error if both types are found.
+
+## Existing PR behavior
+
+When `gh pr create` reports that a PR for the same head branch already exists,
+Anodizer's default is to **skip and emit a warning**:
+
+```
+winget: PR for 'owner:MyOrg.MyApp-1.2.3' already exists — skipping
+        (set update_existing_pr: true to update the PR in place)
+```
+
+Setting `update_existing_pr: true` force-pushes the updated manifest to the
+existing branch using `--force-with-lease`, so the open PR automatically picks
+up the new content:
+
+```yaml
+winget:
+  update_existing_pr: true
+```
+
+This is useful when a prior run pushed a stale manifest (e.g. from a failed
+release) and you want to replace it without closing and reopening the PR.
 
 ## skip_upload
 

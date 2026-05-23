@@ -367,6 +367,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `service` | string | — | Homebrew service definition. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
+| `update_existing_pr` | StringOrBool | — | When true, force-push the updated cask file to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
 | `url` | HomebrewCaskURL | — | Structured download URL configuration (top-level axis). |
 | `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).
 
