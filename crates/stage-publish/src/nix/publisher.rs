@@ -548,8 +548,12 @@ mod publisher_tests {
     #[test]
     fn nix_publisher_visible_work_contract() {
         use crate::testing::assert_publisher_visible_work_contract;
-        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate("demo")])
+            .selected_crates(vec!["demo".to_string()])
+            .dry_run(true)
+            .build();
         let p = NixPublisher::new();
-        assert_publisher_visible_work_contract(&p, &mut ctx, &run_no_eligible_crates_warning(0));
+        assert_publisher_visible_work_contract(&p, &mut ctx);
     }
 }

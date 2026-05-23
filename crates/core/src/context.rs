@@ -321,6 +321,11 @@ pub struct Context {
     /// `succeeded`. The slot is single-shot: any unread value is
     /// cleared at the start of every `run` call.
     pub pending_outcome: Option<crate::PublisherOutcome>,
+    /// Optional in-memory log-capture handle. When `Some`, every logger
+    /// produced by [`Context::logger`] attaches it so the test can read
+    /// back aggregated counts of `status` / `warn` / etc. calls without
+    /// having to intercept stderr. `None` in production (no overhead).
+    pub log_capture: Option<crate::log::LogCapture>,
 }
 
 impl Context {
@@ -339,7 +344,15 @@ impl Context {
             publish_report: None,
             determinism: None,
             pending_outcome: None,
+            log_capture: None,
         }
+    }
+
+    /// Attach an in-memory log-capture sink so every logger derived from
+    /// this context via [`Context::logger`] records to it. Intended for
+    /// tests; production callers leave this `None`.
+    pub fn with_log_capture(&mut self, capture: crate::log::LogCapture) {
+        self.log_capture = Some(capture);
     }
 
     /// Publisher-facing override: when `Publisher::run` returns `Ok`
@@ -535,7 +548,11 @@ impl Context {
     /// snapshot, so any secret value reachable to a hook or subprocess is
     /// available for scrubbing.
     pub fn logger(&self, stage: &'static str) -> StageLogger {
-        StageLogger::new(stage, self.verbosity()).with_env(self.env_for_redact())
+        let mut log = StageLogger::new(stage, self.verbosity()).with_env(self.env_for_redact());
+        if let Some(cap) = &self.log_capture {
+            log = log.with_capture_handle(cap.clone());
+        }
+        log
     }
 
     /// Build the env-pairs list used to seed every [`StageLogger`] created

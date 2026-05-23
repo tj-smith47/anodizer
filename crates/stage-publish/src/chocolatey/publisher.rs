@@ -599,9 +599,31 @@ mod publisher_tests {
     #[test]
     fn chocolatey_publisher_visible_work_contract() {
         use crate::testing::assert_publisher_visible_work_contract;
-        // Zero configured crates → zero eligible crates → warn path must fire.
-        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate("demo", None)])
+            .selected_crates(vec!["demo".to_string()])
+            .dry_run(true)
+            .build();
+        // Chocolatey's publish path resolves a Windows archive artifact — without
+        // one configured here the per-crate publish would bail before emitting
+        // the per-crate-start status line. Mirror the chocolatey dry-run test
+        // setup so the loop actually executes the visible-work sequence.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/demo-windows-amd64.zip"),
+            name: "demo-windows-amd64.zip".to_string(),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("sha256".to_string(), "deadbeef".to_string());
+                m.insert("url".to_string(), "https://example.com/x.zip".to_string());
+                m
+            },
+            size: None,
+        });
         let p = ChocolateyPublisher::new();
-        assert_publisher_visible_work_contract(&p, &mut ctx, &run_no_eligible_crates_warning(0));
+        assert_publisher_visible_work_contract(&p, &mut ctx);
     }
 }

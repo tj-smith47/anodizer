@@ -225,75 +225,93 @@ pub fn fake_with_scope(
     })
 }
 
-/// Shared behavioral contract for per-crate publishers: when called with
-/// `selected_crates = []` (implicit-all) and `dry_run = true`, every
-/// publisher must either:
+/// Shared behavioral contract for per-crate publishers — catches the
+/// silent-success class of bug where a publisher's `run()` returns `Ok`
+/// with no operator-visible signal, indistinguishable from a real push
+/// in the dispatch table.
 ///
-/// 1. Return `Ok(evidence)` where evidence has non-empty content (i.e.
-///    at least one crate was processed), **OR**
-/// 2. Return `Ok(evidence)` with empty evidence **and** the publisher's
-///    `no_eligible_crates_warning` message is non-empty (confirming the
-///    zero-eligible-crates warn path is wired and would fire at runtime).
+/// The contract asserts the following hold after `publisher.run(&mut ctx)`
+/// returns:
 ///
-/// This catches the silent-success class of bugs where a publisher's
-/// `run()` returns `Ok` with no evidence and no warning — indistinguishable
-/// from a real push in the dispatch table.
+/// 1. `run()` returns `Ok(evidence)` and `evidence.publisher` matches
+///    `publisher.name()`.
+/// 2. At least three `status` log lines were emitted — the standard
+///    start + per-crate-start + done pattern every per-crate publisher
+///    uses. This is the load-bearing assertion that the publisher
+///    actually visited its crates rather than silently `continue`-ing
+///    through every iteration.
+/// 3. Either:
+///    - `evidence` is non-empty (`primary_ref` set or `extra` object
+///      non-empty), **OR**
+///    - the publisher emitted at least one `warn` line (e.g. the
+///      no-eligible-crates remediation path fires), **OR**
+///    - at least one extra `status` line beyond the standard three
+///      was emitted — covering the dry-run / skip path where
+///      publishers explicitly log `(dry-run) would push ...` instead
+///      of recording rollback evidence. Without this branch the
+///      contract would conflate "no evidence in dry-run" (correct;
+///      avoids phantom rollback targets) with "silent success" (bug).
+///
+/// The capture is attached via [`Context::with_log_capture`] so every
+/// logger built inside `publisher.run` records to the same vec without
+/// any stderr-intercept gymnastics.
 ///
 /// # Arguments
 ///
 /// * `publisher` — the publisher under test.
-/// * `ctx` — a [`Context`] the caller constructed. If it contains a
-///   crate configured for this publisher, the dry-run path executes;
-///   if not, the zero-eligible-crates warn path executes. Either shape
-///   satisfies the contract.
-/// * `no_eligible_warning` — the publisher's own
-///   `run_no_eligible_crates_warning(N)` output (call it with any `N > 0`).
-///   Must be non-empty; the contract asserts this so the zero-eligible
-///   path is never silent.
+/// * `ctx` — a context the caller built so the publisher's
+///   configured-crate predicate selects at least one crate (typically
+///   via [`anodizer_core::test_helpers::TestContextBuilder`] with a
+///   single appropriately-configured crate and `dry_run(true)`).
 ///
 /// # Panics
 ///
 /// Panics (failing the test) if any contract invariant is violated.
-pub fn assert_publisher_visible_work_contract(
-    publisher: &dyn Publisher,
-    ctx: &mut Context,
-    no_eligible_warning: &str,
-) {
-    // The warning message must not be empty — an empty string would mean the
-    // publisher's zero-eligible path emits nothing, which is silent failure.
-    assert!(
-        !no_eligible_warning.is_empty(),
-        "publisher '{}': run_no_eligible_crates_warning must produce a non-empty string",
-        publisher.name()
-    );
+pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &mut Context) {
+    use anodizer_core::log::LogCapture;
+
+    let capture = LogCapture::new();
+    ctx.with_log_capture(capture.clone());
 
     let evidence = publisher
         .run(ctx)
         .unwrap_or_else(|e| panic!("publisher '{}' run() failed: {e:#}", publisher.name()));
 
-    // The evidence must not be a completely blank sentinel (schema_version
-    // is always set; what we check is that the publisher name is correct).
     assert_eq!(
         evidence.publisher,
         publisher.name(),
         "evidence.publisher must match publisher.name()"
     );
 
-    // Either evidence has content (primary_ref or non-empty extra object)
-    // OR the zero-eligible path is confirmed wired (warning is non-empty,
-    // asserted above). Both shapes satisfy the visible-work contract.
+    let status_count = capture.status_count();
+    let warn_count = capture.warn_count();
     let extra_is_empty = evidence.extra.as_object().is_none_or(|m| m.is_empty());
-    let has_content = evidence.primary_ref.is_some() || !extra_is_empty;
+    let has_evidence = evidence.primary_ref.is_some() || !extra_is_empty;
 
-    if !has_content {
-        // Zero-eligible path: warning must exist (already asserted non-empty
-        // above). This is the expected outcome for a context with no
-        // publisher-specific crate config.
-        assert!(
-            !no_eligible_warning.is_empty(),
-            "publisher '{}': ran with zero eligible crates but no_eligible_warning is empty \
-             — the zero-eligible path would be silent",
-            publisher.name()
-        );
-    }
+    assert!(
+        status_count >= 3,
+        "publisher '{}': expected ≥3 status log lines (start + per-crate-start + done), got {}. \
+         Captured: {:?}",
+        publisher.name(),
+        status_count,
+        capture.all_messages()
+    );
+
+    // A publisher satisfies the visible-work contract when ANY of these
+    // operator-readable signals is present:
+    //   - evidence has content (production push completed), OR
+    //   - a warn fired (no-eligible-crates explanation), OR
+    //   - the loop emitted more than the bare start/per-crate-start/done
+    //     trio — i.e. at least one dry-run / skip / per-crate-progress
+    //     status line, which is what tells the operator what would have
+    //     happened on a real push.
+    let extra_status_lines = status_count > 3;
+    assert!(
+        has_evidence || warn_count >= 1 || extra_status_lines,
+        "publisher '{}': run() returned empty evidence AND emitted zero warnings AND \
+         emitted no progress status beyond the standard start/per-crate-start/done trio \
+         — operator has no signal this publisher did anything. Captured: {:?}",
+        publisher.name(),
+        capture.all_messages()
+    );
 }

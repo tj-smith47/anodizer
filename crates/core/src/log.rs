@@ -21,9 +21,79 @@
 //! or `bail!` messages is therefore redacted without callers having to
 //! remember to scrub at every site.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use colored::Colorize;
+
+/// Level of a log line captured by a [`LogCapture`]. Mirrors the
+/// [`StageLogger`] methods that produce each level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Status,
+    Verbose,
+    Debug,
+}
+
+/// In-memory sink that records every log line a [`StageLogger`] emits.
+///
+/// Cheap clone (`Arc<Mutex<Vec<…>>>` underneath) — pass the same handle to
+/// every logger derived from a [`crate::context::Context`] and read aggregated
+/// counts back via the accessor methods. Intended for tests that need to
+/// assert "publisher emitted ≥N status lines" — calls still write to stderr
+/// so test output stays debuggable.
+#[derive(Clone, Default)]
+pub struct LogCapture {
+    inner: Arc<Mutex<Vec<(LogLevel, String)>>>,
+}
+
+impl LogCapture {
+    /// Construct a fresh empty capture sink.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Append a log line to the capture vec. Called from the
+    /// [`StageLogger`] methods when a capture is attached.
+    pub(crate) fn record(&self, level: LogLevel, msg: impl Into<String>) {
+        if let Ok(mut guard) = self.inner.lock() {
+            guard.push((level, msg.into()));
+        }
+    }
+
+    /// Number of [`LogLevel::Status`] lines recorded.
+    pub fn status_count(&self) -> usize {
+        self.count(LogLevel::Status)
+    }
+
+    /// Number of [`LogLevel::Warn`] lines recorded.
+    pub fn warn_count(&self) -> usize {
+        self.count(LogLevel::Warn)
+    }
+
+    /// Number of [`LogLevel::Error`] lines recorded.
+    pub fn error_count(&self) -> usize {
+        self.count(LogLevel::Error)
+    }
+
+    /// Total count across all levels (useful sanity check).
+    pub fn total_count(&self) -> usize {
+        self.inner.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
+    fn count(&self, level: LogLevel) -> usize {
+        self.inner
+            .lock()
+            .map(|g| g.iter().filter(|(l, _)| *l == level).count())
+            .unwrap_or(0)
+    }
+
+    /// Snapshot of every recorded line in insertion order.
+    pub fn all_messages(&self) -> Vec<(LogLevel, String)> {
+        self.inner.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+}
 
 /// Verbosity level, derived from CLI flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -75,6 +145,10 @@ pub struct StageLogger {
     /// env every time. `None` means redaction is a no-op (matches the
     /// behaviour before this field existed).
     env: Option<Arc<Vec<(String, String)>>>,
+    /// Optional in-memory capture sink. When present, every log method also
+    /// appends to the capture vec (after the stderr write). `None` means
+    /// the logger only writes to stderr (production default).
+    capture: Option<LogCapture>,
 }
 
 impl StageLogger {
@@ -83,7 +157,33 @@ impl StageLogger {
             stage,
             verbosity,
             env: None,
+            capture: None,
         }
+    }
+
+    /// Construct a logger backed by an in-memory [`LogCapture`] alongside the
+    /// usual stderr writes. Returns the logger plus a clone of the capture
+    /// handle so the test can read counts back after the SUT runs.
+    ///
+    /// Intended exclusively for tests — production code uses
+    /// [`StageLogger::new`] or [`crate::context::Context::logger`].
+    pub fn with_capture(stage: &'static str, verbosity: Verbosity) -> (Self, LogCapture) {
+        let capture = LogCapture::new();
+        let logger = Self {
+            stage,
+            verbosity,
+            env: None,
+            capture: Some(capture.clone()),
+        };
+        (logger, capture)
+    }
+
+    /// Attach an existing [`LogCapture`] to this logger. Useful when the
+    /// capture is owned by a [`crate::context::Context`] and every derived
+    /// logger should append to the same vec.
+    pub fn with_capture_handle(mut self, capture: LogCapture) -> Self {
+        self.capture = Some(capture);
+        self
     }
 
     /// Attach an env-pairs list to drive secret redaction inside
@@ -113,12 +213,18 @@ impl StageLogger {
     /// Error message — always shown (even in quiet mode).
     pub fn error(&self, msg: &str) {
         eprintln!("{} [{}] {}", "Error:".red().bold(), self.stage, msg);
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Error, msg);
+        }
     }
 
     /// Warning message — shown at Normal and above.
     pub fn warn(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
             eprintln!("{} [{}] {}", "Warning:".yellow().bold(), self.stage, msg);
+        }
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Warn, msg);
         }
     }
 
@@ -128,6 +234,9 @@ impl StageLogger {
         if self.verbosity >= Verbosity::Normal {
             eprintln!("[{}] {}", self.stage, msg);
         }
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Status, msg);
+        }
     }
 
     /// Detail message — shown only at Verbose and above.
@@ -136,6 +245,9 @@ impl StageLogger {
         if self.verbosity >= Verbosity::Verbose {
             eprintln!("[{}] {}", self.stage, msg);
         }
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Verbose, msg);
+        }
     }
 
     /// Debug message — shown only at Debug level.
@@ -143,6 +255,9 @@ impl StageLogger {
     pub fn debug(&self, msg: &str) {
         if self.verbosity >= Verbosity::Debug {
             eprintln!("[{}] {}", self.stage.dimmed(), msg.dimmed());
+        }
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Debug, msg);
         }
     }
 
