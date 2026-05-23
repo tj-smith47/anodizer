@@ -2302,6 +2302,26 @@ mod publisher_tests {
         p.run(&mut ctx).expect("publisher.run ok");
     }
 
+    /// Implicit-all selection (empty `selected_crates`) + dry-run must
+    /// produce empty evidence. The implicit-all path resolves through
+    /// `effective_publish_crates` to every krew-configured crate, so this
+    /// pins the gate where phantom rollback targets used to leak.
+    #[test]
+    fn test_publish_to_krew_dry_run_implicit_all_produces_empty_evidence() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![krew_crate("demo"), krew_crate("other")])
+            // No selected_crates → implicit-all resolves to both krew crates.
+            .dry_run(true)
+            .build();
+        let p = KrewPublisher::new();
+        let evidence = p.run(&mut ctx).expect("dry-run implicit-all publisher.run");
+        let targets = decode_krew_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "dry-run + implicit-all must not record rollback targets: {targets:?}"
+        );
+    }
+
     /// skip_upload path must produce empty evidence — no branch push occurred.
     #[test]
     fn krew_publisher_run_skip_upload_produces_empty_evidence() {
