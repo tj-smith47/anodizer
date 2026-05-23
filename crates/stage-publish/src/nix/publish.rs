@@ -103,6 +103,12 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         validate_nix_license(license)?;
     }
 
+    let main_program_raw = nix_cfg.main_program.as_deref().unwrap_or("");
+    let main_program_rendered = ctx
+        .render_template(main_program_raw)
+        .with_context(|| format!("nix: render main_program template for '{}'", crate_name))?;
+    let main_program = main_program_rendered.as_str();
+
     // Find artifacts for Linux and Darwin platforms, applying IDs + amd64_variant filter.
     let ids_filter = nix_cfg.ids.as_deref();
     let amd64_variant = nix_cfg.amd64_variant.as_deref().or(Some("v1"));
@@ -360,6 +366,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         description,
         homepage,
         license,
+        main_program,
         archives: &archives,
         install_lines: &install_lines,
         post_install_lines: &post_install_lines,

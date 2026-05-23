@@ -52,6 +52,7 @@ fn test_generate_nix_expression_basic() {
         description: "A great tool",
         homepage: "https://example.com",
         license: "mit",
+        main_program: "",
         archives: &archives,
         install_lines: &install_lines,
         post_install_lines: &[],
@@ -91,6 +92,7 @@ fn test_generate_nix_expression_with_unzip() {
         description: "",
         homepage: "",
         license: "mit",
+        main_program: "",
         archives: &archives,
         install_lines: &install,
         post_install_lines: &[],
@@ -122,6 +124,7 @@ fn test_generate_nix_expression_with_post_install() {
         description: "",
         homepage: "",
         license: "mit",
+        main_program: "",
         archives: &archives,
         install_lines: &install,
         post_install_lines: &post,
@@ -170,6 +173,7 @@ fn test_generate_nix_expression_with_deps_uses_make_bin_path() {
         description: "A tool with deps",
         homepage: "",
         license: "mit",
+        main_program: "",
         archives: &archives,
         install_lines: &install,
         post_install_lines: &[],
@@ -211,6 +215,7 @@ fn test_generate_nix_expression_deps_in_native_build_inputs() {
         description: "",
         homepage: "",
         license: "mit",
+        main_program: "",
         archives: &archives,
         install_lines: &install,
         post_install_lines: &[],
@@ -262,6 +267,7 @@ fn test_generate_nix_expression_no_rec() {
         description: "",
         homepage: "",
         license: "mit",
+        main_program: "",
         archives: &archives,
         install_lines: &install,
         post_install_lines: &[],
@@ -282,6 +288,130 @@ fn test_generate_nix_expression_no_rec() {
         expr.contains("mkDerivation {"),
         "should contain mkDerivation without rec"
     );
+}
+
+#[test]
+fn test_generate_nix_expression_with_main_program() {
+    let archives = vec![(
+        "x86_64-linux".to_string(),
+        "https://example.com/tool.tar.gz".to_string(),
+        "abc".to_string(),
+    )];
+    let install = vec!["mkdir -p $out/bin".to_string()];
+
+    let expr = generate_nix_expression(&NixParams {
+        name: "mytool",
+        version: "1.2.1",
+        description: "my test",
+        homepage: "https://example.com",
+        license: "mit",
+        main_program: "drumroll",
+        archives: &archives,
+        install_lines: &install,
+        post_install_lines: &[],
+        needs_unzip: false,
+        needs_make_wrapper: false,
+        dep_args: &[],
+        source_root: Some("."),
+        source_root_map: None,
+        dynamically_linked: false,
+    })
+    .unwrap();
+
+    assert!(
+        expr.contains("mainProgram = \"drumroll\";"),
+        "meta.mainProgram must be rendered; got:\n{expr}"
+    );
+}
+
+#[test]
+fn test_generate_nix_expression_omits_main_program_when_empty() {
+    let archives = vec![(
+        "x86_64-linux".to_string(),
+        "https://example.com/tool.tar.gz".to_string(),
+        "abc".to_string(),
+    )];
+    let install = vec!["mkdir -p $out/bin".to_string()];
+
+    let expr = generate_nix_expression(&NixParams {
+        name: "mytool",
+        version: "1.0.0",
+        description: "",
+        homepage: "",
+        license: "mit",
+        main_program: "",
+        archives: &archives,
+        install_lines: &install,
+        post_install_lines: &[],
+        needs_unzip: false,
+        needs_make_wrapper: false,
+        dep_args: &[],
+        source_root: Some("."),
+        source_root_map: None,
+        dynamically_linked: false,
+    })
+    .unwrap();
+
+    assert!(
+        !expr.contains("mainProgram"),
+        "mainProgram attr must be omitted when value is empty; got:\n{expr}"
+    );
+}
+
+/// `meta.mainProgram` is interpolated directly inside a Nix string literal.
+/// A pathological value containing `"` / `\` / `${` would either close the
+/// literal (yielding malformed Nix) or trigger antiquotation. The generator
+/// must apply Nix string-escape rules so the rendered derivation parses.
+#[test]
+fn test_generate_nix_expression_escapes_main_program_quotes_backslashes_and_dollar_brace() {
+    let archives = vec![(
+        "x86_64-linux".to_string(),
+        "https://example.com/tool.tar.gz".to_string(),
+        "abc".to_string(),
+    )];
+    let install = vec!["mkdir -p $out/bin".to_string()];
+
+    let expr = generate_nix_expression(&NixParams {
+        name: "mytool",
+        version: "1.0.0",
+        description: "",
+        homepage: "",
+        license: "mit",
+        // Triple-hazard input: a quote, a backslash, and `${` (Nix
+        // antiquotation start).
+        main_program: r#"my"to\ol${X}"#,
+        archives: &archives,
+        install_lines: &install,
+        post_install_lines: &[],
+        needs_unzip: false,
+        needs_make_wrapper: false,
+        dep_args: &[],
+        source_root: Some("."),
+        source_root_map: None,
+        dynamically_linked: false,
+    })
+    .unwrap();
+
+    // The escaped form: `"` → `\"`, `\` → `\\`, `${` → `\${`.
+    // Rust raw-string keeps the backslashes literal in the assertion.
+    assert!(
+        expr.contains(r#"mainProgram = "my\"to\\ol\${X}";"#),
+        "main_program must be Nix-escaped; got:\n{expr}"
+    );
+}
+
+#[test]
+fn test_nix_escape_string_handles_backslash_quote_and_dollar_brace() {
+    use super::generate::nix_escape_string;
+    // Each rule in isolation, then composed.
+    assert_eq!(nix_escape_string(""), "");
+    assert_eq!(nix_escape_string("plain"), "plain");
+    assert_eq!(nix_escape_string(r#"a"b"#), r#"a\"b"#);
+    assert_eq!(nix_escape_string(r"a\b"), r"a\\b");
+    assert_eq!(nix_escape_string("a${X}"), r"a\${X}");
+    // Order matters: backslash escape must run first so the backslashes
+    // introduced for `"` / `${` are not themselves doubled.
+    assert_eq!(nix_escape_string(r#""${"#), r#"\"\${"#);
 }
 
 #[test]

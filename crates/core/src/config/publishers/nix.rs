@@ -56,6 +56,13 @@ pub struct NixConfig {
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
     pub amd64_variant: Option<String>,
+    /// Value for `meta.mainProgram` in the generated Nix derivation.
+    /// When set, the rendered derivation includes
+    /// `mainProgram = "<value>";` inside the `meta` block, telling Nix
+    /// which binary `nix run` should execute when the derivation
+    /// contains multiple executables. Templated: supports
+    /// `{{ .Version }}` etc. Omitted when unset.
+    pub main_program: Option<String>,
 }
 
 /// Nix package dependency with optional OS restriction.

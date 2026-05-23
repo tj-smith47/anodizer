@@ -69,6 +69,7 @@ stdenvNoCC.mkDerivation {
 {% if description %}    description = "{{ description }}";
 {% endif %}{% if homepage %}    homepage = "{{ homepage }}";
 {% endif %}{% if license %}    license = lib.licenses.{{ license }};
+{% endif %}{% if main_program %}    mainProgram = "{{ main_program }}";
 {% endif %}    sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
     platforms = [ {% for p in platforms %}"{{ p }}" {% endfor %}];
   };
@@ -94,6 +95,9 @@ pub struct NixParams<'a> {
     pub description: &'a str,
     pub homepage: &'a str,
     pub license: &'a str,
+    /// Value for `meta.mainProgram` in the rendered derivation.
+    /// Empty string suppresses the attribute.
+    pub main_program: &'a str,
     /// Per-platform archives: `(nix_system, url, sha256)`.
     pub archives: &'a [(String, String, String)],
     /// Install commands. If empty, auto-generates `cp` for each binary.
@@ -131,6 +135,18 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     ctx.insert("description", params.description);
     ctx.insert("homepage", params.homepage);
     ctx.insert("license", params.license);
+    // `main_program` is interpolated directly inside `"..."` in the rendered
+    // Nix derivation (`meta.mainProgram = "{{ main_program }}";`). Nix string
+    // literals interpret `\`, `"`, and `${...}` specially, so a value
+    // containing any of those would either escape the literal (yielding
+    // malformed Nix) or trigger antiquotation. Apply the Nix string-escape
+    // rules before insertion. GoReleaser does not escape at
+    // `internal/pipe/nix/tmpl.nix:135`; anodize escapes for robustness so
+    // legitimate user-input main_program values (e.g. containing apostrophes
+    // turned into curly-quote analogs, or interpolation-like substrings)
+    // render as a valid Nix string rather than failing at `nix-build`.
+    let main_program_escaped = nix_escape_string(params.main_program);
+    ctx.insert("main_program", &main_program_escaped);
     if let Some(sr) = params.source_root {
         ctx.insert("source_root", sr);
     }
@@ -172,6 +188,29 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     ctx.insert("post_install_lines", &params.post_install_lines);
 
     anodizer_core::template::render_static(&tera, "nix", &ctx, "nix")
+}
+
+// ---------------------------------------------------------------------------
+// Nix string escaping
+// ---------------------------------------------------------------------------
+
+/// Escape a value for inclusion inside a double-quoted Nix string literal.
+///
+/// Nix string-literal grammar (per
+/// `https://nixos.org/manual/nix/stable/language/values#type-string`):
+/// - `\\` escapes a literal backslash.
+/// - `\"` escapes a literal double quote.
+/// - `\${` escapes a literal dollar-brace so it is NOT interpreted as the
+///   start of an antiquotation (string interpolation).
+///
+/// Apply replacements in this order: backslash first (so the backslashes
+/// introduced for `"` and `${` are not themselves re-escaped), then quote,
+/// then `${`.
+pub(super) fn nix_escape_string(s: &str) -> String {
+    let mut out = s.replace('\\', "\\\\");
+    out = out.replace('"', "\\\"");
+    out = out.replace("${", "\\${");
+    out
 }
 
 // ---------------------------------------------------------------------------
