@@ -190,9 +190,9 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// The dry-run / skip_upload paths inside `publish_to_homebrew` return
 /// Ok(false) without pushing — `processed` must still increment for them,
 /// otherwise this predicate fires a false-positive warning even though the
-/// correct code path ran. Bug 1 (Task 1 spec review): incrementing only on
-/// push-success would short-circuit this predicate to `true` in dry-run with
-/// a configured crate.
+/// correct code path ran. Incrementing only on push-success would
+/// short-circuit this predicate to `true` in dry-run with a configured
+/// crate.
 pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
     processed == 0 && selected_len > 0
 }
@@ -597,12 +597,7 @@ mod publisher_tests {
 
     // -----------------------------------------------------------------------
     // Log-message helpers — the operator-facing log strings the publisher
-    // emits at each boundary. The failure mode these guard against: a
-    // publisher whose iteration loop hits only silently-`continue`d
-    // crates returns Ok with an empty evidence record, which the
-    // dispatch table then reports as "succeeded" — indistinguishable
-    // from a real push. Every helper below must produce a line the
-    // operator can grep the publish log for.
+    // emits at each boundary.
 
     #[test]
     fn run_start_message_names_selected_total() {
@@ -647,18 +642,17 @@ mod publisher_tests {
         assert!(msg.contains("--all"), "{msg}");
     }
 
-    /// Regression for Bug 1 (Task 1 spec review): the no-eligible-crates
-    /// warning must fire only when the iteration loop's configured-predicate
-    /// filtered every selected crate out — NOT when `publish_to_homebrew`
-    /// returned `Ok(false)` because of dry-run / skip_upload short-circuits.
-    /// The bug shape was incrementing `processed` only on push-success, which
-    /// made this predicate return `true` in dry-run with a configured crate,
-    /// emitting a spurious warning for an otherwise-correct run.
+    /// The no-eligible-crates warning must fire only when the iteration
+    /// loop's configured-predicate filtered every selected crate out — NOT
+    /// when `publish_to_homebrew` returned `Ok(false)` because of dry-run /
+    /// skip_upload short-circuits. Incrementing `processed` only on
+    /// push-success would make this predicate return `true` in dry-run with
+    /// a configured crate, emitting a spurious warning for an
+    /// otherwise-correct run.
     #[test]
     fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
-        // Bug shape: dry-run with one configured crate. After the fix,
-        // `processed` increments on crate-entry (1), so the warning must
-        // not fire.
+        // Dry-run with one configured crate: `processed` increments on
+        // crate-entry (1), so the warning must not fire.
         assert!(!should_warn_no_eligible(1, 1));
         // True positive: 3 crates selected, none configured for homebrew.
         // `processed` stays 0 → warning fires.
@@ -674,11 +668,12 @@ mod publisher_tests {
 
     /// Run the publisher end-to-end in dry-run mode against a context that
     /// selects a homebrew-configured crate. Verifies the run path is wired
-    /// (returns Ok). The bug-1 regression is anchored by the
+    /// (returns Ok). The false-positive no-eligible-warning regression is
+    /// anchored by
     /// `should_warn_no_eligible_only_fires_when_predicate_filtered_everything`
-    /// test above, which covers the predicate the run path uses.
+    /// above, which covers the predicate the run path uses.
     #[test]
-    fn homebrew_publisher_run_dry_run_records_target() {
+    fn homebrew_publisher_run_dry_run_returns_ok() {
         let mut ctx = TestContextBuilder::new()
             .crates(vec![homebrew_crate("demo")])
             .selected_crates(vec!["demo".to_string()])

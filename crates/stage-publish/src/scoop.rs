@@ -682,7 +682,7 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// selection. The dry-run / skip_upload paths inside `publish_to_scoop`
 /// return Ok(false) without pushing — `processed` must still increment
 /// for them, otherwise this predicate fires a false-positive warning even
-/// though the correct code path ran. See `homebrew::publisher::should_warn_no_eligible`.
+/// though the correct code path ran.
 pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
     processed == 0 && selected_len > 0
 }
@@ -733,8 +733,7 @@ impl anodizer_core::Publisher for ScoopPublisher {
         // still a successful run of the correct code path, so it must
         // not trigger the no-eligible-crates warning. `any_pushed` (below)
         // tracks the orthogonal "did we mutate a bucket" question used
-        // to gate evidence recording — see `HomebrewPublisher::run` for
-        // the long-form rationale on intent-driven evidence.
+        // to gate evidence recording.
         let mut processed = 0usize;
         let mut any_pushed = false;
         for crate_name in &selected {
@@ -1029,10 +1028,10 @@ mod publisher_tests {
         assert!(msg.contains("--all"), "{msg}");
     }
 
-    /// Regression for Bug 1 (Task 1 spec review): the no-eligible-crates
-    /// warning must fire only when the iteration loop's configured-predicate
-    /// filtered every selected crate out — NOT when `publish_to_scoop`
-    /// returned `Ok(false)` because of dry-run / skip_upload short-circuits.
+    /// The no-eligible-crates warning must fire only when the iteration
+    /// loop's configured-predicate filtered every selected crate out — NOT
+    /// when `publish_to_scoop` returned `Ok(false)` because of dry-run /
+    /// skip_upload short-circuits.
     #[test]
     fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
         // Dry-run with one configured crate: `processed` increments on
@@ -1342,7 +1341,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task 4C: Additional behavior tests — config fields actually do things
+    // Additional behavior tests — config fields actually do things
     // -----------------------------------------------------------------------
 
     #[test]

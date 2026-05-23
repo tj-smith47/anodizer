@@ -862,6 +862,17 @@ pub(crate) fn run_done_message(processed: usize) -> String {
     format!("aur: completed — {} crate(s) processed", processed)
 }
 
+/// Decision predicate for the no-eligible-crates warning. True when the
+/// publisher walked the selection but the configured-predicate filtered
+/// every crate out — distinct from "ran successfully in dry-run mode".
+///
+/// `processed` is the count of crates whose `is_aur_per_crate_configured`
+/// check passed and whose `publish_to_aur` invocation was reached.
+/// `selected_len` is the size of the implicit-all-resolved selection.
+pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
+    processed == 0 && selected_len > 0
+}
+
 /// Warning emitted when the publisher was registered (at least one crate
 /// has a `publish.aur` block at the config level) but the run path
 /// processed zero crates.
@@ -908,11 +919,11 @@ impl anodizer_core::Publisher for AurOurPublisher {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
+            processed += 1;
             log.status(&run_per_crate_start_message(crate_name));
             publish_to_aur(ctx, crate_name, &log)?;
-            processed += 1;
         }
-        if processed == 0 && !selected.is_empty() {
+        if should_warn_no_eligible(processed, selected.len()) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
@@ -1246,6 +1257,21 @@ mod publisher_tests {
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
         assert!(msg.contains("--all"), "{msg}");
+    }
+
+    /// The no-eligible-crates warning must fire only when the iteration
+    /// loop's configured-predicate filtered every selected crate out — not
+    /// when the publish path was reached successfully.
+    #[test]
+    fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
+        // One configured crate reached the publish path → no warning.
+        assert!(!should_warn_no_eligible(1, 1));
+        // True positive: none configured.
+        assert!(should_warn_no_eligible(0, 3));
+        // Empty selection → no warning.
+        assert!(!should_warn_no_eligible(0, 0));
+        // Partial-skip → no warning.
+        assert!(!should_warn_no_eligible(1, 3));
     }
 
     /// Run the publisher end-to-end in dry-run mode against a context that
