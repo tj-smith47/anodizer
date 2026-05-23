@@ -64,10 +64,6 @@ Not applicable — this is a workflow page, not a publisher. Any credentials you
 - Before hooks run sequentially; a failing hook aborts the pipeline.
 - After hooks only run if all stages complete successfully — they are not a cleanup mechanism for failed runs.
 
-## Republish / update behavior
-
-Not applicable — this is a workflow page, not a publisher. Hook behavior across re-runs depends entirely on the commands you configure.
-
 ## Use cases
 
 - **Pre-flight checks**: `cargo fmt --check`, `cargo clippy`, `cargo test`

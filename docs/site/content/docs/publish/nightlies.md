@@ -37,10 +37,6 @@ Not applicable as a separate config — nightly publishes use the same release c
 - The `nightly` tag is force-pushed every run; existing release assets are replaced (set `release.replace_existing_artifacts: true` to clear before re-upload).
 - Date format defaults to `YYYYMMDD`; override via `name_template` if you need higher resolution.
 
-## Republish / update behavior
-
-Idempotent within a single day — re-running on the same date overwrites the same `nightly` tag and release. Cross-day re-runs cut a fresh date-stamped version.
-
 ## Behavior
 
 - Version becomes `0.1.0-nightly.20260327` (date-stamped)

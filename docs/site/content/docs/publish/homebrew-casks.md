@@ -97,7 +97,7 @@ The token can also be set via `repository.token` in the config.
 
 ## Republish / update behavior
 
-Not applicable as a config flag — cask files are updated in-place on each release. Re-cutting the same version overwrites the cask file in the tap (prior commit stays in git history). The Manager group rollback reverts via `git revert HEAD --no-edit` + push.
+Cask files are updated in-place on each release; no recovery flag is required for re-cuts. When a PR-based workflow is configured and a prior run left an open PR, set `update_existing_pr: true` to force-push the updated cask file instead of opening a duplicate. See [Cask existing PR behavior in the Homebrew doc](./homebrew.md#cask-existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update-existing-pr-winget-krew-homebrew-cask) for the full mechanism.
 
 ## Homebrew cask config fields
 

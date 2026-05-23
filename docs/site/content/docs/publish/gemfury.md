@@ -48,10 +48,6 @@ fury:
 - Format detection is by file extension: `.apk` maps to `alpine` in the format filter list.
 - Gemfury has no programmatic delete API; rollback is warn-only. Use the Gemfury web UI to remove a version if needed.
 
-## Republish / update behavior
-
-Not applicable as a config field — Gemfury allows re-pushing the same version file (the PUT endpoint overwrites). No flag is required. Rollback is warn-only because Gemfury has no delete API in anodizer's scope.
-
 ## Gemfury config fields
 
 | Field | Type | Default | Description |

@@ -67,10 +67,6 @@ The token can also be set via `repository.token` in the config.
 - The `checkver` and `autoupdate` fields in the generated manifest reference the GitHub releases API, so the bucket can detect new versions automatically via `scoop update`.
 - If the bucket repo requires a pull request (e.g., community buckets), use a fork + PR workflow — the direct-push model only works for self-hosted buckets.
 
-## Republish / update behavior
-
-Not applicable — Scoop manifests are updated in-place on each release. A re-cut of the same version overwrites the manifest in the bucket (the previous commit is still in git history). The Manager group rollback reverts the commit via `git revert`.
-
 ## Generated manifest
 
 The manifest includes:

@@ -64,10 +64,6 @@ Where `{NAME}` is the uppercased `name` field.
 - `custom_artifact_name: true` uses the artifact filename as-is instead of appending it to the `target` URL.
 - No programmatic rollback — the upload publisher does not attempt HTTP DELETE on rollback. Use `after:` hooks for custom cleanup if needed.
 
-## Republish / update behavior
-
-Not applicable as a config field — re-uploading to the same `target` URL typically overwrites the object (PUT semantics). Server-specific behavior varies; check your target server's overwrite policy.
-
 ## Upload config fields
 
 | Field | Type | Default | Description |

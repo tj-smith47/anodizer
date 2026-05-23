@@ -81,10 +81,6 @@ The token can also be set via `repository.token` in the config.
 - **SHA256 format**: checksums are automatically converted from hex to Nix SRI format (`sha256-<base64>`). Do not manually convert.
 - **`formatter`**: if `alejandra` or `nixfmt` is set but not on `PATH`, the derivation is written without formatting (no error). Ensure the formatter is available in CI.
 
-## Republish / update behavior
-
-Not applicable as a config flag — the derivation file is updated in-place on each release (previous commit stays in git history). The Manager group rollback reverts the commit via `git revert HEAD --no-edit` + push.
-
 ## Config fields
 
 | Field | Type | Default | Description |

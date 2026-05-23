@@ -42,8 +42,8 @@ If `github.owner` and `github.name` are omitted, anodizer auto-detects them from
 | `footer` | string | none | Text appended to release body |
 | `extra_files` | list | none | Additional files to upload (glob patterns) |
 | `skip_upload` | bool | `false` | Create release without uploading assets |
-| `replace_existing_draft` | bool | `false` | Replace existing draft release |
-| `replace_existing_artifacts` | bool | `false` | Overwrite existing assets |
+| `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
+| `replace_existing_artifacts` | bool | `false` | Overwrite existing assets. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-artifacts). |
 
 ## Full config reference
 
@@ -84,15 +84,7 @@ anodizer release
 
 ## Republish / update behavior
 
-Use `replace_existing_draft: true` and `replace_existing_artifacts: true` on the `release:` block for re-runnable workflows:
-
-```yaml
-release:
-  replace_existing_draft: true       # re-run replaces an existing draft
-  replace_existing_artifacts: true   # re-uploaded assets overwrite existing ones
-```
-
-See [Release resilience → Release-stage retry flags](../advanced/release-resilience.md#release-stage-retry-flags) for full semantics.
+Use `replace_existing_draft: true` and `replace_existing_artifacts: true` on the `release:` block for re-runnable workflows. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft) for the full mechanism.
 
 ## Draft releases
 

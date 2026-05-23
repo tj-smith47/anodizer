@@ -91,10 +91,6 @@ Where `{NAME}` is the uppercased `name` field.
 - **Credential resolution order**: username and password are tried in config value → env var order (see Authentication above). An empty config value falls through to the env var.
 - **`custom_artifact_name: true`**: uses the artifact filename as-is instead of appending it to the `target` URL. Use this when `target` already includes the full artifact path.
 
-## Republish / update behavior
-
-Not applicable as a config field — re-uploading an artifact to the same `target` URL overwrites it by default (Artifactory's standard PUT semantics). No flag is required. Rollback issues parallel HTTP DELETE requests for each uploaded URL; a 404 or 410 response is treated as already-absent (idempotent).
-
 ## Target URL templating
 
 The `target` URL and `custom_headers` values support artifact-specific template variables:

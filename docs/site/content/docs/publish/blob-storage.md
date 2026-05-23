@@ -92,10 +92,6 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 - **`disable` template**: the `disable` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ endif }}"` skips blob upload for snapshot builds.
 - **`content_disposition: "-"`**: set to the literal string `"-"` to disable the `Content-Disposition` header entirely (useful for direct-browser-download use cases).
 
-## Republish / update behavior
-
-Not applicable as a config field — re-uploading to the same object key overwrites the object (standard cloud object storage semantics for all three providers). No flag is required. Rollback deletes each object that was successfully written during the failed run, using an evidence snapshot taken post-upload.
-
 ## Config fields
 
 | Field | Type | Default | Description |

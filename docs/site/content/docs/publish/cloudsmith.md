@@ -57,16 +57,7 @@ cloudsmiths:
 
 ## Republish / update behavior
 
-Set `republish: true` when your release flow may re-cut a version — for example, after a CI failure mid-publish, a hotfix, or a rollback-and-retry. Without it, re-uploading a package with the same version and filename fails with an MD5 conflict.
-
-```yaml
-cloudsmiths:
-  - organization: myorg
-    repository: releases
-    republish: true   # prevents MD5 conflict on version re-cut
-```
-
-By default (`republish: false`), Cloudsmith rejects any upload whose filename+version already exists in the repository.
+When `republish: true`, anodizer opts into the Cloudsmith API's explicit replace-prior-version path, preventing MD5 conflicts when re-cutting a version. See [Recovery flags: cloudsmith.republish](../advanced/recovery-flags.md#cloudsmith-republish) for the full mechanism.
 
 ## Cloudsmith config fields
 
@@ -80,7 +71,7 @@ By default (`republish: false`), Cloudsmith rejects any upload whose filename+ve
 | `component` | string | none | Debian component name (e.g., `"main"`) |
 | `secret_name` | string | `CLOUDSMITH_TOKEN` | Environment variable name for the API key |
 | `skip` | string/bool | none | Skip this config |
-| `republish` | string/bool | `false` | Allow overwriting existing package versions |
+| `republish` | string/bool | `false` | Allow overwriting existing package versions. See [Recovery flags](../advanced/recovery-flags.md#cloudsmith-republish). |
 
 ## Format detection
 

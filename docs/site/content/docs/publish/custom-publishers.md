@@ -43,10 +43,6 @@ Not applicable to anodizer — credentials are the responsibility of the command
 - The env whitelist means most ambient credentials are NOT visible to the subprocess — declare every var you need via `env:`.
 - `artifact_types` filters at dispatch time; if no artifacts match, the publisher is a no-op (no error).
 
-## Republish / update behavior
-
-Depends on the command — anodizer re-invokes the subprocess on each `release` run with the same args. Whether re-running is idempotent, overwrites, or fails is determined by your script.
-
 ## Filtering artifacts
 
 ```yaml

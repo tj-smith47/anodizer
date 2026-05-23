@@ -48,10 +48,6 @@ Re-uses the release publisher's credentials. The same token used to create the G
 | GitLab | API filter by title | PUT `state_event: "close"` |
 | Gitea | API filter by name | PATCH `state: "closed"` |
 
-## Republish / update behavior
-
-Idempotent — closing an already-closed milestone is a no-op on all three providers. Re-running the milestone stage after a successful close has no effect.
-
 ## Custom milestone name
 
 Match a milestone with a name different from the tag:

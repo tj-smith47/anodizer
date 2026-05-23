@@ -88,33 +88,7 @@ The environment variable is used as a fallback when `api_key` is not set in the 
 
 ## Republish / update behavior
 
-When a version is already in the Chocolatey community moderation queue
-(`PackageStatus=Submitted`, `IsApproved=false`), Anodizer's default behavior
-is to **skip the push and emit a warning**. The warning names the package,
-its status, and the flag to set if you want to replace it:
-
-```
-chocolatey: 'MyPkg-1.2.3' is awaiting moderation (PackageStatus=Submitted, Published=...);
-skipping push — set republish_in_moderation: true to replace the in-moderation copy.
-```
-
-Setting `republish_in_moderation: true` opts into re-pushing the queued nupkg.
-Chocolatey's [moderation policy](https://github.com/chocolatey/choco-wiki/blob/master/Moderation.md)
-documents same-version resubmission during moderation review ("make the
-required changes and resubmit the **exact** same version"), but the
-community-feed API may still reject the upload with a 409 Conflict
-depending on queue state. Treat this flag as "attempt re-push when
-moderation is detected"; if the push fails, the warning + dispatch
-summary will surface that.
-
-```yaml
-chocolatey:
-  republish_in_moderation: true   # replace the in-moderation nupkg
-```
-
-Rejected versions (`PackageStatus=Rejected`) always return an error regardless
-of this flag — a rejected version cannot be replaced, and the version must be
-bumped before re-pushing.
+When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the feed reports the version is in moderation. See [Recovery flags: chocolatey.republish_in_moderation](../advanced/recovery-flags.md#chocolatey-republish-in-moderation) for the full mechanism.
 
 ## Chocolatey config fields
 
@@ -149,7 +123,7 @@ bumped before re-pushing.
 | `disable` | bool or string | `false` | Disable this publisher entirely. Accepts a bool or a template string that evaluates to a truthy value |
 | `use` | string | `archive` | Artifact type to package: `archive`, `msi`, or `nsis` |
 | `amd64_variant` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
-| `republish_in_moderation` | bool or string | `false` | Re-push the nupkg when a version is already in the community moderation queue. See [Republish / update behavior](#republish-update-behavior). |
+| `republish_in_moderation` | bool or string | `false` | Re-push the nupkg when a version is already in the community moderation queue. See [Recovery flags](../advanced/recovery-flags.md#chocolatey-republish-in-moderation). |
 
 ### Dependencies
 

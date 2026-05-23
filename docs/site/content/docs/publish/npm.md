@@ -90,10 +90,6 @@ NPM authentication uses the standard `npm` CLI auth mechanism. Configure credent
 - **`access: public`** is required for scoped packages (`@myorg/myapp`) on the public npm registry. Without it, scoped packages default to `restricted` and the publish fails with an access error.
 - **72-hour unpublish window**: npm allows `npm unpublish` within 72 hours of a version being published. After that, the version is permanent on the registry.
 
-## Republish / update behavior
-
-Not applicable — npm does not allow overwriting a published version. Each release must use a new version number. Within 72 hours, `npm unpublish <pkg>@<version>` can remove the version to allow re-publishing.
-
 ## Conditional publishing
 
 Use `if` to conditionally skip NPM publishing:

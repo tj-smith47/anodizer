@@ -136,10 +136,6 @@ Anodizer reads the OIDC request URL and token from the standard GHA env vars, re
 - **`top-level transports`**: the `transports:` list is accepted for GoReleaser config-portability but is not emitted to the registry. Transports are per-package via `packages[].transport`.
 - **Ownership verification**: for server names under `io.github.<owner>/...`, use `auth.type: github-oidc` (in GHA) or `auth.type: github` (PAT). The registry uses this to verify you own the GitHub repository.
 
-## Republish / update behavior
-
-Not applicable as a config flag — the MCP registry accepts re-posting the same server name and version; the manifest is updated in-place on the registry. Rollback is warn-only because the registry has no programmatic unpublish endpoint; deprecated servers must be marked manually via the registry admin UI.
-
 ## MCP config fields
 
 | Field | Type | Default | Description |

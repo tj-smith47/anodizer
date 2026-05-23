@@ -126,10 +126,6 @@ AUR publishing requires SSH access to the AUR git server. See [SSH key setup](#s
 - **No `git_url`**: if `git_url` is omitted for source packages, PKGBUILD files are generated in `dist/` but not pushed. Useful for local inspection before AUR submission.
 - **Force-push upstream AUR**: upstream AUR push is a force-push that overwrites the branch; it is classified as Submitter because it cannot be rolled back programmatically.
 
-## Republish / update behavior
-
-Not applicable as a config flag — AUR publishing is always a push (binary packages) or force-push (upstream AUR). Re-cutting a version overwrites the previous PKGBUILD commit. For our-AUR-repos (Manager group), rollback reverts the commit via `git revert` + push.
-
 ## Binary packages (`publish.aur`)
 
 Binary packages download a prebuilt archive from your release and install the binary. The package name defaults to `<crate>-bin` following AUR convention.

@@ -57,10 +57,6 @@ dockerhub:
 - **Short description limit**: Docker Hub truncates short descriptions to 100 characters. Anodizer emits a warning when the configured value exceeds this limit.
 - **`from_file` precedence**: when both `from_file` and `from_url` are set on `full_description`, `from_file` wins.
 
-## Republish / update behavior
-
-Not applicable — description updates are idempotent. Each release PATCHes the description in-place. Running the publisher twice with the same content is a no-op from Docker Hub's perspective. Rollback is warn-only because the prior description is not snapshotted before the PATCH.
-
 ## Docker Hub config fields
 
 | Field | Type | Default | Description |

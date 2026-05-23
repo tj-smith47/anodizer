@@ -36,10 +36,6 @@ Not applicable — snapshot mode never contacts external services. No tokens are
 - `--auto-snapshot` engages snapshot mode whenever the git repo has uncommitted changes — useful for safety in CI.
 - Required publishers are silently skipped; snapshots never publish regardless of the `required` flag.
 
-## Republish / update behavior
-
-Not applicable — snapshots are local-only. Re-running overwrites the previous `dist/` artifacts; nothing leaves the host.
-
 ## Auto-snapshot
 
 Automatically enable snapshot mode when the git repo has uncommitted changes:

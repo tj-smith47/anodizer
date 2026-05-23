@@ -71,10 +71,6 @@ anodizer release
 - **Index lag**: crates.io's index update can take 30–120 seconds after publish. Anodizer waits up to `index_timeout` seconds (default 300) before publishing dependent crates in the workspace ordering chain.
 - **`allow_dirty: true`** is the default because `anodize tag` writes a version bump commit that leaves the tree dirty. Set `allow_dirty: false` only if you manage version bumps externally.
 
-## Republish / update behavior
-
-Not applicable — crates.io does not allow re-publishing a version once it has been published. Each release must use a new version number. Use `cargo yank` (via the rollback path) to prevent new installs of a broken version.
-
 ## Config options
 
 ```yaml
