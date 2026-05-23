@@ -57,16 +57,16 @@ fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
 /// the entire selection — when set, only [`ArtifactKind::UploadableFile`]
 /// items are returned and the other flags are ignored.
 #[derive(Clone, Copy, Default)]
-pub struct CollectFlags {
-    pub checksum: bool,
-    pub signature: bool,
-    pub meta: bool,
-    pub extra_files_only: bool,
+pub(crate) struct CollectFlags {
+    pub(crate) checksum: bool,
+    pub(crate) signature: bool,
+    pub(crate) meta: bool,
+    pub(crate) extra_files_only: bool,
 }
 
 /// Collect artifacts matching mode, optional ID filter, and optional extension filter.
 /// Also collects checksum/signature/metadata artifacts and extra files when configured.
-pub fn collect_upload_artifacts<'a>(
+pub(crate) fn collect_upload_artifacts<'a>(
     ctx: &'a Context,
     mode: &str,
     ids: Option<&[String]>,
@@ -263,19 +263,19 @@ pub fn render_artifact_url(
 /// (e.g. `X-Checksum-Sha256`) that is set to the artifact's hex SHA-256
 /// before the request is dispatched.
 #[derive(Clone, Copy)]
-pub struct UploadHeaders<'a> {
-    pub method: &'a str,
-    pub url: &'a str,
-    pub checksum_header: &'a str,
-    pub custom_headers: &'a HashMap<String, String>,
+pub(crate) struct UploadHeaders<'a> {
+    pub(crate) method: &'a str,
+    pub(crate) url: &'a str,
+    pub(crate) checksum_header: &'a str,
+    pub(crate) custom_headers: &'a HashMap<String, String>,
 }
 
 /// HTTP basic-auth credentials for [`upload_single_artifact`]. Either both
 /// fields are non-empty (auth applied) or both are empty (anonymous).
 #[derive(Clone, Copy)]
-pub struct UploadAuth<'a> {
-    pub username: &'a str,
-    pub password: &'a str,
+pub(crate) struct UploadAuth<'a> {
+    pub(crate) username: &'a str,
+    pub(crate) password: &'a str,
 }
 
 /// Upload a single artifact to the target URL.
@@ -285,7 +285,7 @@ pub struct UploadAuth<'a> {
 /// responses, and 429s retry per the user's `retry:` config (mirrors
 /// GoReleaser `internal/pipe/upload/upload.go::doUpload`); 4xx responses
 /// fast-fail.
-pub fn upload_single_artifact(
+pub(crate) fn upload_single_artifact(
     client: &reqwest::blocking::Client,
     headers: &UploadHeaders<'_>,
     auth: &UploadAuth<'_>,

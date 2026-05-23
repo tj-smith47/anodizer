@@ -10,40 +10,41 @@ use crate::util;
 
 /// Optional extended fields for manifest generation.
 #[derive(Default)]
-pub struct ManifestOptions<'a> {
+pub(crate) struct ManifestOptions<'a> {
     /// Explicit homepage URL.  Falls back to the GitHub release URL when available.
-    pub homepage: Option<&'a str>,
+    pub(crate) homepage: Option<&'a str>,
     /// GitHub owner/name for default homepage fallback (e.g. "owner/repo").
-    pub github_slug: Option<String>,
+    pub(crate) github_slug: Option<String>,
     /// Data paths persisted between updates.
-    pub persist: Option<&'a [String]>,
+    pub(crate) persist: Option<&'a [String]>,
     /// Application dependencies.
-    pub depends: Option<&'a [String]>,
+    pub(crate) depends: Option<&'a [String]>,
     /// Commands to run before installation.
-    pub pre_install: Option<&'a [String]>,
+    pub(crate) pre_install: Option<&'a [String]>,
     /// Commands to run after installation.
-    pub post_install: Option<&'a [String]>,
+    pub(crate) post_install: Option<&'a [String]>,
     /// Start menu shortcuts.
-    pub shortcuts: Option<&'a [Vec<String>]>,
+    pub(crate) shortcuts: Option<&'a [Vec<String>]>,
     /// Binary names (without `.exe` extension) to use in the `bin` field.
     /// When set, these are used instead of deriving from the manifest name.
     /// Multiple entries produce a JSON array in the `bin` field.
-    pub bin: Option<&'a [String]>,
+    pub(crate) bin: Option<&'a [String]>,
 }
 
 /// A single architecture entry for the Scoop manifest.
-pub struct ArchEntry {
+pub(crate) struct ArchEntry {
     /// Scoop architecture key: "64bit", "32bit", or "arm64".
-    pub scoop_arch: String,
-    pub url: String,
-    pub hash: String,
+    pub(crate) scoop_arch: String,
+    pub(crate) url: String,
+    pub(crate) hash: String,
     /// When the archive wraps contents in a top-level directory, this holds that
     /// directory name.  Bin entries will be prefixed with it (e.g. `dir/bin.exe`).
-    pub wrap_in_directory: Option<String>,
+    pub(crate) wrap_in_directory: Option<String>,
 }
 
 /// Generate a Scoop JSON manifest string for a Windows binary.
-pub fn generate_manifest(
+#[allow(dead_code)]
+pub(crate) fn generate_manifest(
     name: &str,
     version: &str,
     url: &str,
@@ -71,7 +72,7 @@ pub fn generate_manifest(
 ///
 /// Accepts multiple architecture entries. Each entry maps to a key in
 /// the `architecture` block: `64bit`, `32bit`, or `arm64`.
-pub fn generate_manifest_with_opts(
+pub(crate) fn generate_manifest_with_opts(
     name: &str,
     version: &str,
     arch_entries: &[ArchEntry],
@@ -572,15 +573,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         ctx.record_publisher_outcome(pr_outcome);
     }
 
-    Ok(any_pushed_from_outcome(outcome))
-}
-
-/// Translate a [`util::CommitOutcome`] into the bool fed into the
-/// `any_pushed` accumulator in `ScoopPublisher::run`. Extracted so the
-/// gating decision can be unit-tested without standing up a publish
-/// context.
-fn any_pushed_from_outcome(outcome: util::CommitOutcome) -> bool {
-    matches!(outcome, util::CommitOutcome::Pushed)
+    Ok(outcome.is_pushed())
 }
 
 // ---------------------------------------------------------------------------
@@ -932,16 +925,10 @@ mod publisher_tests {
         assert!(s.contains("SCOOP_BUCKET_TOKEN"), "{s}");
     }
 
-    /// NoChanges must not flip `any_pushed` — otherwise ScoopPublisher::run
-    /// records rollback targets for a bucket it never mutated.
     #[test]
-    fn no_changes_outcome_yields_any_pushed_false() {
-        assert!(!any_pushed_from_outcome(util::CommitOutcome::NoChanges));
-    }
-
-    #[test]
-    fn pushed_outcome_yields_any_pushed_true() {
-        assert!(any_pushed_from_outcome(util::CommitOutcome::Pushed));
+    fn commit_outcome_is_pushed() {
+        assert!(util::CommitOutcome::Pushed.is_pushed());
+        assert!(!util::CommitOutcome::NoChanges.is_pushed());
     }
 
     #[test]

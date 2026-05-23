@@ -28,31 +28,31 @@ fn quote_pkgdesc(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Parameters for generating an Arch Linux PKGBUILD file.
-pub struct PkgbuildParams<'a> {
-    pub name: &'a str,
-    pub version: &'a str,
-    pub pkgrel: u32,
-    pub description: &'a str,
-    pub url: &'a str,
-    pub license: &'a str,
-    pub maintainers: &'a [String],
-    pub contributors: &'a [String],
-    pub depends: &'a [String],
-    pub optdepends: &'a [String],
-    pub conflicts: &'a [String],
-    pub provides: &'a [String],
-    pub replaces: &'a [String],
-    pub backup: &'a [String],
+pub(crate) struct PkgbuildParams<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) version: &'a str,
+    pub(crate) pkgrel: u32,
+    pub(crate) description: &'a str,
+    pub(crate) url: &'a str,
+    pub(crate) license: &'a str,
+    pub(crate) maintainers: &'a [String],
+    pub(crate) contributors: &'a [String],
+    pub(crate) depends: &'a [String],
+    pub(crate) optdepends: &'a [String],
+    pub(crate) conflicts: &'a [String],
+    pub(crate) provides: &'a [String],
+    pub(crate) replaces: &'a [String],
+    pub(crate) backup: &'a [String],
     /// `(arch, url, sha256)` tuples — e.g. `("x86_64", url, hash)`.
-    pub sources: &'a [(String, String, String)],
-    pub binary_name: &'a str,
+    pub(crate) sources: &'a [(String, String, String)],
+    pub(crate) binary_name: &'a str,
     /// Custom install template for the `package()` function body.
     /// When `None`, defaults to `install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"`.
     /// Use this when the archive places binaries in a subdirectory.
-    pub install_template: Option<&'a str>,
+    pub(crate) install_template: Option<&'a str>,
     /// Filename for a `.install` file (post-install hooks). When `Some`, the
     /// PKGBUILD will include an `install=<filename>` line.
-    pub install_file: Option<&'a str>,
+    pub(crate) install_file: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ package() {
 "#;
 
 /// Generate an Arch Linux PKGBUILD file string.
-pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
+pub(crate) fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
     let tera = anodizer_core::template::parse_static("pkgbuild", PKGBUILD_TEMPLATE)
         .context("aur: parse PKGBUILD template")?;
 
@@ -218,7 +218,7 @@ pkgname = {{ name }}
 "#;
 
 /// Generate an AUR `.SRCINFO` file string from a Tera template.
-pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
+pub(crate) fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
     let tera = anodizer_core::template::parse_static("srcinfo", SRCINFO_TEMPLATE)
         .context("aur: parse .SRCINFO template")?;
 

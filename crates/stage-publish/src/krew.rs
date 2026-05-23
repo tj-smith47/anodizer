@@ -12,24 +12,24 @@ use crate::util::{self, OsArtifact};
 // ---------------------------------------------------------------------------
 
 /// Parameters for generating a Krew plugin manifest YAML.
-pub struct KrewManifestParams<'a> {
-    pub name: &'a str,
-    pub version: &'a str,
-    pub homepage: &'a str,
-    pub short_description: &'a str,
-    pub description: &'a str,
-    pub caveats: &'a str,
+pub(crate) struct KrewManifestParams<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) version: &'a str,
+    pub(crate) homepage: &'a str,
+    pub(crate) short_description: &'a str,
+    pub(crate) description: &'a str,
+    pub(crate) caveats: &'a str,
     /// `(os, arch, url, sha256, binary_name)` tuples for each platform.
-    pub platforms: &'a [KrewPlatform],
+    pub(crate) platforms: &'a [KrewPlatform],
 }
 
 /// A single platform entry in the Krew manifest.
-pub struct KrewPlatform {
-    pub os: String,
-    pub arch: String,
-    pub url: String,
-    pub sha256: String,
-    pub bin: String,
+pub(crate) struct KrewPlatform {
+    pub(crate) os: String,
+    pub(crate) arch: String,
+    pub(crate) url: String,
+    pub(crate) sha256: String,
+    pub(crate) bin: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ struct KrewMatchLabels {
 /// Uses `serde_yaml_ng` for proper YAML serialization with correct escaping
 /// of special characters. The `description` and `caveats` fields use YAML
 /// block scalar style (literal `|`) when present, achieved via post-processing.
-pub fn generate_manifest(params: &KrewManifestParams<'_>) -> Result<String> {
+pub(crate) fn generate_manifest(params: &KrewManifestParams<'_>) -> Result<String> {
     let mut platforms: Vec<KrewPlatformYaml> = params
         .platforms
         .iter()

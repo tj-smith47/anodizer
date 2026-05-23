@@ -82,51 +82,51 @@ fn render_winget_commit_msg(template: Option<&str>, package_id: &str, version: &
 // ---------------------------------------------------------------------------
 
 /// Parameters for generating WinGet YAML manifests.
-pub struct WingetManifestParams<'a> {
-    pub package_id: &'a str,
-    pub name: &'a str,
+pub(crate) struct WingetManifestParams<'a> {
+    pub(crate) package_id: &'a str,
+    pub(crate) name: &'a str,
     /// Display name for the package. Falls back to `name` when not set.
-    pub package_name: Option<&'a str>,
-    pub version: &'a str,
-    pub description: &'a str,
-    pub short_description: &'a str,
-    pub license: &'a str,
-    pub license_url: Option<&'a str>,
-    pub publisher: &'a str,
-    pub publisher_url: Option<&'a str>,
-    pub publisher_support_url: Option<&'a str>,
-    pub privacy_url: Option<&'a str>,
-    pub author: Option<&'a str>,
-    pub copyright: Option<&'a str>,
-    pub copyright_url: Option<&'a str>,
-    pub homepage: Option<&'a str>,
-    pub release_notes: Option<&'a str>,
-    pub release_notes_url: Option<&'a str>,
-    pub installation_notes: Option<&'a str>,
-    pub tags: Option<&'a [String]>,
-    pub dependencies: &'a [anodizer_core::config::WingetDependency],
-    pub installers: Vec<WingetInstallerItem>,
+    pub(crate) package_name: Option<&'a str>,
+    pub(crate) version: &'a str,
+    pub(crate) description: &'a str,
+    pub(crate) short_description: &'a str,
+    pub(crate) license: &'a str,
+    pub(crate) license_url: Option<&'a str>,
+    pub(crate) publisher: &'a str,
+    pub(crate) publisher_url: Option<&'a str>,
+    pub(crate) publisher_support_url: Option<&'a str>,
+    pub(crate) privacy_url: Option<&'a str>,
+    pub(crate) author: Option<&'a str>,
+    pub(crate) copyright: Option<&'a str>,
+    pub(crate) copyright_url: Option<&'a str>,
+    pub(crate) homepage: Option<&'a str>,
+    pub(crate) release_notes: Option<&'a str>,
+    pub(crate) release_notes_url: Option<&'a str>,
+    pub(crate) installation_notes: Option<&'a str>,
+    pub(crate) tags: Option<&'a [String]>,
+    pub(crate) dependencies: &'a [anodizer_core::config::WingetDependency],
+    pub(crate) installers: Vec<WingetInstallerItem>,
     /// Product code for the installer (used in Add/Remove Programs).
-    pub product_code: Option<&'a str>,
+    pub(crate) product_code: Option<&'a str>,
     /// Release date in YYYY-MM-DD format.
-    pub release_date: Option<&'a str>,
+    pub(crate) release_date: Option<&'a str>,
 }
 
 /// A single installer entry in the WinGet manifest.
-pub struct WingetInstallerItem {
-    pub architecture: String,
-    pub url: String,
-    pub sha256: String,
+pub(crate) struct WingetInstallerItem {
+    pub(crate) architecture: String,
+    pub(crate) url: String,
+    pub(crate) sha256: String,
     /// Installer type: "zip" for archive artifacts, "portable" for bare binaries.
-    pub installer_type: String,
+    pub(crate) installer_type: String,
     /// Binary names contained in this archive.  When multiple binaries are
     /// present, each gets its own `NestedInstallerFile` entry.
-    pub binaries: Vec<String>,
+    pub(crate) binaries: Vec<String>,
     /// When the archive wraps contents in a top-level directory, this holds that
     /// directory name.  `RelativeFilePath` entries will be prefixed with it.
-    pub wrap_in_directory: Option<String>,
+    pub(crate) wrap_in_directory: Option<String>,
     /// Commands for portable binaries (the binary filename without extension).
-    pub commands: Vec<String>,
+    pub(crate) commands: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +241,7 @@ struct LocaleManifest {
 }
 
 // Legacy single-file manifest for backward compatibility
+#[allow(dead_code)]
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct WingetManifest {
@@ -257,6 +258,7 @@ struct WingetManifest {
     manifest_version: String,
 }
 
+#[allow(dead_code)]
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct LegacyInstaller {
@@ -272,7 +274,8 @@ struct LegacyInstaller {
 // ---------------------------------------------------------------------------
 
 /// Generate a legacy singleton WinGet YAML manifest string.
-pub fn generate_manifest(params: &WingetManifestParams<'_>) -> Result<String> {
+#[allow(dead_code)]
+pub(crate) fn generate_manifest(params: &WingetManifestParams<'_>) -> Result<String> {
     let manifest = WingetManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
@@ -301,7 +304,9 @@ pub fn generate_manifest(params: &WingetManifestParams<'_>) -> Result<String> {
 }
 
 /// Generate the 3-file WinGet manifest set: (version, installer, locale).
-pub fn generate_manifests(params: &WingetManifestParams<'_>) -> Result<(String, String, String)> {
+pub(crate) fn generate_manifests(
+    params: &WingetManifestParams<'_>,
+) -> Result<(String, String, String)> {
     let version = VersionManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),

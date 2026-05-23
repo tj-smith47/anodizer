@@ -499,9 +499,9 @@ pub(crate) fn run_github_backend(
             body: &final_body,
             draft: true, // always create as draft first
             prerelease_flag: prerelease,
-            make_latest: &None, // make_latest deferred to publish PATCH
+            make_latest: &None, // applied at the publish PATCH below
             target_commitish,
-            discussion_category: &None, // discussion_category_name deferred to publish PATCH
+            discussion_category: &None, // applied at the publish PATCH below
         });
 
         // Rate limit check before release create/update API call.

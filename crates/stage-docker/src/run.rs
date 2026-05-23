@@ -784,7 +784,6 @@ impl Stage for super::DockerStage {
             // ------------------------------------------------------------------
             if let Some(ref manifest_configs) = krate.docker_manifests {
                 for (midx, manifest_cfg) in manifest_configs.iter().enumerate() {
-                    let _ = midx;
                     // Validate: image_templates must not be empty — a manifest
                     // with zero images is always a configuration error.
                     if manifest_cfg.image_templates.is_empty() {
@@ -954,7 +953,7 @@ impl Stage for super::DockerStage {
                         for (key, value) in &manifest_env_vars {
                             rm_cmd.env(key, value);
                         }
-                        let _ = rm_cmd.output();
+                        rm_cmd.output().ok();
 
                         // Manifest create/push with retry logic — registry
                         // operations can fail transiently. Uses the
