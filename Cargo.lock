@@ -240,6 +240,8 @@ version = "0.1.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
+ "regex",
+ "serde_json",
  "serde_yaml_ng",
  "tempfile",
  "tracing",

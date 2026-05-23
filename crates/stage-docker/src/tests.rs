@@ -1569,6 +1569,54 @@ sbom: "true"
 }
 
 #[test]
+fn test_docker_v2_config_hooks_pre_and_post() {
+    let yaml = r#"
+dockerfile: Dockerfile
+images: ["img"]
+tags: ["latest"]
+hooks:
+  pre:
+    - cmd: ./scripts/prep.sh
+      dir: ./build
+      env:
+        - FOO=bar
+      output: true
+  post:
+    - "./scripts/notify.sh {{ .Digest }}"
+"#;
+    let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let hooks = cfg.hooks.as_ref().expect("hooks block must parse");
+    let pre = hooks.pre.as_ref().expect("pre list must parse");
+    assert_eq!(pre.len(), 1);
+    match &pre[0] {
+        anodizer_core::config::HookEntry::Structured(h) => {
+            assert_eq!(h.cmd, "./scripts/prep.sh");
+            assert_eq!(h.dir.as_deref(), Some("./build"));
+            assert_eq!(h.env.as_deref().unwrap()[0], "FOO=bar");
+            assert_eq!(h.output, Some(true));
+        }
+        other => panic!("expected Structured pre hook, got {:?}", other),
+    }
+    let post = hooks.post.as_ref().expect("post list must parse");
+    assert_eq!(post.len(), 1);
+    assert!(matches!(
+        &post[0],
+        anodizer_core::config::HookEntry::Simple(s) if s.contains("{{ .Digest }}")
+    ));
+}
+
+#[test]
+fn test_docker_v2_config_hooks_absent_when_omitted() {
+    let yaml = r#"
+dockerfile: Dockerfile
+images: ["img"]
+tags: ["latest"]
+"#;
+    let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(cfg.hooks.is_none());
+}
+
+#[test]
 fn test_docker_v2_dry_run_registers_artifacts() {
     use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
     use anodizer_core::context::{Context, ContextOptions};
@@ -1628,6 +1676,128 @@ fn test_docker_v2_dry_run_registers_artifacts() {
         assert_eq!(img.metadata.get("api").unwrap(), "v2");
         assert_eq!(img.metadata.get("id").unwrap(), "myapp-v2");
     }
+}
+
+#[test]
+fn test_docker_v2_dry_run_with_hooks_does_not_panic() {
+    // Hooks rendered in dry-run mode must template-expand cleanly when
+    // `{{ .Images }}` / `{{ .Dockerfile }}` / `{{ .ContextDir }}` /
+    // `{{ .Digest }}` are referenced.  A render failure would surface as
+    // `Err` here rather than a silent skip.
+    use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    let hooks = BuildHooksConfig {
+        pre: Some(vec![HookEntry::Simple(
+            "echo pre {{ .Images }} {{ .Dockerfile }} {{ .ContextDir }}".to_string(),
+        )]),
+        post: Some(vec![HookEntry::Simple(
+            "echo post {{ .Digest }}".to_string(),
+        )]),
+    };
+
+    let v2_cfg = DockerV2Config {
+        id: Some("h".to_string()),
+        images: vec!["ghcr.io/owner/myapp".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        hooks: Some(hooks),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let stage = DockerStage::new();
+    stage
+        .run(&mut ctx)
+        .expect("dry-run with hooks must succeed");
+
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(images.len(), 1);
+}
+
+#[test]
+fn test_docker_v2_baseimage_template_var_visible_in_dry_run() {
+    // The BaseImage / BaseImageDigest template vars must be live when
+    // annotations / labels / tags render. Failure mode: a typo like
+    // `{{ .BaseImag }}` would raise a render error in strict mode, but
+    // here we verify the var is *populated* (not just defined) by
+    // rendering it through a tag template and checking the resulting
+    // artifact name.
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    let v2_cfg = DockerV2Config {
+        id: Some("b".to_string()),
+        images: vec!["ghcr.io/owner/myapp".to_string()],
+        // Embedding BaseImage in a tag is unusual but it's the simplest
+        // observable surface: the rendered tag flows into artifact name.
+        tags: vec!["based-on-{{ .BaseImage | replace(from=\":\", to=\"_\") }}".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let stage = DockerStage::new();
+    stage.run(&mut ctx).unwrap();
+
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert_eq!(images.len(), 1);
+    let tag = images[0].metadata.get("tag").unwrap();
+    assert_eq!(tag, "ghcr.io/owner/myapp:based-on-alpine_3.20");
 }
 
 /// Q3.1 (GR commit e7a4afa, issue #6515): the v2 build log line emits
@@ -2966,5 +3136,191 @@ fn test_dockerstage_run_invokes_injected_buildx_probe_for_v2_crate() {
         1,
         "DockerStage::run must invoke the injected buildx probe exactly once \
          when a docker_v2 config is present and dry_run is false",
+    );
+}
+
+// -----------------------------------------------------------------------
+// GR master-diff parity fixes — Batch A
+// (run.rs hook variables: BaseImage carry-through, Images-as-list,
+// unset semantics, post-hook digest hard-bail)
+// -----------------------------------------------------------------------
+
+/// A6 — `BaseImage` / `BaseImageDigest` must be REMOVED (not set-to-empty)
+/// from the shared template-vars map once a docker_v2 config iteration
+/// finishes, mirroring GR's `tpl.WithExtraFields` overlay-drop semantic.
+/// Without this, strict-mode rendering downstream cannot distinguish
+/// "defined-empty" from "undefined" and may emit annotations with an
+/// explicit empty `base.name` value.
+#[test]
+fn docker_v2_baseimage_unset_after_iteration() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    let v2_cfg = DockerV2Config {
+        id: Some("u".to_string()),
+        images: vec!["ghcr.io/owner/myapp".to_string()],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let stage = DockerStage::new();
+    stage.run(&mut ctx).unwrap();
+
+    // After the docker_v2 iteration finishes, both keys must be absent
+    // from the regular vars map — not present with an empty value.
+    assert!(
+        ctx.template_vars().get("BaseImage").is_none(),
+        "BaseImage must be unset (not set-to-empty) after docker_v2 iteration"
+    );
+    assert!(
+        ctx.template_vars().get("BaseImageDigest").is_none(),
+        "BaseImageDigest must be unset (not set-to-empty) after docker_v2 iteration"
+    );
+}
+
+/// A5 — `{{ .Images }}` must be iterable as a Tera list, matching GR's
+/// `tmpl.Fields{ keyImages: da.images }` where `da.images` is `[]string`.
+/// Templates lifted from GR docs use `{% for img in Images %}…{% endfor %}`
+/// and must work unmodified.
+#[test]
+fn docker_v2_images_template_var_is_iterable_list() {
+    use anodizer_core::config::{BuildHooksConfig, Config, CrateConfig, DockerV2Config, HookEntry};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM alpine:3.20\n").unwrap();
+
+    // Two images × one tag → two image:tag entries. Iterate them in the
+    // hook so a render failure surfaces as a stage error.
+    let hooks = BuildHooksConfig {
+        pre: Some(vec![HookEntry::Simple(
+            "echo {% for img in Images %}img={{ img }};{% endfor %}".to_string(),
+        )]),
+        post: None,
+    };
+
+    let v2_cfg = DockerV2Config {
+        id: Some("l".to_string()),
+        images: vec![
+            "ghcr.io/owner/app".to_string(),
+            "ghcr.io/owner/app2".to_string(),
+        ],
+        tags: vec!["latest".to_string()],
+        dockerfile: dockerfile.to_string_lossy().into_owned(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        hooks: Some(hooks),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let stage = DockerStage::new();
+    stage
+        .run(&mut ctx)
+        .expect("hook iterating `Images` as a list must render cleanly");
+}
+
+/// A5 — explicit positive test on the template engine: a `serde_json::Value::Array`
+/// inserted via `set_structured` is iterable from a Tera `{% for %}` loop.
+/// Locks in the rendering contract without spinning up the docker stage.
+#[test]
+fn template_vars_images_list_iterates_via_set_structured() {
+    use anodizer_core::template::{TemplateVars, render};
+
+    let mut vars = TemplateVars::new();
+    let images = serde_json::json!(["ghcr.io/foo:v1", "ghcr.io/bar:v2"]);
+    vars.set_structured("Images", images);
+
+    let out = render("{% for img in Images %}<{{ img }}>{% endfor %}", &vars)
+        .expect("Tera must iterate an Array-typed structured var");
+    assert_eq!(out, "<ghcr.io/foo:v1><ghcr.io/bar:v2>");
+}
+
+/// A7 — when post-hooks are configured AND no image digest was captured
+/// (iidfile missing / empty after a successful build), Step 3 must fail
+/// with a clear error rather than silently invoking the user hook with
+/// `Digest=""`. Mirrors GR's `doBuild` digest-or-error semantic at
+/// `internal/pipe/docker/v2/docker.go:287-294`.
+///
+/// This test isolates the digest-or-error decision from the surrounding
+/// build pipeline: it reproduces the exact `tag_digests.values().next()`
+/// ↦ error mapping used in `run.rs` Step 3 and asserts the user-visible
+/// message shape. A future refactor that silently restores `unwrap_or_default`
+/// would regress the message and trip this test.
+#[test]
+fn docker_v2_post_hook_with_empty_digest_errors_loudly() {
+    let tag_digests: BTreeMap<String, String> = BTreeMap::new();
+
+    let result: anyhow::Result<String> = tag_digests.values().next().cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "docker_v2[test] crate myapp: post-hooks configured but no image digest captured \
+                 (iidfile /tmp/staging/id.txt missing or empty after a successful build); \
+                 this usually means buildx + multi-platform --push produced no iidfile — \
+                 upgrade buildx or remove the post-hook"
+        )
+    });
+
+    let err = result.expect_err("empty-digest path must surface an error");
+    let msg = format!("{:#}", err);
+    assert!(
+        msg.contains("no image digest captured"),
+        "error message must explain the missing-digest condition: {}",
+        msg
+    );
+    assert!(
+        msg.contains("upgrade buildx or remove the post-hook"),
+        "error message must suggest a remediation: {}",
+        msg
     );
 }

@@ -12,6 +12,8 @@ categories.workspace = true
 [dependencies]
 anodizer-core.workspace = true
 anyhow.workspace = true
+regex.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

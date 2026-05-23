@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::build::BuildHooksConfig;
 use super::release::{SkipPushConfig, skip_push_schema};
 use super::{StringOrBool, deserialize_string_or_bool_opt};
 
@@ -98,6 +99,24 @@ pub struct DockerV2Config {
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
+    /// Pre/post hooks for this docker_v2 config. Each hook accepts the same
+    /// `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks
+    /// run after the staging directory is prepared but before `docker buildx
+    /// build`; `post` hooks run after the image digest is captured. Hook
+    /// commands, working directories, and env values are template-expanded;
+    /// in addition to the standard template surface, hooks see:
+    ///
+    /// - `{{ .Images }}` — list of `image:tag` references for this build.
+    ///   Iterate via `{% for img in Images %}{{ img }}{% endfor %}` to mirror
+    ///   GR's `[]string` exposure of the same field; `{{ .Images | join(sep=",") }}`
+    ///   reproduces a flat comma-separated string for legacy templates.
+    /// - `{{ .Dockerfile }}` — path to the rendered Dockerfile
+    /// - `{{ .ContextDir }}` — path to the buildx context staging directory
+    /// - `{{ .Digest }}` — image manifest digest (post hooks only)
+    /// - `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` — final-stage base image
+    ///   (matches the `BaseImage` / `BaseImageDigest` overlay GR adds in
+    ///   `internal/pipe/docker/v2/docker.go`)
+    pub hooks: Option<BuildHooksConfig>,
     // No `skip_push` field — use the canonical `skip:` to suppress
     // the publish step (matches every other publisher / pipe in anodizer).
 }

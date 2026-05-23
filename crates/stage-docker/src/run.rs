@@ -7,9 +7,26 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::HookEntry;
 use anodizer_core::context::Context;
+use anodizer_core::hooks::run_hooks;
 use anodizer_core::stage::Stage;
 
+/// Per-docker_v2-config post-hook state captured at Step 1 and consumed once
+/// at the end of Step 3. Fires exactly once per config (not per snapshot
+/// platform job) — matching GR's `buildImage` lifecycle.
+struct PerConfigPostHook {
+    idx: usize,
+    id: Option<String>,
+    hooks: Vec<HookEntry>,
+    images_json: serde_json::Value,
+    dockerfile_path: String,
+    staging_dir: PathBuf,
+    base_image_name: String,
+    base_image_digest: String,
+}
+
+use super::baseimage::get_base_image;
 use super::build::{DockerBuildJob, DockerBuildResult, execute_docker_build};
 use super::command::{
     apply_docker_v2_defaults, build_docker_v2_command, generate_v2_image_tags,
@@ -101,6 +118,16 @@ impl Stage for super::DockerStage {
         // lookups.  Each job is fully self-contained after preparation.
         // ==================================================================
         let mut build_jobs: Vec<DockerBuildJob> = Vec::new();
+        let mut config_post_hooks: Vec<PerConfigPostHook> = Vec::new();
+        let mut config_first_digest: std::collections::BTreeMap<usize, String> =
+            std::collections::BTreeMap::new();
+        // Pre-hook failures for individual docker_v2 configs are isolated:
+        // mirrors GR's `semerrgroup` parallel-per-config error semantic at
+        // `internal/pipe/docker/v2/docker.go:118-140`, where a failed config
+        // does not cancel sibling configs already in flight. anodize collects
+        // the errors and surfaces them after Step 3 — `continue` past a
+        // failed pre-hook skips that config's build + post-hook queueing.
+        let mut pre_hook_errors: Vec<anyhow::Error> = Vec::new();
 
         for krate in &crates {
             // ------------------------------------------------------------------
@@ -198,6 +225,33 @@ impl Stage for super::DockerStage {
                     stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker_v2")?;
                 }
 
+                // Resolve the Dockerfile's final-stage base image so the two
+                // template vars `BaseImage` and `BaseImageDigest` are visible
+                // to every downstream render (image tags, labels,
+                // annotations, build args, flags, hooks). Failures are
+                // soft — a missing annotation is better than a hard build
+                // failure when, say, `docker buildx imagetools inspect` is
+                // unreachable. Vars are cleared at the end of this v2_cfg
+                // iteration so they don't leak into the next config.
+                let base_image_info =
+                    match get_base_image(std::path::Path::new(&rendered_dockerfile), dry_run, &log)
+                    {
+                        Ok(opt) => opt,
+                        Err(e) => {
+                            log.warn(&format!(
+                                "docker_v2[{}]: could not parse base image from {}: {:#}",
+                                idx, rendered_dockerfile, e
+                            ));
+                            None
+                        }
+                    };
+                let (base_image_name, base_image_digest) = base_image_info
+                    .map(|b| (b.name, b.digest))
+                    .unwrap_or_default();
+                ctx.template_vars_mut().set("BaseImage", &base_image_name);
+                ctx.template_vars_mut()
+                    .set("BaseImageDigest", &base_image_digest);
+
                 // Render tags through template engine
                 let mut rendered_tags: Vec<String> = Vec::new();
                 for tag_tmpl in &v2_cfg.tags {
@@ -237,6 +291,58 @@ impl Stage for super::DockerStage {
                     } else {
                         vec![platforms.clone()]
                     };
+
+                // Pre-build hooks fire ONCE per docker_v2 config, matching
+                // GR's `buildImage` lifecycle. `Images` is the full
+                // cross-product of `rendered_images × rendered_tags` (no
+                // per-platform arch suffix — that's a snapshot-only
+                // tag-disambiguation step that runs after the hook). Exposed
+                // as a real Tera list so `{% for img in Images %}` works,
+                // mirroring GR's `tmpl.Fields{ keyImages: da.images }` where
+                // `images` is `[]string`.
+                let staging_str = staging_dir.to_string_lossy().into_owned();
+                let cfg_image_tags = generate_v2_image_tags(&rendered_images, &rendered_tags);
+                let cfg_images_json = serde_json::Value::Array(
+                    cfg_image_tags
+                        .iter()
+                        .map(|t| serde_json::Value::String(t.clone()))
+                        .collect(),
+                );
+                let pre_hooks: Vec<_> = v2_cfg
+                    .hooks
+                    .as_ref()
+                    .and_then(|h| h.pre.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+                let post_hooks: Vec<_> = v2_cfg
+                    .hooks
+                    .as_ref()
+                    .and_then(|h| h.post.as_ref())
+                    .cloned()
+                    .unwrap_or_default();
+
+                if !pre_hooks.is_empty() {
+                    let mut hook_vars = ctx.template_vars().clone();
+                    hook_vars.set_structured("Images", cfg_images_json.clone());
+                    hook_vars.set("Dockerfile", &rendered_dockerfile);
+                    hook_vars.set("ContextDir", &staging_str);
+                    let pre_label = format!(
+                        "pre-docker_v2[{}]",
+                        v2_cfg.id.as_deref().unwrap_or(&idx.to_string())
+                    );
+                    if let Err(e) =
+                        run_hooks(&pre_hooks, &pre_label, dry_run, &log, Some(&hook_vars))
+                    {
+                        log.warn(&format!(
+                            "{}: pre-hook failed; skipping this config's build (other configs continue): {:#}",
+                            pre_label, e
+                        ));
+                        pre_hook_errors.push(e);
+                        ctx.template_vars_mut().unset("BaseImage");
+                        ctx.template_vars_mut().unset("BaseImageDigest");
+                        continue;
+                    }
+                }
 
                 for snapshot_plats in &snapshot_platforms {
                     let mut per_plat_tags = rendered_tags.clone();
@@ -341,7 +447,6 @@ impl Stage for super::DockerStage {
 
                     let platform_refs: Vec<&str> =
                         snapshot_plats.iter().map(|s| s.as_str()).collect();
-                    let staging_str = staging_dir.to_string_lossy().into_owned();
 
                     // Snapshot builds never push (GoReleaser uses --load per-platform).
                     // The canonical `skip:` field suppresses publish via
@@ -462,6 +567,43 @@ impl Stage for super::DockerStage {
                         });
                     }
                 } // end for snapshot_plats
+
+                // Dry-run post-hooks fire ONCE per docker_v2 config with an
+                // empty `Digest` so template typos still surface. Real-run
+                // post-hooks fire from Step 3 below — also once per config,
+                // keyed by `idx` against the first matching job's digest.
+                if dry_run && !post_hooks.is_empty() {
+                    let mut hook_vars = ctx.template_vars().clone();
+                    hook_vars.set_structured("Images", cfg_images_json.clone());
+                    hook_vars.set("Dockerfile", &rendered_dockerfile);
+                    hook_vars.set("ContextDir", &staging_str);
+                    hook_vars.set("Digest", "");
+                    let post_label = format!(
+                        "post-docker_v2[{}]",
+                        v2_cfg.id.as_deref().unwrap_or(&idx.to_string())
+                    );
+                    run_hooks(&post_hooks, &post_label, dry_run, &log, Some(&hook_vars))?;
+                } else if !dry_run && !post_hooks.is_empty() {
+                    config_post_hooks.push(PerConfigPostHook {
+                        idx,
+                        id: v2_cfg.id.clone(),
+                        hooks: post_hooks,
+                        images_json: cfg_images_json,
+                        dockerfile_path: rendered_dockerfile.clone(),
+                        staging_dir: staging_dir.clone(),
+                        base_image_name: base_image_name.clone(),
+                        base_image_digest: base_image_digest.clone(),
+                    });
+                }
+
+                // Remove per-config BaseImage / BaseImageDigest so the next
+                // docker_v2 config — or any downstream stage — does not
+                // observe stale values. `unset` (not `set("")`) so strict-
+                // mode templates can distinguish "undefined" from
+                // "defined-empty"; mirrors GR's overlay-drop semantic from
+                // `tpl.WithExtraFields` in `v2/docker.go:319`.
+                ctx.template_vars_mut().unset("BaseImage");
+                ctx.template_vars_mut().unset("BaseImageDigest");
             }
         }
 
@@ -579,7 +721,56 @@ impl Stage for super::DockerStage {
                         size: None,
                     });
                 }
+
+                // Capture the first digest produced for this docker_v2
+                // config so the per-config post-hook (fired below, after
+                // all jobs complete) can render `{{ .Digest }}`. In snapshot
+                // multi-platform mode anodize emits one job per platform —
+                // any platform's digest is representative since GR's
+                // post-hook lifecycle has only one digest variable per
+                // config.
+                if !config_first_digest.contains_key(&job.idx)
+                    && let Some(d) = build_result.tag_digests.values().next()
+                {
+                    config_first_digest.insert(job.idx, d.clone());
+                }
             }
+
+            // Per-config post-hooks fire ONCE per docker_v2 config, after
+            // every snapshot-platform job for that config has completed.
+            // Matches GR's `buildImage` lifecycle (pre → build → post).
+            for cph in &config_post_hooks {
+                let digest_val = config_first_digest.get(&cph.idx).cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "docker_v2[{}]: post-hooks configured but no image digest captured \
+                         (iidfile id.txt missing or empty after a successful build); \
+                         this usually means buildx + multi-platform --push produced no iidfile — \
+                         upgrade buildx or remove the post-hook",
+                        cph.id.as_deref().unwrap_or(&cph.idx.to_string())
+                    )
+                })?;
+                let mut hook_vars = ctx.template_vars().clone();
+                hook_vars.set_structured("Images", cph.images_json.clone());
+                hook_vars.set("Dockerfile", &cph.dockerfile_path);
+                hook_vars.set("ContextDir", &cph.staging_dir.to_string_lossy());
+                hook_vars.set("Digest", &digest_val);
+                hook_vars.set("BaseImage", &cph.base_image_name);
+                hook_vars.set("BaseImageDigest", &cph.base_image_digest);
+                let post_label = format!(
+                    "post-docker_v2[{}]",
+                    cph.id.as_deref().unwrap_or(&cph.idx.to_string())
+                );
+                run_hooks(&cph.hooks, &post_label, false, &log, Some(&hook_vars))?;
+            }
+        }
+
+        // Surface accumulated pre-hook errors AFTER successful per-config
+        // builds — matches GR's `g.Wait()` (`v2/docker.go:141`) which returns
+        // the first error only after every parallel config has finished. The
+        // first error is most informative; remaining errors were already
+        // logged inline via `log.warn` in the Step 1 collector above.
+        if let Some(first) = pre_hook_errors.into_iter().next() {
+            return Err(first);
         }
 
         // ==================================================================

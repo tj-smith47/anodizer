@@ -32,6 +32,13 @@ pub use command::{
 };
 
 // ---------------------------------------------------------------------------
+// parse_base_image / get_base_image — Dockerfile FROM resolver feeding
+// the `{{ .BaseImage }}` / `{{ .BaseImageDigest }}` template surface.
+// ---------------------------------------------------------------------------
+mod baseimage;
+pub use baseimage::{BaseImage, get_base_image, parse_base_image};
+
+// ---------------------------------------------------------------------------
 // DockerBuildJob / DockerBuildResult / execute_docker_build
 // ---------------------------------------------------------------------------
 mod build;

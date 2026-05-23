@@ -44,6 +44,22 @@ impl TemplateVars {
         self.vars.insert(key.to_string(), value.to_string());
     }
 
+    /// Remove a regular template variable. Returns `true` if the key was
+    /// present. Use when a value is logically *undefined* for downstream
+    /// renders — distinct from `set(key, "")` which keeps the key with an
+    /// empty string. Strict-mode template rendering can distinguish defined-
+    /// empty from undefined; the latter is the correct shape for per-config
+    /// vars (e.g. `BaseImage`) that should not bleed across iterations.
+    pub fn unset(&mut self, key: &str) -> bool {
+        self.vars.remove(key).is_some()
+    }
+
+    /// Remove a structured (non-string) template variable. Mirrors `unset`
+    /// for the structured map. Returns `true` if the key was present.
+    pub fn unset_structured(&mut self, key: &str) -> bool {
+        self.structured.remove(key).is_some()
+    }
+
     pub fn get(&self, key: &str) -> Option<&String> {
         self.vars.get(key)
     }
