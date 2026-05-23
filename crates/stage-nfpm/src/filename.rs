@@ -54,13 +54,7 @@ impl<'a> FileNameInfo<'a> {
         pkg_name: &'a str,
         version: &'a str,
         arch: &'a str,
-        format: &str,
     ) -> Self {
-        // nfpm exposes per-format arch overrides (e.g. `deb.arch`); we
-        // only support `deb.arch_variant` today, which is a different
-        // concept (microarch label, not an arch rename). Leave the
-        // override slot open for future per-packager arch fields.
-        let _ = format; // suppress unused-var while we plumb overrides
         Self {
             name: pkg_name,
             version,

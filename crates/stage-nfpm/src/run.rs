@@ -142,8 +142,7 @@ impl Stage for NfpmStage {
                 // GoReleaser Pro `nfpm.if`: template-conditional skip.
                 // Rendered "false"/empty => skip with info log; render error => hard bail.
                 // Hard-error on render failure intentionally diverges from stage-sign's
-                // silent-skip-on-render-error (that is tracked as W1 in pro-features-audit.md
-                // and must be fixed there too). A render failure means the user's template
+                // silent-skip-on-render-error. A render failure means the user's template
                 // references an unknown var; silently skipping would ship a release without
                 // the packages the user asked for.
                 if let Some(ref condition) = nfpm_cfg.if_condition {
@@ -669,7 +668,7 @@ impl Stage for NfpmStage {
                         // translations. Falls back to the hand-rolled
                         // default for formats we don't recognise.
                         let fn_info = filename::FileNameInfo::from_config(
-                            nfpm_cfg, pkg_name, &version, &arch, format,
+                            nfpm_cfg, pkg_name, &version, &arch,
                         );
                         let conventional = filename::conventional_filename(format, &fn_info)
                             .unwrap_or_else(|| format!("{pkg_name}_{version}_{os}_{arch}{ext}"));

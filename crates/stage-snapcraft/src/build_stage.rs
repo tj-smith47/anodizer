@@ -15,7 +15,7 @@ use crate::command::snapcraft_command;
 use crate::generate::generate_snap_yaml;
 use crate::yaml::DEFAULT_SNAP_NAME_TEMPLATE;
 
-// Workaround for snapcraft 8.14.5: `snapcraft_legacy.internal.repo._deb` runs
+// snapcraft ≤8.14.5: `snapcraft_legacy.internal.repo._deb` runs
 // `BaseDirectory.save_cache_path("snapcraft", "download")` at import time, which
 // calls `os.makedirs(path)` without `exist_ok=True`. Once the first invocation
 // creates that directory, every subsequent snapcraft process crashes at import
