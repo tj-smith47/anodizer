@@ -138,7 +138,7 @@ jobs:
   tag:
     name: Auto-tag
     if: github.ref == 'refs/heads/master'
-    needs: [fmt, clippy, test, package, snapshot]
+    needs: [fmt, clippy, test, package, snapshot, validate-readme]
     runs-on: ubuntu-latest
     permissions:
       contents: write

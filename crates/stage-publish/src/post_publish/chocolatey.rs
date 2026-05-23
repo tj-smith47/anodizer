@@ -174,11 +174,11 @@ pub fn poll(
                 ));
             }
             PageVerdict::NetworkError(msg) => {
-                // A network error means we couldn't reach the gallery at all,
-                // so we can no longer discriminate "404 = not yet indexed"
-                // from "network is down". Reset the not-found timer so the
-                // elapsed counter doesn't over-count periods where the gallery
-                // was unreachable rather than genuinely returning 404.
+                // Network error: the gallery was unreachable — cannot
+                // distinguish a legitimate 404 ("not yet indexed") from an
+                // outage. Reset the not-found timer to avoid over-counting
+                // periods where the gallery was unreachable rather than
+                // genuinely returning 404.
                 not_found_since = None;
                 last_pending_detail = Some(format!("transient network error: {}", msg));
                 log.verbose(&format!(

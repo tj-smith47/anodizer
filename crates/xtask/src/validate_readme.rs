@@ -1,7 +1,7 @@
-//! Extract every YAML code block from `README.md` and attempt to parse each
-//! as an anodizer [`Config`].
+//! Extract every YAML code block from each README in the workspace and
+//! attempt to parse each as an anodizer [`Config`].
 //!
-//! Not every YAML block in the README is an anodizer config — some are GitHub
+//! Not every YAML block in a README is an anodizer config — some are GitHub
 //! Actions workflows, shell sessions, or CLI references. The validator
 //! silently skips blocks that look like GitHub Actions (`on:`, `jobs:`,
 //! `name:` without any anodizer-specific keys) and only hard-fails on blocks
@@ -10,7 +10,26 @@
 //! Run via `cargo xtask validate-readme` or `task docs:validate-readme`.
 
 use anodizer_core::config::Config;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// READMEs that ship with the workspace and may contain anodizer YAML
+/// config examples. Each entry is a path relative to the workspace root.
+///
+/// Add new READMEs explicitly here so the validator's scope is auditable
+/// at a glance and CI doesn't silently pick up unrelated READMEs that
+/// happen to contain GitHub Actions YAML.
+const DEFAULT_READMES: &[&str] = &["README.md", "crates/cli/README.md"];
+
+/// Resolve the workspace root from xtask's own manifest directory.
+/// xtask lives at `crates/xtask/`, so going up two levels lands at the
+/// workspace root regardless of where `cargo xtask` is invoked from.
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("xtask manifest must live two levels below workspace root")
+        .to_path_buf()
+}
 
 /// Keys that signal a YAML block is likely an anodizer config rather than a
 /// GitHub Actions workflow or other YAML document. A block without any of
@@ -88,10 +107,31 @@ fn looks_like_anodizer_config(value: &serde_yaml_ng::Value) -> bool {
         .any(|key| map.contains_key(serde_yaml_ng::Value::String(key.to_string())))
 }
 
-pub fn run(readme: Option<&Path>) -> Result<(), String> {
-    let readme_path = readme.unwrap_or_else(|| Path::new("README.md"));
-    let content = std::fs::read_to_string(readme_path)
-        .map_err(|e| format!("failed to read {}: {e}", readme_path.display()))?;
+/// Per-README validation result. Errors accumulate across the whole run
+/// so a single CI invocation surfaces every broken block at once instead
+/// of failing on the first.
+struct ReadmeResult {
+    validated: usize,
+    skipped: usize,
+    errors: Vec<String>,
+}
+
+fn validate_readme(readme_path: &Path) -> ReadmeResult {
+    let mut result = ReadmeResult {
+        validated: 0,
+        skipped: 0,
+        errors: Vec::new(),
+    };
+
+    let content = match std::fs::read_to_string(readme_path) {
+        Ok(c) => c,
+        Err(e) => {
+            result
+                .errors
+                .push(format!("failed to read {}: {e}", readme_path.display()));
+            return result;
+        }
+    };
 
     let blocks = extract_yaml_blocks(&content);
     if blocks.is_empty() {
@@ -99,20 +139,14 @@ pub fn run(readme: Option<&Path>) -> Result<(), String> {
             "validate-readme: no YAML blocks found in {}",
             readme_path.display()
         );
-        return Ok(());
+        return result;
     }
 
-    let mut validated = 0usize;
-    let mut skipped = 0usize;
-    let mut errors: Vec<String> = Vec::new();
-
     for (idx, block) in &blocks {
-        // Parse as generic YAML first to inspect structure.
         let value: serde_yaml_ng::Value = match serde_yaml_ng::from_str(block) {
             Ok(v) => v,
             Err(e) => {
-                // YAML parse failure is always reported.
-                errors.push(format!(
+                result.errors.push(format!(
                     "YAML block #{idx} in {}: YAML parse error: {e}",
                     readme_path.display()
                 ));
@@ -121,25 +155,33 @@ pub fn run(readme: Option<&Path>) -> Result<(), String> {
         };
 
         if is_github_actions_block(&value) {
-            skipped += 1;
-            println!("validate-readme: block #{idx} — skipped (GitHub Actions workflow)");
+            result.skipped += 1;
+            println!(
+                "validate-readme: {} block #{idx} — skipped (GitHub Actions workflow)",
+                readme_path.display()
+            );
             continue;
         }
 
         if !looks_like_anodizer_config(&value) {
-            skipped += 1;
-            println!("validate-readme: block #{idx} — skipped (no anodizer-shaped keys)");
+            result.skipped += 1;
+            println!(
+                "validate-readme: {} block #{idx} — skipped (no anodizer-shaped keys)",
+                readme_path.display()
+            );
             continue;
         }
 
-        // Try to deserialize as Config.
         match serde_yaml_ng::from_str::<Config>(block) {
             Ok(_) => {
-                validated += 1;
-                println!("validate-readme: block #{idx} — OK");
+                result.validated += 1;
+                println!(
+                    "validate-readme: {} block #{idx} — OK",
+                    readme_path.display()
+                );
             }
             Err(e) => {
-                errors.push(format!(
+                result.errors.push(format!(
                     "YAML block #{idx} in {}: Config parse error: {e}\n\
                      Block content:\n{block}",
                     readme_path.display()
@@ -148,18 +190,46 @@ pub fn run(readme: Option<&Path>) -> Result<(), String> {
         }
     }
 
+    result
+}
+
+pub fn run(readme: Option<&Path>) -> Result<(), String> {
+    // Single-file override (e.g. `cargo xtask validate-readme --readme foo.md`)
+    // takes precedence; otherwise validate every entry in DEFAULT_READMES
+    // resolved relative to the workspace root.
+    let paths: Vec<PathBuf> = match readme {
+        Some(p) => vec![p.to_path_buf()],
+        None => {
+            let root = workspace_root();
+            DEFAULT_READMES.iter().map(|r| root.join(r)).collect()
+        }
+    };
+
+    let mut total_validated = 0usize;
+    let mut total_skipped = 0usize;
+    let mut all_errors: Vec<String> = Vec::new();
+
+    for path in &paths {
+        let r = validate_readme(path);
+        total_validated += r.validated;
+        total_skipped += r.skipped;
+        all_errors.extend(r.errors);
+    }
+
     println!(
-        "validate-readme: {validated} anodizer config block(s) validated, {skipped} skipped, {} error(s)",
-        errors.len()
+        "validate-readme: {total_validated} anodizer config block(s) validated across {} file(s), \
+         {total_skipped} skipped, {} error(s)",
+        paths.len(),
+        all_errors.len()
     );
 
-    if !errors.is_empty() {
-        for e in &errors {
+    if !all_errors.is_empty() {
+        for e in &all_errors {
             eprintln!("error: {e}");
         }
         return Err(format!(
-            "{} README YAML block(s) failed validation — update the README to match the current schema",
-            errors.len()
+            "{} README YAML block(s) failed validation — update the README(s) to match the current schema",
+            all_errors.len()
         ));
     }
 

@@ -324,7 +324,11 @@ pub struct Context {
     /// Optional in-memory log-capture handle. When `Some`, every logger
     /// produced by [`Context::logger`] attaches it so the test can read
     /// back aggregated counts of `status` / `warn` / etc. calls without
-    /// having to intercept stderr. `None` in production (no overhead).
+    /// having to intercept stderr.
+    ///
+    /// Gated behind the `test-helpers` Cargo feature — production
+    /// binaries do not carry the field at all.
+    #[cfg(feature = "test-helpers")]
     pub log_capture: Option<crate::log::LogCapture>,
 }
 
@@ -344,6 +348,7 @@ impl Context {
             publish_report: None,
             determinism: None,
             pending_outcome: None,
+            #[cfg(feature = "test-helpers")]
             log_capture: None,
         }
     }
@@ -351,6 +356,9 @@ impl Context {
     /// Attach an in-memory log-capture sink so every logger derived from
     /// this context via [`Context::logger`] records to it. Intended for
     /// tests; production callers leave this `None`.
+    ///
+    /// Gated behind the `test-helpers` Cargo feature.
+    #[cfg(feature = "test-helpers")]
     pub fn with_log_capture(&mut self, capture: crate::log::LogCapture) {
         self.log_capture = Some(capture);
     }
@@ -548,7 +556,9 @@ impl Context {
     /// snapshot, so any secret value reachable to a hook or subprocess is
     /// available for scrubbing.
     pub fn logger(&self, stage: &'static str) -> StageLogger {
+        #[allow(unused_mut)]
         let mut log = StageLogger::new(stage, self.verbosity()).with_env(self.env_for_redact());
+        #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.log_capture {
             log = log.with_capture_handle(cap.clone());
         }

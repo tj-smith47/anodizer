@@ -21,12 +21,18 @@
 //! or `bail!` messages is therefore redacted without callers having to
 //! remember to scrub at every site.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "test-helpers")]
+use std::sync::Mutex;
 
 use colored::Colorize;
 
 /// Level of a log line captured by a [`LogCapture`]. Mirrors the
 /// [`StageLogger`] methods that produce each level.
+///
+/// Gated behind the `test-helpers` Cargo feature — production binaries
+/// do not link the capture infrastructure.
+#[cfg(feature = "test-helpers")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
     Error,
@@ -43,11 +49,15 @@ pub enum LogLevel {
 /// counts back via the accessor methods. Intended for tests that need to
 /// assert "publisher emitted ≥N status lines" — calls still write to stderr
 /// so test output stays debuggable.
+///
+/// Gated behind the `test-helpers` Cargo feature.
+#[cfg(feature = "test-helpers")]
 #[derive(Clone, Default)]
 pub struct LogCapture {
     inner: Arc<Mutex<Vec<(LogLevel, String)>>>,
 }
 
+#[cfg(feature = "test-helpers")]
 impl LogCapture {
     /// Construct a fresh empty capture sink.
     pub fn new() -> Self {
@@ -148,6 +158,10 @@ pub struct StageLogger {
     /// Optional in-memory capture sink. When present, every log method also
     /// appends to the capture vec (after the stderr write). `None` means
     /// the logger only writes to stderr (production default).
+    ///
+    /// Gated behind the `test-helpers` Cargo feature — production binaries
+    /// do not carry the field, so no per-log-call `is_none()` check fires.
+    #[cfg(feature = "test-helpers")]
     capture: Option<LogCapture>,
 }
 
@@ -157,6 +171,7 @@ impl StageLogger {
             stage,
             verbosity,
             env: None,
+            #[cfg(feature = "test-helpers")]
             capture: None,
         }
     }
@@ -167,6 +182,9 @@ impl StageLogger {
     ///
     /// Intended exclusively for tests — production code uses
     /// [`StageLogger::new`] or [`crate::context::Context::logger`].
+    ///
+    /// Gated behind the `test-helpers` Cargo feature.
+    #[cfg(feature = "test-helpers")]
     pub fn with_capture(stage: &'static str, verbosity: Verbosity) -> (Self, LogCapture) {
         let capture = LogCapture::new();
         let logger = Self {
@@ -181,6 +199,9 @@ impl StageLogger {
     /// Attach an existing [`LogCapture`] to this logger. Useful when the
     /// capture is owned by a [`crate::context::Context`] and every derived
     /// logger should append to the same vec.
+    ///
+    /// Gated behind the `test-helpers` Cargo feature.
+    #[cfg(feature = "test-helpers")]
     pub fn with_capture_handle(mut self, capture: LogCapture) -> Self {
         self.capture = Some(capture);
         self
@@ -213,6 +234,7 @@ impl StageLogger {
     /// Error message — always shown (even in quiet mode).
     pub fn error(&self, msg: &str) {
         eprintln!("{} [{}] {}", "Error:".red().bold(), self.stage, msg);
+        #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Error, msg);
         }
@@ -223,6 +245,7 @@ impl StageLogger {
         if self.verbosity >= Verbosity::Normal {
             eprintln!("{} [{}] {}", "Warning:".yellow().bold(), self.stage, msg);
         }
+        #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Warn, msg);
         }
@@ -234,6 +257,7 @@ impl StageLogger {
         if self.verbosity >= Verbosity::Normal {
             eprintln!("[{}] {}", self.stage, msg);
         }
+        #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Status, msg);
         }
@@ -245,6 +269,7 @@ impl StageLogger {
         if self.verbosity >= Verbosity::Verbose {
             eprintln!("[{}] {}", self.stage, msg);
         }
+        #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Verbose, msg);
         }
@@ -256,6 +281,7 @@ impl StageLogger {
         if self.verbosity >= Verbosity::Debug {
             eprintln!("[{}] {}", self.stage.dimmed(), msg.dimmed());
         }
+        #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Debug, msg);
         }

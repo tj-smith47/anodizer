@@ -752,6 +752,50 @@ impl Default for CargoPublisher {
     }
 }
 
+/// Operator-visible start line for the cargo publisher. Mirrors the
+/// `run_start_message` helper every per-crate publisher exposes so the
+/// dispatch table can't silently report success on a no-op run.
+pub(crate) fn run_start_message(selected_total: usize) -> String {
+    format!(
+        "cargo: starting publish for {} selected crate(s)",
+        selected_total
+    )
+}
+
+/// Operator-visible done line, emitted after `publish_to_cargo` returns
+/// Ok. `processed` counts crates whose publish path was actually
+/// invoked (skipped-by-already-published, skipped-by-skip-template, and
+/// dry-run paths all count as processed — they're successful runs of
+/// the correct code path).
+pub(crate) fn run_done_message(processed: usize) -> String {
+    format!("cargo: completed — {} crate(s) processed", processed)
+}
+
+/// Warning emitted when the publisher was registered (at least one
+/// crate has a `publish.cargo` block) but `publish_to_cargo` resolved
+/// zero publishable crates (every cargo-configured crate was filtered
+/// out by `--crate` / `--all` selection).
+pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
+    format!(
+        "cargo: registered but 0 of {} effective crate(s) had a publish.cargo \
+         block selected — nothing pushed. Check that --crate / --all selects a \
+         crate whose publish.cargo block is set.",
+        selected_total
+    )
+}
+
+/// True when `ctx.config.crates` contains at least one crate with a
+/// `publish.cargo` block. Used by the publisher's run wrapper to choose
+/// between the `done` and `no-eligible-crates` log paths.
+fn count_cargo_configured_crates(ctx: &Context) -> usize {
+    let all = crate::util::all_crates(ctx);
+    let selected = &ctx.options.selected_crates;
+    all.iter()
+        .filter(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some())
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .count()
+}
+
 impl anodizer_core::Publisher for CargoPublisher {
     fn name(&self) -> &str {
         "cargo"
@@ -768,7 +812,20 @@ impl anodizer_core::Publisher for CargoPublisher {
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected = ctx.options.selected_crates.clone();
+        // Operator-facing visible-work bookends — every per-crate publisher
+        // emits these so a no-op dispatch can't masquerade as success. The
+        // inner `publish_to_cargo` emits its own per-crate progress
+        // (`running: cargo publish -p ...` / `(dry-run) would run: ...` /
+        // `skipping ... already published`) which forms the third line that
+        // satisfies the visible-work contract.
+        let eligible = count_cargo_configured_crates(ctx);
+        log.status(&run_start_message(eligible.max(selected.len())));
         publish_to_cargo(ctx, &selected, &log)?;
+        if eligible == 0 {
+            log.warn(&run_no_eligible_crates_warning(selected.len()));
+        } else {
+            log.status(&run_done_message(eligible));
+        }
         let mut evidence = anodizer_core::PublishEvidence::new("cargo");
         if let Some(primary) = first_published_crate(ctx) {
             evidence.primary_ref = Some(format!(
@@ -1158,6 +1215,30 @@ mod publisher_tests {
 
         let r = first_published_crate(&ctx).expect("eligible crate");
         assert_eq!(r.name, "anodizer-util");
+    }
+
+    #[test]
+    fn cargo_publisher_emits_visible_work_when_configured() {
+        use crate::testing::assert_publisher_visible_work_contract;
+        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+
+        let cargo_crate = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![cargo_crate])
+            .selected_crates(vec!["demo".to_string()])
+            .dry_run(true)
+            .build();
+        let p = CargoPublisher::new();
+        assert_publisher_visible_work_contract(&p, &mut ctx);
     }
 }
 
@@ -1793,7 +1874,6 @@ mod tests {
         // locate it at runtime without baking in a temp path at compile time.
         let src = r#"
 use std::fs;
-use std::io::{Read, Write};
 
 fn main() {
     let counter_path = std::env::var("STUB_COUNTER").expect("STUB_COUNTER not set");
