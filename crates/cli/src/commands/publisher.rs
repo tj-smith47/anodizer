@@ -374,10 +374,7 @@ pub fn build_publisher_command(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     vars.set("ArtifactName", &artifact_name);
-    vars.set(
-        "ArtifactExt",
-        anodizer_core::template::extract_artifact_ext(&artifact_name),
-    );
+    vars.set("ArtifactExt", &artifact.ext());
     vars.set("ArtifactKind", artifact.kind.as_str());
     // Set ArtifactID from artifact metadata "id" key (Pro addition)
     vars.set(

@@ -376,7 +376,13 @@ impl SourceStage {
             ctx.template_vars_mut().set("ArtifactName", artifact_name);
             ctx.template_vars_mut().set(
                 "ArtifactExt",
-                anodizer_core::template::extract_artifact_ext(artifact_name),
+                artifact_meta
+                    .get("ext")
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.as_str())
+                    .unwrap_or_else(|| {
+                        anodizer_core::template::extract_artifact_ext(artifact_name)
+                    }),
             );
             // Set ArtifactID from artifact metadata "id" key (Pro addition)
             ctx.template_vars_mut().set(

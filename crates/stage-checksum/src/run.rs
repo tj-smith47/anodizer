@@ -327,7 +327,8 @@ impl Stage for ChecksumStage {
 
                 // Determine the display name for this artifact in the checksum line.
                 // If the extra file has a name_template, render it to get an alias.
-                let artifact_ext = anodizer_core::template::extract_artifact_ext(filename);
+                let artifact_ext = artifact.ext();
+                let artifact_ext = artifact_ext.as_str();
                 let checksum_name = if let Some(tmpl) = artifact.metadata.get("extra_name_template")
                 {
                     let mut vars = ctx.template_vars().clone();

@@ -282,6 +282,12 @@ impl Stage for SrpmStage {
         // Register artifact
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), "srpm".to_string());
+        // Mirror GoReleaser's `artifact.ExtraExt = ".src.rpm"` so downstream
+        // template consumers (`.Artifact.Ext`, filename templates) and other
+        // stages keying off the canonical extension see the same value
+        // regardless of whether the artifact came from the archive stage or
+        // the SRPM stage.
+        metadata.insert("ext".to_string(), ".src.rpm".to_string());
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::SourceRpm,
@@ -455,6 +461,26 @@ mod tests {
                 .to_string()
                 .contains("no source archives"),
             "should require source archive"
+        );
+    }
+
+    /// `ext` extra mirrors GoReleaser's
+    /// `artifact.ExtraExt: ".src.rpm"` so downstream filename templates and
+    /// publisher stages see the canonical extension. Because the artifact
+    /// emission path runs `rpmbuild` (an external tool unavailable in CI),
+    /// this regression test pins the literal at source level rather than
+    /// driving the full pipe end-to-end.
+    #[test]
+    fn test_srpm_artifact_metadata_includes_ext() {
+        let src = include_str!("lib.rs");
+        assert!(
+            src.contains("metadata.insert(\"ext\".to_string(), \".src.rpm\".to_string())"),
+            "srpm artifact must register `ext` metadata with the canonical \
+             `.src.rpm` extension (GR `artifact.ExtraExt` parity)"
+        );
+        assert!(
+            src.contains("metadata.insert(\"format\".to_string(), \"srpm\".to_string())"),
+            "srpm artifact must continue to register `format=srpm`"
         );
     }
 

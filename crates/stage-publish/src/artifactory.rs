@@ -229,10 +229,7 @@ pub fn render_artifact_url(
     let mut vars = ctx.template_vars().clone();
     let art_name = artifact.name();
     vars.set("ArtifactName", art_name);
-    vars.set(
-        "ArtifactExt",
-        anodizer_core::template::extract_artifact_ext(art_name),
-    );
+    vars.set("ArtifactExt", &artifact.ext());
     if let Some(ref target) = artifact.target {
         let (os, arch) = anodizer_core::target::map_target(target);
         vars.set("Os", &os);
@@ -342,10 +339,7 @@ pub fn upload_single_artifact(
     for (k, v) in custom_headers {
         let mut vars = ctx.template_vars().clone();
         vars.set("ArtifactName", artifact.name());
-        vars.set(
-            "ArtifactExt",
-            anodizer_core::template::extract_artifact_ext(artifact.name()),
-        );
+        vars.set("ArtifactExt", &artifact.ext());
         if let Some(ref target) = artifact.target {
             let (os, arch) = anodizer_core::target::map_target(target);
             vars.set("Os", &os);

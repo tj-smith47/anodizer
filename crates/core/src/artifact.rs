@@ -263,6 +263,24 @@ impl Artifact {
     pub fn extra_binary(&self) -> Option<String> {
         self.metadata.get("binary").cloned()
     }
+
+    /// Resolve the artifact's canonical file extension (including the leading
+    /// dot), mirroring GoReleaser's `Artifact.Ext()` at
+    /// `internal/artifact/artifact.go:442`: prefer the `ext` metadata extra
+    /// when present and non-empty, fall back to parsing the filename.
+    ///
+    /// Stages that know their canonical extension better than filename
+    /// parsing can (e.g. `srpm` knowing `.src.rpm` rather than `.rpm`)
+    /// populate `metadata["ext"]` so downstream `{{ .ArtifactExt }}`
+    /// renders the canonical value.
+    pub fn ext(&self) -> String {
+        if let Some(ext) = self.metadata.get("ext")
+            && !ext.is_empty()
+        {
+            return ext.clone();
+        }
+        crate::template::extract_artifact_ext(&self.name).to_string()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1542,6 +1560,57 @@ mod tests {
             ArtifactKind::Certificate,
         ];
         assert_eq!(kinds, &expected);
+    }
+
+    #[test]
+    fn artifact_ext_prefers_metadata_when_present() {
+        // GoReleaser parity: `Artifact.Ext()` reads `ExtraExt` from extras
+        // (`internal/artifact/artifact.go:442`), not the filename. An SRPM
+        // artifact registers `metadata["ext"] = ".src.rpm"` so downstream
+        // `{{ .ArtifactExt }}` resolves to `.src.rpm`, not the
+        // last-dot-suffix `.rpm` the filename would produce.
+        let mut metadata = HashMap::new();
+        metadata.insert("ext".to_string(), ".src.rpm".to_string());
+        let art = Artifact {
+            kind: ArtifactKind::SourceRpm,
+            name: "myapp-1.0.0-1.fc42.src.rpm".to_string(),
+            path: PathBuf::from("dist/myapp-1.0.0-1.fc42.src.rpm"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        };
+        assert_eq!(art.ext(), ".src.rpm");
+    }
+
+    #[test]
+    fn artifact_ext_falls_back_to_filename_when_metadata_missing() {
+        let art = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp-1.0.0-linux-amd64.tar.gz".to_string(),
+            path: PathBuf::from("dist/myapp-1.0.0-linux-amd64.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        };
+        assert_eq!(art.ext(), ".tar.gz");
+    }
+
+    #[test]
+    fn artifact_ext_falls_back_when_metadata_ext_is_empty() {
+        let mut metadata = HashMap::new();
+        metadata.insert("ext".to_string(), String::new());
+        let art = Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp.zip".to_string(),
+            path: PathBuf::from("dist/myapp.zip"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        };
+        assert_eq!(art.ext(), ".zip");
     }
 
     #[test]
