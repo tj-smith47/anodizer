@@ -1140,9 +1140,8 @@ fn resolve_winget_upstream(winget_cfg: &anodizer_core::config::WingetConfig) -> 
 /// True when the crate has a `publish.winget` block — mirrors the
 /// `per_crate!` predicate in `lib.rs`.
 fn is_winget_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    ctx.config
-        .crates
-        .iter()
+    crate::util::all_crates(ctx)
+        .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.winget.is_some()))
 }
 

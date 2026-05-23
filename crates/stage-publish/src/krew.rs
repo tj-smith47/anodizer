@@ -1702,9 +1702,8 @@ fn collect_krew_run_targets(ctx: &Context) -> Vec<KrewPrTarget> {
 /// `per_crate!` predicate in `lib.rs` so the publisher iterates
 /// exactly the same crate universe.
 fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    ctx.config
-        .crates
-        .iter()
+    crate::util::all_crates(ctx)
+        .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
 }
 

@@ -140,20 +140,6 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
             for entry in entries {
                 let entry = entry.with_context(|| format!("reading entry in {}", src.display()))?;
                 let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                if INTERMEDIATE_STAGE_DIRS.contains(&name_str.as_ref()) {
-                    // Stage scratch space (e.g. `dist/makeself/<id>/<arch>/`)
-                    // holds intermediate inputs the stage bundled into its
-                    // shippable output (the .run / .snap / .msi etc.). These
-                    // staging files routinely share basenames across arches
-                    // (`anodizer`, `makeself-install.sh`, `package.lsm`), and
-                    // the harness's basename-keyed hash map collapses such
-                    // siblings — preserving them leaves the manifest with
-                    // mismatched hash/path pairs that publish-only hash-verify
-                    // then trips on. The shippable bytes live under
-                    // `dist/<os>/...` and travel independently.
-                    continue;
-                }
                 let src_path = entry.path();
                 let dst_path = dest.join(&name);
                 let ft = entry
@@ -177,20 +163,6 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
     }
     Ok(())
 }
-
-/// Top-level `dist/<name>/` subdirectories that hold stage-internal
-/// scratch space, NOT shippable artifacts. Skipped during preservation
-/// so the resulting manifest only references files that actually ship.
-///
-/// Why a hardcoded list rather than a config field: anodizer owns these
-/// directory names — they're emitted by anodizer's own stage code, not
-/// user config. The list grows in lockstep with stages that scribble
-/// under `dist/<stage_id>/...`. As of v0.3.0 only `makeself` does (its
-/// pre-pack staging area for each arch holds copies of the source binary
-/// alongside the install script and `package.lsm`; all three collide on
-/// basename across arches). If a future stage adopts the same pattern,
-/// add it here so the manifest stays hash-stable across multi-arch runs.
-const INTERMEDIATE_STAGE_DIRS: &[&str] = &["makeself"];
 
 /// Recursive directory copy with predictable semantics — files via
 /// `std::fs::copy`, directories created on demand. Symlinks are
@@ -310,27 +282,19 @@ pub(super) fn write_preserved_dist_context(dest: &Path, inputs: ContextInputs<'_
     // ── Per-file walk of <dest>/** ───────────────────────────────────
     // Use the report's recorded hashes when available (the harness
     // already hashed every artifact it discovered; re-hashing here
-    // would waste cycles). Index by BASENAME — `ArtifactRow::name`
-    // is the basename for `dist/...` files (matches the harness's
-    // hash-map key convention) BUT the `relative_path` field is the
-    // full relative path. Strip to basename for the lookup so a
-    // hypothetical row whose `name` contained a directory prefix
-    // still finds its file.
-    let report_by_basename: HashMap<String, &anodizer_core::ArtifactRow> = report
+    // would waste cycles). Index by `ArtifactRow::name`, which since
+    // the D1 fix is the dist-root-relative path (forward-slash
+    // normalized, `dist/` prefix stripped). `collect_preserved_entries`
+    // computes the same relative path from `dest` and uses it as the
+    // lookup key so multi-arch same-basename files are distinguished.
+    let report_by_rel_path: HashMap<String, &anodizer_core::ArtifactRow> = report
         .artifacts
         .iter()
-        .map(|a| {
-            let key = Path::new(&a.name)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or(a.name.as_str())
-                .to_string();
-            (key, a)
-        })
+        .map(|a| (a.name.clone(), a))
         .collect();
 
     let mut entries: Vec<PreservedArtifact> = Vec::new();
-    collect_preserved_entries(dest, dest, &report_by_basename, &mut entries)?;
+    collect_preserved_entries(dest, dest, &report_by_rel_path, &mut entries)?;
     entries.sort_by(|a, b| a.name.cmp(&b.name));
 
     let ctx = PreservedDistContext {
@@ -399,7 +363,7 @@ fn read_optional_json(path: &Path) -> Option<serde_json::Value> {
 fn collect_preserved_entries(
     root: &Path,
     dir: &Path,
-    report_by_basename: &HashMap<String, &anodizer_core::ArtifactRow>,
+    report_by_rel_path: &HashMap<String, &anodizer_core::ArtifactRow>,
     out: &mut Vec<PreservedArtifact>,
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir)
@@ -409,7 +373,7 @@ fn collect_preserved_entries(
         let path = entry.path();
         let ft = entry.file_type()?;
         if ft.is_dir() {
-            collect_preserved_entries(root, &path, report_by_basename, out)?;
+            collect_preserved_entries(root, &path, report_by_rel_path, out)?;
             continue;
         }
         if !ft.is_file() {
@@ -451,7 +415,10 @@ fn collect_preserved_entries(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        let (sha256, size) = if let Some(row) = report_by_basename.get(name.as_str())
+        // Lookup key matches `hash_artifacts`'s map key: dist-root-relative
+        // path (the `rel` already is relative to `root` which is `dest`,
+        // mirroring `hash_artifacts` stripping the `dist/` prefix).
+        let (sha256, size) = if let Some(row) = report_by_rel_path.get(rel.as_str())
             && let Some(hash) = row.hash.as_ref()
         {
             (hash.clone(), row.size_bytes)
@@ -544,25 +511,18 @@ mod tests {
         }
     }
 
-    /// FIX #1 regression test: `report_by_basename` MUST key on the
-    /// file basename, not the relative path. A previous iteration
-    /// keyed on `ArtifactRow::name` directly; when `name` was a
-    /// relative path (e.g. `dist/foo.tar.gz`) the lookup missed and
-    /// the context wrote a freshly-hashed value instead of the
-    /// harness's recorded hash.
-    ///
-    /// The assertion: write a preserved file, register a report row
-    /// with a relative-path `name`, mutate the preserved bytes AFTER
-    /// the report was recorded, then write context.json and confirm
-    /// the manifest carries the REPORT's hash (not the mutated
-    /// bytes' fresh hash).
+    /// Regression: `collect_preserved_entries` must look up report rows by
+    /// the same relative-path key that `hash_artifacts` uses as the map key
+    /// (dist-root-relative, forward-slash-normalized). A flat file
+    /// `foo.tar.gz` placed directly under `dest` has rel `"foo.tar.gz"`, so
+    /// `ArtifactRow.name` must also be `"foo.tar.gz"` (no `dist/` prefix —
+    /// that prefix is stripped by `hash_artifacts`). If the lookup misses,
+    /// context.json re-hashes from disk and this test's post-mutation
+    /// assertion fails.
     #[test]
     fn write_context_prefers_report_hash_over_fresh_rehash() {
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path();
-        // Original artifact + its real hash, recorded into the
-        // report. ArtifactRow.name uses the basename convention
-        // matching what the harness emits.
         std::fs::write(dest.join("foo.tar.gz"), b"original-bytes").unwrap();
         let recorded_hash = {
             use sha2::{Digest, Sha256};
@@ -572,9 +532,9 @@ mod tests {
         };
         let mut report = empty_report("deadbeef");
         report.artifacts.push(ArtifactRow {
-            // Use a RELATIVE-PATH name to exercise the basename-
-            // stripping codepath that fix #1 introduced.
-            name: "dist/foo.tar.gz".into(),
+            // Name matches the dist-root-relative key `hash_artifacts`
+            // would produce for `dist/foo.tar.gz` (i.e. "foo.tar.gz").
+            name: "foo.tar.gz".into(),
             path: "dist/foo.tar.gz".into(),
             size_bytes: b"original-bytes".len() as u64,
             stage: "archive".into(),
@@ -754,17 +714,14 @@ mod tests {
         );
     }
 
-    /// Regression: `dist/makeself/<id>/<arch>/` holds per-arch staging
-    /// inputs (anodizer, makeself-install.sh, package.lsm) that the
-    /// harness's basename-keyed hash map collapses across arches. Those
-    /// scratch dirs must NOT be copied into the preserved tree — only
-    /// the shippable `.run` files under `dist/<os>/` should survive.
-    /// Without this filter the preserved manifest carries mismatched
-    /// hash/path pairs and publish-only hash-verify trips on them
-    /// (`bytes on disk diverge from determinism record for
-    /// ./dist/makeself/default/linux_arm64/anodizer`).
+    /// `preserve_dist_tree` copies the full `dist/` tree verbatim, including
+    /// `dist/makeself/<id>/<arch>/` staging directories. Per-arch files with
+    /// the same basename (e.g. `anodizer`) are keyed by their dist-root-
+    /// relative path in the hash map, so they are distinct entries and the
+    /// manifest carries correct hash/path pairs. The band-aid that filtered
+    /// `makeself/` is gone; the root-cause key collision is fixed instead.
     #[test]
-    fn preserve_dist_tree_skips_intermediate_stage_dirs() {
+    fn preserve_dist_tree_includes_makeself_per_arch_dirs() {
         let src_root = TempDir::new().unwrap();
         let dest_root = TempDir::new().unwrap();
         let dist = src_root.path().join("dist");
@@ -776,8 +733,7 @@ mod tests {
             b"shippable .run bytes",
         )
         .unwrap();
-        // Two per-arch staging dirs that collide on basename — must NOT
-        // be preserved.
+        // Two per-arch staging dirs sharing a basename — both must be preserved.
         for arch in &["linux_amd64", "linux_arm64"] {
             let stage_dir = dist.join("makeself").join("default").join(arch);
             std::fs::create_dir_all(&stage_dir).unwrap();
@@ -795,10 +751,21 @@ mod tests {
                 .exists(),
             "shippable .run must survive preservation",
         );
+        // Per-arch staging files are now preserved — the relative-path key
+        // prevents the hash-map collision that the old band-aid worked around.
         assert!(
-            !dest_root.path().join("makeself").exists(),
-            "makeself/ scratch dir must NOT be preserved — its per-arch \
-             siblings share basenames and collide in the harness's hash map",
+            dest_root
+                .path()
+                .join("makeself/default/linux_amd64/anodizer")
+                .exists(),
+            "makeself/linux_amd64/anodizer must be preserved",
+        );
+        assert!(
+            dest_root
+                .path()
+                .join("makeself/default/linux_arm64/anodizer")
+                .exists(),
+            "makeself/linux_arm64/anodizer must be preserved",
         );
     }
 

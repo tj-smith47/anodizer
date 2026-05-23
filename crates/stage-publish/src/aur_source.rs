@@ -668,9 +668,8 @@ pub(crate) fn is_aur_source_configured(ctx: &Context) -> bool {
 /// True when the named crate has a `publish.aur_source` block. Per-crate
 /// gate for the iteration in `run()`.
 fn is_aur_source_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    ctx.config
-        .crates
-        .iter()
+    crate::util::all_crates(ctx)
+        .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.aur_source.is_some()))
 }
 

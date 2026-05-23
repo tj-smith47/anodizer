@@ -24,7 +24,7 @@
 
 pub mod responder;
 
-use crate::config::{Config, CrateConfig, Defaults, SignConfig, UpxConfig};
+use crate::config::{Config, CrateConfig, Defaults, SignConfig, UpxConfig, WorkspaceConfig};
 use crate::context::{Context, ContextOptions};
 use crate::git::{GitInfo, SemVer};
 use std::fs;
@@ -122,6 +122,7 @@ pub struct TestContextBuilder {
     parallelism: usize,
     single_target: Option<String>,
     crates: Vec<CrateConfig>,
+    workspaces: Option<Vec<WorkspaceConfig>>,
     populate_git_vars: bool,
     dist: Option<PathBuf>,
     signs: Vec<SignConfig>,
@@ -162,6 +163,7 @@ impl Default for TestContextBuilder {
             parallelism: 1,
             single_target: None,
             crates: Vec::new(),
+            workspaces: None,
             populate_git_vars: true,
             dist: None,
             signs: Vec::new(),
@@ -288,6 +290,12 @@ impl TestContextBuilder {
         self
     }
 
+    /// Add workspace configurations to the config.
+    pub fn workspaces(mut self, workspaces: Vec<WorkspaceConfig>) -> Self {
+        self.workspaces = Some(workspaces);
+        self
+    }
+
     /// Whether to auto-populate git template vars (default: true).
     /// Set to false if you want to test the context before git vars are populated.
     pub fn populate_git_vars(mut self, populate: bool) -> Self {
@@ -349,6 +357,7 @@ impl TestContextBuilder {
         let mut config = Config::default();
         config.project_name = self.project_name;
         config.crates = self.crates;
+        config.workspaces = self.workspaces;
         config.signs = self.signs;
         config.binary_signs = self.binary_signs;
         config.upx = self.upx;

@@ -50,17 +50,11 @@ pub(crate) fn is_top_level_block_configured<T>(field: Option<&Vec<T>>) -> bool {
 /// - When `ctx.options.selected_crates` is non-empty: returns those names
 ///   verbatim (operator passed `--crate` and the run honors that scope).
 /// - When `ctx.options.selected_crates` is empty: returns every crate in
-///   `ctx.config.crates` for which `is_per_crate_configured` returns true
-///   (implicit-all over configured crates — matches the cargo publisher's
-///   established `selected.is_empty() || selected_set.contains(name)`
-///   shape so a `publish-only` run with no `--crate` / `--all` flag still
-///   visits every crate whose publisher block is set).
-///
-/// The implicit-all branch reads `ctx.config.crates` rather than
-/// `util::all_crates(ctx)` because every per-crate publisher's existing
-/// `collect_*_run_targets` helpers walk `ctx.config.crates`; aligning the
-/// iteration with the target-collection surface keeps the evidence
-/// shape coherent across both paths.
+///   the full crate universe (top-level + workspace crates) for which
+///   `is_per_crate_configured` returns true. Uses `util::all_crates` so
+///   workspace-only crates carrying a publisher block are not silently
+///   skipped — they are visible under `--all` and must be equally visible
+///   in this implicit-all path.
 pub(crate) fn effective_publish_crates(
     ctx: &anodizer_core::context::Context,
     is_per_crate_configured: impl Fn(&anodizer_core::context::Context, &str) -> bool,
@@ -68,11 +62,10 @@ pub(crate) fn effective_publish_crates(
     if !ctx.options.selected_crates.is_empty() {
         return ctx.options.selected_crates.clone();
     }
-    ctx.config
-        .crates
-        .iter()
+    crate::util::all_crates(ctx)
+        .into_iter()
         .filter(|c| is_per_crate_configured(ctx, &c.name))
-        .map(|c| c.name.clone())
+        .map(|c| c.name)
         .collect()
 }
 
@@ -312,5 +305,41 @@ mod tests {
         assert!(!is_top_level_block_configured(Some(&empty)));
         let one = vec![1u32];
         assert!(is_top_level_block_configured(Some(&one)));
+    }
+
+    /// `effective_publish_crates` must surface workspace-only crates under
+    /// implicit-all. A crate living exclusively in `workspaces[].crates` (not
+    /// in `config.crates`) that carries a publisher block must be returned
+    /// when no explicit `--crate` selection is present — matching the behavior
+    /// of `--all` in the CLI dispatcher.
+    #[test]
+    fn effective_publish_crates_implicit_all_includes_workspace_only_crates() {
+        use anodizer_core::config::{CrateConfig, PublishConfig, WorkspaceConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        // Top-level crates list is empty; the crate lives only in a workspace.
+        let ws_crate = CrateConfig {
+            name: "ws-only".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig::default()),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .crates(vec![])
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws-a".to_string(),
+                crates: vec![ws_crate],
+                ..Default::default()
+            }])
+            .build();
+
+        // Predicate always returns true (the publisher is configured for any name).
+        let names = effective_publish_crates(&ctx, |_, _| true);
+        assert_eq!(
+            names,
+            vec!["ws-only".to_string()],
+            "workspace-only crate must appear under implicit-all"
+        );
     }
 }

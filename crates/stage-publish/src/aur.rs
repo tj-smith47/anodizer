@@ -834,9 +834,8 @@ fn collect_aur_our_run_targets(ctx: &Context) -> Vec<AurOurTarget> {
 }
 
 fn is_aur_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    ctx.config
-        .crates
-        .iter()
+    crate::util::all_crates(ctx)
+        .into_iter()
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.aur.is_some()))
 }
 

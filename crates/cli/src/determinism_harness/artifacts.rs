@@ -196,15 +196,14 @@ fn push_release_dir_files(release_dir: &Path, out: &mut Vec<PathBuf>) -> Result<
 
 /// SHA256 every artifact and return `{name -> info}`.
 ///
-/// Map keys are usually the artifact basename (matching the spec's
-/// allow-list pattern semantics — glob/exact matches operate on the
-/// file name). Raw cargo binaries under `<worktree>/.det-tmp/target`
-/// get a `target/<triple>/<bin>` (or `target/release/<bin>` for host
-/// builds) prefix so the report unambiguously distinguishes
-/// `dist/anodize` (the shipped binary inside an archive) from
-/// `target/<triple>/anodize` (the raw cargo output that flows INTO
-/// the archive). Without the prefix, a reader of the report can't
-/// tell which file's hash they're looking at when both kinds exist.
+/// Map keys are relative paths stripped of the leading `dist/` prefix
+/// and forward-slash-normalized. For `dist/` files this is the path
+/// under the dist root (e.g. `makeself/default/linux_amd64/anodizer`),
+/// which avoids basename collisions when multiple arch directories
+/// contain a file with the same name. Raw cargo binaries under
+/// `<worktree>/.det-tmp/target` get a `target/<triple>/<bin>` key so
+/// the report unambiguously distinguishes them from same-basename
+/// `dist/` artifacts.
 pub(super) fn hash_artifacts(
     worktree_path: &Path,
     paths: &[PathBuf],
@@ -232,10 +231,24 @@ pub(super) fn hash_artifacts(
             let suffix = under_target.to_string_lossy().replace('\\', "/");
             format!("target/{}", suffix)
         } else {
-            p.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned()
+            // Dist artifact: key by path relative to the dist root
+            // (forward-slash-normalized, `dist/` prefix stripped).
+            // Keying by basename would collapse same-basename files
+            // under different arch subdirectories (e.g.
+            // `dist/makeself/<id>/linux_amd64/anodizer` and
+            // `dist/makeself/<id>/linux_arm64/anodizer` both have
+            // basename `anodizer`).
+            let dist_root = worktree_path.join("dist");
+            if let Ok(under_dist) = p.strip_prefix(&dist_root) {
+                under_dist.to_string_lossy().replace('\\', "/")
+            } else {
+                // Path outside dist/ and outside target/: fall back to
+                // relative-from-worktree so the key is still unique.
+                p.strip_prefix(worktree_path)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            }
         };
         let stage = infer_stage_from_path(&relative);
         let head_len = bytes.len().min(HEAD_SAMPLE_BYTES);
@@ -686,5 +699,60 @@ mod tests {
         std::fs::write(dist.join("foo.tar.gz"), b"x").unwrap();
         let out = discover_artifacts(wt).expect("must not error on missing target dir");
         assert_eq!(out.len(), 1);
+    }
+
+    /// `hash_artifacts` must produce distinct map entries for same-basename
+    /// files that live in different arch subdirectories under `dist/`.
+    ///
+    /// Regression: keying by basename collapses e.g.
+    /// `dist/makeself/default/linux_amd64/anodizer` and
+    /// `dist/makeself/default/linux_arm64/anodizer` — the second write
+    /// overwrites the first. After the D1 fix the key is dist-root-relative
+    /// path, so both entries survive and carry their distinct hashes.
+    #[test]
+    fn hash_artifacts_distinguishes_same_basename_across_arch_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path();
+
+        let amd64_dir = wt
+            .join("dist")
+            .join("makeself")
+            .join("default")
+            .join("linux_amd64");
+        let arm64_dir = wt
+            .join("dist")
+            .join("makeself")
+            .join("default")
+            .join("linux_arm64");
+        std::fs::create_dir_all(&amd64_dir).unwrap();
+        std::fs::create_dir_all(&arm64_dir).unwrap();
+
+        std::fs::write(amd64_dir.join("anodizer"), b"amd64-bytes").unwrap();
+        std::fs::write(arm64_dir.join("anodizer"), b"arm64-bytes").unwrap();
+
+        let paths = discover_artifacts(wt).unwrap();
+        let map = hash_artifacts(wt, &paths).unwrap();
+
+        // Both entries must be present under their distinct relative paths.
+        let amd64_key = "makeself/default/linux_amd64/anodizer";
+        let arm64_key = "makeself/default/linux_arm64/anodizer";
+        assert!(
+            map.contains_key(amd64_key),
+            "amd64 entry missing; map keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            map.contains_key(arm64_key),
+            "arm64 entry missing; map keys: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+
+        // Hashes must differ — different bytes, different digests.
+        let amd64_hash = &map[amd64_key].hash;
+        let arm64_hash = &map[arm64_key].hash;
+        assert_ne!(
+            amd64_hash, arm64_hash,
+            "distinct arch files must produce distinct hashes"
+        );
     }
 }
