@@ -493,32 +493,16 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         ctx.record_publisher_outcome(pr_outcome);
     }
 
-    Ok(any_pushed_from_outcome(outcome))
-}
-
-/// Translate a [`CommitOutcome`] into the bool that
-/// [`HomebrewPublisher::run`] feeds into its `any_pushed` accumulator.
-/// Extracted so the gating decision can be unit-tested in isolation
-/// without instantiating a full publish context.
-fn any_pushed_from_outcome(outcome: crate::util::CommitOutcome) -> bool {
-    matches!(outcome, crate::util::CommitOutcome::Pushed)
+    Ok(outcome.is_pushed())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::util::CommitOutcome;
 
-    /// `any_pushed` must stay false when commit_and_push_with_opts
-    /// short-circuits with NoChanges — otherwise HomebrewPublisher::run
-    /// records evidence for a tap it never touched, mis-gating rollback.
     #[test]
-    fn no_changes_outcome_yields_any_pushed_false() {
-        assert!(!any_pushed_from_outcome(CommitOutcome::NoChanges));
-    }
-
-    #[test]
-    fn pushed_outcome_yields_any_pushed_true() {
-        assert!(any_pushed_from_outcome(CommitOutcome::Pushed));
+    fn commit_outcome_is_pushed() {
+        assert!(CommitOutcome::Pushed.is_pushed());
+        assert!(!CommitOutcome::NoChanges.is_pushed());
     }
 }

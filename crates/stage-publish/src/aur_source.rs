@@ -16,7 +16,7 @@ fn publish_aur_source_entry(
     strip_bin_suffix: bool,
     label: &str,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<bool> {
     let version = ctx
         .template_vars()
         .get("Version")
@@ -153,7 +153,7 @@ fn publish_aur_source_entry(
             pkg_name, label
         ));
         log.verbose(&format!("PKGBUILD:\n{}", pkgbuild));
-        return Ok(());
+        return Ok(false);
     }
 
     // Write files to dist
@@ -256,14 +256,20 @@ fn publish_aur_source_entry(
                 ));
             }
         }
+        log.status(&format!("{}: published '{}'", label, pkg_name));
+        return Ok(outcome.is_pushed());
     }
 
     log.status(&format!("{}: published '{}'", label, pkg_name));
-    Ok(())
+    Ok(false)
 }
 
 /// Publish AUR source packages for a crate (per-crate config path).
-pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+pub fn publish_to_aur_source(
+    ctx: &mut Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<bool> {
     let crate_cfg = ctx
         .config
         .crates
@@ -290,7 +296,7 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         &label,
         log,
     )? {
-        return Ok(());
+        return Ok(false);
     }
 
     publish_aur_source_entry(ctx, &publish_cfg, crate_name, false, "aur_source", log)
@@ -301,10 +307,10 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
 /// GoReleaser's `internal/pipe/aursources/aursources.go` reads `ctx.Config.AURSources`
 /// as a project-wide array. Each entry generates a source PKGBUILD and .SRCINFO,
 /// then pushes them to the configured AUR git repo.
-pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Result<()> {
+pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Result<bool> {
     let entries = match ctx.config.aur_sources {
         Some(ref v) if !v.is_empty() => v.clone(),
-        _ => return Ok(()),
+        _ => return Ok(false),
     };
 
     let project_name = ctx
@@ -313,6 +319,7 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
         .cloned()
         .unwrap_or_default();
 
+    let mut any_pushed = false;
     for (i, cfg) in entries.iter().enumerate() {
         let label = format!("aur_sources[{}]", i);
         if crate::util::should_skip_publisher(
@@ -325,10 +332,10 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
             continue;
         }
 
-        publish_aur_source_entry(ctx, cfg, &project_name, true, &label, log)?;
+        any_pushed |= publish_aur_source_entry(ctx, cfg, &project_name, true, &label, log)?;
     }
 
-    Ok(())
+    Ok(any_pushed)
 }
 
 // ---------------------------------------------------------------------------
