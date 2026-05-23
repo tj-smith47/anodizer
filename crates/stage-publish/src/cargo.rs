@@ -598,7 +598,11 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         .collect();
 
     if publishable.is_empty() {
-        log.status("no crates configured for crates.io publishing");
+        // The publisher wrapper (`CargoPublisher::run`) emits the canonical
+        // operator-facing warn for the no-eligible-crates path; this
+        // branch is unreachable in normal dispatch because the wrapper
+        // short-circuits before calling here, but defensive callers
+        // (tests, direct CLI sub-commands) still exit cleanly.
         return Ok(());
     }
 
@@ -612,6 +616,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
 
     if ctx.is_dry_run() {
         for name in &sorted_names {
+            log.status(&run_per_crate_start_message(name));
             let cmd = publish_command(name, cargo_cfgs.get(name));
             log.status(&format!("(dry-run) would run: {}", cmd.join(" ")));
         }
@@ -635,6 +640,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         .collect();
 
     for (i, name) in sorted_names.iter().enumerate() {
+        log.status(&run_per_crate_start_message(name));
         // Read the crate's actual version from its Cargo.toml, falling back
         // to the global release version if the path isn't found or parse fails.
         let crate_version = crate_paths
@@ -762,6 +768,15 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
     )
 }
 
+/// Operator-visible per-crate start line. Emitted by `publish_to_cargo`
+/// immediately before each crate's publish-or-skip decision so the
+/// per-crate progress is anchored to a specific name in the log.
+/// Mirrors `run_per_crate_start_message` on every other per-crate
+/// publisher (homebrew, scoop, nix, aur, krew).
+pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
+    format!("cargo: starting per-crate publish for '{}'", crate_name)
+}
+
 /// Operator-visible done line, emitted after `publish_to_cargo` returns
 /// Ok. `processed` counts crates whose publish path was actually
 /// invoked (skipped-by-already-published, skipped-by-skip-template, and
@@ -813,19 +828,24 @@ impl anodizer_core::Publisher for CargoPublisher {
         let log = ctx.logger("publish");
         let selected = ctx.options.selected_crates.clone();
         // Operator-facing visible-work bookends — every per-crate publisher
-        // emits these so a no-op dispatch can't masquerade as success. The
-        // inner `publish_to_cargo` emits its own per-crate progress
-        // (`running: cargo publish -p ...` / `(dry-run) would run: ...` /
-        // `skipping ... already published`) which forms the third line that
-        // satisfies the visible-work contract.
+        // emits these so a no-op dispatch can't masquerade as success.
+        // `publish_to_cargo` emits per-crate progress
+        // (`(dry-run) would run: ...` / `running: cargo publish -p ...` /
+        // `skipping ... already published`) plus the per-crate-start line
+        // from `run_per_crate_start_message` which forms the loop-body
+        // signal that satisfies the visible-work contract.
         let eligible = count_cargo_configured_crates(ctx);
         log.status(&run_start_message(eligible.max(selected.len())));
-        publish_to_cargo(ctx, &selected, &log)?;
+        // Short-circuit BEFORE delegating into publish_to_cargo when no
+        // cargo-configured crate is eligible — otherwise the inner path
+        // would also emit a "no crates configured ..." status, duplicating
+        // the canonical no-eligible warn the wrapper owns.
         if eligible == 0 {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
-        } else {
-            log.status(&run_done_message(eligible));
+            return Ok(anodizer_core::PublishEvidence::new("cargo"));
         }
+        publish_to_cargo(ctx, &selected, &log)?;
+        log.status(&run_done_message(eligible));
         let mut evidence = anodizer_core::PublishEvidence::new("cargo");
         if let Some(primary) = first_published_crate(ctx) {
             evidence.primary_ref = Some(format!(
@@ -1038,6 +1058,41 @@ mod publisher_tests {
         assert_eq!(p.group(), PublisherGroup::Submitter);
         assert!(p.required());
         assert_eq!(p.rollback_scope_needed(), Some("CARGO_REGISTRY_TOKEN yank"));
+    }
+
+    #[test]
+    fn run_start_message_names_selected_total() {
+        let msg = run_start_message(3);
+        assert!(msg.starts_with("cargo:"), "{msg}");
+        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.contains("3 selected"), "{msg}");
+    }
+
+    #[test]
+    fn run_per_crate_start_message_names_crate() {
+        let msg = run_per_crate_start_message("demo");
+        assert!(msg.starts_with("cargo:"), "{msg}");
+        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.contains("'demo'"), "{msg}");
+    }
+
+    #[test]
+    fn run_done_message_reports_processed_count() {
+        let msg = run_done_message(2);
+        assert!(msg.starts_with("cargo:"), "{msg}");
+        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+    }
+
+    #[test]
+    fn run_no_eligible_crates_warning_names_remediation() {
+        let msg = run_no_eligible_crates_warning(5);
+        assert!(msg.starts_with("cargo:"), "{msg}");
+        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.contains("0 of 5 effective"), "{msg}");
+        assert!(msg.contains("nothing pushed"), "{msg}");
+        assert!(msg.contains("--crate"), "{msg}");
+        assert!(msg.contains("--all"), "{msg}");
     }
 
     #[test]
