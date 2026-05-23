@@ -27,14 +27,30 @@ use anyhow::{Context as _, Result};
 /// while `cargo.rs` flattens both. The cargo + non-cargo walkers must
 /// share one universe so a crate with both `cargo:` and `homebrew:` is
 /// either eligible everywhere or skipped everywhere.
+///
+/// On a name collision where the colliding entries point at different
+/// `path` values (almost certainly a config mistake — two distinct crates
+/// sharing a name), emit a warning so the operator notices the dropped
+/// workspace entry. The dedup itself stays silent for the legitimate
+/// case (the same crate referenced from both top-level and a workspace).
 pub(crate) fn all_crates(ctx: &Context) -> Vec<CrateConfig> {
     let mut acc = ctx.config.crates.clone();
     if let Some(ref ws_list) = ctx.config.workspaces {
+        let log = ctx.logger("publish");
         for ws in ws_list {
             for c in &ws.crates {
-                if !acc.iter().any(|existing| existing.name == c.name) {
-                    acc.push(c.clone());
+                if let Some(existing) = acc.iter().find(|e| e.name == c.name) {
+                    if existing.path != c.path {
+                        log.warn(&format!(
+                            "all_crates: workspace '{}' crate '{}' path '{}' shadowed by \
+                             prior entry with path '{}'; workspace entry dropped (name \
+                             collision with different paths — likely a config mistake)",
+                            ws.name, c.name, c.path, existing.path
+                        ));
+                    }
+                    continue;
                 }
+                acc.push(c.clone());
             }
         }
     }
@@ -240,4 +256,76 @@ pub(crate) fn resolve_repo_token(
     }
     // 2. Fall back to context + env
     resolve_token(ctx, env_var)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::{CrateConfig, WorkspaceConfig};
+    use anodizer_core::log::LogCapture;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    fn crate_with(name: &str, path: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn all_crates_dedups_silently_when_paths_match() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_with("foo", ".")])
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws-a".to_string(),
+                crates: vec![crate_with("foo", ".")],
+                ..Default::default()
+            }])
+            .build();
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+
+        let out = all_crates(&ctx);
+        assert_eq!(out.len(), 1, "dedup keeps one entry: {:?}", out);
+        assert_eq!(cap.warn_count(), 0, "same-path dedup must stay silent");
+    }
+
+    #[test]
+    fn all_crates_warns_when_name_collides_with_different_paths() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_with("foo", "crates/foo")])
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws-a".to_string(),
+                crates: vec![crate_with("foo", "other/path/foo")],
+                ..Default::default()
+            }])
+            .build();
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+
+        let out = all_crates(&ctx);
+        assert_eq!(out.len(), 1, "workspace entry must be dropped");
+        assert_eq!(out[0].path, "crates/foo", "top-level entry wins");
+        assert_eq!(
+            cap.warn_count(),
+            1,
+            "operator must be warned about the dropped workspace entry"
+        );
+        let msgs = cap.all_messages();
+        let warn_msg = &msgs[0].1;
+        assert!(
+            warn_msg.contains("foo"),
+            "warn must name the crate: {warn_msg}"
+        );
+        assert!(
+            warn_msg.contains("ws-a"),
+            "warn must name the workspace: {warn_msg}"
+        );
+        assert!(
+            warn_msg.contains("other/path/foo"),
+            "warn must show the dropped path: {warn_msg}"
+        );
+    }
 }

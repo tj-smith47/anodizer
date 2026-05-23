@@ -112,8 +112,8 @@ pub struct PreservedDistContext {
 /// from a prior aborted run can't shadow run-0's actual output. If
 /// `dest` doesn't exist yet, the clear is a no-op.
 ///
-/// Called from `Harness::run` between run-0's hashing and the
-/// next iteration's `Worktree` destruction. Spec: section A.2.
+/// Run before the per-iteration worktree is destroyed so the preserved
+/// bytes survive the harness loop's teardown.
 pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()> {
     let src = worktree_path.join("dist");
     // Clear dest first — defends against a prior aborted preservation
@@ -225,10 +225,9 @@ pub(super) struct ContextInputs<'a> {
 /// harness-supplied defaults) so a corrupted sibling can't kill the
 /// manifest write.
 ///
-/// Write is atomic via stage-to-`.tmp` + rename, matching
-/// `commands/release/split.rs::run_split`.
-///
-/// Spec: section A.3.
+/// Write is atomic via stage-to-`.tmp` + rename so a mid-write SIGKILL
+/// never leaves a truncated `context.json` for a downstream reader to
+/// silently mis-deserialize.
 pub(super) fn write_preserved_dist_context(dest: &Path, inputs: ContextInputs<'_>) -> Result<()> {
     let report = inputs.report;
 
@@ -282,11 +281,11 @@ pub(super) fn write_preserved_dist_context(dest: &Path, inputs: ContextInputs<'_
     // ── Per-file walk of <dest>/** ───────────────────────────────────
     // Use the report's recorded hashes when available (the harness
     // already hashed every artifact it discovered; re-hashing here
-    // would waste cycles). Index by `ArtifactRow::name`, which since
-    // the D1 fix is the dist-root-relative path (forward-slash
-    // normalized, `dist/` prefix stripped). `collect_preserved_entries`
-    // computes the same relative path from `dest` and uses it as the
-    // lookup key so multi-arch same-basename files are distinguished.
+    // would waste cycles). Index by `ArtifactRow::name`, which is the
+    // dist-root-relative path (forward-slash normalized, `dist/` prefix
+    // stripped). `collect_preserved_entries` computes the same relative
+    // path from `dest` and uses it as the lookup key so multi-arch
+    // same-basename files are distinguished.
     let report_by_rel_path: HashMap<String, &anodizer_core::ArtifactRow> = report
         .artifacts
         .iter()
@@ -766,6 +765,115 @@ mod tests {
                 .join("makeself/default/linux_arm64/anodizer")
                 .exists(),
             "makeself/linux_arm64/anodizer must be preserved",
+        );
+    }
+
+    /// End-to-end multi-arch contract: threads a same-basename multi-arch
+    /// fixture through the full pipeline (discover_artifacts → hash_artifacts
+    /// → build a DeterminismReport carrying those rows → preserve_dist_tree →
+    /// write_preserved_dist_context → read context.json back) and asserts
+    /// that BOTH per-arch entries land in the manifest carrying the hashes
+    /// the harness recorded (not freshly re-hashed against disk). Catches a
+    /// key-contract drift between the hashing layer and the preservation
+    /// lookup that the piece-wise tests cannot.
+    #[test]
+    fn multi_arch_round_trip_preserves_distinct_hashes_from_report() {
+        use super::super::artifacts::{discover_artifacts, hash_artifacts};
+
+        let wt = TempDir::new().unwrap();
+        let dest = TempDir::new().unwrap();
+
+        // Two arch dirs, both containing a file named `anodizer` with
+        // distinct bytes. Plus a top-level dist artifact for good measure.
+        let dist = wt.path().join("dist");
+        std::fs::create_dir_all(dist.join("makeself/default/linux_amd64")).unwrap();
+        std::fs::create_dir_all(dist.join("makeself/default/linux_arm64")).unwrap();
+        std::fs::write(
+            dist.join("makeself/default/linux_amd64/anodizer"),
+            b"amd64-bytes-original",
+        )
+        .unwrap();
+        std::fs::write(
+            dist.join("makeself/default/linux_arm64/anodizer"),
+            b"arm64-bytes-original",
+        )
+        .unwrap();
+
+        // Drive the real pipeline: discover → hash.
+        let paths = discover_artifacts(wt.path()).unwrap();
+        let hash_map = hash_artifacts(wt.path(), &paths).unwrap();
+        let amd64_key = "makeself/default/linux_amd64/anodizer";
+        let arm64_key = "makeself/default/linux_arm64/anodizer";
+        let amd64_hash = hash_map[amd64_key].hash.clone();
+        let arm64_hash = hash_map[arm64_key].hash.clone();
+        assert_ne!(
+            amd64_hash, arm64_hash,
+            "fixture must produce distinct hashes"
+        );
+
+        // Synthesize the report `Harness::build_report` would emit: one row
+        // per map entry, `name` = the map key, `path` = the dist-prefixed
+        // relative path.
+        let mut report = empty_report("e2e-commit");
+        for (key, info) in &hash_map {
+            report.artifacts.push(ArtifactRow {
+                name: key.clone(),
+                path: format!("dist/{}", key),
+                size_bytes: info.size_bytes,
+                stage: info.stage.clone(),
+                deterministic: true,
+                nondeterministic_reason: None,
+                hash: Some(info.hash.clone()),
+                hashes: vec![],
+            });
+        }
+
+        // Run the preservation pipeline against the real wt → dest copy.
+        preserve_dist_tree(wt.path(), dest.path()).expect("preserve_dist_tree");
+
+        // Tamper with the preserved arm64 bytes AFTER the report was built.
+        // If `write_preserved_dist_context` re-hashes from disk instead of
+        // pulling from the report, the recorded hash will diverge from
+        // `arm64_hash` and the assertion below will fail.
+        std::fs::write(
+            dest.path().join("makeself/default/linux_arm64/anodizer"),
+            b"arm64-bytes-MUTATED",
+        )
+        .unwrap();
+
+        write_preserved_dist_context(
+            dest.path(),
+            ContextInputs {
+                report: &report,
+                harness_targets: None,
+                version_hint: "0.0.0-fixture",
+            },
+        )
+        .expect("write_preserved_dist_context");
+
+        // Read back and assert both arch entries carry the REPORT's hash.
+        let ctx: PreservedDistContext =
+            serde_json::from_slice(&std::fs::read(dest.path().join("context.json")).unwrap())
+                .unwrap();
+        let amd64_entry = ctx
+            .artifacts
+            .iter()
+            .find(|a| a.path == amd64_key)
+            .unwrap_or_else(|| panic!("amd64 entry missing in {:?}", ctx.artifacts));
+        let arm64_entry = ctx
+            .artifacts
+            .iter()
+            .find(|a| a.path == arm64_key)
+            .unwrap_or_else(|| panic!("arm64 entry missing in {:?}", ctx.artifacts));
+        assert_eq!(
+            amd64_entry.sha256, amd64_hash,
+            "amd64 entry must carry the harness-recorded hash"
+        );
+        assert_eq!(
+            arm64_entry.sha256, arm64_hash,
+            "arm64 entry must carry the harness-recorded hash even after \
+             the bytes on disk were tampered with — proves the lookup hit \
+             the report instead of re-hashing"
         );
     }
 

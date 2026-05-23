@@ -16,8 +16,8 @@
 //! emits when `rollback()` is invoked with no evidence to act on. Exposed
 //! as a free function so unit tests can pin the wording without needing to
 //! capture stderr (`eprintln!` cannot be intercepted from the same process
-//! portably). Each Bundle A publisher's `rollback()` calls this helper for
-//! the empty-evidence branch.
+//! portably). Publishers whose `rollback()` is a no-op when evidence is
+//! empty call this helper for the user-facing warn line.
 //!
 //! [`is_top_level_block_configured`] is the canonical shape for the
 //! `is_X_configured` predicates that walk a `Option<Vec<_>>` field on
@@ -69,9 +69,9 @@ pub(crate) fn effective_publish_crates(
         .collect()
 }
 
-/// Canonical wording for a Bundle B publisher's rollback failure warn line.
+/// Canonical wording for a PR-based publisher's rollback failure warn line.
 ///
-/// Bundle B rollbacks shell out to `git revert HEAD --no-edit` + `git push`.
+/// PR-based rollbacks shell out to `git revert HEAD --no-edit` + `git push`.
 /// The dominant failure mode operators hit is missing-credentials: `git`
 /// prints `could not read Username for 'https://github.com'` and exits
 /// non-zero. The operator-facing warn line needs to name (1) the publisher

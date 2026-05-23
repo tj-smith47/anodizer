@@ -707,7 +707,7 @@ mod tests {
     /// Regression: keying by basename collapses e.g.
     /// `dist/makeself/default/linux_amd64/anodizer` and
     /// `dist/makeself/default/linux_arm64/anodizer` — the second write
-    /// overwrites the first. After the D1 fix the key is dist-root-relative
+    /// overwrites the first. The current key is the dist-root-relative
     /// path, so both entries survive and carry their distinct hashes.
     #[test]
     fn hash_artifacts_distinguishes_same_basename_across_arch_dirs() {
