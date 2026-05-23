@@ -1669,6 +1669,62 @@ fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
 }
 
+/// Message emitted at publisher entry. Names how many crates the publisher
+/// is iterating over. Factored into a helper so tests can pin the exact
+/// substring an operator scans the log for.
+pub(crate) fn run_start_message(selected_total: usize) -> String {
+    format!(
+        "krew: starting publish for {} selected crate(s)",
+        selected_total
+    )
+}
+
+/// Message emitted when a selected crate has no `publish.krew` block.
+/// Replaces what used to be a silent `continue` — operators need to see
+/// why a per-crate publish was a no-op rather than guess from a blank log.
+pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
+    format!(
+        "krew: skipping crate '{}' — no krew config block",
+        crate_name
+    )
+}
+
+/// Message emitted just before delegating to `publish_to_krew`. Anchors
+/// the krew activity (plugin manifest render, fork clone, PR submission)
+/// to a specific crate in the log so multi-crate workspaces are
+/// disambiguatable.
+pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
+    format!("krew: starting per-crate publish for '{}'", crate_name)
+}
+
+/// Final summary emitted at publisher exit. `processed` is the count of
+/// crates the publisher actually invoked `publish_to_krew` on (not the
+/// count of successful PRs — `publish_to_krew` has its own skip paths for
+/// skip_upload/dry-run/etc., each of which logs its own status line).
+pub(crate) fn run_done_message(processed: usize) -> String {
+    format!("krew: completed — {} crate(s) processed", processed)
+}
+
+/// Warning emitted when the publisher was registered (at least one crate
+/// has a `publish.krew` block at the config level) but the run path
+/// processed zero crates.
+///
+/// With the implicit-all default in
+/// [`crate::publisher_helpers::effective_publish_crates`], an empty
+/// `selected_crates` resolves to every crate carrying a `publish.krew`
+/// block — so a zero-processed run means `--crate`/`--all` matrix
+/// selection was non-empty AND filtered every krew-configured crate out.
+/// Operators must see this — otherwise the publisher's `succeeded` status
+/// hides the fact that nothing was pushed.
+pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
+    format!(
+        "krew: registered but 0 of {} effective crate(s) had a krew \
+         config block — nothing pushed. Check that --crate / --all selects a \
+         crate whose publish.krew block is set.",
+        selected_total
+    )
+}
+
 impl anodizer_core::Publisher for KrewPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -1690,11 +1746,21 @@ impl anodizer_core::Publisher for KrewPublisher {
         let targets = collect_krew_run_targets(ctx);
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_krew_per_crate_configured);
+        log.status(&run_start_message(selected.len()));
+        let mut processed = 0usize;
         for crate_name in &selected {
             if !is_krew_per_crate_configured(ctx, crate_name) {
+                log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
+            log.status(&run_per_crate_start_message(crate_name));
             publish_to_krew(ctx, crate_name, &log)?;
+            processed += 1;
+        }
+        if processed == 0 && !selected.is_empty() {
+            log.warn(&run_no_eligible_crates_warning(selected.len()));
+        } else {
+            log.status(&run_done_message(processed));
         }
         let mut evidence = anodizer_core::PublishEvidence::new("krew");
         evidence.extra = serde_json::json!({ "krew_targets": targets });
@@ -2064,5 +2130,96 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].upstream_owner, "custom-org");
         assert_eq!(targets[0].upstream_repo, "custom-index");
+    }
+
+    // -----------------------------------------------------------------------
+    // Log-message helpers — the operator-facing log strings the publisher
+    // emits at each boundary.
+
+    #[test]
+    fn run_start_message_names_selected_total() {
+        let msg = run_start_message(3);
+        assert!(msg.starts_with("krew:"), "{msg}");
+        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.contains("3 selected"), "{msg}");
+    }
+
+    #[test]
+    fn run_skip_unconfigured_message_names_crate() {
+        let msg = run_skip_unconfigured_message("demo");
+        assert!(msg.starts_with("krew:"), "{msg}");
+        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(msg.contains("no krew config block"), "{msg}");
+    }
+
+    #[test]
+    fn run_per_crate_start_message_names_crate() {
+        let msg = run_per_crate_start_message("demo");
+        assert!(msg.starts_with("krew:"), "{msg}");
+        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.contains("'demo'"), "{msg}");
+    }
+
+    #[test]
+    fn run_done_message_reports_processed_count() {
+        let msg = run_done_message(2);
+        assert!(msg.starts_with("krew:"), "{msg}");
+        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+    }
+
+    #[test]
+    fn run_no_eligible_crates_warning_names_remediation() {
+        let msg = run_no_eligible_crates_warning(5);
+        assert!(msg.starts_with("krew:"), "{msg}");
+        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.contains("0 of 5 effective"), "{msg}");
+        assert!(msg.contains("nothing pushed"), "{msg}");
+        assert!(msg.contains("--crate"), "{msg}");
+        assert!(msg.contains("--all"), "{msg}");
+    }
+
+    /// Run the publisher end-to-end in dry-run mode against a context that
+    /// selects a krew-configured crate. Verifies the run path is wired
+    /// (returns Ok). The log lines are written to stderr and asserted
+    /// indirectly via the helper-string tests above.
+    #[test]
+    fn krew_publisher_run_dry_run_returns_ok() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![krew_crate("demo")])
+            .selected_crates(vec!["demo".to_string()])
+            .dry_run(true)
+            .build();
+        let p = KrewPublisher::new();
+        let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
+        // dry-run publish_to_krew short-circuits; evidence is still
+        // populated from collect_krew_run_targets. We only assert no error.
+        let _ = decode_krew_targets(&evidence.extra);
+    }
+
+    /// When the publisher is registered (a crate has a krew block) but the
+    /// selected-crates filter excludes every krew-configured crate, the run
+    /// path must still return Ok and the processed count is zero.
+    #[test]
+    fn krew_publisher_run_no_eligible_crates_returns_ok() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                krew_crate("demo"),
+                CrateConfig {
+                    name: "other".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            // Select only the non-krew crate — publisher registered but
+            // run path will iterate zero krew-configured crates.
+            .selected_crates(vec!["other".to_string()])
+            .dry_run(true)
+            .build();
+        let p = KrewPublisher::new();
+        // Must return Ok even when no krew-configured crate is selected.
+        p.run(&mut ctx).expect("publisher.run ok");
     }
 }

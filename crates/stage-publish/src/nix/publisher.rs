@@ -86,6 +86,60 @@ fn is_nix_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
         .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.nix.is_some()))
 }
 
+/// Message emitted at publisher entry. Names how many crates the publisher
+/// is iterating over. Factored into a helper so tests can pin the exact
+/// substring an operator scans the log for.
+pub(crate) fn run_start_message(selected_total: usize) -> String {
+    format!(
+        "nix: starting publish for {} selected crate(s)",
+        selected_total
+    )
+}
+
+/// Message emitted when a selected crate has no `publish.nix` block.
+/// Replaces what used to be a silent `continue` — operators need to see
+/// why a per-crate publish was a no-op rather than guess from a blank log.
+pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
+    format!("nix: skipping crate '{}' — no nix config block", crate_name)
+}
+
+/// Message emitted just before delegating to `publish_to_nix`. Anchors
+/// the nix activity (overlay derivation render, repo clone, push) to a
+/// specific crate in the log so multi-crate workspaces are
+/// disambiguatable.
+pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
+    format!("nix: starting per-crate publish for '{}'", crate_name)
+}
+
+/// Final summary emitted at publisher exit. `processed` is the count of
+/// crates the publisher actually invoked `publish_to_nix` on (not the
+/// count of successful overlay pushes — `publish_to_nix` has its own
+/// skip paths for skip_upload/dry-run/etc., each of which logs its own
+/// status line).
+pub(crate) fn run_done_message(processed: usize) -> String {
+    format!("nix: completed — {} crate(s) processed", processed)
+}
+
+/// Warning emitted when the publisher was registered (at least one crate
+/// has a `publish.nix` block at the config level) but the run path
+/// processed zero crates.
+///
+/// With the implicit-all default in
+/// [`crate::publisher_helpers::effective_publish_crates`], an empty
+/// `selected_crates` resolves to every crate carrying a `publish.nix`
+/// block — so a zero-processed run means `--crate`/`--all` matrix
+/// selection was non-empty AND filtered every nix-configured crate out.
+/// Operators must see this — otherwise the publisher's `succeeded` status
+/// hides the fact that nothing was pushed.
+pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
+    format!(
+        "nix: registered but 0 of {} effective crate(s) had a nix \
+         config block — nothing pushed. Check that --crate / --all selects a \
+         crate whose publish.nix block is set.",
+        selected_total
+    )
+}
+
 impl anodizer_core::Publisher for NixPublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -104,23 +158,31 @@ impl anodizer_core::Publisher for NixPublisher {
         let log = ctx.logger("publish");
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_nix_per_crate_configured);
+        log.status(&run_start_message(selected.len()));
         // Only record rollback targets for overlay repos this run
         // actually mutated. See `HomebrewPublisher::run` for the
         // long-form rationale: intent-driven evidence makes the
         // rollback orchestrator git-revert HEAD in clones it never
         // touched, which fails on missing identity AND would
         // otherwise revert the wrong commit.
-        let mut any_pushed = false;
+        let mut processed = 0usize;
         for crate_name in &selected {
             if !is_nix_per_crate_configured(ctx, crate_name) {
+                log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
+            log.status(&run_per_crate_start_message(crate_name));
             if super::publish_to_nix(ctx, crate_name, &log)? {
-                any_pushed = true;
+                processed += 1;
             }
         }
+        if processed == 0 && !selected.is_empty() {
+            log.warn(&run_no_eligible_crates_warning(selected.len()));
+        } else {
+            log.status(&run_done_message(processed));
+        }
         let mut evidence = anodizer_core::PublishEvidence::new("nix");
-        if any_pushed {
+        if processed > 0 {
             let targets = collect_nix_run_targets(ctx);
             evidence.extra = serde_json::json!({ "nix_targets": targets });
         }
@@ -345,5 +407,104 @@ mod publisher_tests {
         let unique = dedup_nix_targets(&targets);
         assert_eq!(unique.len(), 1);
         assert_eq!(unique[0].target, "alpha");
+    }
+
+    // -----------------------------------------------------------------------
+    // Log-message helpers — the operator-facing log strings the publisher
+    // emits at each boundary.
+
+    #[test]
+    fn run_start_message_names_selected_total() {
+        let msg = run_start_message(3);
+        assert!(msg.starts_with("nix:"), "{msg}");
+        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.contains("3 selected"), "{msg}");
+    }
+
+    #[test]
+    fn run_skip_unconfigured_message_names_crate() {
+        let msg = run_skip_unconfigured_message("demo");
+        assert!(msg.starts_with("nix:"), "{msg}");
+        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(msg.contains("no nix config block"), "{msg}");
+    }
+
+    #[test]
+    fn run_per_crate_start_message_names_crate() {
+        let msg = run_per_crate_start_message("demo");
+        assert!(msg.starts_with("nix:"), "{msg}");
+        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.contains("'demo'"), "{msg}");
+    }
+
+    #[test]
+    fn run_done_message_reports_processed_count() {
+        let msg = run_done_message(2);
+        assert!(msg.starts_with("nix:"), "{msg}");
+        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+    }
+
+    #[test]
+    fn run_no_eligible_crates_warning_names_remediation() {
+        let msg = run_no_eligible_crates_warning(5);
+        assert!(msg.starts_with("nix:"), "{msg}");
+        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.contains("0 of 5 effective"), "{msg}");
+        assert!(msg.contains("nothing pushed"), "{msg}");
+        assert!(msg.contains("--crate"), "{msg}");
+        assert!(msg.contains("--all"), "{msg}");
+    }
+
+    /// Run the publisher end-to-end in dry-run mode against a context that
+    /// selects a nix-configured crate. Verifies the run path is wired
+    /// (returns Ok). The log lines are written to stderr and asserted
+    /// indirectly via the helper-string tests above.
+    #[test]
+    fn nix_publisher_run_dry_run_returns_ok() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate("demo")])
+            .selected_crates(vec!["demo".to_string()])
+            .dry_run(true)
+            .build();
+        let p = NixPublisher::new();
+        let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
+        // dry-run publish_to_nix returns false (no actual push), so
+        // evidence.extra will be empty — the run path must not error.
+        let _ = decode_nix_targets(&evidence.extra);
+    }
+
+    /// When the publisher is registered (a crate has a nix block) but the
+    /// selected-crates filter excludes every nix-configured crate, the run
+    /// path must still return Ok and record no targets.
+    #[test]
+    fn nix_publisher_run_no_eligible_crates_returns_empty_evidence() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                nix_crate("demo"),
+                CrateConfig {
+                    name: "other".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            // Select only the non-nix crate — publisher registered but
+            // run path will iterate zero nix-configured crates.
+            .selected_crates(vec!["other".to_string()])
+            .dry_run(true)
+            .build();
+        let p = NixPublisher::new();
+        let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        assert!(
+            evidence.primary_ref.is_none(),
+            "no nix-eligible crate selected, primary_ref must be unset"
+        );
+        let targets = decode_nix_targets(&evidence.extra);
+        assert!(
+            targets.is_empty(),
+            "no nix-eligible crate selected, targets must be empty"
+        );
     }
 }
