@@ -24,34 +24,15 @@ This guide walks through:
 
 ## Release-stage retry flags
 
-Two config fields on the `release:` block make individual release-stage runs
-idempotent without requiring a full rollback:
+Two flags on the `release:` block make individual release-stage runs idempotent
+without requiring a full rollback:
 
-```yaml
-release:
-  replace_existing_draft: true       # re-run replaces an existing draft release
-  replace_existing_artifacts: true   # re-uploaded assets overwrite same-named ones
-```
+- `release.replace_existing_draft` — DELETE-and-recreate a draft release with the same name
+- `release.replace_existing_artifacts` — DELETE-and-re-upload an asset that conflicts with new bytes
 
-| Field | Default | Semantics |
-|---|---|---|
-| `replace_existing_draft` | `false` | When the release stage runs against a tag that already has a draft release, replace it instead of erroring. No-op when the existing release is already published. |
-| `replace_existing_artifacts` | `false` | When uploading assets, overwrite any already-uploaded artifact with the same filename. Without this, a second upload of the same artifact name returns a 422 from the GitHub API. |
-
-Both are needed for a robust retry flow:
-
-```yaml
-# Recommended for retry-able release workflows:
-release:
-  replace_existing_draft: true
-  replace_existing_artifacts: true
-```
-
-Without `replace_existing_draft`, retrying after a partial release failure fails
-immediately because the draft already exists. Without `replace_existing_artifacts`,
-every already-uploaded artifact causes a 422 even when the content is identical.
-These flags are safe to set permanently — a fresh first-run has no existing draft
-or assets, so they are no-ops on the happy path.
+Both are safe to set permanently; they are no-ops when there is no existing draft or conflicting asset.
+See [Recovery flags](./recovery-flags.md) for the full mechanism, the equivalent flags on every other
+publisher, and operational guidance.
 
 ## Publisher groups
 
@@ -414,5 +395,7 @@ anodize release \
 | `--allow-rerun` | DANGEROUS: force `release` to re-run publish even when a prior `dist/run-<id>/report.json` exists. PR-based publishers (homebrew/scoop/nix/krew/MCP) will open duplicate PRs. Prefer `--rollback-only --from-run=<id>` first. | off |
 | `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | unset |
 
-See also: [Determinism](./determinism.md) for the byte-stability contract that
-backs safe retries when a publisher reports a byte mismatch.
+See also:
+
+- [Determinism](./determinism.md) — byte-stability contract that backs safe retries when a publisher reports a byte mismatch
+- [Recovery flags](./recovery-flags.md) — per-publisher conflict-resolution flags (replace_existing_draft, replace_existing_artifacts, republish_in_moderation, update_existing_pr, cloudsmith.republish)

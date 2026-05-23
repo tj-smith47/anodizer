@@ -35,7 +35,7 @@ When uploading a release asset and the server returns `422 already_exists`, anod
 
 Anodizer queries the Chocolatey OData feed for the version being published. If `<d:PackageStatus>` is `Submitted` (in moderation queue), the default is to skip with a warning. With this flag set, anodizer falls through to `choco push` anyway. Chocolatey's [moderation policy](https://github.com/chocolatey/choco-wiki/blob/master/Moderation.md) documents same-version resubmission during review ("make the required changes and resubmit the **exact** same version") — but the community-feed API may still reject the push with a 409 Conflict depending on queue state. If the push fails, the warning + dispatch summary surfaces it.
 
-### `*.update_existing_pr` (winget, krew, homebrew cask)
+### `update_existing_pr` (winget, krew, homebrew cask)
 
 When `gh pr create` reports a PR for the same head branch already exists, the default is to skip with a warning. With this flag set, anodizer runs `git push --force-with-lease origin <branch>` to overwrite the existing PR's branch — the open PR auto-picks up the new content without creating a duplicate. The `--force-with-lease` guard refuses to push if someone else has committed to the branch since you last fetched.
 
@@ -45,7 +45,7 @@ Cloudsmith treats versions as immutable by default. Setting `republish: true` op
 
 ## Operational guidance
 
-- **Recommended posture for production releases:** all of these flags should be `true` unless you have a specific reason to leave a conflict in place. They are no-ops when there's no conflict, so setting them `true` carries no downside outside the conflict path.
+- **Recommended posture for production releases:** all of these flags should be `true` unless you have a specific reason to leave a conflict in place (note `republish_in_moderation`'s 409 caveat above). They are no-ops when there's no conflict, so setting them `true` carries no downside outside the conflict path.
 - **Leaving them off:** the failure mode is a stuck release pipeline — anodizer skips the publisher and emits a warning, but the publisher target is unchanged. Operators have to clean up manually.
 - **Rollback interaction:** these flags only affect the *publish* path. The rollback path (see [Release resilience](release-resilience.md)) operates independently and always force-cleans publisher state regardless of how these flags are set.
 

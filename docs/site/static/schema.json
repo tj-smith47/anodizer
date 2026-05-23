@@ -4626,6 +4626,18 @@
             "type": "string"
           }
         },
+        "hooks": {
+          "description": "Pre/post hooks for this docker_v2 config. Each hook accepts the same `cmd`/`dir`/`env`/`output` shape as build/archive hooks. `pre` hooks run after the staging directory is prepared but before `docker buildx build`; `post` hooks run after the image digest is captured. Hook commands, working directories, and env values are template-expanded; in addition to the standard template surface, hooks see:\n\n- `{{ .Images }}` — comma-separated `image:tag` references for this build - `{{ .Dockerfile }}` — path to the rendered Dockerfile - `{{ .ContextDir }}` — path to the buildx context staging directory - `{{ .Digest }}` — image manifest digest (post hooks only)",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BuildHooksConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "id": {
           "description": "Unique identifier for this Docker V2 config.",
           "default": null,
@@ -8883,6 +8895,14 @@
         },
         "license": {
           "description": "Nix license identifier (e.g. \"mit\", \"asl20\"). Validated against known licenses.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "main_program": {
+          "description": "Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = \"<value>\";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ .Version }}` etc. Omitted when unset.",
           "default": null,
           "type": [
             "string",

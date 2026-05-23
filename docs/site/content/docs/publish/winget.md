@@ -79,7 +79,7 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `product_code` | string | none | Product code for Add/Remove Programs |
 | `use` | string | `archive` | Artifact type: `archive`, `msi`, or `nsis` |
 | `amd64_variant` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
-| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior). |
+| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update_existing_pr-winget-krew-homebrew-cask). |
 
 ## Repository config
 

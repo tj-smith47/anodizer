@@ -48,7 +48,7 @@ Both `repository` and `short_description` are required. The publisher will error
 | `skip_upload` | bool or string | `false` | Generate the manifest but skip the upload step; `true` always skips, `"auto"` skips for pre-releases |
 | `amd64_variant` | string | `"v1"` | amd64 microarchitecture variant filter (`"v1"`, `"v2"`, `"v3"`, `"v4"`) |
 | `arm_variant` | string | none | ARM version filter (`"6"`, `"7"`) |
-| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior). |
+| `update_existing_pr` | bool or string | `false` | Force-push to an existing open PR branch instead of skipping. See [Existing PR behavior](#existing-pr-behavior) and [Recovery flags](../advanced/recovery-flags.md#update_existing_pr-winget-krew-homebrew-cask). |
 
 All string fields support Tera template rendering (e.g. `{{ ProjectName }}`, `{{ Version }}`).
 
