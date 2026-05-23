@@ -374,16 +374,16 @@ crates:
         summary: "A Rust-native release automation tool"
         description: "A Rust-native release automation tool"
         authors: "TJ Smith"
+        owners: "tj-smith47"
         copyright: "Copyright © 2026 TJ Smith"
         license: MIT
         require_license_acceptance: false
         project_url: "https://github.com/tj-smith47/anodizer"
-        project_source_url: "https://github.com/tj-smith47/anodizer"
         package_source_url: "https://github.com/tj-smith47/anodizer/tree/{{ .Tag }}/crates/cli"
         docs_url: "https://tj-smith47.github.io/anodizer/docs/reference/configuration/"
         bug_tracker_url: "https://github.com/tj-smith47/anodizer/issues"
         release_notes: "https://github.com/tj-smith47/anodizer/releases/tag/{{ .Tag }}"
-        icon_url: "https://raw.githubusercontent.com/tj-smith47/anodizer/main/assets/logo.png"
+        icon_url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/assets/logo.png"
         tags:
           - release
           - automation
