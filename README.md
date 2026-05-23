@@ -171,6 +171,37 @@ crates:
 
 See the [full configuration reference](https://tj-smith47.github.io/anodizer/docs/reference/configuration/) and the [template reference](https://tj-smith47.github.io/anodizer/docs/general/templates/) for all available fields, variables, and filters.
 
+## Real-world adoption: cfgd
+
+[`cfgd`](https://github.com/tj-smith47/cfgd) — declarative, GitOps-style machine configuration management — is anodizer's first real-world adopter and dogfoods every shipped publisher. It's a 4-crate workspace (shared lib + CLI + Kubernetes operator + CSI driver) that ships to crates.io (dependency-aware ordering), GitHub Releases, Homebrew, Scoop, Chocolatey, Winget, the Snap Store, Krew, GHCR, and via `cargo binstall` — all from one `.anodizer.yaml` and one tag push.
+
+A condensed slice of [cfgd's `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml):
+
+```yaml
+workspaces:
+  - name: cfgd-core
+    crates:
+      - name: cfgd-core
+        tag_template: "core-v{{ Version }}"
+        version_sync: { enabled: true, mode: cargo }
+
+  - name: cfgd
+    crates:
+      - name: cfgd
+        depends_on: [cfgd-core]
+        version_sync: { enabled: true, mode: cargo }
+        universal_binaries:
+          - name_template: "{{ ProjectName }}"
+            replace: false
+        binstall:
+          enabled: true
+          pkg_url: "https://github.com/tj-smith47/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-{ target }.tar.gz"
+          pkg_fmt: tgz
+  # ... cfgd-operator, cfgd-csi
+```
+
+Every cell of [What works (with proof)](https://tj-smith47.github.io/anodizer/dogfooding/) links to a real published cfgd artifact for the feature in question — that's the verification surface.
+
 ## GitHub Actions
 
 Anodizer ships a first-party action, [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action), which is what this repo dogfoods in its own `release.yml`:

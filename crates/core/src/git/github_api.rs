@@ -179,7 +179,6 @@ pub fn create_tag_via_github_api(
     // Get the current HEAD SHA to point the tag at.
     let sha = git_output(&["rev-parse", "HEAD"])?;
 
-    // Step 1: Create the tag object
     let body = serde_json::json!({
         "tag": tag,
         "message": message,
@@ -213,7 +212,6 @@ pub fn create_tag_via_github_api(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("GitHub API response missing 'sha' field"))?;
 
-    // Step 2: Create the ref pointing to the tag object
     let ref_body = serde_json::json!({
         "ref": format!("refs/tags/{}", tag),
         "sha": tag_sha,

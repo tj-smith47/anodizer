@@ -592,8 +592,8 @@ impl Stage for SnapcraftStage {
                         anodizer_core::util::apply_mod_timestamp(&prime_dir, ts, &log)?;
                     }
 
-                    // Step 1 done: compose subprocess args and hand the
-                    // staged work to the parallel worker pool.
+                    // Compose subprocess args and hand the staged work
+                    // to the parallel worker pool.
                     let cmd_args = snapcraft_command(
                         &prime_dir.to_string_lossy(),
                         &snap_path.to_string_lossy(),
@@ -623,9 +623,9 @@ impl Stage for SnapcraftStage {
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // ----------------------------------------------------------------
-        // Step 2 (parallel): run `snapcraft pack` per job. Bounded
-        // concurrency via chunks(parallelism). Each worker returns the
-        // populated Artifact; Step 3 registers them serially.
+        // Parallel: run `snapcraft pack` per job. Bounded concurrency via
+        // chunks(parallelism). Each worker returns the populated Artifact
+        // for serial registration below.
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &SnapcraftJob| -> Result<Artifact> {

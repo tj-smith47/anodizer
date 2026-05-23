@@ -113,8 +113,8 @@ impl Stage for super::BuildStage {
         }
 
         // -----------------------------------------------------------------
-        // Step 1: Flatten the nested (crate, build, target) loops into a
-        // list of BuildJob descriptors. No compilation happens here.
+        // Flatten the nested (crate, build, target) loops into a list of
+        // BuildJob descriptors. No compilation happens here.
         // -----------------------------------------------------------------
 
         /// A fully-resolved description of one build unit.
@@ -772,7 +772,7 @@ impl Stage for super::BuildStage {
         }
 
         // -----------------------------------------------------------------
-        // Step 1.5: Ensure cross-compilation targets are installed via rustup.
+        // Ensure cross-compilation targets are installed via rustup.
         // -----------------------------------------------------------------
 
         {
@@ -793,7 +793,7 @@ impl Stage for super::BuildStage {
         }
 
         // -----------------------------------------------------------------
-        // Step 2: Execute build jobs (with parallelism) then copy_from jobs.
+        // Execute build jobs (with parallelism) then copy_from jobs.
         // -----------------------------------------------------------------
 
         // Rust builds sharing the same workspace target/ directory can deadlock
@@ -1058,7 +1058,7 @@ impl Stage for super::BuildStage {
                     let handles: Vec<_> = chunk
                         .iter()
                         .map(|job| {
-                            // Step 1 populates `job.cmd` for every build job (copy-from-only
+                            // `job.cmd` is populated for every build job (copy-from-only
                             // jobs take a separate code path). If it's absent here, that's a
                             // pipeline invariant violation — surface as an error, not a panic,
                             // so the worker thread unwinds through the Result channel instead

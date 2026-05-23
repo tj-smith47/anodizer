@@ -113,24 +113,24 @@ pub(super) fn preprocess_go_builtins(template: &str) -> String {
 fn rewrite_go_builtins_in_expr(expr: &str) -> String {
     let mut result = expr.to_string();
 
-    // Step 1: Rewrite `and`/`or` with parenthesized args.
+    // Rewrite `and`/`or` with parenthesized args first.
     // Pattern: `and/or (EXPR1) (EXPR2)` where EXPR can contain `eq`/`ne`/etc.
-    // We process the inner expressions first, then combine with the logical op.
+    // Inner expressions are processed first, then combined with the logical op.
     result = rewrite_logical_with_paren_args(&result);
 
-    // Step 2: Rewrite `not (COMPARISON_FUNC X Y)` → `not X OP Y`
+    // Rewrite `not (COMPARISON_FUNC X Y)` → `not X OP Y`
     result = rewrite_not_with_paren_comparison(&result);
 
-    // Step 3: Rewrite top-level comparison functions: `eq X Y` → `X == Y`
+    // Rewrite top-level comparison functions: `eq X Y` → `X == Y`
     for (func_name, operator) in COMPARISON_OPS {
         result = rewrite_prefix_to_infix(&result, func_name, operator);
     }
 
-    // Step 4: Rewrite top-level logical functions: `and X Y` → `X and Y`
+    // Rewrite top-level logical functions: `and X Y` → `X and Y`
     result = rewrite_prefix_to_infix(&result, "and", "and");
     result = rewrite_prefix_to_infix(&result, "or", "or");
 
-    // Step 5: Rewrite `len X` → `X | length`
+    // Rewrite `len X` → `X | length`
     result = rewrite_len(&result);
 
     result

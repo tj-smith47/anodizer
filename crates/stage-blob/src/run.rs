@@ -78,9 +78,9 @@ impl Default for BlobStage {
     }
 }
 
-/// A fully-prepared blob upload job. Step 1 (serial, `&mut ctx`) renders
-/// templates, builds the ObjectStore, pre-renders per-item put options;
-/// Step 2 (parallel) runs the per-config upload via `upload_files_owned`.
+/// A fully-prepared blob upload job. The serial phase (`&mut ctx`) renders
+/// templates, builds the ObjectStore, and pre-renders per-item put options;
+/// the parallel phase runs the per-config upload via `upload_files_owned`.
 /// Workers never touch `ctx`.
 struct BlobJob {
     provider_display: &'static str,
@@ -293,7 +293,7 @@ impl BlobStage {
             }
         }
 
-        // Step 1 (serial): render every config, build stores, collect jobs.
+        // Serial: render every config, build stores, collect jobs.
         let mut jobs: Vec<BlobJob> = Vec::new();
 
         for krate in &crates {
@@ -525,10 +525,10 @@ impl BlobStage {
             return Ok((Vec::new(), None));
         }
 
-        // Step 2 (parallel across configs): each worker runs its own
-        // upload loop (which itself has intra-config per-file concurrency
-        // via tokio). Bounded by the global parallelism so we don't fan
-        // out unbounded across both axes simultaneously.
+        // Parallel across configs: each worker runs its own upload loop
+        // (which itself has intra-config per-file concurrency via tokio).
+        // Bounded by the global parallelism so we don't fan out unbounded
+        // across both axes simultaneously.
         //
         // One tokio runtime is shared across every job — N parallel jobs
         // would otherwise allocate N independent thread pools.

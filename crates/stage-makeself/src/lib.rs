@@ -187,9 +187,9 @@ fn group_by_platform(artifacts: &[Artifact]) -> BTreeMap<String, Vec<&Artifact>>
 
 pub struct MakeselfStage;
 
-/// A fully-prepared makeself job ready for parallel execution. Step 1
-/// (serial, requires `&mut ctx` for template rendering) populates this;
-/// Step 2 (parallel, `std::thread::scope`) consumes it — filesystem
+/// A fully-prepared makeself job ready for parallel execution. The serial
+/// phase (requires `&mut ctx` for template rendering) populates this;
+/// the parallel phase (`std::thread::scope`) consumes it — filesystem
 /// preparation + `makeself` subprocess only. Struct carries only owned data
 /// so worker threads never touch `ctx`.
 struct MakeselfJob {
@@ -247,8 +247,8 @@ impl Stage for MakeselfStage {
         let project_name = ctx.config.project_name.clone();
 
         // ----------------------------------------------------------------
-        // Step 1 (serial): render every template, collect MakeselfJob
-        // structs containing fully-owned data ready for parallel exec.
+        // Serial: render every template, collect MakeselfJob structs
+        // containing fully-owned data ready for parallel exec.
         // ----------------------------------------------------------------
         let mut jobs: Vec<MakeselfJob> = Vec::new();
 
@@ -562,10 +562,10 @@ impl Stage for MakeselfStage {
         }
 
         // ----------------------------------------------------------------
-        // Step 2 (parallel): each job = one `makeself` subprocess invocation
-        // with its own work dir. Bounded concurrency via chunks(parallelism).
-        // Workers return the fully-populated `Artifact` so Step 3 can
-        // register them serially in ctx.artifacts.
+        // Parallel: each job = one `makeself` subprocess invocation with
+        // its own work dir. Bounded concurrency via chunks(parallelism).
+        // Workers return the fully-populated `Artifact` for serial
+        // registration in ctx.artifacts below.
         // ----------------------------------------------------------------
         let run_job = |job: &MakeselfJob| -> Result<Artifact> {
             let thread_log = anodizer_core::log::StageLogger::new("makeself", log.verbosity());
@@ -684,8 +684,7 @@ impl Stage for MakeselfStage {
             anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, "makeself", run_job)?;
 
         // ----------------------------------------------------------------
-        // Step 3 (serial): register artifacts in ctx. Serial because
-        // ArtifactRegistry takes &mut self.
+        // Serial: register artifacts in ctx. ArtifactRegistry takes &mut self.
         // ----------------------------------------------------------------
         for artifact in built_artifacts {
             ctx.artifacts.add(artifact);

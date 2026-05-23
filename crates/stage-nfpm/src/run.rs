@@ -1,7 +1,7 @@
 //! `NfpmStage` — `Stage` implementation that drives `nfpm pkg` per crate / format.
 //!
-//! Step 1 (serial, `&mut ctx`) renders all templates and writes the YAML into
-//! `_tmp_dir`; Step 2 (parallel) runs `nfpm pkg --packager <format>`.
+//! The serial phase (`&mut ctx`) renders all templates and writes the YAML into
+//! `_tmp_dir`; the parallel phase runs `nfpm pkg --packager <format>`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -794,9 +794,9 @@ impl Stage for NfpmStage {
         }
 
         // ----------------------------------------------------------------
-        // Step 2 (parallel): run `nfpm pkg --packager <format>` per job.
-        // Bounded concurrency via chunks(parallelism). Each worker returns
-        // the populated Artifact; Step 3 registers them serially.
+        // Parallel: run `nfpm pkg --packager <format>` per job. Bounded
+        // concurrency via chunks(parallelism). Each worker returns the
+        // populated Artifact for serial registration below.
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &NfpmJob| -> Result<Artifact> {

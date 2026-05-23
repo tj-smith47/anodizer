@@ -492,14 +492,14 @@ impl Stage for NotarizeStage {
             );
         }
 
-        // Step 1: Cross-platform signing/notarization (rcodesign)
+        // Cross-platform signing/notarization (rcodesign)
         if let Some(ref macos_configs) = notarize_config.macos {
             for (idx, cfg) in macos_configs.iter().enumerate() {
                 run_cross_platform(ctx, cfg, idx, dry_run, &log)?;
             }
         }
 
-        // Step 2: Native signing/notarization (codesign + xcrun notarytool)
+        // Native signing/notarization (codesign + xcrun notarytool)
         if let Some(ref native_configs) = notarize_config.macos_native {
             for (idx, cfg) in native_configs.iter().enumerate() {
                 run_native(ctx, cfg, idx, dry_run, &log)?;
@@ -517,7 +517,7 @@ impl Stage for NotarizeStage {
 }
 
 // ---------------------------------------------------------------------------
-// Step 1: Cross-platform (rcodesign)
+// Cross-platform (rcodesign)
 // ---------------------------------------------------------------------------
 
 fn run_cross_platform(
@@ -730,7 +730,7 @@ fn run_cross_platform(
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Native (codesign + xcrun notarytool)
+// Native (codesign + xcrun notarytool)
 // ---------------------------------------------------------------------------
 
 /// Parameters for native signing/notarization, extracted from config before
@@ -849,7 +849,7 @@ fn run_native_dmg(
 ) -> Result<()> {
     let idx = params.idx;
 
-    // Step 1: Find AppBundle (Installer with format=appbundle) artifacts for darwin targets
+    // Find AppBundle (Installer with format=appbundle) artifacts for darwin targets
     let app_bundles: Vec<&Artifact> = ctx
         .artifacts
         .all()
@@ -919,7 +919,7 @@ fn run_native_dmg(
         }
     }
 
-    // Step 2: Find DiskImage artifacts for darwin targets and notarize each
+    // Find DiskImage artifacts for darwin targets and notarize each
     let dmg_artifacts: Vec<&Artifact> = ctx
         .artifacts
         .all()

@@ -112,10 +112,10 @@ impl Stage for super::DockerStage {
         let mut v2_multiplatform_tags: HashSet<String> = HashSet::new();
 
         // ==================================================================
-        // Step 1: Prepare all docker build jobs sequentially
+        // Prepare all docker build jobs sequentially.
         //
-        // This phase needs &mut Context for template rendering and artifact
-        // lookups.  Each job is fully self-contained after preparation.
+        // Needs &mut Context for template rendering and artifact lookups.
+        // Each job is fully self-contained after preparation.
         // ==================================================================
         let mut build_jobs: Vec<DockerBuildJob> = Vec::new();
         let mut config_post_hooks: Vec<PerConfigPostHook> = Vec::new();
@@ -608,11 +608,10 @@ impl Stage for super::DockerStage {
         }
 
         // ==================================================================
-        // Step 2: Execute docker build jobs in parallel
+        // Execute docker build jobs in parallel.
         //
-        // Uses std::thread::scope with a simple semaphore pattern (channel-
-        // based) bounded by ctx.parallelism, matching GoReleaser's
-        // semerrgroup.New(ctx.Parallelism) behavior.
+        // Uses std::thread::scope with a channel-based semaphore bounded by
+        // ctx.parallelism, matching GoReleaser's semerrgroup.New(ctx.Parallelism).
         // ==================================================================
         if !build_jobs.is_empty() {
             use std::sync::mpsc;
@@ -670,7 +669,7 @@ impl Stage for super::DockerStage {
             });
 
             // ==================================================================
-            // Step 3: Collect results and register artifacts
+            // Collect results and register artifacts.
             // ==================================================================
             for (job, result) in build_jobs.iter().zip(results) {
                 let build_result = result?;

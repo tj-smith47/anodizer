@@ -64,7 +64,6 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
         .build()
         .context("reddit: build HTTP client")?;
 
-    // Step 1: Get OAuth token (retried).
     let token_body = retry_sync(policy, |_attempt| {
         match client
             .post("https://www.reddit.com/api/v1/access_token")
@@ -116,7 +115,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("reddit: missing access_token in OAuth response"))?;
 
-    // Step 2: Submit link (retried; rate-limit headers logged from final response).
+    // Rate-limit headers are logged from the final response on failure.
     let mut form = HashMap::new();
     form.insert("api_type", "json");
     form.insert("kind", "link");

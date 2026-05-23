@@ -24,7 +24,6 @@ pub fn send_bluesky(
         .build()
         .context("bluesky: build HTTP client")?;
 
-    // Step 1: Create session (login)
     let session_payload = json!({
         "identifier": username,
         "password": app_password,
@@ -46,7 +45,6 @@ pub fn send_bluesky(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("bluesky: missing did in session response"))?;
 
-    // Step 2: Build post record
     let now = anodizer_core::sde::resolve_now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut record = json!({
         "$type": "app.bsky.feed.post",

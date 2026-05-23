@@ -133,10 +133,10 @@ struct FlatpakJob {
     builder_args: Vec<String>,
     bundle_args: Vec<String>,
     /// Pre-parsed mtime to stamp the output `.flatpak` with; when set,
-    /// Step 2 also calls `set_file_mtime`. Step 1 already stamped the
-    /// work dir.
+    /// the parallel phase also calls `set_file_mtime`. The serial phase
+    /// already stamped the work dir.
     output_mtime: Option<std::time::SystemTime>,
-    /// Rendered mod_timestamp string for logging (Step 2).
+    /// Rendered mod_timestamp string for logging.
     output_mtime_repr: Option<String>,
     target: Option<String>,
     crate_name: String,
@@ -597,8 +597,8 @@ impl Stage for FlatpakStage {
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // ----------------------------------------------------------------
-        // Step 2 (parallel): run flatpak-builder + flatpak build-bundle
-        // for each job. Bounded concurrency via chunks(parallelism).
+        // Parallel: run flatpak-builder + flatpak build-bundle for each
+        // job. Bounded concurrency via chunks(parallelism).
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &FlatpakJob| -> Result<Artifact> {
