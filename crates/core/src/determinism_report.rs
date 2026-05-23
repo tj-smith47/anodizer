@@ -97,7 +97,12 @@ pub struct AllowListEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactRow {
-    /// File name as emitted (basename of the artifact path).
+    /// Dist-root-relative path of the artifact (forward-slash-normalized,
+    /// `dist/` prefix stripped). Multi-arch artifacts sharing a basename
+    /// (e.g. per-target makeself scratch dirs) get distinct entries here.
+    /// Raw cargo binaries discovered under `<worktree>/.det-tmp/target/`
+    /// instead get a `target/<triple>/release/<bin>` key so they are not
+    /// confused with same-basename `dist/` artifacts.
     pub name: String,
     /// Path as seen by the harness — workspace-relative when possible,
     /// absolute otherwise.
