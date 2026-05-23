@@ -34,16 +34,35 @@ fn clear_snapcraft_cache() {
 // Icon copy helper
 // ---------------------------------------------------------------------------
 
+/// Resolve a user-configured icon path against the project root.
+///
+/// Absolute paths pass through unchanged. Relative paths are joined to
+/// `project_root` when set, otherwise to the process CWD (`.`). Used by
+/// both the early-validation site and the actual copy site so the two
+/// can't drift on resolution rules.
+fn resolve_icon_path(icon_src_str: &str, project_root: Option<&PathBuf>) -> PathBuf {
+    if std::path::Path::new(icon_src_str).is_absolute() {
+        PathBuf::from(icon_src_str)
+    } else {
+        project_root
+            .map(|p| p.as_path())
+            .unwrap_or(std::path::Path::new("."))
+            .join(icon_src_str)
+    }
+}
+
 /// Copy a snap icon source file into `<meta_dir>/gui/<snap_name>.<ext>`.
 ///
-/// `icon_src` is the resolved (absolute) path to the source image.
+/// `icon_src`: the resolved path (absolute when `project_root` is set,
+/// otherwise relative to the process CWD).
 /// `meta_dir` is the `prime/meta/` directory that snapcraft reads from
 /// when packing a pre-staged prime dir. `snap_name` is the snap's name
 /// field — the destination filename matches the name so the Store's GUI
 /// metadata channel picks up the correct icon.
 ///
 /// Extension is preserved from the source so `.svg` icons round-trip
-/// correctly alongside `.png`.
+/// correctly alongside `.png`. The caller is expected to have already
+/// validated the extension against snapcraft's allowed set.
 pub(crate) fn copy_snap_icon(
     icon_src: &std::path::Path,
     meta_dir: &std::path::Path,
@@ -188,20 +207,31 @@ impl Stage for SnapcraftStage {
                 }
 
                 // Icon validation: when `icon` is set, check the source file
-                // exists before spending time staging binaries. Fail early so
-                // the error names the missing path rather than surfacing a
-                // confusing snapcraft failure later.
+                // exists AND its extension is in snapcraft's allowed set
+                // (png/svg) before spending time staging binaries. snapcraft
+                // pack silently rejects other formats at pack time, after the
+                // operator already burned minutes on the run.
                 if let Some(ref icon_src_str) = snap_cfg.icon {
-                    let icon_src = if std::path::Path::new(icon_src_str).is_absolute() {
-                        std::path::PathBuf::from(icon_src_str)
-                    } else {
-                        ctx.options
-                            .project_root
-                            .as_deref()
-                            .map(std::path::Path::new)
-                            .unwrap_or(std::path::Path::new("."))
-                            .join(icon_src_str)
-                    };
+                    let icon_src =
+                        resolve_icon_path(icon_src_str, ctx.options.project_root.as_ref());
+                    let ext_lower = icon_src
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|s| s.to_ascii_lowercase());
+                    match ext_lower.as_deref() {
+                        Some("png") | Some("svg") => {}
+                        _ => {
+                            anyhow::bail!(
+                                "snapcraft: icon '{}' configured for crate '{}' has \
+                                 unsupported extension (resolved to '{}'). Snapcraft \
+                                 only accepts .png or .svg snap icons; rename or \
+                                 convert the source file.",
+                                icon_src_str,
+                                krate.name,
+                                icon_src.display()
+                            );
+                        }
+                    }
                     if !icon_src.exists() {
                         anyhow::bail!(
                             "snapcraft: icon '{}' configured for crate '{}' does not exist \
@@ -451,16 +481,8 @@ impl Stage for SnapcraftStage {
                     // (see generate_snap_yaml). The meta/gui/ path is the
                     // supported delivery mechanism for snap icons.
                     if let Some(ref icon_src_str) = snap_cfg.icon {
-                        let icon_src = if std::path::Path::new(icon_src_str).is_absolute() {
-                            std::path::PathBuf::from(icon_src_str)
-                        } else {
-                            ctx.options
-                                .project_root
-                                .as_deref()
-                                .map(std::path::Path::new)
-                                .unwrap_or(std::path::Path::new("."))
-                                .join(icon_src_str)
-                        };
+                        let icon_src =
+                            resolve_icon_path(icon_src_str, ctx.options.project_root.as_ref());
                         let dest_rel = copy_snap_icon(&icon_src, &meta_dir, snap_name)?;
                         log.status(&format!("snapcraft: wrote snap icon to {}", dest_rel));
                     }

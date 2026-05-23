@@ -419,6 +419,156 @@ fn test_copy_snap_icon_preserves_svg_extension() {
     assert!(meta_dir.join("gui").join("myapp.svg").exists());
 }
 
+/// `copy_snap_icon` must overwrite an existing destination file. Pins the
+/// `fs::copy` truncate-on-conflict contract so a re-run never silently
+/// preserves a stale icon from a prior pack attempt.
+#[test]
+fn test_copy_snap_icon_overwrites_existing_destination() {
+    let tmp = TempDir::new().unwrap();
+    let src = tmp.path().join("icon.png");
+    let source_bytes: &[u8] = b"new-icon-bytes";
+    std::fs::write(&src, source_bytes).unwrap();
+
+    let meta_dir = tmp.path().join("meta");
+    let gui_dir = meta_dir.join("gui");
+    std::fs::create_dir_all(&gui_dir).unwrap();
+
+    // Pre-seed the destination with sentinel bytes that must be overwritten.
+    let dest = gui_dir.join("mysnap.png");
+    std::fs::write(&dest, b"stale-sentinel-bytes").unwrap();
+
+    copy_snap_icon(&src, &meta_dir, "mysnap").unwrap();
+
+    let on_disk = std::fs::read(&dest).unwrap();
+    assert_eq!(
+        on_disk, source_bytes,
+        "copy_snap_icon must overwrite an existing destination, not preserve stale bytes"
+    );
+}
+
+/// icon set + unsupported extension (`.jpg`): build stage must error BEFORE
+/// pack runs. snapcraft only accepts png/svg for snap icons.
+#[test]
+fn test_stage_icon_unsupported_extension_errors_before_pack() {
+    let tmp = TempDir::new().unwrap();
+    // The file must EXIST so we know the extension check fires, not the
+    // existence check.
+    let icon = tmp.path().join("logo.jpg");
+    std::fs::write(&icon, b"fake-jpg").unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        icon: Some(icon.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from("/tmp/myapp"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let stage = SnapcraftStage;
+    let err = stage.run(&mut ctx).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unsupported extension"),
+        "error should mention unsupported extension, got: {msg}"
+    );
+    assert!(
+        msg.contains(".png") && msg.contains(".svg"),
+        "error should name the allowed extensions (.png, .svg), got: {msg}"
+    );
+    // No snap artifacts registered — stage bailed before pack staging.
+    assert!(
+        ctx.artifacts.by_kind(ArtifactKind::Snap).is_empty(),
+        "snapcraft pack must not have been invoked on extension error"
+    );
+}
+
+/// icon set + extensionless source: extension validator must reject,
+/// not silently fall back to `.png`.
+#[test]
+fn test_stage_icon_extensionless_source_errors_before_pack() {
+    let tmp = TempDir::new().unwrap();
+    let icon = tmp.path().join("logo");
+    std::fs::write(&icon, b"raw bytes").unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        icon: Some(icon.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from("/tmp/myapp"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let stage = SnapcraftStage;
+    let err = stage.run(&mut ctx).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unsupported extension"),
+        "extensionless source must trigger the unsupported-extension error, got: {msg}"
+    );
+}
+
 /// icon set + missing source file: build stage must error BEFORE pack runs.
 #[test]
 fn test_stage_icon_missing_source_errors_before_pack() {
