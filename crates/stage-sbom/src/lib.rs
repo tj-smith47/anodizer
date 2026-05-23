@@ -1012,7 +1012,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // SOURCE_DATE_EPOCH wiring regression (release-resilience task 24)
+    // SOURCE_DATE_EPOCH wiring regression
     // -----------------------------------------------------------------------
     //
     // These tests pin the contract that the CycloneDX `metadata.timestamp`

@@ -442,7 +442,7 @@ fn test_generate_nfpm_yaml_empty_lists_omitted() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests -- config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]
@@ -754,7 +754,7 @@ fn test_nfpm_yaml_custom_bindir() {
     assert!(yaml.contains("dst: /opt/myapp/bin/myapp"));
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: missing binary / live mode ----
 
 #[test]
 fn test_nfpm_missing_binary_produces_error_in_live_mode() {
@@ -1431,7 +1431,7 @@ fn test_nfpm_yaml_dependencies_none_format_merges_all() {
 }
 
 // -----------------------------------------------------------------------
-// Task 9: nFPM parity -- versioning, metadata, format-specific, mtime
+// nFPM parity — versioning, metadata, format-specific, mtime
 // -----------------------------------------------------------------------
 
 #[test]
@@ -3450,7 +3450,7 @@ fn test_release_and_epoch_combined_in_file_name_template() {
 }
 
 // -----------------------------------------------------------------------
-// Task 9: libdirs, changelog, owner/group template rendering
+// libdirs, changelog, owner/group template rendering
 // -----------------------------------------------------------------------
 
 #[test]
@@ -4201,7 +4201,7 @@ crates:
 }
 
 // -----------------------------------------------------------------------
-// Template rendering tests for Session K gaps
+// Template rendering tests
 // -----------------------------------------------------------------------
 
 #[test]

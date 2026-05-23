@@ -802,7 +802,7 @@ fn test_resolve_repo_owner_name_partial_returns_none() {
 // Err; instead, the raw value is preserved and a warning is emitted.
 // Pins the warn-and-fallback path against a future drift back to
 // `unwrap_or_else(|_| raw.clone())` (silent swallow) or `with_context()`
-// (hard-fail). Source: Session C / Group E review deferral 2026-04-28.
+// (hard-fail).
 // -----------------------------------------------------------------------
 
 /// A malformed Tera template (`{{ unclosed`) feeding `render_or_warn`

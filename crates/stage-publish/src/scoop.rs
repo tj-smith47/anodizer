@@ -584,7 +584,7 @@ fn any_pushed_from_outcome(outcome: util::CommitOutcome) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// ScoopPublisher — Publisher trait wrapper (Bundle B)
+// ScoopPublisher — Publisher trait wrapper (git-revert rollback)
 // ---------------------------------------------------------------------------
 
 /// Scoop bucket publisher. Mirrors the `homebrew` shape: each pushed
@@ -598,7 +598,7 @@ fn any_pushed_from_outcome(outcome: util::CommitOutcome) -> bool {
 /// NAME of the env var — not the resolved token VALUE. The token is
 /// read from the live env at rollback time so persisted evidence
 /// carries no secret material. Same rule applies to the homebrew /
-/// nix Bundle B publishers.
+/// nix git-revert publishers.
 use crate::util::{RevertTarget, run_revert_targets_parallel};
 use serde::{Deserialize, Serialize};
 
@@ -915,8 +915,8 @@ mod publisher_tests {
     fn scoop_target_extra_carries_no_secret_material() {
         // Defense-in-depth: serialize a target and assert no field
         // names that could leak a token / pat / password are present.
-        // Mirrors the Bundle B credential-handling contract documented
-        // on `PublishEvidence::extra`.
+        // Mirrors the credential-handling contract documented on
+        // `PublishEvidence::extra`.
         let t = ScoopTarget {
             target: "demo".into(),
             repo_url: "https://github.com/acme/scoop-bucket.git".into(),

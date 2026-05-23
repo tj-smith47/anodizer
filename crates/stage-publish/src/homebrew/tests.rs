@@ -349,7 +349,7 @@ fn test_integration_formula_multiline_install() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests -- config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]

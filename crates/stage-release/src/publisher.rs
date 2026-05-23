@@ -62,8 +62,8 @@ use serde::{Deserialize, Serialize};
 use crate::ReleaseStage;
 
 /// Bounded fan-out cap for the rollback delete loop. Mirrors the
-/// `ROLLBACK_PARALLELISM` constant used by `stage-publish`'s Bundle B
-/// / Bundle C publishers; kept inline rather than re-exported so
+/// `ROLLBACK_PARALLELISM` constant used by `stage-publish`'s git-revert
+/// and close-PR publishers; kept inline rather than re-exported so
 /// `stage-release` does not depend on `stage-publish`.
 const ROLLBACK_PARALLELISM: usize = 4;
 

@@ -15,14 +15,15 @@
 //! at call sites — so the answer to "what's the default?" lives in one
 //! place per stage and a future default change (or override resolution)
 //! lands in one place too. This is the lazy-vs-eager defaults policy
-//! settled in Session C; precedent commit `ff3be47` (stage-checksum).
+//! anodizer uses across stage configs; precedent commit `ff3be47`
+//! (stage-checksum).
 
 use crate::config::{StringOrBool, deserialize_string_or_bool_opt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
-// gpg --faked-system-time capability probe (release-resilience Task 25)
+// gpg --faked-system-time capability probe
 // ---------------------------------------------------------------------------
 
 /// Argv passed to `gpg` for the `--faked-system-time` capability probe.
@@ -318,7 +319,7 @@ impl DockerSignConfig {
 mod tests {
     use super::*;
 
-    // ---- SignConfig::resolved_*() (Session C lazy-defaults policy) ----
+    // ---- SignConfig::resolved_*() (lazy-defaults policy) ----
 
     #[test]
     fn sign_resolved_id_default() {
@@ -481,7 +482,7 @@ mod tests {
         assert_eq!(cfg.resolved_args(), custom);
     }
 
-    // ---- gpg --faked-system-time capability probe (Task 25) ----------
+    // ---- gpg --faked-system-time capability probe ----
 
     use std::process::{ExitStatus, Output};
 

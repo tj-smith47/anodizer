@@ -1,17 +1,17 @@
-//! `NixPublisher` — Bundle B Manager-group `Publisher` impl that wraps
-//! the existing [`publish_to_nix`](super::publish_to_nix) per-crate
-//! entry point.
+//! `NixPublisher` — Manager-group `Publisher` impl that wraps the
+//! existing [`publish_to_nix`](super::publish_to_nix) per-crate entry
+//! point.
 //!
-//! Rollback shape mirrors the other Bundle B publishers: every push
-//! to the configured nix overlay repo is recorded so a `--rollback-
-//! only` re-clones, runs `git revert HEAD --no-edit`, and pushes the
-//! revert back to the same branch.
+//! Rollback shape mirrors the other git-revert publishers (homebrew /
+//! scoop / our-AUR): every push to the configured nix overlay repo is
+//! recorded so a `--rollback-only` re-clones, runs `git revert HEAD
+//! --no-edit`, and pushes the revert back to the same branch.
 //!
 //! CREDENTIAL HANDLING: [`NixTarget`] stores `token_env_var` — the
 //! NAME of the env var — not the resolved token VALUE. The token is
 //! read from the live env at rollback time so persisted evidence
 //! carries no secret material. Same rule applies to the homebrew /
-//! scoop Bundle B publishers.
+//! scoop git-revert publishers.
 
 use anodizer_core::context::Context;
 use serde::{Deserialize, Serialize};
@@ -329,8 +329,8 @@ mod publisher_tests {
     fn nix_target_extra_carries_no_secret_material() {
         // Defense-in-depth: serialize a target and assert no field
         // names that could leak a token / pat / password are present.
-        // Mirrors the Bundle B credential-handling contract documented
-        // on `PublishEvidence::extra`.
+        // Mirrors the credential-handling contract documented on
+        // `PublishEvidence::extra`.
         let t = NixTarget {
             target: "demo".into(),
             repo_url: "https://github.com/acme/nixpkgs-overlay.git".into(),

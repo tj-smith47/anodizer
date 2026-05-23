@@ -1246,7 +1246,7 @@ fn test_integration_changelog_stage_with_real_git_repo() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests — config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]
@@ -1469,7 +1469,7 @@ fn test_changelog_written_to_correct_output_location() {
     );
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: malformed inputs / regex / config ----
 
 #[test]
 fn test_invalid_exclude_regex_is_warned_and_skipped() {

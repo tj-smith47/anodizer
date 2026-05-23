@@ -8,7 +8,7 @@
 //! programmatic withdraw endpoint. The community gallery's "Maintain"
 //! UI is the only path back, and only the package owner can drive it.
 //!
-//! Bundle "Submitter group, no-rollback" contract for chocolatey: record
+//! "Submitter group, no-rollback" contract for chocolatey: record
 //! `(crate_name, package_id, version)` tuples in
 //! [`anodizer_core::PublishEvidence::extra`] so a `--rollback-only`
 //! invocation can surface the exact package page the operator needs to

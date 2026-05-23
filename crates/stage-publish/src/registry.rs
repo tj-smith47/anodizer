@@ -39,7 +39,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if is_cargo_configured(ctx) {
         v.push(Box::new(crate::cargo::CargoPublisher::new()));
     }
-    // Bundle A (Assets group): dockerhub, artifactory, cloudsmith.
+    // Assets group: dockerhub, artifactory, cloudsmith.
     // `blob` is also Assets-group but runs as its own `BlobStage` (see
     // doc on `configured_publishers` above for why it's not registered).
     if is_dockerhub_configured(ctx) {
@@ -56,7 +56,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
             anodizer_stage_release::publisher::GithubReleasePublisher::new(),
         ));
     }
-    // Bundle B (Manager — git-revert rollback against publisher-owned repo).
+    // Manager group — git-revert rollback against publisher-owned repo.
     if is_homebrew_configured(ctx) {
         v.push(Box::new(
             crate::homebrew::publisher::HomebrewPublisher::new(),
@@ -71,7 +71,7 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if is_aur_configured(ctx) {
         v.push(Box::new(crate::aur::AurOurPublisher::new()));
     }
-    // Bundle C (Manager — close-PR / registry rollback).
+    // Manager group — close-PR / registry rollback.
     if is_krew_configured(ctx) {
         v.push(Box::new(crate::krew::KrewPublisher::new()));
     }
@@ -333,10 +333,10 @@ mod tests {
 
         let publishers = configured_publishers(&ctx);
         let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
-        // Every Bundle A publisher that registers in this list must
-        // appear; blob is Assets-group but runs as its own `BlobStage`,
-        // not via the publisher dispatch path, so it is NOT registered
-        // here (asserted separately below).
+        // Every Assets-group publisher that registers in this list
+        // must appear; blob is Assets-group but runs as its own
+        // `BlobStage`, not via the publisher dispatch path, so it is
+        // NOT registered here (asserted separately below).
         for expected in ["dockerhub", "artifactory", "cloudsmith"] {
             assert!(
                 names.contains(&expected),
@@ -363,11 +363,11 @@ mod tests {
     }
 
     #[test]
-    fn bundle_b_publishers_registered_when_configured() {
+    fn git_revert_publishers_registered_when_configured() {
         use anodizer_core::config::{
             AurConfig, HomebrewConfig, NixConfig, RepositoryConfig, ScoopConfig,
         };
-        // Build a single crate with all four Bundle B per-crate
+        // Build a single crate with all four git-revert per-crate
         // publishers configured so one fixture exercises every
         // gate in `configured_publishers`.
         let demo = CrateConfig {
@@ -656,7 +656,7 @@ mod tests {
         // `SnapcraftPublishStage` is the load-bearing runner and writes
         // its own entry into `ctx.publish_report`; a trait-based
         // wrapper here would double-publish every snap target (parallel
-        // to the BlobPublisher fix in Task 15 / commit 026c854). The
+        // to the BlobPublisher fix in commit 026c854). The
         // table form pins ALL three input shapes (unset, false, true)
         // so a future regression that re-introduces a `publish:
         // true`-gated registration is caught.

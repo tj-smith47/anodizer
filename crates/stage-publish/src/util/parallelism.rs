@@ -1,13 +1,14 @@
 //! Shared rollback fan-out primitives used by every publisher whose
 //! rollback path issues one network/git call per recorded target.
 //!
-//! Bundle A's artifactory rollback established the cap; promoting it
-//! here lets Bundle B (homebrew / scoop / nix / aur) and any future
-//! publisher reuse the same operator-friendly limit and the same
-//! [`std::thread::scope`] fan-out shape without copy-pasting the loop.
+//! Artifactory's rollback first established the cap; promoting it here
+//! lets the git-revert publishers (homebrew / scoop / nix / aur) and
+//! any future publisher reuse the same operator-friendly limit and the
+//! same [`std::thread::scope`] fan-out shape without copy-pasting the
+//! loop.
 //!
-//! See [`crate::util::git_revert`] for the per-target work
-//! Bundle B drives through this primitive.
+//! See [`crate::util::git_revert`] for the per-target work the
+//! git-revert publishers drive through this primitive.
 
 use anodizer_core::log::StageLogger;
 use std::sync::Mutex;
@@ -57,9 +58,9 @@ pub(crate) fn join_or_warn<'scope, T>(
 /// Chosen to match the scale at which v0.2.0's 143-artifact
 /// artifactory cascade case becomes operator-usable (~36 batches of
 /// 4 at 30s/req) without exhausting any reasonable remote rate
-/// limit. Bundle B's git revert + push pattern is bounded by the
-/// user's network and the git remote's per-IP push rate, both of
-/// which 4 stays comfortably under.
+/// limit. The git-revert + push pattern is bounded by the user's
+/// network and the git remote's per-IP push rate, both of which 4
+/// stays comfortably under.
 pub(crate) const ROLLBACK_PARALLELISM: usize = 4;
 
 /// Fan out [`run_git_revert_and_push`] across `targets` under the

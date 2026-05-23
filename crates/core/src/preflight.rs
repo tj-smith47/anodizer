@@ -103,8 +103,8 @@ pub struct PreflightEntry {
 /// `entries` carries one row per checked publisher (cargo / chocolatey /
 /// winget / aur). `warnings` and `blockers` are free-form, publisher-agnostic
 /// messages produced by the release-resilience preflight extension: rollback
-/// token scope checks (Task 18) and per-publisher `Publisher::preflight()`
-/// hook results. The two channels are kept separate from `entries` so that
+/// token scope checks and per-publisher `Publisher::preflight()` hook
+/// results. The two channels are kept separate from `entries` so that
 /// the existing one-way-door consumers (state-machine queries like
 /// `has_blockers` / `clean_count`) stay focused on publisher state, while the
 /// CLI's operator-facing output can still surface every warning and blocker

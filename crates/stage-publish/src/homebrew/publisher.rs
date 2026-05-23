@@ -1,5 +1,5 @@
-//! `HomebrewPublisher` — Bundle B Manager-group `Publisher` impl that
-//! wraps the existing [`publish_to_homebrew`](super::publish_to_homebrew)
+//! `HomebrewPublisher` — Manager-group `Publisher` impl that wraps the
+//! existing [`publish_to_homebrew`](super::publish_to_homebrew)
 //! (per-crate formula + optional same-tap cask) and
 //! [`publish_top_level_homebrew_casks`](super::publish_top_level_homebrew_casks)
 //! (top-level `homebrew_casks:` block).
@@ -22,7 +22,7 @@
 //! resolved token VALUE. The actual token is read from the live env
 //! at yank time so persisted evidence (`dist/run-<id>/report.json`,
 //! the announce-time release-body summary) carries no secret
-//! material. Same rule applies to the scoop / nix Bundle B
+//! material. Same rule applies to the scoop / nix git-revert
 //! publishers and is documented at their module level.
 
 use anodizer_core::context::Context;
@@ -440,8 +440,8 @@ mod publisher_tests {
     fn homebrew_target_extra_carries_no_secret_material() {
         // Defense-in-depth: serialize a target and assert no field
         // names that could leak a token / pat / password are present.
-        // Mirrors the Bundle B credential-handling contract documented
-        // on `PublishEvidence::extra`.
+        // Mirrors the credential-handling contract documented on
+        // `PublishEvidence::extra`.
         let t = HomebrewTarget {
             target: "demo".into(),
             repo_url: "https://github.com/acme/homebrew-tap.git".into(),

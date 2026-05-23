@@ -1,6 +1,6 @@
-//! GitHub PR close + lookup helpers — used by Bundle C close-PR
-//! rollback (krew today; reusable for any future publisher whose
-//! rollback shape is "close the PR we opened against an upstream").
+//! GitHub PR close + lookup helpers — used by the close-PR rollback
+//! shape (krew today; reusable for any future publisher whose rollback
+//! is "close the PR we opened against an upstream").
 //!
 //! Two public helpers:
 //! - [`find_open_pr_numbers_for_head`] — `GET /repos/{owner}/{repo}/pulls`

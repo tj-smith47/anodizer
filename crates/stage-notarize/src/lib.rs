@@ -97,8 +97,8 @@ fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
 // Defaults
 // ---------------------------------------------------------------------------
 
-// Default values are owned by the config impls (Session C lazy-defaults
-// policy). See `MacOSSignConfig::DEFAULT_TIMESTAMP_URL`,
+// Default values are owned by the config impls (lazy-defaults policy).
+// See `MacOSSignConfig::DEFAULT_TIMESTAMP_URL`,
 // `MacOSNotarizeApiConfig::DEFAULT_TIMEOUT`, and
 // `MacOSNativeNotarizeConfig::DEFAULT_TIMEOUT`.
 

@@ -1044,7 +1044,7 @@ fn test_checksum_of_fake_binary_via_builder() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests — config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]
@@ -1393,7 +1393,7 @@ fn test_ids_filter_excludes_unmatched_artifacts() {
     );
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: missing file / bad inputs ----
 
 #[test]
 fn test_hash_file_missing_file_errors_with_path() {
@@ -1812,7 +1812,7 @@ fn test_sha3_384_dispatches_via_hash_file() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4: Config + wiring parity tests
+// Config + wiring parity tests
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2386,7 +2386,7 @@ fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
 }
 
 // ---------------------------------------------------------------------------
-// SOURCE_DATE_EPOCH byte-stability regression (release-resilience task 24)
+// SOURCE_DATE_EPOCH byte-stability regression
 // ---------------------------------------------------------------------------
 //
 // stage-checksum is trivially deterministic: SHA256 (and friends) over the

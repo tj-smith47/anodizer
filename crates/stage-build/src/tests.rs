@@ -168,7 +168,7 @@ fn test_detect_cross_strategy_auto() {
     ));
 }
 
-// ---- Error path tests (Task 3B) ----
+// ---- Error path tests: invalid triple / build failures ----
 
 #[test]
 fn test_build_command_with_invalid_target_triple() {
@@ -322,7 +322,7 @@ fn test_build_stage_no_targets_skips_gracefully() {
     assert!(binaries.is_empty());
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: missing binaries / copy failures ----
 
 #[test]
 fn test_copy_from_nonexistent_binary_errors_with_paths() {
@@ -443,7 +443,7 @@ fn test_build_command_with_env_vars() {
     );
 }
 
-// ---- Task 5A: cdylib detection tests ----
+// ---- cdylib detection tests ----
 
 #[test]
 fn test_detect_crate_type_cdylib() {
@@ -533,7 +533,7 @@ crate_type = ["dylib"]
     assert_eq!(result, Some("dylib".to_string()));
 }
 
-// ---- Task 5A: build_lib_command tests ----
+// ---- build_lib_command tests ----
 
 #[test]
 fn test_build_lib_command_uses_lib_flag() {
@@ -595,7 +595,7 @@ fn test_build_lib_command_zigbuild() {
     assert!(cmd.args.contains(&"--lib".to_string()));
 }
 
-// ---- Task 5E: reproducible build env var injection ----
+// ---- Reproducible build env var injection ----
 
 #[test]
 fn test_reproducible_build_sets_source_date_epoch_and_rustflags() {
@@ -706,7 +706,7 @@ fn test_reproducible_false_does_not_inject_env_vars() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// ---- Task 5F: universal binary tests ----
+// ---- Universal binary tests ----
 
 /// Helper: register a fake Binary artifact directly in the context.
 /// Mirrors production `artifact_meta` — both `binary` and `id` are set

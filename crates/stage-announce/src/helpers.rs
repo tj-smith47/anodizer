@@ -12,11 +12,11 @@ use anyhow::{Context as _, Result};
 /// Display name shown to recipients in chat-platform announcements
 /// (Discord embed `author`, Slack/Mattermost webhook `username`).
 ///
-/// **Brand-default policy** (Session C, locked 2026-04-28): anodizer keeps
-/// its own attribution instead of GR's `"GoReleaser"` default. The message
-/// *is* from anodize, not GoReleaser, and impersonating a different release
-/// tool in someone's release channels is wrong UX. The deviation is the
-/// documented exception to the GR-alignment rule.
+/// **Brand-default policy**: anodizer keeps its own attribution instead of
+/// GR's `"GoReleaser"` default. The message *is* from anodize, not
+/// GoReleaser, and impersonating a different release tool in someone's
+/// release channels is wrong UX. The deviation is the documented
+/// exception to the GR-alignment rule.
 ///
 /// Companion decision: discord/teams `icon_url` defaults stay `None` rather
 /// than pointing at `https://goreleaser.com/static/avatar.png` — we don't

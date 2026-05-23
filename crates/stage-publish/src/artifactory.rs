@@ -896,7 +896,7 @@ simple_publisher!(
 );
 
 // Bound for parallel DELETE fan-out during rollback is shared with the
-// Bundle B git-revert publishers via [`crate::util::ROLLBACK_PARALLELISM`].
+// git-revert publishers via [`crate::util::ROLLBACK_PARALLELISM`].
 // Re-imported below so the local references in `parallel_delete` stay
 // terse.
 use crate::util::ROLLBACK_PARALLELISM;
@@ -1740,7 +1740,7 @@ mod publisher_tests {
     }
 
     /// The empty-evidence warn text comes from the shared helper. Tests
-    /// across the four Bundle A publishers reuse this helper so the
+    /// across the Assets-group publishers reuse this helper so the
     /// message wording can be pinned in one place.
     #[test]
     fn artifactory_rollback_empty_warning_msg_shape() {

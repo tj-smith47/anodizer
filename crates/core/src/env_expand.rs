@@ -185,7 +185,9 @@ mod tests {
     #[test]
     fn digit_sequences_not_expanded() {
         // `$5` must NOT be expanded — matches GoReleaser + shell rules.
-        // This is the D1 bug fix case.
+        // `$<digit>` is a positional parameter reference in shell, never
+        // a variable name; leaving it intact preserves credentials of
+        // the form `Bearer $5XYZ...` and matches existing user expectations.
         assert_eq!(expand_with("Bearer $5XYZ", |_| None), "Bearer $5XYZ");
         assert_eq!(expand_with("$0", |_| None), "$0");
     }

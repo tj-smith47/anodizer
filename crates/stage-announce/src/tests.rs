@@ -2243,7 +2243,7 @@ fn test_mattermost_channel_template_resolves_on_dry_run() {
 // "user-foo" }` (lowercase) bypassed the gate, anodizer pushed its own
 // `Authorization` header, and reqwest emitted BOTH on the wire. The
 // resolver now case-folds the override check; these tests pin that
-// behavior. Source: Group G review deferral 2026-04-28.
+// behavior.
 // -----------------------------------------------------------------------
 
 /// Lowercase `authorization` from the user must suppress anodizer's

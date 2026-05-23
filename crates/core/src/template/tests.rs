@@ -96,7 +96,7 @@ fn test_tera_missing_var() {
     assert!(result.is_err());
 }
 
-// --- Task 1B: custom filters and extended template tests ---
+// --- Custom filters and extended template tests ---
 
 #[test]
 fn test_conditional_true() {
@@ -212,7 +212,7 @@ fn test_filter_chaining() {
     assert_eq!(result, "1.2.3");
 }
 
-// ---- Error path tests (Task 3B) ----
+// ---- Error path tests: unknown filter / parse failures ----
 
 #[test]
 fn test_unknown_filter_error() {
@@ -308,7 +308,7 @@ fn test_mismatched_endfor_with_if_error() {
     );
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: undefined variables ----
 
 #[test]
 fn test_undefined_variable_error_mentions_variable() {
@@ -1148,7 +1148,7 @@ fn test_custom_var_with_template_in_value() {
     assert_eq!(result, "cfgd v1.2.3");
 }
 
-// ---- Go-style positional syntax tests (Task 2) ----
+// ---- Go-style positional syntax tests ----
 
 #[test]
 fn test_positional_replace_standalone() {

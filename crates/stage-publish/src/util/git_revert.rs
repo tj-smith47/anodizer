@@ -1,31 +1,23 @@
 //! Shared `git revert HEAD --no-edit` + `git push` helper used by every
-//! Bundle B publisher (homebrew / scoop / nix / our-AUR) whose rollback
+//! git-revert publisher (homebrew / scoop / nix / our-AUR) whose rollback
 //! shape is "create a revert commit on the publisher-owned repo, push
 //! it to the same branch".
 //!
 //! Why re-clone instead of reuse a `target/anodize/<publisher>/` clone?
-//! All four Bundle B publishers clone into a `tempfile::tempdir()` that
+//! All four git-revert publishers clone into a `tempfile::tempdir()` that
 //! is dropped at the end of `publish_to_X`. Persisting the clone would
-//! change the publish path's working-tree footprint (a violation of the
-//! "publish_to_X bodies remain UNCHANGED" constraint in the Bundle B
-//! spec) and would leak secrets onto disk for longer than necessary.
-//! The cheaper alternative — recording `{repo_url, branch, ssh hints}`
-//! in [`anodizer_core::PublishEvidence::extra`] and re-cloning at
-//! rollback time — keeps the publish path intact and trades one extra
-//! `git clone` (rare, only on rollback) for a smaller blast radius.
+//! change the publish path's working-tree footprint (each publisher's
+//! `publish_to_X` body intentionally leaves no on-disk state) and would
+//! leak secrets onto disk for longer than necessary. Recording
+//! `{repo_url, branch, ssh hints}` in
+//! [`anodizer_core::PublishEvidence::extra`] and re-cloning at rollback
+//! time keeps the publish path intact and trades one extra `git clone`
+//! (rare, only on rollback) for a smaller blast radius.
 //!
 //! The helper itself shells out to real `git` via
 //! [`std::process::Command`]. The tests use a tempdir-backed real repo
 //! with a bare remote so the helper exercises the same code path it
 //! will hit in production.
-//!
-//! Future-refactor seam: Bundle B publishers each construct
-//! [`RevertTarget`] lists and run the same dedup + parallel fan-out
-//! loop in their `rollback`. Consider promoting that shape to a shared
-//! `GitRevertPublisher` trait when Bundle C's close-PR publishers land
-//! — a sibling trait there can collapse this and the close-PR rollback
-//! shape behind one default impl. Not done in this commit to keep the
-//! Bundle B diff focused on the credential / dedup / parallelism fixes.
 
 use anyhow::{Context as _, Result};
 use std::path::Path;
@@ -39,7 +31,7 @@ use anodizer_core::log::StageLogger;
 ///
 /// This is the structured form of what gets serialized into
 /// `PublishEvidence.extra` and decoded back at rollback time. Each
-/// Bundle B publisher records one of these per target it pushed to.
+/// git-revert publisher records one of these per target it pushed to.
 ///
 /// `target` identifies the artifact within the publisher (formula
 /// name, manifest name, AUR package name, ...) so rollback warnings

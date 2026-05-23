@@ -1153,7 +1153,7 @@ fn test_archive_stage_scoped_vars_not_preset() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests — config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]
@@ -1626,7 +1626,7 @@ fn test_archive_stage_wrap_in_directory_renders_template() {
     );
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: missing binary / archive failures ----
 
 #[test]
 fn test_missing_binary_artifact_errors_with_path() {
@@ -1786,7 +1786,7 @@ fn test_archive_unsupported_format_returns_error() {
     );
 }
 
-// ---- Task 5E: reproducible archive mtime tests ----
+// ---- Reproducible archive mtime tests ----
 
 #[test]
 fn test_create_tar_gz_with_fixed_mtime() {
@@ -2626,7 +2626,7 @@ fn test_archive_stage_unknown_format_errors() {
 }
 
 // -----------------------------------------------------------------------
-// Task 3: Config parsing tests for new parity features
+// Config parsing tests for parity features
 // -----------------------------------------------------------------------
 
 #[test]
@@ -4468,7 +4468,7 @@ fn test_multi_crate_archive_projectname_resolves_to_crate() {
 }
 
 // ---------------------------------------------------------------------------
-// SOURCE_DATE_EPOCH byte-stability regression (release-resilience task 24)
+// SOURCE_DATE_EPOCH byte-stability regression
 // ---------------------------------------------------------------------------
 //
 // stage-archive's tar writer reads `mtime` from the SDE-derived value

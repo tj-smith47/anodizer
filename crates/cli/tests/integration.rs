@@ -1516,7 +1516,7 @@ crates:
 }
 
 // ============================================================================
-// Error Path Tests (Task 3B)
+// Error Path Tests
 // ============================================================================
 
 /// Error path: `anodizer check` with malformed YAML should fail with a clear error.
@@ -2248,7 +2248,7 @@ crates:
 }
 
 // ============================================================================
-// E2E Pipeline Tests (Task 4E)
+// E2E Pipeline Tests
 // ============================================================================
 
 /// E2E #1: Multi-format archive — config with tar.gz, tar.xz, zip, and binary
@@ -3688,26 +3688,28 @@ crates:
     );
 }
 
-/// E2E: Session C cross-axis smoke test — exercises three Session C streams
-/// in one binary invocation:
+/// E2E: cross-axis strict-mode smoke test — exercises three orthogonal
+/// pipeline streams in one binary invocation:
 ///
-///   * Group A — `milestones[*].close: true` triggers the validate-time
-///     pre-flight; the resolved-target log line is asserted on stderr.
-///   * Group B — the SBOM stage emits an `Sbom` artifact; the checksum
-///     stage's source-list (cross-linked to `release_uploadable_kinds()`)
-///     must include it in `checksums.txt`.
-///   * Group F — `release.changelog.header` propagates into
-///     `dist/CHANGELOG.md` (the rendered release-notes body).
+///   * milestone pre-flight — `milestones[*].close: true` triggers the
+///     validate-time pre-flight; the resolved-target log line is asserted
+///     on stderr.
+///   * SBOM → checksum cross-link — the SBOM stage emits an `Sbom`
+///     artifact; the checksum stage's source-list (cross-linked to
+///     `release_uploadable_kinds()`) must include it in `checksums.txt`.
+///   * Changelog header propagation — `release.changelog.header`
+///     propagates into `dist/CHANGELOG.md` (the rendered release-notes
+///     body).
 ///
 /// Runs under `--strict --snapshot` so any silently-skipped resolution would
-/// fail loudly. The fourth axis (a synthetic DiskImage / Signature artifact
+/// fail loudly. A fourth axis (a synthetic DiskImage / Signature artifact
 /// fed directly into the source-list) lives at the unit level in
 /// `stage-checksum::test_checksum_source_list_cross_links_release_uploadable_kinds`
 /// because registering bare artifact metadata is impractical from a
 /// black-box binary test; the SBOM artifact path here exercises the same
 /// cross-link without needing docker / cosign / hdiutil.
 #[test]
-fn test_strict_mode_cross_axis_session_c_smoke() {
+fn test_strict_mode_cross_axis_smoke() {
     let tmp = TempDir::new().unwrap();
     let host = detect_host_target();
 
@@ -3727,11 +3729,11 @@ fn test_strict_mode_cross_axis_session_c_smoke() {
         );
     };
 
-    // Group F: changelog.header set so the rendered body must contain it.
-    // Group A: milestones[].close=true with an explicit repo so pre-flight
-    // can resolve owner/name without a token or git remote.
-    // Group B: a single sbom block triggers the builtin Cargo.lock-based
-    // SBOM emitter (no syft dependency) so the Sbom artifact lands in the
+    // changelog.header set so the rendered body must contain it.
+    // milestones[].close=true with an explicit repo so pre-flight can
+    // resolve owner/name without a token or git remote.
+    // A single sbom block triggers the builtin Cargo.lock-based SBOM
+    // emitter (no syft dependency) so the Sbom artifact lands in the
     // checksum source-list.
     let config = format!(
         r##"project_name: test-project
@@ -3801,14 +3803,14 @@ crates:
         stderr
     );
 
-    // Group A: milestone pre-flight emits the resolved target on stderr.
+    // milestone pre-flight emits the resolved target on stderr.
     assert!(
         stderr.contains("milestone:") && stderr.contains("cross-axis-owner/cross-axis-repo"),
         "stderr should log the milestone pre-flight target, got:\n{}",
         stderr
     );
 
-    // Group F: the rendered release notes body must contain the configured
+    // The rendered release notes body must contain the configured
     // changelog.header verbatim.
     let dist = tmp.path().join("dist");
     let notes = fs::read_to_string(dist.join("CHANGELOG.md"))
@@ -3819,7 +3821,7 @@ crates:
         notes
     );
 
-    // Group B: the SBOM artifact landed in the checksums source-list. The
+    // The SBOM artifact must land in the checksums source-list. The
     // checksum filename is parsed structurally to avoid substring
     // false-positives between e.g. `foo.cdx.json` and `foo.cdx.json.sig`.
     let checksums = fs::read_to_string(dist.join("checksums.txt"))
@@ -3830,7 +3832,7 @@ crates:
         .collect();
     assert!(
         filenames.iter().any(|n| n.ends_with(".cdx.json")),
-        "checksums.txt should list the SBOM artifact (Group B cross-link), got: {:?}",
+        "checksums.txt should list the SBOM artifact (cross-link), got: {:?}",
         filenames
     );
 
@@ -4393,7 +4395,7 @@ crates:
     );
 }
 
-// ---- Release-resilience CLI flag runtime behaviour (Task 17 / Task 20) ----
+// ---- Release-resilience CLI flag runtime behaviour ----
 
 /// `--rollback-only --from-run X` short-circuits the pipeline and replays
 /// rollback against the prior run's `report.json`. When no such report

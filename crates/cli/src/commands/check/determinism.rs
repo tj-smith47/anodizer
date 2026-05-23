@@ -332,10 +332,10 @@ mod tests {
 
     #[test]
     fn parse_stages_errors_on_unknown_token() {
-        // Audit M11: typos like `--stages=archve,checksum` previously
-        // filtered to just `checksum` and quietly under-verified. The
-        // unknown token must surface as an error naming the bad token
-        // and the legal vocabulary.
+        // Typos like `--stages=archve,checksum` previously filtered to
+        // just `checksum` and quietly under-verified. The unknown token
+        // must surface as an error naming the bad token and the legal
+        // vocabulary.
         let err = parse_stages(Some(" archive , bogus, checksum "))
             .expect_err("unknown token must error");
         assert!(

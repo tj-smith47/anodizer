@@ -1342,7 +1342,7 @@ mod tests {
         );
     }
 
-    // ---- Release-resilience CLI flag tests (Task 17) ----
+    // ---- Release-resilience CLI flag tests ----
 
     #[test]
     fn release_parses_no_gate_submitter_flag() {

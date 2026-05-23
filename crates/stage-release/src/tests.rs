@@ -810,7 +810,7 @@ fn test_resolve_release_tag_invalid_template_errors() {
     );
 }
 
-// ---- Error path tests (Task 3B) ----
+// ---- Error path tests ----
 
 #[test]
 fn test_release_missing_token_errors() {
@@ -974,7 +974,7 @@ fn test_release_pipeline_with_mock_github_client() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests — config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]
@@ -1307,7 +1307,7 @@ fn test_prerelease_auto_case_insensitive() {
     ));
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: actionable error messages ----
 
 #[test]
 fn test_release_missing_token_error_message_is_actionable() {
@@ -1680,10 +1680,8 @@ fn test_release_stage_not_skipped_when_disable_false() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
-// resolve_release_mode tests moved to anodizer-core's
-// test_release_resolved_mode_* (Session C lazy-defaults migration).
-// The release-mode default and validation logic now lives on
-// ReleaseConfig::resolved_mode in core/config.rs.
+// resolve_release_mode tests live with the canonical defaults logic on
+// `ReleaseConfig::resolved_mode` in `anodizer-core` (lazy-defaults policy).
 
 #[test]
 fn test_release_mode_stored_in_config() {

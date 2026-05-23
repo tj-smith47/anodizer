@@ -197,7 +197,7 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 // build_release_body, collect_extra_files, resolve_make_latest,
 // resolve_content_source, compose_body_for_mode, build_release_json,
 // resolve_release_tag live in `release_body.rs`. Mode-resolution is on
-// `ReleaseConfig::resolved_mode` (Session C lazy-defaults policy).
+// `ReleaseConfig::resolved_mode` (lazy-defaults policy).
 
 // ---------------------------------------------------------------------------
 // populate_checksums_var

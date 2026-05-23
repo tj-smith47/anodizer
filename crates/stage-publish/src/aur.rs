@@ -683,20 +683,20 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 }
 
 // ---------------------------------------------------------------------------
-// AurOurPublisher — Publisher trait wrapper (Bundle B)
+// AurOurPublisher — Publisher trait wrapper (git-revert rollback)
 // ---------------------------------------------------------------------------
 
-/// Bundle B `Publisher` for the AUR repo we own (the per-crate
+/// `Publisher` for the AUR repo we own (the per-crate
 /// `publish.aur:` entry that pushes a binary PKGBUILD to a dedicated
 /// AUR package we control via SSH).
 ///
 /// Named `AurOurPublisher` to disambiguate from the upstream-AUR
-/// force-push publisher coming in a follow-up task — that one is
-/// Submitter group, has no rollback path (irreversible force-push),
-/// and writes to packages we do NOT own.
+/// force-push publisher (`aur_source:`) — that one is Submitter group,
+/// has no rollback path (irreversible force-push), and writes to
+/// packages we do NOT own.
 ///
-/// Rollback shape mirrors the other Bundle B publishers: re-clone via
-/// the configured SSH key + command, run `git revert HEAD --no-edit`,
+/// Rollback shape mirrors the other git-revert publishers: re-clone
+/// via the configured SSH key + command, run `git revert HEAD --no-edit`,
 /// push to `master` (AUR's only branch).
 ///
 /// SECURITY NOTE: [`AurOurTarget`]'s SSH credentials (`private_key`,

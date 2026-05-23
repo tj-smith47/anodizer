@@ -1,4 +1,4 @@
-//! `McpPublisher` — Bundle C Manager-group `Publisher` impl wrapping the
+//! `McpPublisher` — Manager-group `Publisher` impl wrapping the
 //! top-level [`publish_to_mcp`](super::publish_to_mcp) entrypoint.
 //!
 //! MCP is structurally different from krew: krew opens a PR against a
@@ -10,8 +10,8 @@
 //! reference implementation does not expose one as of the schema
 //! pinned in [`super::manifest::CURRENT_SCHEMA_URL`].
 //!
-//! Bundle C's contract for MCP is therefore: record what was published
-//! in [`anodizer_core::PublishEvidence::extra`] so a `--rollback-only`
+//! The contract for MCP is therefore: record what was published in
+//! [`anodizer_core::PublishEvidence::extra`] so a `--rollback-only`
 //! invocation can surface the exact server name + registry endpoint
 //! the operator needs to clean up manually. The `rollback` method
 //! itself is a warn-only path that does not call out to the registry.

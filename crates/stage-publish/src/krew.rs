@@ -1574,7 +1574,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// KrewPublisher — Publisher trait wrapper (Bundle C)
+// KrewPublisher — Publisher trait wrapper (close-PR rollback)
 // ---------------------------------------------------------------------------
 
 /// Krew plugin-index publisher. Each successful per-crate publish opens a
@@ -1592,8 +1592,8 @@ mod tests {
 ///
 /// CREDENTIAL HANDLING: [`KrewPrTarget`] stores `token_env_var` — the
 /// NAME of the env var to consult at rollback time — not the resolved
-/// token VALUE. Same rule applies to every Bundle B / Bundle C publisher
-/// that touches GitHub auth.
+/// token VALUE. Same rule applies to every PR-based publisher that
+/// touches GitHub auth.
 use serde::Deserialize;
 
 simple_publisher!(
@@ -1841,7 +1841,7 @@ impl anodizer_core::Publisher for KrewPublisher {
 
         // Resolve token at rollback time — never persisted in evidence.
         // Falls back to ANODIZER_GITHUB_TOKEN then GITHUB_TOKEN, same as
-        // every Bundle B publisher.
+        // every git-revert publisher.
         let resolve_token = |t: &KrewPrTarget| -> Option<String> {
             t.token_env_var
                 .as_deref()
@@ -2095,7 +2095,7 @@ mod publisher_tests {
     fn krew_target_extra_carries_no_secret_material() {
         // Defense-in-depth: serialize a target and assert no field
         // names that could leak a token / pat are present. Mirrors
-        // the Bundle B credential-handling test.
+        // the credential-handling contract on `PublishEvidence::extra`.
         let t = KrewPrTarget {
             target: "demo".into(),
             upstream_owner: "kubernetes-sigs".into(),

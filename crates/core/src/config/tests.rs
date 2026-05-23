@@ -448,7 +448,7 @@ crates:
     assert_eq!(cl.sort, Some("desc".to_string()));
 }
 
-// ---- ChecksumConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+// ---- ChecksumConfig resolved_*() accessors (lazy-defaults policy) ----
 
 #[test]
 fn test_checksum_resolved_algorithm_default() {
@@ -501,7 +501,7 @@ fn test_checksum_resolved_combined_name_template_user_value_wins() {
     );
 }
 
-// ---- Notarize resolved_*() accessors (Session C lazy-defaults policy) ----
+// ---- Notarize resolved_*() accessors (lazy-defaults policy) ----
 
 #[test]
 fn test_macos_sign_resolved_timestamp_url_default() {
@@ -609,7 +609,7 @@ fn test_macos_native_sign_notarize_resolved_use_user_value_wins() {
     assert_eq!(cfg.resolved_use(), MacOSNativeArtifactKind::Pkg);
 }
 
-// ---- SbomConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+// ---- SbomConfig resolved_*() accessors (lazy-defaults policy) ----
 
 #[test]
 fn test_sbom_resolved_id_default() {
@@ -755,7 +755,7 @@ fn test_sbom_default_syft_env_non_syft_empty() {
     assert!(SbomConfig::default_syft_env_for("trivy", "archive").is_empty());
 }
 
-// ---- ReleaseConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+// ---- ReleaseConfig resolved_*() accessors (lazy-defaults policy) ----
 
 #[test]
 fn test_release_resolved_name_template_default() {
@@ -845,7 +845,7 @@ fn test_release_resolved_bool_user_values_win() {
     assert!(cfg.resolved_use_existing_draft());
 }
 
-// ---- ChangelogConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+// ---- ChangelogConfig resolved_*() accessors (lazy-defaults policy) ----
 
 #[test]
 fn test_changelog_resolved_sort_default_empty() {
@@ -1006,7 +1006,7 @@ fn test_changelog_resolved_snapshot_user_value_wins() {
     assert!(cfg.resolved_snapshot());
 }
 
-// ---- MilestoneConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+// ---- MilestoneConfig resolved_*() accessors (lazy-defaults policy) ----
 
 #[test]
 fn test_milestone_resolved_name_template_default() {
@@ -2133,7 +2133,7 @@ workspaces:
     assert!(env.contains(&"WS_BUILD={{ .Tag }}".to_string()));
 }
 
-// ---- Error path tests (Task 3B) ----
+// ---- Error path tests: malformed YAML / schema violations ----
 
 #[test]
 fn test_malformed_yaml_syntax_error() {

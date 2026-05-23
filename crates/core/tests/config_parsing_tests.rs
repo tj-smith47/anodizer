@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use anodizer_core::config::*;
 
 // ====================================================================
-// Task 4B: Config parsing depth — every field, every variation
+// Config parsing depth — every field, every variation
 // ====================================================================
 
 // ---- project_name tests ----
@@ -3265,7 +3265,7 @@ crates: []
 }
 
 // ====================================================================
-// Task 4D: Error path completeness — config error tests
+// Error path completeness — config error tests
 // ====================================================================
 
 // ---- Duplicate crate names ----

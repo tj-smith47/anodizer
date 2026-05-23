@@ -252,7 +252,7 @@ fn test_build_docker_command_push_flags() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests — config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]
@@ -362,7 +362,7 @@ fn test_build_docker_command_context_dir_is_last() {
     assert_eq!(cmd.last().unwrap(), "/my/staging/dir");
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests ----
 
 // -----------------------------------------------------------------------
 // Tests for id, ids, labels config fields
@@ -568,7 +568,7 @@ fn test_docker_retry_deprecation_warn_emits_once() {
 }
 
 // -----------------------------------------------------------------------
-// Task 8: skip_push auto, use_backend, docker_manifests, digest
+// skip_push auto, use_backend, docker_manifests, digest
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2548,7 +2548,7 @@ fn test_v2_iidfile_digest_read() {
 }
 
 // -----------------------------------------------------------------------
-// Task 8: Levenshtein distance tests
+// Levenshtein distance tests
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2564,7 +2564,7 @@ fn test_levenshtein_distance() {
 }
 
 // -----------------------------------------------------------------------
-// Task 9: Project marker detection tests
+// Project marker detection tests
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2593,7 +2593,7 @@ fn test_project_marker_in_subdirectory_path() {
 }
 
 // -----------------------------------------------------------------------
-// Task 10: Docker daemon / load parameter tests
+// Docker daemon / load parameter tests
 // -----------------------------------------------------------------------
 
 #[test]

@@ -508,9 +508,9 @@ impl CheckerFactory for RealCheckerFactory {
 /// Checkers run sequentially. Each checker is only constructed when the
 /// corresponding publisher is configured for at least one selected crate.
 ///
-/// Takes `&mut Context` so the gpg capability probe (release-resilience
-/// Task 25) can append to `ctx.determinism.compile_time_allowlist` when
-/// the local gpg binary lacks `--faked-system-time` support.
+/// Takes `&mut Context` so the gpg capability probe can append to
+/// `ctx.determinism.compile_time_allowlist` when the local gpg binary
+/// lacks `--faked-system-time` support.
 pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightReport> {
     run_preflight_with_factory_and_gpg_probe(
         ctx,
@@ -654,7 +654,7 @@ pub fn run_preflight_with_factory_and_gpg_probe(
 }
 
 // ---------------------------------------------------------------------------
-// gpg --faked-system-time capability probe (release-resilience Task 25)
+// gpg --faked-system-time capability probe
 // ---------------------------------------------------------------------------
 
 /// If gpg is configured for signing somewhere in the config AND the
@@ -690,7 +690,7 @@ fn run_gpg_capability_probe(
 }
 
 // ---------------------------------------------------------------------------
-// Rollback-scope + publisher-preflight extension (release-resilience Task 18)
+// Rollback-scope + publisher-preflight extension
 // ---------------------------------------------------------------------------
 
 /// Walk the trait-based publisher registry and surface two classes of
@@ -1367,7 +1367,7 @@ mod tests {
         assert_eq!(report.blockers(true).len(), 3);
     }
 
-    // ---- rollback-scope + Publisher::preflight() extension (Task 18) ----
+    // ---- rollback-scope + Publisher::preflight() extension ----
     //
     // These tests mutate process-wide env vars (CARGO_REGISTRY_TOKEN,
     // GITHUB_TOKEN, ANODIZER_GITHUB_TOKEN). The `serial_test::serial`
@@ -1654,7 +1654,7 @@ mod tests {
         }
     }
 
-    // ---- gpg --faked-system-time capability probe (Task 25) ------------
+    // ---- gpg --faked-system-time capability probe ----
 
     /// Build a Context whose top-level `signs:` declares a gpg signature
     /// covering all artifacts (the canonical user-facing way to enable

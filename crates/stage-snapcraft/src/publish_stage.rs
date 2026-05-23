@@ -23,7 +23,7 @@ use crate::targets::{SnapcraftTarget, collect_snapcraft_targets};
 // ---------------------------------------------------------------------------
 //
 // `SnapcraftPublishStage` is the load-bearing snapcraft runner. Following
-// the Task 15 (commit 026c854) BlobStage pattern, the stage writes its own
+// the `BlobStage` pattern (commit 026c854), the stage writes its own
 // `PublisherResult` directly into `ctx.publish_report` so the Submitter gate
 // (and any downstream consumers, e.g. announce-gating, `--rollback-only
 // --from-run`) observes outcomes uniformly. A parallel trait-based

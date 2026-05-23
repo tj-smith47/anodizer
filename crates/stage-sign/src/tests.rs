@@ -267,7 +267,7 @@ fn test_stage_skips_with_empty_signs() {
 }
 
 // -----------------------------------------------------------------------
-// Task 4C: Additional behavior tests — config fields actually do things
+// Additional behavior tests — config fields actually do things
 // -----------------------------------------------------------------------
 
 #[test]
@@ -745,7 +745,7 @@ fn test_sign_positional_label_when_id_missing() {
     assert_eq!(events[0].label, "sign[0]");
 }
 
-// ---- Error path tests (Task 4D) ----
+// ---- Error path tests: missing tools / bad inputs ----
 
 #[test]
 fn test_missing_signing_binary_errors_with_command_name() {
@@ -1343,7 +1343,7 @@ fn test_docker_sign_env_vars_passed_to_command() {
 }
 
 // -----------------------------------------------------------------------
-// Task 7: sign stage parity — output, if, binary_signs, docker vars
+// Sign stage parity — output, if, binary_signs, docker vars
 // -----------------------------------------------------------------------
 
 #[test]
@@ -1891,7 +1891,7 @@ fn test_output_capture_with_real_command() {
 }
 
 // -----------------------------------------------------------------------
-// Task 1: binary_signs architecture-aware signature template
+// binary_signs architecture-aware signature template
 // -----------------------------------------------------------------------
 
 /// Regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
@@ -2090,7 +2090,7 @@ fn test_normal_signs_uses_simple_default() {
 }
 
 // -----------------------------------------------------------------------
-// Task 3: DockerImageV2 in docker_signs filters
+// DockerImageV2 in docker_signs filters
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2571,11 +2571,11 @@ fn test_docker_sign_digest_go_compat_syntax() {
 }
 
 // ---------------------------------------------------------------------------
-// SOURCE_DATE_EPOCH byte-stability regression (release-resilience task 24)
+// SOURCE_DATE_EPOCH byte-stability regression
 // ---------------------------------------------------------------------------
 //
 // stage-sign delegates to an external signer (`cosign`, `gpg`) via
-// `Command::new`. The audit found no `Utc::now()` / `SystemTime::now()`
+// `Command::new`. There are no `Utc::now()` / `SystemTime::now()`
 // callsites in stage-sign — the SDE goes in as an env var on the
 // `Command`. Byte-stable signature output requires the signer itself to
 // honor SDE (and, for GPG, `--faked-system-time`). These two
@@ -2585,34 +2585,35 @@ fn test_docker_sign_digest_go_compat_syntax() {
 //      default (random nonce); deterministic-signing mode requires
 //      `--key-ref` with a specific KMS configuration the test harness
 //      cannot provision.
-//   2. gpg's `--faked-system-time` flag preflight check lands in
-//      release-resilience task 25 (preflight); without it, a test that
-//      pins gpg byte-stability is flaky on hosts where the flag isn't
-//      supported.
+//   2. gpg's `--faked-system-time` flag requires a preflight check that
+//      fails fast on gpg < 2.0.10 (no `--faked-system-time` support);
+//      without it, a test that pins gpg byte-stability is flaky on
+//      hosts where the flag isn't supported.
 //
 // Both tests remain in the suite as documentation of the contract; they
-// will be un-ignored once tasks 25 and the cosign-KMS fixture land.
+// will be un-ignored once the preflight gpg check + cosign-KMS fixture
+// are wired up.
 
 #[test]
-#[ignore = "cosign deterministic-signing requires KMS key fixture; see task 25"]
+#[ignore = "cosign deterministic-signing requires KMS key fixture"]
 fn cosign_signature_byte_stable_for_same_sde() {
     // Sketch:
     //   - Skip if `cosign` not on PATH.
     //   - Set SOURCE_DATE_EPOCH=1715000000 on two separate sign invocations.
     //   - Assert the two `.sig` outputs are byte-identical.
     //
-    // Blocked on: deterministic-signing KMS fixture (task 25 preflight will
+    // Blocked on: deterministic-signing KMS fixture (preflight will
     // surface whether the host's cosign supports `--key-ref kms://`).
 }
 
 #[test]
-#[ignore = "gpg --faked-system-time preflight check lands in task 25"]
+#[ignore = "requires gpg --faked-system-time preflight"]
 fn gpg_signature_byte_stable_for_same_sde() {
     // Sketch:
     //   - Skip if `gpg --version` doesn't print 2.x+.
     //   - Sign the same payload twice with the same `--faked-system-time`.
     //   - Assert byte-equal `.sig` outputs.
     //
-    // Blocked on: task 25's preflight that fails fast on gpg < 2.0.10
-    // (no `--faked-system-time` support).
+    // Blocked on: a preflight that fails fast on gpg < 2.0.10 (no
+    // `--faked-system-time` support).
 }

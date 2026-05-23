@@ -350,9 +350,9 @@ impl Config {
     /// `true` when any top-level / workspace `signs:` or `binary_signs:`
     /// entry will invoke gpg (via `SignConfig::is_gpg()`).
     ///
-    /// Used by preflight (release-resilience Task 25) to decide whether
-    /// to probe `gpg --faked-system-time` support. `docker_signs:` is
-    /// excluded because that driver only ever invokes cosign.
+    /// Used by preflight to decide whether to probe
+    /// `gpg --faked-system-time` support. `docker_signs:` is excluded
+    /// because that driver only ever invokes cosign.
     pub fn has_gpg_sign_configured(&self) -> bool {
         let top_level = self
             .signs
