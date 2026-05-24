@@ -2485,3 +2485,931 @@ fn snapcraft_non_5xx_classifies_unrecoverable() {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// Branches not exercised above: grade validation, riscv64 skip,
+// ARM Arch/Arm template split, multi-binary grouping per target,
+// ids-matches-none warn+skip, meta_description fallback,
+// project_root relative-icon resolution, and the staging-side error
+// paths (mode > 0o7777, extra_files copy, completer copy).
+// -----------------------------------------------------------------------
+
+/// Helper: build a one-crate Context with the given SnapcraftConfig and
+/// register the supplied binary artifacts. Common scaffolding extracted
+/// so each branch test only carries its own variation.
+fn stage_ctx_with_binaries(
+    dist: PathBuf,
+    snap_cfg: SnapcraftConfig,
+    binaries: Vec<Artifact>,
+    dry_run: bool,
+) -> Context {
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = dist;
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for art in binaries {
+        ctx.artifacts.add(art);
+    }
+    ctx
+}
+
+fn linux_bin(name: &str, target: &str) -> Artifact {
+    Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from(format!("/tmp/{name}")),
+        target: Some(target.to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    }
+}
+
+#[test]
+fn test_grade_validation_rejects_unknown_value() {
+    // The grade-validation match arm (build_stage.rs:197-207) bails on any
+    // value outside {stable, devel}. Mirrors the confinement validation
+    // already tested above for the sibling branch.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        grade: Some("alpha".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("invalid grade") && msg.contains("alpha"),
+        "expected grade-validation error naming the bad value, got: {msg}"
+    );
+}
+
+#[test]
+fn test_riscv64_target_is_skipped() {
+    // riscv64 → triple_to_snap_arch returns "riscv64", which is_valid_snap_arch
+    // rejects. The stage logs a warn and continues without producing a snap
+    // for that target (build_stage.rs:303-312).
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![
+            linux_bin("myapp-amd64", "x86_64-unknown-linux-gnu"),
+            linux_bin("myapp-riscv", "riscv64gc-unknown-linux-gnu"),
+        ],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(
+        snaps.len(),
+        1,
+        "riscv64 target must be filtered out, only amd64 snap should register"
+    );
+    assert_eq!(snaps[0].target.as_deref(), Some("x86_64-unknown-linux-gnu"));
+}
+
+#[test]
+fn test_armv7_target_splits_arch_and_arm_for_default_template() {
+    // The default name template renders `{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}`.
+    // For armv7-* targets the stage must split Arch="arm" and Arm="7" so
+    // the rendered filename is `linux_armv7`, not `linux_armv7v7`
+    // (build_stage.rs:344-350).
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "armv7-unknown-linux-gnueabihf")],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(snaps.len(), 1);
+    let path_str = snaps[0].path.to_string_lossy().into_owned();
+    assert!(
+        path_str.ends_with("mysnap_1.0.0_linux_armv7.snap"),
+        "armv7 must produce single 'armv7' suffix, not doubled. Got: {path_str}"
+    );
+}
+
+#[test]
+fn test_multiple_binaries_same_target_produce_single_snap() {
+    // Two binaries for the same target triple should group into ONE snap
+    // (one entry in the by_target BTreeMap → one job). The snap.yaml is
+    // unobservable from a dry-run, but the artifact count proves grouping.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![
+            linux_bin("server", "x86_64-unknown-linux-gnu"),
+            linux_bin("client", "x86_64-unknown-linux-gnu"),
+        ],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(
+        snaps.len(),
+        1,
+        "two binaries on the same target must collapse into one snap"
+    );
+}
+
+#[test]
+fn test_ids_filter_matches_none_skips_with_warning() {
+    // When linux_binaries is non-empty but the ids filter matches zero of
+    // them, the stage logs a warn-and-skip distinct from the no-linux-
+    // binaries path (build_stage.rs:272-278).
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        ids: Some(vec!["nonexistent-build-id".to_string()]),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/tmp/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "actual-build-id".to_string())]),
+            size: None,
+        }],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    assert!(
+        ctx.artifacts.by_kind(ArtifactKind::Snap).is_empty(),
+        "ids filter matching nothing must skip pack without erroring"
+    );
+}
+
+#[test]
+fn test_project_root_resolves_relative_icon_path() {
+    // resolve_icon_path joins relative paths against project_root. When the
+    // file exists at <project_root>/<icon>, validation must pass; when only
+    // a CWD-relative path exists, validation must fail (the icon isn't
+    // where project_root says it should be).
+    let tmp = TempDir::new().unwrap();
+    let project_root = tmp.path().join("myproject");
+    std::fs::create_dir_all(project_root.join("assets")).unwrap();
+    let icon_at_project = project_root.join("assets").join("icon.png");
+    std::fs::write(&icon_at_project, b"\x89PNG\r\n\x1a\n").unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        icon: Some("assets/icon.png".to_string()),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            project_root: Some(project_root.clone()),
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+
+    // Must succeed — icon resolves to <project_root>/assets/icon.png.
+    SnapcraftStage
+        .run(&mut ctx)
+        .expect("icon resolution via project_root should find the file");
+}
+
+#[test]
+fn test_extra_files_invalid_mode_errors_during_staging() {
+    // mode > 0o7777 is rejected during staging, after the copy succeeds
+    // (build_stage.rs:533-540). The error must mention the bad mode and
+    // happen BEFORE snapcraft pack spawns — so it's reproducible without
+    // a real snapcraft binary.
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("myapp");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+    let extra_src = tmp.path().join("README.md");
+    std::fs::write(&extra_src, b"hi").unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        extra_files: Some(vec![SnapcraftExtraFileSpec::Detailed {
+            source: extra_src.to_string_lossy().to_string(),
+            destination: Some("README.md".to_string()),
+            mode: Some(0o10000), // one bit over the 0o7777 limit
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+        false, // must be non-dry-run so the extra_files branch runs
+    );
+
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("invalid file mode"),
+        "expected mode-range error during staging, got: {msg}"
+    );
+}
+
+#[test]
+fn test_extra_files_copies_source_to_prime_dest() {
+    // Detailed-form extra_files (source + custom destination) are staged
+    // into the prime dir during the non-dry-run path. We can't peek the
+    // tmp prime dir post-run (TempDir drops at end of staging), but a
+    // missing source file fails the copy with a specific error that
+    // proves the copy site executed (build_stage.rs:525-527).
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("myapp");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        extra_files: Some(vec![SnapcraftExtraFileSpec::Detailed {
+            source: "/nonexistent/extra/file.txt".to_string(),
+            destination: Some("etc/file.txt".to_string()),
+            mode: Some(0o644),
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+        false,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("copy extra file"),
+        "expected extra-files copy-site error, got: {msg}"
+    );
+    assert!(
+        msg.contains("/nonexistent/extra/file.txt"),
+        "error must name the missing source path, got: {msg}"
+    );
+}
+
+#[test]
+fn test_apps_completer_existing_file_is_copied_to_prime() {
+    // The completer-copy branch only fires when the apps map contains an
+    // entry with `completer:` set (build_stage.rs:552-576). The branch
+    // silently no-ops when the source doesn't exist, so we can only assert
+    // by reaching the snapcraft-spawn failure (proving the prior staging
+    // completed) with a valid completer source file in place.
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("myapp");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+    let completer_src = tmp.path().join("completions").join("myapp.bash");
+    std::fs::create_dir_all(completer_src.parent().unwrap()).unwrap();
+    std::fs::write(&completer_src, b"# completion script").unwrap();
+
+    let mut apps = BTreeMap::new();
+    apps.insert(
+        "myapp".to_string(),
+        SnapcraftApp {
+            command: Some("myapp".to_string()),
+            completer: Some(completer_src.to_string_lossy().to_string()),
+            ..Default::default()
+        },
+    );
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        apps: Some(apps),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+        false,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    // Must fail at snapcraft spawn ("execute snapcraft") and NOT at the
+    // completer copy ("snapcraft: copy completer"). Either no spawn
+    // attempt or a copy-site error would mean the completer branch
+    // mis-fired.
+    assert!(
+        !msg.contains("copy completer"),
+        "completer staging branch failed unexpectedly: {msg}"
+    );
+    assert!(
+        msg.contains("execute snapcraft") || msg.contains("snapcraft pack"),
+        "should reach snapcraft spawn after completer staging, got: {msg}"
+    );
+}
+
+#[test]
+fn test_summary_template_render_failure_errors() {
+    // summary goes through render_template (build_stage.rs:447-451). A
+    // malformed template surfaces as a render error before the spawn.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Broken {{ unterminated".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        false,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("summary"),
+        "expected summary render-site error context, got: {msg}"
+    );
+}
+
+#[test]
+fn test_skip_template_string_evaluating_true_skips() {
+    // skip: StringOrBool::String("true") must be evaluated via the template
+    // engine and treated as truthy (build_stage.rs:168-181). Distinct from
+    // the bool branch already tested above.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        skip: Some(StringOrBool::String("true".to_string())),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+    assert!(
+        ctx.artifacts.by_kind(ArtifactKind::Snap).is_empty(),
+        "skip='true' (string form) must skip the config like skip=true (bool form)"
+    );
+}
+
+#[test]
+fn test_selected_crates_filter_excludes_unmatched_crate() {
+    // selected_crates filtering (build_stage.rs:127): when set, only
+    // crates whose name is in the list contribute snaps.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            selected_crates: vec!["other-crate".to_string()],
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+
+    SnapcraftStage.run(&mut ctx).unwrap();
+    assert!(
+        ctx.artifacts.by_kind(ArtifactKind::Snap).is_empty(),
+        "crate not in selected_crates must be skipped"
+    );
+}
+
+#[test]
+fn test_name_template_with_explicit_snap_suffix_is_not_doubled() {
+    // The stage appends `.snap` only when the rendered template doesn't
+    // already end in `.snap` (build_stage.rs:369-373). Pin both branches.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        name_template: Some("custom_{{ Version }}.snap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(snaps.len(), 1);
+    let path_str = snaps[0].path.to_string_lossy().into_owned();
+    assert!(
+        path_str.ends_with("/custom_1.0.0.snap"),
+        "rendered .snap suffix must not be doubled. Got: {path_str}"
+    );
+    assert!(
+        !path_str.ends_with(".snap.snap"),
+        "unexpected doubled suffix: {path_str}"
+    );
+}
+
+// -----------------------------------------------------------------------
+// Additional uncovered branches: description/grade render errors,
+// absolute icon paths, icon copy in non-dry-run, mod_timestamp,
+// templated_extra_files, real replace removal, name_template
+// ending in .SNAP (case-insensitive suffix check).
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_description_template_render_failure_errors() {
+    // description goes through render_template (build_stage.rs:452-457).
+    // A malformed Tera template must surface as a render error before
+    // snapcraft pack spawns. Mirrors the summary-render test above.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("Broken {{ unterminated".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        false,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("description"),
+        "expected description render-site error context, got: {msg}"
+    );
+}
+
+#[test]
+fn test_absolute_icon_path_resolves_directly() {
+    // resolve_icon_path's absolute branch (build_stage.rs:44-45): an
+    // absolute path is returned unchanged and must NOT be re-rooted under
+    // project_root. Observable by passing an absolute icon path that
+    // exists on disk while project_root points elsewhere.
+    let tmp = TempDir::new().unwrap();
+    let icon_path = tmp.path().join("icon.png");
+    std::fs::write(&icon_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+    // project_root is a sibling that does NOT contain the icon.
+    let project_root = tmp.path().join("other-project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        icon: Some(icon_path.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            project_root: Some(project_root),
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+
+    // Absolute icon path must validate-OK regardless of project_root.
+    SnapcraftStage
+        .run(&mut ctx)
+        .expect("absolute icon path should bypass project_root rerooting");
+}
+
+#[test]
+fn test_icon_resolution_falls_back_to_cwd_when_project_root_unset() {
+    // resolve_icon_path's `unwrap_or(Path::new("."))` branch
+    // (build_stage.rs:49): when project_root is None AND the icon path
+    // is relative, validation looks under CWD. We can't easily mutate
+    // CWD safely from a test, so we assert the negative behaviour: a
+    // nonexistent relative icon with project_root unset fails validation
+    // with the "does not exist" error, proving the resolution branch ran.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        icon: Some("definitely-not-a-real-icon-xyz123.png".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("does not exist") && msg.contains("definitely-not-a-real-icon-xyz123.png"),
+        "expected icon-missing error after CWD resolution, got: {msg}"
+    );
+}
+
+#[test]
+fn test_mod_timestamp_invalid_value_errors_during_staging() {
+    // build_stage.rs:591-593: mod_timestamp is applied during the
+    // non-dry-run staging path. An unparseable value must surface as a
+    // timestamp-parse error before the snapcraft spawn.
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("myapp");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        mod_timestamp: Some("not-a-timestamp".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+        false,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("mod_timestamp") && msg.contains("not-a-timestamp"),
+        "expected mod_timestamp parse error, got: {msg}"
+    );
+}
+
+#[test]
+fn test_templated_extra_files_missing_source_errors() {
+    // build_stage.rs:579-588: templated_extra_files invokes
+    // anodizer_core::templated_files::process_templated_extra_files. A
+    // nonexistent source file surfaces as a "read templated file" error
+    // tagged "snapcraft" — proving the branch fires.
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("myapp");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        templated_extra_files: Some(vec![anodizer_core::config::TemplatedExtraFile {
+            src: "/nonexistent/template.tpl".to_string(),
+            dst: Some("notes.txt".to_string()),
+            mode: None,
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+        false,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("snapcraft") && msg.contains("templated"),
+        "expected snapcraft-tagged templated-file error, got: {msg}"
+    );
+    assert!(
+        msg.contains("/nonexistent/template.tpl"),
+        "error must name the missing source, got: {msg}"
+    );
+}
+
+#[test]
+fn test_replace_false_does_not_remove_archives() {
+    // build_stage.rs:602-609: collect_if_replace is a no-op when
+    // replace=false. Pairs with test_stage_dry_run_replace_removes_archives
+    // (which pins the replace=true branch) to fence both arms of the
+    // conditional.
+    let tmp = TempDir::new().unwrap();
+
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        replace: Some(false),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: String::new(),
+        path: PathBuf::from("dist/myapp_1.0.0_linux_amd64.tar.gz"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    // replace=false must leave the archive in place.
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(
+        archives.len(),
+        1,
+        "replace=false must not remove archives, found: {}",
+        archives.len()
+    );
+}
+
+#[test]
+fn test_name_template_with_uppercase_snap_suffix_is_not_doubled() {
+    // build_stage.rs:369 uses `rendered.to_lowercase().ends_with(".snap")`
+    // — uppercase `.SNAP` must also be detected so the suffix isn't
+    // doubled. Pins the case-insensitive branch separately from the
+    // lowercase test above.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        name_template: Some("custom_{{ Version }}.SNAP".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(snaps.len(), 1);
+    let path_str = snaps[0].path.to_string_lossy().into_owned();
+    assert!(
+        path_str.ends_with("/custom_1.0.0.SNAP"),
+        "uppercase .SNAP suffix must be preserved and not doubled. Got: {path_str}"
+    );
+    assert!(
+        !path_str.to_lowercase().ends_with(".snap.snap"),
+        "unexpected doubled suffix: {path_str}"
+    );
+}
+
+#[test]
+fn test_arm64_target_uses_arch_arm64_not_arm() {
+    // build_stage.rs:344-350: the `armv` prefix split applies ONLY to
+    // armv* triples. aarch64-* maps to arm64, which must NOT trigger
+    // the Arm/Arch split (no `v` suffix). Confirms the strip_prefix
+    // branch isn't over-eager.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "aarch64-unknown-linux-gnu")],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(snaps.len(), 1);
+    let path_str = snaps[0].path.to_string_lossy().into_owned();
+    assert!(
+        path_str.ends_with("mysnap_1.0.0_linux_arm64.snap"),
+        "aarch64 must render as 'arm64' with no `v` suffix. Got: {path_str}"
+    );
+}
+
+#[test]
+fn test_multiple_targets_produce_one_snap_per_target() {
+    // build_stage.rs:288-292: by_target BTreeMap groups binaries per
+    // target triple. With distinct linux targets, the stage must
+    // register exactly one snap per target — and the BTreeMap-ordered
+    // iteration means the artifact order is deterministic.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![
+            linux_bin("myapp-amd64", "x86_64-unknown-linux-gnu"),
+            linux_bin("myapp-arm64", "aarch64-unknown-linux-gnu"),
+        ],
+        true,
+    );
+    SnapcraftStage.run(&mut ctx).unwrap();
+
+    let snaps = ctx.artifacts.by_kind(ArtifactKind::Snap);
+    assert_eq!(snaps.len(), 2, "one snap per target triple");
+    let targets: Vec<&str> = snaps.iter().filter_map(|s| s.target.as_deref()).collect();
+    assert!(targets.contains(&"x86_64-unknown-linux-gnu"));
+    assert!(targets.contains(&"aarch64-unknown-linux-gnu"));
+}
+
+#[test]
+fn test_binary_copy_missing_source_errors_with_path_context() {
+    // build_stage.rs:500-502: when a registered binary path doesn't
+    // exist on disk, the non-dry-run staging must fail at the binary
+    // copy site with the source path in the error context.
+    let tmp = TempDir::new().unwrap();
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/nonexistent/path/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+        false,
+    );
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("copy binary") && msg.contains("/nonexistent/path/myapp"),
+        "expected binary-copy error with source path context, got: {msg}"
+    );
+}

@@ -1401,4 +1401,221 @@ mod existing_assets_precheck_tests {
         assert!(names.contains(&"app_linux_amd64.tar.gz".to_string()));
         assert!(names.contains(&"checksums.txt".to_string()));
     }
+
+    #[test]
+    fn conflict_list_preserves_input_order() {
+        // The helper returns the names in the order the caller supplied
+        // them, so the resulting bail message lists assets in a predictable
+        // (release-API) order. A future sort/dedupe regression would be
+        // user-visible noise; pin the contract.
+        let assets = &["a.tar.gz", "b.zip", "c.sig"];
+        let names = check_existing_assets_block_upload(false, false, false, assets)
+            .expect("conflict present");
+        assert_eq!(
+            names,
+            vec![
+                "a.tar.gz".to_string(),
+                "b.zip".to_string(),
+                "c.sig".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn skip_upload_wins_even_with_assets_and_no_replace() {
+        // skip_upload short-circuits BEFORE the asset-list inspection runs.
+        // Pinning this so a future refactor doesn't reorder the early-return
+        // and accidentally surface a conflict during a no-op upload pass.
+        let result = check_existing_assets_block_upload(true, false, false, &["x.tar.gz"]);
+        assert!(
+            result.is_none(),
+            "skip_upload short-circuits unconditionally"
+        );
+    }
+}
+
+#[cfg(test)]
+mod upload_retry_locals_tests {
+    //! Pin the policy-to-locals translation that the bespoke upload retry
+    //! loop reads on every iteration. The formula is trivial today but the
+    //! rustdoc claims "single point of translation"; if a future change
+    //! adds a clamp / fudge factor / multiplier here, these tests force
+    //! that change to be conscious (and visible in one place).
+    use super::*;
+    use anodizer_core::retry::RetryPolicy;
+    use std::time::Duration;
+
+    #[test]
+    fn returns_policy_fields_verbatim() {
+        let policy = RetryPolicy {
+            max_attempts: 7,
+            base_delay: Duration::from_millis(50),
+            max_delay: Duration::from_secs(30),
+        };
+        let (attempts, base, max) = upload_retry_locals(&policy);
+        assert_eq!(
+            attempts, 7,
+            "max_attempts mirrors RetryPolicy::max_attempts"
+        );
+        assert_eq!(base, Duration::from_millis(50));
+        assert_eq!(max, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn surfaces_the_upload_canonical_policy_unchanged() {
+        // GoReleaser-aligned canonical upload policy: 10 attempts, 50ms base,
+        // 30s cap. The locals helper must NOT mutate these on the way to the
+        // upload loop — drift here is a user-visible behaviour change in the
+        // retry envelope.
+        let (attempts, base, max) = upload_retry_locals(&RetryPolicy::UPLOAD);
+        assert_eq!(attempts, 10);
+        assert_eq!(base, Duration::from_millis(50));
+        assert_eq!(max, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn preserves_one_attempt_minimum_without_extra_clamp() {
+        // The rustdoc claims the helper relies on RetryConfig::to_policy's
+        // upstream clamp and adds none of its own. A `max_attempts: 1`
+        // input must therefore round-trip unchanged (proving the helper
+        // does not, say, force a minimum of 2 retries).
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let (attempts, _, _) = upload_retry_locals(&policy);
+        assert_eq!(
+            attempts, 1,
+            "single-attempt policy must round-trip verbatim"
+        );
+    }
+}
+
+#[cfg(test)]
+mod already_exists_action_derive_tests {
+    //! Pin the `Debug`/`PartialEq`/`Eq` derives on `AlreadyExistsAction`.
+    //! The classifier returns these variants and downstream call sites in
+    //! the upload retry loop `match` on them — a drift to a non-equality
+    //! representation would silently break the upload loop's arm matching.
+    use super::*;
+
+    #[test]
+    fn variants_compare_equal_only_to_themselves() {
+        assert_eq!(
+            AlreadyExistsAction::SkipIdempotent,
+            AlreadyExistsAction::SkipIdempotent
+        );
+        assert_ne!(
+            AlreadyExistsAction::SkipIdempotent,
+            AlreadyExistsAction::BailReplaceForbidden
+        );
+        assert_ne!(
+            AlreadyExistsAction::BailReplaceForbidden,
+            AlreadyExistsAction::DeleteAndRetry
+        );
+        assert_ne!(
+            AlreadyExistsAction::DeleteAndRetry,
+            AlreadyExistsAction::SkipIdempotent
+        );
+    }
+
+    #[test]
+    fn debug_format_names_the_variant() {
+        // The error-path log lines format the action via `{:?}` to identify
+        // which branch the classifier picked. Pin the variant names so a
+        // future rename (`SkipIdempotent` -> `Idempotent`) surfaces in the
+        // log diff instead of silently breaking grep-based triage.
+        assert_eq!(
+            format!("{:?}", AlreadyExistsAction::SkipIdempotent),
+            "SkipIdempotent"
+        );
+        assert_eq!(
+            format!("{:?}", AlreadyExistsAction::BailReplaceForbidden),
+            "BailReplaceForbidden"
+        );
+        assert_eq!(
+            format!("{:?}", AlreadyExistsAction::DeleteAndRetry),
+            "DeleteAndRetry"
+        );
+    }
+}
+
+#[cfg(test)]
+mod spec_struct_surface_tests {
+    //! Pin the field surface of the three "context bundles" passed into
+    //! `run_github_backend`. Each is `Clone + Copy` so we can construct a
+    //! struct, copy it, and read every field through the copy — a future
+    //! field removal/rename breaks compilation right here, not at the
+    //! distant call site in `run.rs`.
+    use super::*;
+    use octocrab::repos::releases::MakeLatest;
+
+    #[test]
+    fn github_release_spec_round_trips_all_fields() {
+        let make_latest = Some(MakeLatest::True);
+        let target = Some("main".to_string());
+        let category = Some("Announcements".to_string());
+        let spec = GithubReleaseSpec {
+            tag: "v1.2.3",
+            name: "Release 1.2.3",
+            body: "## Changes",
+            mode: "replace",
+            draft: true,
+            prerelease: false,
+            make_latest: &make_latest,
+            target_commitish: &target,
+            discussion_category: &category,
+        };
+        let copy = spec; // exercises Copy
+        assert_eq!(copy.tag, "v1.2.3");
+        assert_eq!(copy.name, "Release 1.2.3");
+        assert_eq!(copy.body, "## Changes");
+        assert_eq!(copy.mode, "replace");
+        assert!(copy.draft);
+        assert!(!copy.prerelease);
+        assert!(copy.make_latest.is_some());
+        assert_eq!(copy.target_commitish.as_deref(), Some("main"));
+        assert_eq!(copy.discussion_category.as_deref(), Some("Announcements"));
+    }
+
+    #[test]
+    fn upload_opts_round_trips_every_boolean() {
+        // Five independent booleans -> a drift in field order or a silent
+        // removal would let the caller in `run.rs` send `replace_existing_draft`
+        // where `skip_upload` was wanted. Pin each one by name.
+        let opts = UploadOpts {
+            skip_upload: true,
+            replace_existing_draft: false,
+            replace_existing_artifacts: true,
+            use_existing_draft: false,
+            resume_release: true,
+        };
+        let copy = opts; // exercises Copy
+        assert!(copy.skip_upload);
+        assert!(!copy.replace_existing_draft);
+        assert!(copy.replace_existing_artifacts);
+        assert!(!copy.use_existing_draft);
+        assert!(copy.resume_release);
+    }
+
+    #[test]
+    fn upload_opts_all_false_is_constructible() {
+        // The "default-ish" shape (no opt-ins): the upload loop must see
+        // every flag as `false` so the production code path runs as the
+        // GR-aligned default. A drift to e.g. `Option<bool>` would break
+        // this all-false literal.
+        let opts = UploadOpts {
+            skip_upload: false,
+            replace_existing_draft: false,
+            replace_existing_artifacts: false,
+            use_existing_draft: false,
+            resume_release: false,
+        };
+        assert!(!opts.skip_upload);
+        assert!(!opts.replace_existing_draft);
+        assert!(!opts.replace_existing_artifacts);
+        assert!(!opts.use_existing_draft);
+        assert!(!opts.resume_release);
+    }
 }

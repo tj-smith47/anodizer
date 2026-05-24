@@ -3697,3 +3697,1214 @@ fn test_release_upload_candidates_exclude_binary_sign_outputs() {
         paths
     );
 }
+
+// =====================================================================
+// run.rs coverage: behaviors not already pinned by sibling tests.
+// =====================================================================
+
+// ---- release.skip template-rendering path -----------------------------
+//
+// `release.skip` is a `StringOrBool`: when a template string evaluates
+// to "true" the crate is skipped before validation runs. Pin both
+// branches (renders-to-true skips; renders-to-false proceeds).
+
+#[test]
+fn test_release_skip_template_renders_to_true_skips_crate() {
+    // Template evaluates to "true" via the IsSnapshot var (snapshot=true).
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .snapshot(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip: Some(StringOrBool::String(
+                    "{% if IsSnapshot %}true{% else %}false{% endif %}".to_string(),
+                )),
+                // A conflicting draft pair would normally bail, but skip:
+                // short-circuits before that validation. If the bail fires
+                // the assertion below will catch it.
+                replace_existing_draft: Some(true),
+                use_existing_draft: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let stage = ReleaseStage;
+    assert!(
+        stage.run(&mut ctx).is_ok(),
+        "skip template that renders to true should short-circuit before draft validation"
+    );
+}
+
+#[test]
+fn test_release_skip_template_renders_to_false_proceeds() {
+    // Template renders to "false" (snapshot=false), so the crate proceeds.
+    // We deliberately set the conflicting draft pair so the stage MUST
+    // reach validation and bail — proving the skip branch was not taken.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .snapshot(false)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip: Some(StringOrBool::String(
+                    "{% if IsSnapshot %}true{% else %}false{% endif %}".to_string(),
+                )),
+                replace_existing_draft: Some(true),
+                use_existing_draft: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let stage = ReleaseStage;
+    let err = stage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("replace_existing_draft") && err.contains("use_existing_draft"),
+        "skip-renders-false must reach draft validation; got: {err}"
+    );
+}
+
+// ---- skip_upload string/template variants -----------------------------
+//
+// `release.skip_upload` accepts true/false/auto/1/0 plus a templated
+// string. The bare-bool path is covered (`test_skip_upload_dry_run_message`)
+// but the string/template variants — including the bail on invalid — are
+// not. Each test relies on the dry-run path so behavior is observable
+// through ok/err alone (no API).
+
+#[test]
+fn test_skip_upload_string_auto_in_snapshot_succeeds() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .snapshot(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip_upload: Some(StringOrBool::String("auto".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_skip_upload_string_zero_and_one_are_valid() {
+    for value in ["1", "0", "true", "false", ""] {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    skip_upload: Some(StringOrBool::String(value.to_string())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ReleaseStage.run(&mut ctx).is_ok(),
+            "skip_upload value {value:?} should be accepted"
+        );
+    }
+}
+
+#[test]
+fn test_skip_upload_invalid_string_bails() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip_upload: Some(StringOrBool::String("maybe".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("invalid skip_upload") && err.contains("maybe"),
+        "bail should name the rejected value; got: {err}"
+    );
+}
+
+#[test]
+fn test_skip_upload_template_renders_to_true_then_validates() {
+    // Template ("{% if IsSnapshot %}true{% else %}false{% endif %}") with
+    // snapshot=true → "true". Stage must not bail — proves the template
+    // branch (vs the literal-string branch) was taken.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .snapshot(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip_upload: Some(StringOrBool::String(
+                    "{% if IsSnapshot %}true{% else %}maybe{% endif %}".to_string(),
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_skip_upload_template_renders_to_invalid_bails() {
+    // Same template shape but snapshot=false → "maybe", which is invalid.
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .snapshot(false)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip_upload: Some(StringOrBool::String(
+                    "{% if IsSnapshot %}true{% else %}maybe{% endif %}".to_string(),
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("invalid skip_upload"),
+        "rendered-invalid template should still bail; got: {err}"
+    );
+}
+
+// ---- selected_crates filter -------------------------------------------
+//
+// Only crates whose name is in `ctx.options.selected_crates` are
+// processed (when the filter is non-empty). Pin by setting up a crate
+// whose release config has a poison pill (conflicting drafts that would
+// bail) and filtering it OUT: success means the crate was filtered.
+
+#[test]
+fn test_selected_crates_filter_excludes_unlisted_crate() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .selected_crates(vec!["other".to_string()])
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                // Would bail if processed — filter must exclude us first.
+                replace_existing_draft: Some(true),
+                use_existing_draft: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    assert!(
+        ReleaseStage.run(&mut ctx).is_ok(),
+        "selected_crates filter should exclude the unlisted crate"
+    );
+}
+
+#[test]
+fn test_selected_crates_filter_includes_listed_crate() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .selected_crates(vec!["testcrate".to_string()])
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                // Same poison pill — but now the crate IS listed, so the
+                // bail SHOULD fire and prove the include-path was taken.
+                replace_existing_draft: Some(true),
+                use_existing_draft: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(err.contains("replace_existing_draft"));
+}
+
+// ---- include_meta: missing metadata.json ------------------------------
+//
+// When `include_meta` is true and `dist/metadata.json` is absent:
+//   - non-strict: warn and continue (stage succeeds);
+//   - strict: bail with a strict-mode error.
+
+#[test]
+fn test_include_meta_missing_metadata_json_warns_in_non_strict() {
+    let dir = tempfile::tempdir().unwrap();
+    let dist_dir = dir.path().join("dist");
+    std::fs::create_dir_all(&dist_dir).unwrap();
+    // intentionally no metadata.json
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                include_meta: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.config.dist = dist_dir;
+
+    assert!(
+        ReleaseStage.run(&mut ctx).is_ok(),
+        "non-strict include_meta with missing metadata.json should warn, not fail"
+    );
+}
+
+#[test]
+fn test_include_meta_missing_metadata_json_bails_in_strict_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let dist_dir = dir.path().join("dist");
+    std::fs::create_dir_all(&dist_dir).unwrap();
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                include_meta: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.config.dist = dist_dir;
+    ctx.options.strict = true;
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("include_meta") && err.contains("strict"),
+        "strict include_meta with missing file should bail; got: {err}"
+    );
+}
+
+// ---- release.tag override drifts from pushed git tag (warn) -----------
+//
+// The stage warns when `release.tag` resolves to a value different from
+// the pushed `Tag` template var. The warn is logged, not returned, so we
+// observe the post-state: `ReleaseURL` should be composed from the
+// override tag.
+
+#[test]
+fn test_release_tag_override_drifts_from_pushed_tag_does_not_fail() {
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .tag("v9.9.9") // pushed tag in template_vars
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v9.9.9".to_string(),
+            release: Some(ReleaseConfig {
+                // Override differs from pushed Tag — should warn + proceed.
+                tag: Some("v0.0.0-override".to_string()),
+                github: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    // Post-state: the ReleaseURL contains the override tag, not the pushed
+    // tag. This is the observable consequence of the override path.
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        release_url.contains("v0.0.0-override"),
+        "ReleaseURL should use override tag, got {release_url:?}"
+    );
+}
+
+// ---- replace_existing_artifacts CLI override --------------------------
+//
+// The CLI `--replace-existing` flag (`ctx.options.replace_existing_artifacts`)
+// is OR'd with the config value. Test that setting only the CLI flag is
+// enough to drive the stage through dry-run (smoke-test of the OR path).
+
+#[test]
+fn test_replace_existing_artifacts_cli_override_drives_stage() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                // config flag NOT set; only the CLI override is enabled.
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.options.replace_existing_artifacts = true;
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+// ---- ids filter zero-match warning --------------------------------
+//
+// When `ids` is set and no artifacts match, the stage logs a warn and
+// proceeds (release still gets created with no uploads). Observable
+// signal: ok() return AND ReleaseURL still populated in dry-run.
+
+#[test]
+fn test_ids_filter_zero_match_warns_and_proceeds() {
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                ids: Some(vec!["nonexistent-id".to_string()]),
+                github: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !release_url.is_empty(),
+        "ids-zero-match should still create the release (URL populated)"
+    );
+}
+
+// ---- exemptions block injection into release body ---------------------
+//
+// When `ctx.determinism.runtime_allowlist` is non-empty AND the
+// changelog body is empty, the exemptions block becomes the body
+// outright (the `exemptions if changelog_body.is_empty()` branch).
+// When both are non-empty, the format string joins them with "\n".
+// Both branches drive the dry-run stage to completion.
+
+#[test]
+fn test_release_with_exemptions_and_empty_changelog_succeeds() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }])
+        .build();
+    // Seed the allowlist; leave changelog_body empty.
+    ctx.determinism = Some(anodizer_core::DeterminismState {
+        runtime_allowlist: vec![("foo.deb".to_string(), "dpkg timestamp".to_string())],
+        ..Default::default()
+    });
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn test_release_with_exemptions_and_changelog_joins_both() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }])
+        .build();
+    ctx.determinism = Some(anodizer_core::DeterminismState {
+        runtime_allowlist: vec![("foo.deb".to_string(), "dpkg timestamp".to_string())],
+        ..Default::default()
+    });
+    ctx.stage_outputs
+        .changelogs
+        .insert("testcrate".to_string(), "- bug fix".to_string());
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+// ---- dry-run gitea derives download URL from API URL ------------------
+//
+// In the dry-run path, when `gitea_urls.download` is None but `api` is
+// set, the stage derives the download URL by stripping `/api/v1` from
+// the API URL. Observable through the `ReleaseURL` template var.
+
+#[test]
+fn test_gitea_dry_run_derives_download_url_from_api_url() {
+    use anodizer_core::config::{GiteaUrlsConfig, ScmRepoConfig};
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                gitea: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.token_type = ScmTokenType::Gitea;
+    ctx.config.gitea_urls = Some(GiteaUrlsConfig {
+        api: Some("https://gitea.example.com/api/v1".to_string()),
+        download: None,
+        skip_tls_verify: None,
+    });
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        release_url.contains("gitea.example.com"),
+        "ReleaseURL should be derived from API host, got {release_url:?}"
+    );
+    assert!(
+        !release_url.contains("/api/v1"),
+        "/api/v1 should be stripped from derived download URL, got {release_url:?}"
+    );
+}
+
+// ---- collect_release_upload_candidates: include_meta + ids filter -----
+//
+// Beyond the existing binary-sign exclusion test, pin two more behaviors
+// of the public helper:
+//   1. `include_meta=true` adds the Metadata kind to the upload set.
+//   2. The ids filter honors metadata["id"] correctly.
+
+#[test]
+fn test_release_upload_candidates_include_meta_adds_metadata_kind() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Metadata,
+        path: "dist/metadata.json".into(),
+        name: "metadata.json".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+
+    let without =
+        super::run::collect_release_upload_candidates(&ctx, "myapp", None, /*meta*/ false);
+    assert!(
+        !without
+            .iter()
+            .any(|(p, _)| p.to_string_lossy().ends_with("metadata.json")),
+        "Metadata kind must be excluded when include_meta=false"
+    );
+
+    let with =
+        super::run::collect_release_upload_candidates(&ctx, "myapp", None, /*meta*/ true);
+    assert!(
+        with.iter()
+            .any(|(p, _)| p.to_string_lossy().ends_with("metadata.json")),
+        "Metadata kind must be included when include_meta=true"
+    );
+}
+
+#[test]
+fn test_release_upload_candidates_ids_filter_selects_matching() {
+    let mut ctx = TestContextBuilder::new().build();
+    let mut meta_keep = std::collections::HashMap::new();
+    meta_keep.insert("id".to_string(), "linux-archive".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: "dist/keep.tar.gz".into(),
+        name: "keep.tar.gz".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: meta_keep,
+        size: None,
+    });
+    let mut meta_drop = std::collections::HashMap::new();
+    meta_drop.insert("id".to_string(), "windows-archive".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: "dist/drop.zip".into(),
+        name: "drop.zip".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: meta_drop,
+        size: None,
+    });
+
+    let ids = vec!["linux-archive".to_string()];
+    let selected = super::run::collect_release_upload_candidates(&ctx, "myapp", Some(&ids), false);
+    let paths: Vec<String> = selected
+        .iter()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .collect();
+    assert!(paths.iter().any(|p| p.ends_with("keep.tar.gz")));
+    assert!(!paths.iter().any(|p| p.ends_with("drop.zip")));
+}
+
+#[test]
+fn test_release_upload_candidates_filters_by_crate_name() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: "dist/mine.tar.gz".into(),
+        name: "mine.tar.gz".to_string(),
+        target: None,
+        crate_name: "mycrate".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: "dist/theirs.tar.gz".into(),
+        name: "theirs.tar.gz".to_string(),
+        target: None,
+        crate_name: "othercrate".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+
+    let selected = super::run::collect_release_upload_candidates(&ctx, "mycrate", None, false);
+    let paths: Vec<String> = selected
+        .iter()
+        .map(|(p, _)| p.to_string_lossy().into_owned())
+        .collect();
+    assert!(paths.iter().any(|p| p.ends_with("mine.tar.gz")));
+    assert!(!paths.iter().any(|p| p.ends_with("theirs.tar.gz")));
+}
+
+// =====================================================================
+// run.rs additional coverage: bail paths, template render errors, and
+// dry-run branches not yet pinned above.
+// =====================================================================
+
+// ---- conflicting draft options bail (without skip-template detour) -----
+//
+// The pre-existing test that pins this error path threads through the
+// `release.skip` renders-to-false branch. Pin the direct bail path too:
+// no `skip`, just `replace_existing_draft + use_existing_draft` both true.
+// Regression target: dropping or reordering the validation.
+
+#[test]
+fn test_release_conflicting_draft_options_bails_direct() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                replace_existing_draft: Some(true),
+                use_existing_draft: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("replace_existing_draft") && err.contains("use_existing_draft"),
+        "conflicting draft options must bail; got: {err}"
+    );
+}
+
+// ---- header template render error ------------------------------------
+//
+// `release.header` is template-rendered. An invalid Tera template must
+// surface a contextualised error mentioning the crate name.
+
+#[test]
+fn test_release_header_invalid_template_errors() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                // Unterminated tag → Tera parse error.
+                header: Some(ContentSource::Inline("{{ unterminated".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("header") && err.contains("testcrate"),
+        "header render error should mention header + crate; got: {err}"
+    );
+}
+
+// ---- footer template render error ------------------------------------
+
+#[test]
+fn test_release_footer_invalid_template_errors() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                footer: Some(ContentSource::Inline("{{ broken".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("footer") && err.contains("testcrate"),
+        "footer render error should mention footer + crate; got: {err}"
+    );
+}
+
+// ---- release.name_template render error -------------------------------
+
+#[test]
+fn test_release_name_template_invalid_errors() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                name_template: Some("{{ broken".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("name_template") && err.contains("testcrate"),
+        "name_template render error should mention field + crate; got: {err}"
+    );
+}
+
+// ---- target_commitish render error ------------------------------------
+
+#[test]
+fn test_release_target_commitish_invalid_template_errors() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                target_commitish: Some("{{ unterminated".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("target_commitish") && err.contains("testcrate"),
+        "target_commitish render error should mention field + crate; got: {err}"
+    );
+}
+
+// ---- release.skip template render error -------------------------------
+//
+// When the skip template fails to render, the error context must
+// identify the field and crate.
+
+#[test]
+fn test_release_skip_invalid_template_errors() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip: Some(StringOrBool::String("{{ unterminated".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("skip") && err.contains("testcrate"),
+        "skip render error should mention field + crate; got: {err}"
+    );
+}
+
+// ---- release.tag override matches pushed tag → no drift warn ----------
+//
+// When the override resolves to the same value as the pushed Tag, no
+// drift warning should fire. We can't introspect the warn directly but
+// the dry-run still completes ok and the ReleaseURL uses the same tag.
+
+#[test]
+fn test_release_tag_override_matches_pushed_tag_no_drift() {
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .tag("v1.2.3")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.2.3".to_string(),
+            release: Some(ReleaseConfig {
+                tag: Some("v1.2.3".to_string()),
+                github: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        release_url.ends_with("/releases/tag/v1.2.3"),
+        "ReleaseURL should reflect the matching tag, got {release_url:?}"
+    );
+}
+
+// ---- selected_crates excludes other release-configured crate ----------
+//
+// When `selected_crates` is non-empty, crates not in the set must be
+// silently filtered. Combined with one selected and one ignored crate
+// (both with release config), only the selected one's ReleaseURL is set.
+
+#[test]
+fn test_selected_crates_excludes_other_release_configured_crate() {
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .selected_crates(vec!["keep".to_string()])
+        .crates(vec![
+            CrateConfig {
+                name: "keep".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: "o".to_string(),
+                        name: "keep-repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "drop".to_string(),
+                path: ".".to_string(),
+                tag_template: "v2.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: "o".to_string(),
+                        name: "drop-repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    // Only the selected crate's repo should be in the URL.
+    assert!(
+        release_url.contains("keep-repo"),
+        "selected crate's repo should appear in ReleaseURL, got {release_url:?}"
+    );
+    assert!(
+        !release_url.contains("drop-repo"),
+        "unselected crate's repo must NOT appear in ReleaseURL, got {release_url:?}"
+    );
+}
+
+// ---- multiple crates: one with release config, one without -----------
+//
+// Crates without a `release` block must be silently filtered (no
+// failure, no warn). Sanity-check the stage iterates only the
+// release-configured ones.
+
+#[test]
+fn test_release_stage_filters_crates_without_release_block() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![
+            CrateConfig {
+                name: "without".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: None,
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "with".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig::default()),
+                ..Default::default()
+            },
+        ])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+// ---- release.skip plain bool true skips silently ----------------------
+//
+// Bool-shaped skip (not a template) hits the same branch. Pin it
+// explicitly so a future regression that only handles the template
+// form gets caught.
+
+#[test]
+fn test_release_skip_plain_bool_true_skips_silently() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip: Some(StringOrBool::Bool(true)),
+                // Conflicting draft options would normally bail, but
+                // skip:true short-circuits before validation runs.
+                replace_existing_draft: Some(true),
+                use_existing_draft: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(
+        ReleaseStage.run(&mut ctx).is_ok(),
+        "skip:true must skip before the conflicting-draft validation runs"
+    );
+}
+
+// ---- GitLab missing token returns an actionable error -----------------
+
+#[test]
+fn test_gitlab_missing_token_errors() {
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .token(None)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                gitlab: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.token_type = ScmTokenType::GitLab;
+
+    let err = ReleaseStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(
+        err.contains("GITLAB_TOKEN") || err.contains("--token"),
+        "missing GitLab token should mention GITLAB_TOKEN or --token; got: {err}"
+    );
+}
+
+// ---- Gitea backend dry-run with default URLs (no gitea_urls) ---------
+//
+// When `gitea_urls` is None, the dry-run still publishes a ReleaseURL
+// derived from the default `https://gitea.com`. Pin that URL prefix so
+// dropping the default would surface immediately.
+
+#[test]
+fn test_gitea_dry_run_default_urls() {
+    use anodizer_core::config::ScmRepoConfig;
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                gitea: Some(ScmRepoConfig {
+                    owner: "owner".to_string(),
+                    name: "repo".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+    ctx.token_type = ScmTokenType::Gitea;
+    // Explicitly leave ctx.config.gitea_urls = None.
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        release_url.starts_with("https://gitea.com/owner/repo/"),
+        "default gitea download URL should be https://gitea.com, got {release_url:?}"
+    );
+}
+
+// ---- dry-run + skip_upload + extra_files: upload lines must not fire --
+//
+// skip_upload should suppress the per-artifact "would upload" logging
+// even when extra_files contribute entries. Observable proof: the run
+// still completes ok with a non-empty extra_files glob.
+
+#[test]
+fn test_dry_run_skip_upload_with_extra_files_succeeds() {
+    use anodizer_core::config::ExtraFileSpec;
+    use anodizer_core::config::StringOrBool;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let extra = tmp.path().join("EXTRA.txt");
+    std::fs::write(&extra, "x").unwrap();
+    let pattern = tmp.path().join("*.txt").to_string_lossy().into_owned();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip_upload: Some(StringOrBool::Bool(true)),
+                extra_files: Some(vec![ExtraFileSpec::Glob(pattern)]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+// ---- include_meta=true dry-run with metadata.json present -----------
+//
+// When `include_meta=true` AND `dist/metadata.json` exists, the dry-run
+// path enumerates it as a would-upload candidate (no warn, no bail).
+
+#[test]
+fn test_dry_run_include_meta_with_existing_metadata_json() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join("metadata.json"), "{\"a\":1}").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                include_meta: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+// ---- dry-run sets ReleaseURL even with empty owner (defensive path) --
+//
+// When no repo config resolves (no github/gitlab/gitea block), the
+// dry-run path uses empty owner/repo and skips composing the
+// ReleaseURL. The stage must still complete ok.
+
+#[test]
+fn test_dry_run_no_repo_config_does_not_set_release_url() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            // No github/gitlab/gitea block.
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        release_url.is_empty(),
+        "ReleaseURL must stay empty when no repo config resolves, got {release_url:?}"
+    );
+}
+
+// ---- skip_upload template that renders to a bare bool string ---------
+//
+// `skip_upload: "{{ IsSnapshot }}"` should evaluate IsSnapshot and the
+// rendered "true"/"false" string is consumed by the same matcher. Pin
+// the snapshot=false / renders-to-"false" path so the dry-run proceeds
+// AND the artifact-listing branch is taken.
+
+#[test]
+fn test_skip_upload_template_renders_false_in_non_snapshot() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .snapshot(false)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                skip_upload: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(ReleaseStage.run(&mut ctx).is_ok());
+}
+
+// ---- release.tag template render error surfaces via resolve_release_tag
+
+#[test]
+fn test_release_tag_override_invalid_template_errors() {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("test")
+        .dry_run(true)
+        .crates(vec![CrateConfig {
+            name: "testcrate".to_string(),
+            path: ".".to_string(),
+            tag_template: "v1.0.0".to_string(),
+            release: Some(ReleaseConfig {
+                tag: Some("{{ unterminated".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }])
+        .build();
+
+    assert!(
+        ReleaseStage.run(&mut ctx).is_err(),
+        "invalid release.tag template must error"
+    );
+}

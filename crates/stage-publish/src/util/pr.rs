@@ -16,7 +16,7 @@ use anodizer_core::log::StageLogger;
 use std::path::Path;
 use std::process::Command;
 
-use super::branch::fetch_default_branch;
+use super::branch::{fetch_default_branch, github_api_base};
 use super::cmd::run_cmd_in;
 
 /// Sync a fork with its upstream base repository.
@@ -302,7 +302,8 @@ fn create_pr_via_api(
         draft,
         update_existing_pr,
     } = *spec;
-    let url = format!("https://api.github.com/repos/{}/{}/pulls", owner, name);
+    let base = github_api_base();
+    let url = format!("{base}/repos/{owner}/{name}/pulls");
     let payload = serde_json::json!({
         "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,
     });
@@ -612,12 +613,18 @@ pub(crate) fn submit_pr_via_gh_with_opts(
 
 #[cfg(test)]
 mod tests {
-    use super::{PrOrigin, PrTransport, classify_pr_transport, maybe_submit_pr};
+    use super::{
+        PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api,
+        maybe_submit_pr,
+    };
+    use anodizer_core::PublisherOutcome;
     use anodizer_core::config::{
         HomebrewCaskConfig, KrewConfig, PullRequestConfig, RepositoryConfig, StringOrBool,
         WingetConfig,
     };
     use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
     use std::path::Path;
 
     fn quiet_log() -> StageLogger {
@@ -842,6 +849,154 @@ mod tests {
         assert!(
             outcome.is_none(),
             "pull_request.enabled=None must short-circuit before any git/gh/HTTP work"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `create_pr_via_api` HTTP coverage. Each test redirects requests
+    // to an in-process responder by setting `ANODIZER_GITHUB_API_BASE`
+    // under the workspace env mutex.
+    // -----------------------------------------------------------------
+
+    /// RAII guard that sets `ANODIZER_GITHUB_API_BASE` for the duration
+    /// of one test and restores the previous value (or unsets) on drop
+    /// so a panicking test body cannot leak the override.
+    struct BaseOverride {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        previous: Option<String>,
+    }
+
+    impl BaseOverride {
+        fn set(base: &str) -> Self {
+            let guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+            let previous = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
+            // SAFETY: serialised by the workspace env mutex; pair set / restore.
+            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", base) };
+            Self {
+                _guard: guard,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for BaseOverride {
+        fn drop(&mut self) {
+            // SAFETY: still under the env mutex (held by `_guard`).
+            unsafe {
+                match &self.previous {
+                    Some(prev) => std::env::set_var("ANODIZER_GITHUB_API_BASE", prev),
+                    None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
+                }
+            }
+        }
+    }
+
+    fn spec(update_existing_pr: bool) -> PrSpec<'static> {
+        PrSpec {
+            title: "t",
+            body: "b",
+            head: "fork-owner:release/v1.2.3",
+            base_branch: "main",
+            draft: false,
+            update_existing_pr,
+        }
+    }
+
+    /// 201 Created is the success path — `create_pr_via_api` returns
+    /// `None` so `Context::record_publisher_outcome` is NOT called and
+    /// dispatch records `succeeded` from the default. A regression that
+    /// returned `Some(Failed)` on 201 would gate every healthy PR.
+    #[test]
+    fn create_pr_via_api_returns_none_on_201() {
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+        ]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        assert!(outcome.is_none(), "201 must be the success path");
+    }
+
+    /// 422 with "already exists" + `update_existing_pr=false` is the
+    /// "PR for this head already exists, leave it alone" branch.
+    /// Returning `PendingValidation` pins the silent-skip fix at the
+    /// transport boundary — dispatch would otherwise record this
+    /// publisher as `succeeded` even though no PR was created.
+    #[test]
+    fn create_pr_via_api_returns_pending_on_422_already_exists_no_update() {
+        let body = "{\"message\":\"Validation Failed\",\"errors\":[{\"message\":\"A pull request already exists for fork-owner:release/v1.2.3.\"}]}";
+        let len = body.len();
+        let resp =
+            format!("HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {len}\r\n\r\n{body}");
+        let resp_static: &'static str = Box::leak(resp.into_boxed_str());
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        assert!(
+            matches!(outcome, Some(PublisherOutcome::PendingValidation)),
+            "422 already-exists must map to PendingValidation; got {outcome:?}"
+        );
+    }
+
+    /// Same 422 body, but `update_existing_pr=true`. The API transport
+    /// cannot force-push (no working tree), so the option is a
+    /// documented no-op here and the outcome MUST still be
+    /// `PendingValidation`. A regression that returned `None` on this
+    /// branch would silently advertise success to dispatch even though
+    /// the open PR did not advance to the new manifest.
+    #[test]
+    fn create_pr_via_api_returns_pending_on_422_already_exists_with_update() {
+        let body = "{\"message\":\"Validation Failed\",\"errors\":[{\"message\":\"A pull request already exists for fork-owner:release/v1.2.3.\"}]}";
+        let len = body.len();
+        let resp =
+            format!("HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {len}\r\n\r\n{body}");
+        let resp_static: &'static str = Box::leak(resp.into_boxed_str());
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(true), "tok", "label", &log);
+        assert!(
+            matches!(outcome, Some(PublisherOutcome::PendingValidation)),
+            "API transport cannot force-push; update_existing_pr=true \
+             must still surface PendingValidation, not None. Got {outcome:?}"
+        );
+    }
+
+    /// 500 is a generic transport-style failure. The function must
+    /// return `Some(Failed(_))` so dispatch records the truth — a
+    /// regression that returned `None` would let dispatch record
+    /// `succeeded` for a publisher that did no work (the silent-skip
+    /// bug class fixed by the `must_use` return values throughout
+    /// stage-publish).
+    #[test]
+    fn create_pr_via_api_returns_failed_on_500() {
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let log = quiet_log();
+        let upstream = Upstream {
+            owner: "o",
+            name: "n",
+        };
+        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        assert!(
+            matches!(outcome, Some(PublisherOutcome::Failed(_))),
+            "500 must map to Failed (silent-skip would let dispatch \
+             record succeeded); got {outcome:?}"
         );
     }
 }
