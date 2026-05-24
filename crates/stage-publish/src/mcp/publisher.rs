@@ -26,8 +26,8 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{HttpError, SuccessClass, retry_http_blocking};
 use anodizer_core::url::percent_encode_unreserved;
 use anyhow::Context as _;
-use serde::{Deserialize, Serialize};
 
+use super::McpTarget;
 use super::auth::{build_client, provider_for};
 
 simple_publisher!(
@@ -41,38 +41,6 @@ simple_publisher!(
     // operators need it (or OIDC permissions) for status-mutation rollback.
     Some("MCP_GITHUB_TOKEN status-mutation"),
 );
-
-/// Serialized shape of a recorded MCP publish. Single-entry per run —
-/// MCP is top-level (one `mcp:` block) — so we still store it as a Vec
-/// for shape-parity with the krew/homebrew/scoop targets.
-///
-/// `server_name` is the rendered `mcp.name` (already template-resolved)
-/// and `registry_url` is the resolved endpoint (config override or
-/// [`super::manifest::DEFAULT_REGISTRY_URL`]).
-///
-/// `version` and `auth_method` are captured at publish time so rollback
-/// can reconstruct the PATCH URL and re-authenticate without reading config
-/// (which might have changed between publish and rollback invocations).
-///
-/// NB: no `token`, `password`, or `pat` fields — see module rustdoc for
-/// the credential-handling rationale.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct McpTarget {
-    /// Per-target label — duplicates `server_name` for log-line shape
-    /// parity with the krew/homebrew/scoop publishers.
-    target: String,
-    /// Fully-qualified MCP server name in reverse-DNS form
-    /// (e.g. `io.github.user/weather`).
-    server_name: String,
-    /// Resolved registry endpoint the publish path posted to.
-    registry_url: String,
-    /// Version string published (`ctx.version()` at publish time).
-    version: String,
-    /// Auth method in use — determines which provider rollback builds.
-    /// Stored as the enum (serializes as `"none"` / `"github"` /
-    /// `"github-oidc"`) so rollback re-authenticates identically to publish.
-    auth_method: anodizer_core::config::McpAuthMethod,
-}
 
 /// Outcome of a single-target rollback attempt.
 enum RollbackOutcome {
@@ -89,47 +57,6 @@ fn decode_mcp_targets(extra: &serde_json::Value) -> Vec<McpTarget> {
         .get("mcp_targets")
         .and_then(|v| serde_json::from_value::<Vec<McpTarget>>(v.clone()).ok())
         .unwrap_or_default()
-}
-
-/// Resolve the effective registry URL the publisher will POST to.
-/// Mirrors the resolution in [`super::publish_to_mcp`].
-fn resolve_registry_url(ctx: &Context) -> String {
-    ctx.config
-        .mcp
-        .registry
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(super::manifest::DEFAULT_REGISTRY_URL)
-        .to_string()
-}
-
-/// Build the single-element target list for this run. Reads the
-/// template-rendered server name so the recorded value matches what
-/// the registry actually stored. Returns `None` when the skip
-/// gate would fire (matches `publish_to_mcp`'s no-op semantics).
-fn collect_mcp_run_target(ctx: &Context) -> Option<McpTarget> {
-    let mcp = &ctx.config.mcp;
-    let raw_name = mcp.name.as_deref().unwrap_or("").trim();
-    if raw_name.is_empty() {
-        return None;
-    }
-    // The publish path renders `mcp.name` through the template engine
-    // (see super::render_strings); reproduce here so the persisted
-    // value matches the wire form. Fall back to the raw string when
-    // rendering fails — the publish path itself would have errored on
-    // the same template, so the evidence "lies" only in the same
-    // failure mode the publish path already surfaces.
-    let server_name = ctx
-        .render_template(raw_name)
-        .unwrap_or_else(|_| raw_name.to_string());
-    Some(McpTarget {
-        target: server_name.clone(),
-        server_name,
-        registry_url: resolve_registry_url(ctx),
-        version: ctx.version(),
-        auth_method: mcp.auth.method,
-    })
 }
 
 /// PATCH the registry to mark one published server-version as `"deleted"`.
@@ -179,7 +106,7 @@ fn rollback_one_target(
 
     let body = serde_json::json!({
         "status": "deleted",
-        "statusMessage": format!("anodizer auto-rollback for v{}", target.version),
+        "statusMessage": format!("anodizer auto-rollback for {}", target.version),
     })
     .to_string();
 
@@ -260,14 +187,14 @@ impl anodizer_core::Publisher for McpPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        // Snapshot the target shape BEFORE the publish path runs, so
-        // even a mid-publish failure on the POST leaves the operator
-        // a hint of what was attempted. (The publish path is
-        // idempotent over the server_name+version coordinates, so a
-        // resurrected re-publish hitting the same name is the
-        // expected recovery path.)
-        let target = collect_mcp_run_target(ctx);
-        super::publish_to_mcp(ctx, &log)?;
+        // The publish path returns Some(McpTarget) only on the success
+        // path of the POST; dry-run, skip-true, and missing-name all
+        // return None so no phantom target ever lands in evidence. A
+        // mid-publish failure on the POST surfaces as Err and aborts
+        // before evidence assembly — the rollback contract is therefore
+        // "if there's a target in evidence, the version exists on the
+        // registry," which is what `--rollback-only` relies on.
+        let target = super::publish_to_mcp(ctx, &log)?;
         let mut evidence = anodizer_core::PublishEvidence::new("mcp");
         if let Some(t) = target {
             evidence.extra = serde_json::json!({ "mcp_targets": [t] });
@@ -320,24 +247,22 @@ impl anodizer_core::Publisher for McpPublisher {
 
 #[cfg(test)]
 mod publisher_tests {
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use super::*;
-    use anodizer_core::config::{HumanDuration, McpAuth, McpAuthMethod, McpConfig, RetryConfig};
+    use anodizer_core::config::{
+        Config, HumanDuration, McpAuth, McpAuthMethod, McpConfig, McpPackage, McpRegistryType,
+        McpTransport, McpTransportType, RetryConfig,
+    };
+    use anodizer_core::context::ContextOptions;
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::test_helpers::responder::{
         spawn_oneshot_http_responder, spawn_request_capturing_responder,
     };
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
 
-    fn mcp_ctx_named(server_name: &str) -> Context {
-        let mut ctx = TestContextBuilder::new().build();
-        ctx.config.mcp = McpConfig {
-            name: Some(server_name.to_string()),
-            ..Default::default()
-        };
-        ctx
-    }
+    use super::super::{publish_with_registry, warn_once_lock};
 
     /// Build a context suitable for rollback tests: named server, tight retry
     /// policy, a non-empty pre-issued JWT (so NoneAuthProvider short-circuits),
@@ -358,6 +283,46 @@ mod publisher_tests {
             registry: Some(registry_url.to_string()),
             ..Default::default()
         };
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx
+    }
+
+    /// Build a fully-populated context suitable for end-to-end `Publisher::run`
+    /// invocations (one OCI package configured, so `build_server_json` produces
+    /// a valid payload). `dry_run` controls whether the publish path
+    /// short-circuits before any network I/O.
+    fn run_ctx(server_name: &str, registry_url: &str, dry_run: bool) -> Context {
+        let config = Config {
+            project_name: "anodizer".to_string(),
+            retry: Some(RetryConfig {
+                attempts: 3,
+                delay: HumanDuration(Duration::from_millis(1)),
+                max_delay: HumanDuration(Duration::from_millis(5)),
+            }),
+            mcp: McpConfig {
+                name: Some(server_name.to_string()),
+                description: Some("Test server".to_string()),
+                packages: vec![McpPackage {
+                    registry_type: McpRegistryType::Oci,
+                    identifier: "ghcr.io/test/server:v1".to_string(),
+                    transport: McpTransport {
+                        kind: McpTransportType::Stdio,
+                    },
+                }],
+                auth: McpAuth {
+                    method: McpAuthMethod::None,
+                    token: "preissued-jwt".to_string(),
+                },
+                registry: Some(registry_url.to_string()),
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let opts = ContextOptions {
+            dry_run,
+            ..ContextOptions::default()
+        };
+        let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx
     }
@@ -453,36 +418,117 @@ mod publisher_tests {
     }
 
     #[test]
-    fn mcp_collect_run_target_skip_when_name_unset() {
-        let ctx = TestContextBuilder::new().build();
-        assert!(collect_mcp_run_target(&ctx).is_none());
+    fn mcp_publish_with_registry_returns_none_when_name_unset() {
+        // Missing name short-circuits before the POST; no target produced.
+        let _g = warn_once_lock();
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let registry = format!("http://{addr}");
+        let mut ctx = run_ctx("io.github.user/weather", &registry, false);
+        ctx.config.mcp.name = None;
+
+        let log = ctx.logger("mcp-test");
+        let target = publish_with_registry(&ctx, &log, &registry).expect("ok");
+        assert!(target.is_none(), "missing name must not produce a target");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn mcp_collect_run_target_captures_default_registry() {
-        let mut ctx = mcp_ctx_named("io.github.user/weather");
-        ctx.template_vars_mut().set("Version", "2.0.0");
-        let t = collect_mcp_run_target(&ctx).expect("target");
-        assert_eq!(t.server_name, "io.github.user/weather");
-        assert_eq!(t.registry_url, super::super::manifest::DEFAULT_REGISTRY_URL);
-        assert_eq!(t.version, "2.0.0");
-        assert_eq!(t.auth_method, McpAuthMethod::None);
+    fn mcp_publish_with_registry_returns_some_on_publish_success() {
+        // The success path produces a populated McpTarget reflecting what
+        // the registry stored — used by Publisher::run to assemble evidence.
+        let _g = warn_once_lock();
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+        ]);
+        let registry = format!("http://{addr}");
+        let ctx = run_ctx("io.github.user/weather", &registry, false);
+
+        let log = ctx.logger("mcp-test");
+        let target = publish_with_registry(&ctx, &log, &registry)
+            .expect("ok")
+            .expect("target present on success");
+        assert_eq!(target.server_name, "io.github.user/weather");
+        assert_eq!(target.registry_url, registry);
+        assert_eq!(target.version, "1.0.0");
+        assert_eq!(target.auth_method, McpAuthMethod::None);
     }
 
     #[test]
-    fn mcp_collect_run_target_captures_registry_override() {
-        let mut ctx = mcp_ctx_named("io.github.user/weather");
-        ctx.config.mcp.registry = Some("https://staging.example.com".to_string());
-        let t = collect_mcp_run_target(&ctx).expect("target");
-        assert_eq!(t.registry_url, "https://staging.example.com");
+    fn mcp_run_writes_no_extra_under_dry_run() {
+        // Regression guard for the v0 phantom-evidence bug: under --dry-run
+        // the publish path short-circuits without POSTing, so Publisher::run
+        // must produce evidence with no `mcp_targets` key (otherwise a later
+        // --rollback-only would PATCH a version that was never published).
+        let _g = warn_once_lock();
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let registry = format!("http://{addr}");
+        let mut ctx = run_ctx("io.github.user/weather", &registry, true);
+
+        let p = McpPublisher::new();
+        let evidence = p.run(&mut ctx).expect("dry-run must succeed");
+        assert!(
+            evidence.extra.get("mcp_targets").is_none(),
+            "dry-run must not record any mcp_targets; got {}",
+            evidence.extra
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "dry-run must not contact the registry"
+        );
     }
 
     #[test]
-    fn mcp_collect_run_target_captures_version_from_context() {
-        let mut ctx = mcp_ctx_named("io.github.user/weather");
-        ctx.template_vars_mut().set("Version", "3.1.4");
-        let t = collect_mcp_run_target(&ctx).expect("target");
-        assert_eq!(t.version, "3.1.4");
+    fn mcp_run_writes_no_extra_when_skip_evaluates_true() {
+        // Same phantom-evidence guard for the skip-template short-circuit.
+        let _g = warn_once_lock();
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let registry = format!("http://{addr}");
+        let mut ctx = run_ctx("io.github.user/weather", &registry, false);
+        ctx.config.mcp.skip = Some(anodizer_core::config::StringOrBool::String(
+            "{{ true }}".to_string(),
+        ));
+
+        let p = McpPublisher::new();
+        let evidence = p.run(&mut ctx).expect("skip-true must succeed");
+        assert!(
+            evidence.extra.get("mcp_targets").is_none(),
+            "skip=true must not record any mcp_targets; got {}",
+            evidence.extra
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn mcp_rollback_warns_per_target_when_auth_token_template_invalid() {
+        // Token re-render at rollback time can fail (e.g. unclosed tera tag).
+        // The per-target failure must be caught and surfaced as a warn so
+        // sibling publishers continue rolling back — not propagated as Err.
+        let _g = warn_once_lock();
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let registry = format!("http://{addr}");
+        let mut ctx = rollback_ctx("io.github.user/weather", &registry);
+        // Unclosed tera tag — render_template returns Err.
+        ctx.config.mcp.auth.token = "{{ invalid template".to_string();
+        let evidence = evidence_for("io.github.user/weather", "1.0.0", &registry);
+
+        let p = McpPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+        // Auth re-render failed before any HTTP call; the responder must not
+        // have been contacted.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "rollback must not contact the registry when auth re-resolution fails"
+        );
     }
 
     // ---------------------------------------------------------------------------

@@ -34,6 +34,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result};
+use serde::{Deserialize, Serialize};
 
 use anodizer_core::config::{McpAuthMethod, McpConfig};
 
@@ -42,6 +43,42 @@ use manifest::{
     CURRENT_SCHEMA_URL, DEFAULT_REGISTRY_URL, Package, Repository, ServerJson, ServerResponse,
     Transport,
 };
+
+/// Serialized shape of a recorded MCP publish. Single-entry per run —
+/// MCP is top-level (one `mcp:` block) — so we still store it as a Vec
+/// for shape-parity with the krew/homebrew/scoop targets.
+///
+/// `server_name` is the rendered `mcp.name` (already template-resolved)
+/// and `registry_url` is the resolved endpoint (config override or
+/// [`DEFAULT_REGISTRY_URL`]).
+///
+/// `version` and `auth_method` are captured at publish time so rollback
+/// can reconstruct the PATCH URL and re-authenticate without reading config
+/// (which might have changed between publish and rollback invocations).
+///
+/// Constructed only on the success path of [`publish_with_registry`] —
+/// dry-run, skip-true, and missing-name short-circuits return `None` so
+/// no phantom evidence ever lands in [`anodizer_core::PublishEvidence::extra`].
+///
+/// NB: no `token`, `password`, or `pat` fields — see [`publisher`] module
+/// rustdoc for the credential-handling rationale.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct McpTarget {
+    /// Per-target label — duplicates `server_name` for log-line shape
+    /// parity with the krew/homebrew/scoop publishers.
+    pub(crate) target: String,
+    /// Fully-qualified MCP server name in reverse-DNS form
+    /// (e.g. `io.github.user/weather`).
+    pub(crate) server_name: String,
+    /// Resolved registry endpoint the publish path posted to.
+    pub(crate) registry_url: String,
+    /// Version string published (`ctx.version()` at publish time).
+    pub(crate) version: String,
+    /// Auth method in use — determines which provider rollback builds.
+    /// Stored as the enum (serializes as `"none"` / `"github"` /
+    /// `"github-oidc"`) so rollback re-authenticates identically to publish.
+    pub(crate) auth_method: McpAuthMethod,
+}
 
 /// Process-wide flag — the "mcp is experimental" warning is emitted at
 /// most once per anodizer invocation regardless of how many crates trigger
@@ -54,7 +91,14 @@ static EXPERIMENTAL_WARNED: AtomicBool = AtomicBool::new(false);
 /// shared `top_level!` macro. Performs the skip-gate, builds the manifest
 /// from `ctx.config.mcp`, exchanges credentials for a registry JWT, and
 /// posts the manifest with retries.
-pub fn publish_to_mcp(ctx: &Context, log: &StageLogger) -> Result<()> {
+///
+/// Returns `Some(McpTarget)` describing what was published when the POST
+/// succeeds; `None` when the skip-gate fires (missing name, truthy
+/// `mcp.skip`, or `--dry-run`). The wrapper's `Publisher::run` records the
+/// returned target in `evidence.extra` only when `Some`, so a later
+/// `--rollback-only` cannot fire a PATCH against a server-version that
+/// was never published.
+pub(crate) fn publish_to_mcp(ctx: &Context, log: &StageLogger) -> Result<Option<McpTarget>> {
     let registry_url = ctx
         .config
         .mcp
@@ -71,17 +115,20 @@ pub fn publish_to_mcp(ctx: &Context, log: &StageLogger) -> Result<()> {
 /// (falling back to `manifest::DEFAULT_REGISTRY_URL`). Tests inject the
 /// wiremock-style `http://127.0.0.1:<port>` address of a one-shot HTTP
 /// responder directly.
+///
+/// Returns `Some(McpTarget)` only after the `/v0/publish` POST succeeds.
+/// All short-circuit paths (skip-true, missing name, dry-run) return `None`.
 pub(crate) fn publish_with_registry(
     ctx: &Context,
     log: &StageLogger,
     registry_url: &str,
-) -> Result<()> {
+) -> Result<Option<McpTarget>> {
     let mcp = &ctx.config.mcp;
 
     // ---- Skip gate (GR mcp.go::Skip parity) ----
     if mcp.name.as_deref().unwrap_or("").is_empty() {
         log.status("mcp: skipping — no mcp.name configured");
-        return Ok(());
+        return Ok(None);
     }
     if let Some(skip) = mcp.skip.as_ref() {
         let off = skip
@@ -89,7 +136,7 @@ pub(crate) fn publish_with_registry(
             .context("mcp: render skip template")?;
         if off {
             log.status("mcp: skipping — skip evaluates true");
-            return Ok(());
+            return Ok(None);
         }
     }
 
@@ -111,7 +158,7 @@ pub(crate) fn publish_with_registry(
             rendered_name,
             mcp_rendered.auth.method.as_str()
         ));
-        return Ok(());
+        return Ok(None);
     }
 
     let policy = ctx.retry_policy();
@@ -154,7 +201,16 @@ pub(crate) fn publish_with_registry(
         registry_url,
     )?;
 
-    Ok(())
+    // Only construct the target on the success path so rollback evidence
+    // tracks exactly what landed on the registry. `server.name` is the
+    // rendered name; `registry_url` is the resolved endpoint.
+    Ok(Some(McpTarget {
+        target: server.name.clone(),
+        server_name: server.name,
+        registry_url: registry_url.to_string(),
+        version: ctx.version(),
+        auth_method: mcp_rendered.auth.method,
+    }))
 }
 
 /// Fill in `mcp.repository.url` / `mcp.repository.source` from the configured
@@ -398,4 +454,20 @@ fn publish_payload(
 #[cfg(test)]
 pub(crate) fn reset_experimental_warned_for_test() {
     EXPERIMENTAL_WARNED.store(false, Ordering::SeqCst);
+}
+
+/// Cross-test serialization for the `EXPERIMENTAL_WARNED` static.
+///
+/// `warn_experimental_once` toggles a process-wide AtomicBool. Any test that
+/// (a) resets that flag, or (b) invokes a code path that flips it (e.g.
+/// `publish_with_registry` or `Publisher::run`), races with every other test
+/// that does the same when cargo runs tests in parallel. Shared via this
+/// module-level helper so both `tests.rs` and `publisher::publisher_tests`
+/// use the same lock — without it, the per-module locks would not serialize
+/// across modules and the warn-once assertion would race the run-end-to-end
+/// tests.
+#[cfg(test)]
+pub(crate) fn warn_once_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }

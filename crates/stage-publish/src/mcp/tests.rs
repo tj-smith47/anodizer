@@ -11,7 +11,6 @@
 //! default 10s base delay.
 
 use std::sync::atomic::Ordering;
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use anodizer_core::config::{
@@ -22,27 +21,9 @@ use anodizer_core::context::{Context, ContextOptions};
 
 use super::{
     infer_repository_from_release, publish_with_registry, reset_experimental_warned_for_test,
-    warn_experimental_once,
+    warn_experimental_once, warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-
-// ---------------------------------------------------------------------------
-// Cross-test serialization for the EXPERIMENTAL_WARNED static
-// ---------------------------------------------------------------------------
-//
-// `warn_experimental_once` toggles a process-wide AtomicBool. Any test that
-// (a) resets that flag, or (b) invokes a code path that flips it (e.g.
-// `publish_with_registry`), races with every other test that does the same
-// when cargo runs tests in parallel. We don't want a serial_test crate dep
-// for one assertion, so this module-local Mutex is acquired by every test
-// touching the warn-once path. The `experimental_warning_emitted_once_per_process`
-// test asserts the boolean-return semantics of `warn_experimental_once`;
-// every other test that calls `publish_with_registry` holds the same lock
-// for its duration so the warn-once test's reset isn't clobbered mid-run.
-fn warn_once_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 // ---------------------------------------------------------------------------
 // Test helpers
