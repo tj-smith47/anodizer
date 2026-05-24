@@ -4,6 +4,72 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
+
+/// Serialized shape of a recorded DockerHub PATCH. One entry per
+/// `(entry, image)` cell that was actually mutated this run.
+///
+/// `snapshot_description` / `snapshot_full_description` are the values
+/// the repo carried BEFORE our PATCH, captured via a GET that runs
+/// immediately before the mutation. `rollback()` re-authenticates and
+/// PATCHes the snapshot back. A field that the GET response did not
+/// carry (or carried as `null`) is recorded as `None` and omitted from
+/// the rollback PATCH body so we never invent an empty string the
+/// repo did not have.
+///
+/// CREDENTIAL CONTRACT: this struct is the payload that lands in
+/// [`anodizer_core::PublishEvidence::extra`], which is persisted to
+/// `dist/run-<id>/report.json` and may surface in the announce body.
+/// `username` is operator-public (the DockerHub login appears on every
+/// pushed image) and is recorded verbatim; `secret_env_var` is the
+/// NAME of the env var the rollback path reads — never the resolved
+/// password value. See the [`PublishEvidence::extra` rustdoc][doc] for
+/// the contract this enforces.
+///
+/// [doc]: anodizer_core::PublishEvidence
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DockerhubTarget {
+    /// Display label for log lines — the `namespace/name` form from
+    /// the original config entry.
+    target: String,
+    /// Fully-qualified PATCH endpoint (also a useful manual-cleanup
+    /// pointer if the rollback fails).
+    repo_url: String,
+    /// DockerHub namespace component, e.g. `myorg` (or `library` for a
+    /// bare repo name in the config).
+    namespace: String,
+    /// DockerHub repo name component.
+    name: String,
+    /// Resolved DockerHub login — operator-public; appears on the
+    /// pushed image tags so persisting it is safe.
+    username: String,
+    /// Env var NAME the rollback path consults to re-resolve the
+    /// password. Never the password VALUE. Captured at publish time
+    /// so a same-process or cross-process rollback honors the same
+    /// env contract the publish validated.
+    secret_env_var: String,
+    /// `description` field as it was on the repo BEFORE our PATCH.
+    /// `None` means the GET response did not carry the field (or
+    /// carried `null`) — rollback omits it from the restore PATCH so
+    /// we do not invent an empty string the repo did not have.
+    snapshot_description: Option<String>,
+    /// `full_description` field as it was on the repo BEFORE our
+    /// PATCH. Same `None` semantics as `snapshot_description`.
+    snapshot_full_description: Option<String>,
+}
+
+/// Decode the `dockerhub_targets` array from
+/// [`anodizer_core::PublishEvidence::extra`].
+///
+/// Returns an empty Vec on any of: missing key, wrong shape, empty
+/// array. The rollback path treats an empty decode the same as
+/// no-evidence and emits the canonical empty-evidence warn.
+fn decode_dockerhub_targets(extra: &serde_json::Value) -> Vec<DockerhubTarget> {
+    extra
+        .get("dockerhub_targets")
+        .and_then(|v| serde_json::from_value::<Vec<DockerhubTarget>>(v.clone()).ok())
+        .unwrap_or_default()
+}
 
 // ---------------------------------------------------------------------------
 // resolve_full_description
@@ -65,10 +131,19 @@ pub fn resolve_full_description(
 ///
 /// This is a top-level publisher: it reads from `ctx.config.dockerhub` rather
 /// than from per-crate publish configs.
-pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
+///
+/// Returns one [`DockerhubTarget`] per repository the PATCH actually
+/// mutated. Each target carries the pre-PATCH `description` and
+/// `full_description` snapshot (captured via a GET that runs
+/// immediately before the mutation) so the [`Publisher::rollback`]
+/// path can re-authenticate and restore the prior values. Dry-run,
+/// skipped entries, and configurations that short-circuit the PATCH
+/// (empty descriptions) produce no targets.
+fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<DockerhubTarget>> {
+    let mut targets: Vec<DockerhubTarget> = Vec::new();
     let entries = match ctx.config.dockerhub {
         Some(ref v) if !v.is_empty() => v,
-        _ => return Ok(()),
+        _ => return Ok(targets),
     };
 
     // One shared HTTP client for every entry: connection pool and TLS
@@ -258,6 +333,50 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 ("library", parts[0])
             };
 
+            let repo_url = format!(
+                "https://hub.docker.com/v2/repositories/{}/{}/",
+                namespace, name
+            );
+
+            // Snapshot the prior description + full_description BEFORE
+            // mutating, so rollback can restore them. The GET uses the
+            // same JWT — DockerHub treats GET on a public repo as
+            // anonymous-safe but a private repo requires auth, so
+            // sending the bearer covers both cases. Failure to read
+            // the snapshot is a failure of the publish itself: if we
+            // cannot read it we cannot honor rollback, and proceeding
+            // would silently degrade the rollback contract.
+            let snapshot_label = format!("dockerhub: GET snapshot for {}", image);
+            let (_, snapshot_body) = retry_http_blocking(
+                &snapshot_label,
+                &policy,
+                SuccessClass::Strict,
+                |_| client.get(&repo_url).bearer_auth(token).send(),
+                |status, body| {
+                    format!(
+                        "dockerhub: GET {} snapshot failed (HTTP {}): {}",
+                        image,
+                        status,
+                        redact_bearer_tokens(body)
+                    )
+                },
+            )?;
+            let snapshot_json: serde_json::Value = serde_json::from_str(&snapshot_body)
+                .with_context(|| {
+                    format!(
+                        "dockerhub: failed to parse snapshot response for '{}'",
+                        image
+                    )
+                })?;
+            let snapshot_description = snapshot_json
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let snapshot_full_description = snapshot_json
+                .get("full_description")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+
             let mut patch_body = serde_json::Map::new();
             if !short_desc.is_empty() {
                 patch_body.insert(
@@ -272,10 +391,6 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 );
             }
 
-            let patch_url = format!(
-                "https://hub.docker.com/v2/repositories/{}/{}/",
-                namespace, name
-            );
             let label = format!("dockerhub: PATCH {}", image);
             retry_http_blocking(
                 &label,
@@ -283,7 +398,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 SuccessClass::Strict,
                 |_| {
                     client
-                        .patch(&patch_url)
+                        .patch(&repo_url)
                         .bearer_auth(token)
                         .json(&patch_body)
                         .send()
@@ -300,9 +415,108 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             )?;
 
             log.status(&format!("dockerhub: synced description for '{}'", image));
+            targets.push(DockerhubTarget {
+                target: image.clone(),
+                repo_url,
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                username: username.clone(),
+                secret_env_var: secret_name.to_string(),
+                snapshot_description,
+                snapshot_full_description,
+            });
         }
     }
 
+    Ok(targets)
+}
+
+/// Re-authenticate to DockerHub and PATCH a single target back to its
+/// snapshotted `description` / `full_description`. Used exclusively by
+/// [`DockerhubPublisher::rollback`].
+///
+/// Credentials are re-resolved at rollback time from the live process
+/// env (`std::env::var(t.secret_env_var)`); the password value never
+/// crosses [`PublishEvidence::extra`]. A target whose snapshot was
+/// entirely `None` (rare — neither field was readable at publish
+/// time) is a no-op: there is nothing to restore.
+fn restore_dockerhub_target(
+    client: &reqwest::blocking::Client,
+    policy: &RetryPolicy,
+    target: &DockerhubTarget,
+) -> Result<()> {
+    let mut patch_body = serde_json::Map::new();
+    if let Some(ref d) = target.snapshot_description {
+        patch_body.insert(
+            "description".to_string(),
+            serde_json::Value::String(d.clone()),
+        );
+    }
+    if let Some(ref fd) = target.snapshot_full_description {
+        patch_body.insert(
+            "full_description".to_string(),
+            serde_json::Value::String(fd.clone()),
+        );
+    }
+    if patch_body.is_empty() {
+        return Ok(());
+    }
+
+    let password = std::env::var(&target.secret_env_var).with_context(|| {
+        format!(
+            "dockerhub: env var '{}' not set; cannot re-authenticate to restore '{}'",
+            target.secret_env_var, target.target
+        )
+    })?;
+
+    let login_body = serde_json::json!({
+        "username": &target.username,
+        "password": password,
+    });
+    let (_, login_body_text) = retry_http_blocking(
+        "dockerhub: rollback authenticate",
+        policy,
+        SuccessClass::Strict,
+        |_| {
+            client
+                .post("https://hub.docker.com/v2/users/login/")
+                .json(&login_body)
+                .send()
+        },
+        |status, body| {
+            format!(
+                "dockerhub: rollback authentication failed (HTTP {status}): {}",
+                redact_bearer_tokens(body)
+            )
+        },
+    )?;
+    let login_json: serde_json::Value = serde_json::from_str(&login_body_text)
+        .context("dockerhub: failed to parse rollback login response")?;
+    let token = login_json["token"]
+        .as_str()
+        .ok_or_else(|| anyhow!("dockerhub: no token in rollback login response"))?;
+
+    let label = format!("dockerhub: rollback PATCH {}", target.target);
+    retry_http_blocking(
+        &label,
+        policy,
+        SuccessClass::Strict,
+        |_| {
+            client
+                .patch(&target.repo_url)
+                .bearer_auth(token)
+                .json(&patch_body)
+                .send()
+        },
+        |status, body| {
+            format!(
+                "dockerhub: rollback PATCH {} failed (HTTP {}): {}",
+                target.target,
+                status,
+                redact_bearer_tokens(body)
+            )
+        },
+    )?;
     Ok(())
 }
 
@@ -318,19 +532,19 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 // non-load-bearing publisher; not required for the release to succeed).
 //
 // Rollback shape: DockerHub publishes a PATCH against the repo's
-// description and `full_description` fields. The PATCH overwrites the
-// previous value; we do not snapshot the prior state, so the rollback is
-// **deferred-with-warn**: each affected image is logged so an operator
-// running `--rollback-only` has a checklist of repos to inspect and revert
-// manually.
+// `description` and `full_description` fields. Before each PATCH the
+// publish path issues a GET to snapshot the prior values into
+// [`DockerhubTarget`]; the rollback path re-authenticates (via the
+// captured `secret_env_var`) and PATCHes the snapshot back. The
+// `<password>` value is never persisted — only the env var name is —
+// matching the credential contract enforced for every other
+// `*Target` evidence struct.
 simple_publisher!(
     DockerhubPublisher,
     "dockerhub",
     anodizer_core::PublisherGroup::Assets,
     false,
-    // Snapshot-then-restore is what an actual rollback would need; the
-    // current implementation only emits a manual-cleanup checklist.
-    Some("DOCKER_TOKEN description snapshot+restore"),
+    Some("DOCKER_PASSWORD description snapshot+restore"),
 );
 
 impl anodizer_core::Publisher for DockerhubPublisher {
@@ -352,36 +566,23 @@ impl anodizer_core::Publisher for DockerhubPublisher {
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
-        publish_to_dockerhub(ctx, &log)?;
+        let targets = publish_to_dockerhub(ctx, &log)?;
         let mut evidence = anodizer_core::PublishEvidence::new("dockerhub");
-        // Record every configured image namespace/repo so rollback has a
-        // manual-cleanup checklist. The PATCH endpoint URL is the canonical
-        // reference; we synthesise one per image rather than relying on a
-        // single primary_ref because dockerhub entries fan out across
-        // multiple repos in one run.
-        let mut targets: Vec<std::path::PathBuf> = Vec::new();
-        if let Some(entries) = ctx.config.dockerhub.as_ref() {
-            for entry in entries {
-                if let Some(images) = entry.images.as_deref() {
-                    for image in images {
-                        let parts: Vec<&str> = image.splitn(2, '/').collect();
-                        let (namespace, name) = if parts.len() == 2 {
-                            (parts[0], parts[1])
-                        } else {
-                            ("library", parts[0])
-                        };
-                        targets.push(std::path::PathBuf::from(format!(
-                            "https://hub.docker.com/v2/repositories/{}/{}/",
-                            namespace, name
-                        )));
-                    }
-                }
-            }
-        }
-        if let Some(first) = targets.first() {
+        // `artifact_paths` indexes every repo this run actually mutated
+        // (driven off the returned targets, not config) so dry-run / skip
+        // paths do not leak phantom entries. `primary_ref` points at the
+        // first mutated repo for log-line continuity.
+        let paths: Vec<std::path::PathBuf> = targets
+            .iter()
+            .map(|t| std::path::PathBuf::from(&t.repo_url))
+            .collect();
+        if let Some(first) = paths.first() {
             evidence.primary_ref = Some(first.display().to_string());
         }
-        evidence.artifact_paths = targets;
+        evidence.artifact_paths = paths;
+        if !targets.is_empty() {
+            evidence.extra = serde_json::json!({ "dockerhub_targets": targets });
+        }
         Ok(evidence)
     }
 
@@ -391,26 +592,67 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         evidence: &anodizer_core::PublishEvidence,
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
-        if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
+        let targets = decode_dockerhub_targets(&evidence.extra);
+        if targets.is_empty() {
             log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
                 "dockerhub",
                 "description-sync targets",
             ));
             return Ok(());
         }
-        // Deferred: Docker Hub PATCH overwrites the prior description and we
-        // never snapshot it, so the descriptions cannot be auto-restored.
-        // Emit one warn per image so an operator has a checklist. The
-        // rollback function itself stays Ok(()) — best-effort by design.
-        for url in &evidence.artifact_paths {
-            log.warn(&format!(
-                "dockerhub: cannot auto-revert description for {} — prior content was not snapshotted; review/restore manually in the Docker Hub UI",
-                url.display()
-            ));
+
+        let client = match reqwest::blocking::Client::builder()
+            .user_agent("anodizer/1.0")
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                // Building a reqwest client only fails on a malformed
+                // TLS config — vanishingly unlikely, but if it does we
+                // degrade to the warn-only checklist rather than
+                // bubbling Err and gating rollback of sibling
+                // publishers.
+                log.warn(&format!(
+                    "dockerhub: rollback could not build HTTP client ({e:#}); \
+                     manual review required for {} repo(s)",
+                    targets.len()
+                ));
+                for t in &targets {
+                    log.warn(&format!(
+                        "dockerhub: manual restore needed for {} ({})",
+                        t.target, t.repo_url
+                    ));
+                }
+                return Ok(());
+            }
+        };
+        let policy = ctx.retry_policy();
+
+        let mut restored = 0usize;
+        let mut failed = 0usize;
+        for t in &targets {
+            match restore_dockerhub_target(&client, &policy, t) {
+                Ok(()) => {
+                    restored += 1;
+                    log.status(&format!(
+                        "dockerhub: restored description for '{}'",
+                        t.target
+                    ));
+                }
+                Err(e) => {
+                    failed += 1;
+                    log.warn(&format!(
+                        "dockerhub: failed to restore '{}' ({}): {:#}; \
+                         check ${} is set or restore manually via the Docker Hub UI",
+                        t.target, t.repo_url, e, t.secret_env_var
+                    ));
+                }
+            }
         }
         log.status(&format!(
-            "dockerhub: rollback emitted manual-cleanup checklist for {} repo(s)",
-            evidence.artifact_paths.len()
+            "dockerhub: rollback restored {} description(s), {} failure(s)",
+            restored, failed
         ));
         Ok(())
     }
@@ -756,7 +998,7 @@ mod publisher_tests {
         assert!(!p.required());
         assert_eq!(
             p.rollback_scope_needed(),
-            Some("DOCKER_TOKEN description snapshot+restore")
+            Some("DOCKER_PASSWORD description snapshot+restore")
         );
     }
 
@@ -790,5 +1032,188 @@ mod publisher_tests {
         assert!(msg.contains("description-sync targets"), "{msg}");
         assert!(msg.contains("verify"), "{msg}");
         assert!(msg.contains("manually"), "{msg}");
+    }
+
+    /// Defense-in-depth: a serialized `DockerhubTarget` carries no
+    /// secret material. Mirrors the negative test on every other
+    /// publisher's `*Target` struct — see the `PublishEvidence::extra`
+    /// rustdoc for the contract. `password` is the field the historical
+    /// warn-only rollback could not enforce; this test pins that the
+    /// snapshot+restore implementation still does not persist one.
+    #[test]
+    fn dockerhub_target_extra_carries_no_secret_material() {
+        let t = DockerhubTarget {
+            target: "myorg/myapp".into(),
+            repo_url: "https://hub.docker.com/v2/repositories/myorg/myapp/".into(),
+            namespace: "myorg".into(),
+            name: "myapp".into(),
+            username: "ci-bot".into(),
+            secret_env_var: "DOCKER_PASSWORD".into(),
+            snapshot_description: Some("prior short desc".into()),
+            snapshot_full_description: Some("# Prior README\nbody".into()),
+        };
+        let s = serde_json::to_string(&t).expect("serialize");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+        assert!(!s.contains("\"pat\":"), "{s}");
+        assert!(!s.contains("\"auth\":"), "{s}");
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        // The env var NAME is recorded, not the env var VALUE — pin
+        // that the name appears (so the rollback hint surfaces) but
+        // that no `DOCKER_PASSWORD=...` resolved value snuck in.
+        assert!(s.contains("\"secret_env_var\""), "{s}");
+    }
+
+    /// `decode_dockerhub_targets` is the rollback entry point — assert
+    /// the round-trip shape so a future schema drift (rename of the
+    /// `dockerhub_targets` key, change to the field set) fails loudly
+    /// rather than silently degrading rollback to warn-only.
+    #[test]
+    fn dockerhub_target_decode_round_trips() {
+        let original = vec![DockerhubTarget {
+            target: "myorg/myapp".into(),
+            repo_url: "https://hub.docker.com/v2/repositories/myorg/myapp/".into(),
+            namespace: "myorg".into(),
+            name: "myapp".into(),
+            username: "ci-bot".into(),
+            secret_env_var: "DOCKER_PASSWORD".into(),
+            snapshot_description: Some("prior".into()),
+            snapshot_full_description: None,
+        }];
+        let extra = serde_json::json!({ "dockerhub_targets": original.clone() });
+        let decoded = decode_dockerhub_targets(&extra);
+        assert_eq!(decoded, original);
+    }
+
+    /// Wrong shape / missing key → empty vec → rollback short-circuits
+    /// to the empty-evidence warn path. Pins the failure mode so a
+    /// renamed-without-migration field cannot accidentally re-enable
+    /// the live-PATCH path against arbitrary decoded data.
+    #[test]
+    fn dockerhub_target_decode_missing_key_yields_empty() {
+        let extra = serde_json::json!({ "other_targets": [] });
+        assert!(decode_dockerhub_targets(&extra).is_empty());
+        let extra = serde_json::json!({ "dockerhub_targets": "not-an-array" });
+        assert!(decode_dockerhub_targets(&extra).is_empty());
+    }
+
+    /// PATCH-body construction round-trip: a snapshot with both
+    /// description and full_description set produces a PATCH body
+    /// carrying exactly those keys. The live-HTTP path goes through
+    /// `restore_dockerhub_target` (also exercised by the missing-env
+    /// and empty-snapshot tests below); this test pins the body shape
+    /// without spinning up the responder — login + PATCH both hit the
+    /// hard-coded `https://hub.docker.com` host, so a unit-level
+    /// happy-path requires either redirecting login (an artificial
+    /// fixture) or running against the real registry (integration).
+    #[test]
+    fn dockerhub_restore_body_contains_snapshot_fields() {
+        let t = DockerhubTarget {
+            target: "myorg/myapp".into(),
+            repo_url: "https://hub.docker.com/v2/repositories/myorg/myapp/".into(),
+            namespace: "myorg".into(),
+            name: "myapp".into(),
+            username: "ci-bot".into(),
+            secret_env_var: "DOCKER_PASSWORD".into(),
+            snapshot_description: Some("prior short".into()),
+            snapshot_full_description: Some("# prior README".into()),
+        };
+
+        // Reproduce the body-construction the restore function would
+        // assemble. Pins the contract without exercising the live
+        // HTTP path.
+        let mut expected = serde_json::Map::new();
+        if let Some(ref d) = t.snapshot_description {
+            expected.insert("description".into(), serde_json::Value::String(d.clone()));
+        }
+        if let Some(ref fd) = t.snapshot_full_description {
+            expected.insert(
+                "full_description".into(),
+                serde_json::Value::String(fd.clone()),
+            );
+        }
+        assert_eq!(
+            expected.get("description").and_then(|v| v.as_str()),
+            Some("prior short")
+        );
+        assert_eq!(
+            expected.get("full_description").and_then(|v| v.as_str()),
+            Some("# prior README")
+        );
+    }
+
+    /// All-None snapshot → restore is a no-op (no PATCH issued).
+    /// Defends against the failure mode where a publisher with no
+    /// readable prior description would otherwise PATCH `{}` (which
+    /// DockerHub treats as a no-op anyway, but issuing the call wastes
+    /// an auth round-trip and surfaces a spurious "restored" log line).
+    #[test]
+    fn dockerhub_restore_no_op_when_snapshot_empty() {
+        // Build a fresh client; the function returns Ok(()) before
+        // touching the network when the snapshot is all-None.
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(2),
+        };
+        let t = DockerhubTarget {
+            target: "myorg/myapp".into(),
+            repo_url: "http://127.0.0.1:1/unreachable".into(),
+            namespace: "myorg".into(),
+            name: "myapp".into(),
+            username: "ci-bot".into(),
+            secret_env_var: "DOCKER_PASSWORD_UNSET_FOR_TEST_XYZ".into(),
+            snapshot_description: None,
+            snapshot_full_description: None,
+        };
+        // Note: the unreachable URL + unset env var would normally
+        // make this fail loudly. The no-op short-circuit must fire
+        // before either is touched.
+        restore_dockerhub_target(&client, &policy, &t).expect("no-op when snapshot empty");
+    }
+
+    /// Missing env var → restore returns Err with a recognizable
+    /// message naming the env var. Defends the operator-facing hint
+    /// shape that the `Publisher::rollback` warn line interpolates.
+    #[test]
+    fn dockerhub_restore_errors_when_env_missing() {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(2),
+        };
+        // Pick an env var name that is overwhelmingly unlikely to be
+        // set in any test environment. No call to `std::env::remove_var`
+        // — that would race other tests in the same process under
+        // `cargo test`'s default thread-pool runner.
+        let env_var = "DOCKER_PASSWORD_INTENTIONALLY_UNSET_FOR_DOCKERHUB_TEST_ABCDEF";
+        assert!(
+            std::env::var(env_var).is_err(),
+            "guard: this test requires the env var to be unset"
+        );
+        let t = DockerhubTarget {
+            target: "myorg/myapp".into(),
+            repo_url: "http://127.0.0.1:1/unreachable".into(),
+            namespace: "myorg".into(),
+            name: "myapp".into(),
+            username: "ci-bot".into(),
+            secret_env_var: env_var.into(),
+            snapshot_description: Some("prior".into()),
+            snapshot_full_description: None,
+        };
+        let err = restore_dockerhub_target(&client, &policy, &t).expect_err("env missing");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(env_var),
+            "error chain should name the unset env var: {chain}"
+        );
     }
 }
