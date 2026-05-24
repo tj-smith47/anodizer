@@ -121,6 +121,12 @@ tasks:
       - cargo clean
       - rm -rf dist/
 
+  coverage:check:
+    desc: Run workspace test coverage and write cobertura.xml. No branch switching, no push.
+    cmds:
+      - cargo llvm-cov --cobertura --output-path cobertura.xml
+      - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
+
   tidy:
     desc: Format code and regenerate docs
     cmds:

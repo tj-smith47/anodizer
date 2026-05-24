@@ -11,3 +11,11 @@
 docs/site/public/
 CLAUDE.local.md
 .claude/
+# Un-ignore load-bearing CI / hook helpers under .claude/. Everything else
+# under .claude/ stays on disk but is intentionally local-only.
+!.claude/
+!.claude/scripts/
+!.claude/scripts/coverage-percent.sh
+!.claude/scripts/publish-coverage.sh
+# Coverage artifact emitted by `task coverage:check`.
+cobertura.xml
