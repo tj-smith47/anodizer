@@ -26,12 +26,83 @@ mod rate_limit;
 mod retry_call;
 mod retry_classify;
 mod secondary_rate_limit;
+mod upload_outcome;
 
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit;
 pub(crate) use retry_call::{format_retry_warn, is_octocrab_404, retry_octocrab_call};
-use secondary_rate_limit::{RetryAfterCapture, is_secondary_rate_limit, secondary_rl_delay};
+use secondary_rate_limit::{RetryAfterCapture, secondary_rl_delay};
+use upload_outcome::{UploadAttemptOutcome, classify_upload_attempt};
+
+/// Page size used when paginating `GET /repos/{owner}/{repo}/releases`.
+///
+/// Matches GitHub's per-page maximum so the draft search reaches the
+/// answer in the minimum number of round trips. The "fewer than this many
+/// results means last page" pagination terminator depends on this value
+/// being the same as the `per_page` query parameter sent in
+/// [`find_draft_by_name`].
+const LIST_RELEASES_PAGE_SIZE: usize = 100;
+
+/// Find a draft release on `{owner}/{repo}` whose `name` field matches
+/// `name`, paginating through `GET /repos/{owner}/{repo}/releases` 100
+/// results at a time until a match is found or the listing is exhausted.
+///
+/// GoReleaser parity: mirrors `internal/client/github.go::findDraftRelease`,
+/// which searches releases by *name* (not tag) and loops while
+/// `resp.NextPage != 0`. There is no artificial page cap so repos with
+/// thousands of historical draft releases still locate the target —
+/// otherwise the create-release path would 422 on a duplicate tag.
+///
+/// Each page fetch is wrapped by [`retry_octocrab_call`] so transient
+/// 5xx / 429 / transport failures retry according to `policy`; 4xx
+/// errors (auth, validation) fast-fail. The retry envelope wraps a single
+/// page only: once a page returns OK, the next page is fetched fresh.
+///
+/// Returns `Ok(Some(release))` when a draft with the matching `name` is
+/// found, `Ok(None)` when the listing is exhausted with no match, and
+/// `Err(_)` when a non-retryable error surfaces (or every retry has been
+/// consumed).
+pub(crate) async fn find_draft_by_name(
+    octo: &Arc<octocrab::Octocrab>,
+    owner: &str,
+    repo: &str,
+    name: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    retry_after: Option<&RetryAfterCapture>,
+) -> Result<Option<octocrab::models::repos::Release>> {
+    let mut page: u32 = 1;
+    loop {
+        let route = format!(
+            "/repos/{}/{}/releases?per_page={}&page={}",
+            owner, repo, LIST_RELEASES_PAGE_SIZE, page
+        );
+        let releases: Vec<octocrab::models::repos::Release> =
+            retry_octocrab_call(policy, "list releases", retry_after, || {
+                let route = route.clone();
+                let octo = octo.clone();
+                async move { octo.get(route, None::<&()>).await }
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "release: list releases on {}/{} (page {})",
+                    owner, repo, page
+                )
+            })?;
+        if let Some(found) = releases
+            .iter()
+            .find(|r| r.draft && r.name.as_deref() == Some(name))
+        {
+            return Ok(Some(found.clone()));
+        }
+        if releases.len() < LIST_RELEASES_PAGE_SIZE {
+            break;
+        }
+        page += 1;
+    }
+    Ok(None)
+}
 
 /// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
 ///
@@ -262,63 +333,6 @@ pub(crate) fn run_github_backend(
         let (octo_raw, retry_after_capture) = build_octocrab_client(&token_str, &github_urls)?;
         let octo = Arc::new(octo_raw);
         let rate_limit_client = reqwest::Client::new();
-
-        // Helper: list all releases (with pagination) and find a draft
-        // matching the release name. GoReleaser searches by name (not tag).
-        //
-        // Pagination terminates when the page returns fewer than `per_page=100`
-        // results (matching GoReleaser `internal/client/github.go::findDraftRelease`,
-        // which loops while `resp.NextPage != 0`). No artificial cap: repos
-        // with thousands of historical draft releases must still find the
-        // target so the create-release path doesn't 422 on a duplicate tag.
-        //
-        // Each page fetch flows through `retry_octocrab_call` so a transient
-        // 5xx / 429 / network error retries per `ctx.config.retry`; a 4xx
-        // (auth, validation) fast-fails. The retry wraps the single page
-        // call only: once a page returns OK, we move to the next page; we
-        // never re-fetch a page we've already received.
-        async fn find_draft_by_name(
-            octo: &Arc<octocrab::Octocrab>,
-            owner: &str,
-            repo: &str,
-            name: &str,
-            policy: &anodizer_core::retry::RetryPolicy,
-            retry_after: Option<&RetryAfterCapture>,
-        ) -> Result<Option<octocrab::models::repos::Release>> {
-            let mut page: u32 = 1;
-            loop {
-                let route = format!(
-                    "/repos/{}/{}/releases?per_page=100&page={}",
-                    owner, repo, page
-                );
-                let releases: Vec<octocrab::models::repos::Release> =
-                    retry_octocrab_call(policy, "list releases", retry_after, || {
-                        let route = route.clone();
-                        let octo = octo.clone();
-                        async move { octo.get(route, None::<&()>).await }
-                    })
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "release: list releases on {}/{} (page {})",
-                            owner, repo, page
-                        )
-                    })?;
-                if let Some(found) = releases
-                    .iter()
-                    .find(|r| r.draft && r.name.as_deref() == Some(name))
-                {
-                    return Ok(Some(found.clone()));
-                }
-                // If we got fewer than 100 results, there are no more pages
-                // (matches GR's `resp.NextPage == 0` terminator).
-                if releases.len() < 100 {
-                    break;
-                }
-                page += 1;
-            }
-            Ok(None)
-        }
 
         // Proactive rate limit check before draft search/release operations.
         check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
@@ -735,254 +749,233 @@ pub(crate) fn run_github_backend(
                         })?;
                         let local_size = data.len() as u64;
 
-                        match octo
+                        let result = octo
                             .repos(&gh_owner, &gh_name)
                             .releases()
                             .upload_asset(release_id_raw, &file_name, data.into())
                             .send()
-                            .await
-                        {
-                            Ok(_) => {
+                            .await;
+                        let outcome = classify_upload_attempt(&result);
+                        match outcome {
+                            UploadAttemptOutcome::Success => {
                                 last_err = None;
                                 break;
                             }
-                            Err(err) => {
-                                let is_server_error = matches!(
-                                    &err,
-                                    octocrab::Error::GitHub { source, .. }
-                                        if source.status_code.is_server_error()
+                            UploadAttemptOutcome::AlreadyExists => {
+                                let err = result.expect_err(
+                                    "AlreadyExists outcome guarantees Err variant",
                                 );
-                                // `already_exists` lives in GitHubError.errors[].code,
-                                // not in the outer Display. octocrab::Error::GitHub's
-                                // generated Display is just "GitHub", inspect the
-                                // source struct directly.
-                                let is_already_exists = matches!(
-                                    &err,
-                                    octocrab::Error::GitHub { source, .. }
-                                        if source.status_code.as_u16() == 422
-                                            && source.errors.as_ref().is_some_and(|errs| {
-                                                errs.iter().any(|e| {
-                                                    e.get("code")
-                                                        .and_then(|v| v.as_str())
-                                                        == Some("already_exists")
-                                                })
-                                            })
-                                );
+                                // If a prior attempt successfully deleted the stale
+                                // asset and the upload *still* surfaces
+                                // already_exists, give up rather than looping until
+                                // max_upload_attempts exhausts. The re-appearing
+                                // asset is typically a GitHub backend
+                                // eventual-consistency window after the prior
+                                // successful delete; retrying does not help.
+                                if overwrite_attempted {
+                                    release_log().warn(&format!(
+                                        "existing asset '{file_name}' on release '{tag_c}' \
+                                         reappeared after delete+retry; \
+                                         skipping, stale asset kept"
+                                    ));
+                                    last_err = None;
+                                    break;
+                                }
 
-                                if is_already_exists {
-                                    // If we've already tried the delete+retry dance
-                                    // once and upload *still* returns already_exists,
-                                    // give up and keep the stale asset rather than
-                                    // looping until max_upload_attempts exhausts. The
-                                    // re-appearing asset is typically a GitHub backend
-                                    // eventual-consistency window after our prior
-                                    // successful delete; retrying doesn't help.
-                                    if overwrite_attempted {
+                                // Probe the remote asset's size to distinguish
+                                // "same bytes uploaded earlier" (idempotent no-op)
+                                // from "different bytes, user opted out of
+                                // overwrites" (unrecoverable). The classifier
+                                // [`classify_already_exists`] encodes the
+                                // GR-aligned 422 decision rule
+                                // (`internal/client/github.go:734-744`).
+                                let remote_size = find_release_asset_size(
+                                    &octo,
+                                    &gh_owner,
+                                    &gh_name,
+                                    release_id_raw,
+                                    &file_name,
+                                    &policy_for_upload,
+                                    Some(&retry_after_for_upload),
+                                )
+                                .await
+                                .with_context(|| {
+                                    format!(
+                                        "release: look up existing asset '{}' on release '{}'",
+                                        file_name, tag_c
+                                    )
+                                })?;
+
+                                match classify_already_exists(
+                                    replace_existing_artifacts,
+                                    remote_size,
+                                    local_size,
+                                ) {
+                                    AlreadyExistsAction::SkipIdempotent => {
+                                        // A prior attempt in this same release
+                                        // already uploaded byte-identical
+                                        // content. Pure no-op, regardless of
+                                        // `replace_existing_artifacts`.
+                                        last_err = None;
+                                        break;
+                                    }
+                                    AlreadyExistsAction::BailReplaceForbidden => {
+                                        // User explicitly set
+                                        // `replace_existing_artifacts: false`
+                                        // and the bytes differ: surface the
+                                        // conflict rather than overwriting.
+                                        // Mirrors GR's `Unrecoverable(err)`
+                                        // return at `github.go:736`.
+                                        return Err(anyhow::anyhow!(err)).with_context(|| {
+                                            format!(
+                                                "release: artifact '{}' already exists on release '{}' \
+                                                 with different bytes and `replace_existing_artifacts: false` \
+                                                 forbids overwriting (set \
+                                                 `release.replace_existing_artifacts: true` \
+                                                 to permit overwrites)",
+                                                file_name, tag_c
+                                            )
+                                        });
+                                    }
+                                    AlreadyExistsAction::DeleteAndRetry => {
+                                        // Fall through to the delete-retry
+                                        // arm below (user opted in via
+                                        // `replace_existing_artifacts: true`).
+                                    }
+                                }
+
+                                // Size mismatch + user opted in via
+                                // `replace_existing_artifacts: true`: delete
+                                // the stale asset and retry. If the delete
+                                // itself fails (perms, asset disappeared
+                                // mid-flight, etc.), warn and treat the
+                                // upload as skipped: a stale asset is
+                                // better than aborting the release.
+                                match delete_release_asset_by_name(
+                                    &octo,
+                                    &gh_owner,
+                                    &gh_name,
+                                    release_id_raw,
+                                    &file_name,
+                                    &policy_for_upload,
+                                    Some(&retry_after_for_upload),
+                                )
+                                .await
+                                {
+                                    Ok(_) => {
+                                        overwrite_attempted = true;
+                                        last_err = Some(anyhow::anyhow!(err));
+                                        if attempt < max_upload_attempts {
+                                            let base = std::cmp::min(
+                                                initial_retry_delay * 2u32.pow(attempt - 1),
+                                                max_retry_delay,
+                                            );
+                                            tokio::time::sleep(jitter_duration(base)).await;
+                                        }
+                                        continue;
+                                    }
+                                    Err(del_err) => {
                                         release_log().warn(&format!(
-                                            "existing asset '{file_name}' on release '{tag_c}' \
-                                             reappeared after delete+retry; \
-                                             skipping, stale asset kept"
+                                            "could not overwrite existing asset '{file_name}' on release '{tag_c}' \
+                                             (size mismatch and delete failed: {del_err}); skipping, stale asset kept"
                                         ));
                                         last_err = None;
                                         break;
                                     }
-
-                                    // Probe the remote asset's size so we can
-                                    // distinguish "same bytes uploaded earlier"
-                                    // (idempotent no-op) from "different bytes,
-                                    // user opted out of overwrites"
-                                    // (unrecoverable). The classifier
-                                    // [`classify_already_exists`] encodes the
-                                    // GR-aligned 422 decision rule
-                                    // (`internal/client/github.go:734-744`).
-                                    let remote_size = find_release_asset_size(
-                                        &octo,
-                                        &gh_owner,
-                                        &gh_name,
-                                        release_id_raw,
-                                        &file_name,
-                                        &policy_for_upload,
-                                        Some(&retry_after_for_upload),
-                                    )
-                                    .await
-                                    .with_context(|| {
-                                        format!(
-                                            "release: look up existing asset '{}' on release '{}'",
-                                            file_name, tag_c
-                                        )
-                                    })?;
-
-                                    match classify_already_exists(
-                                        replace_existing_artifacts,
-                                        remote_size,
-                                        local_size,
-                                    ) {
-                                        AlreadyExistsAction::SkipIdempotent => {
-                                            // A prior attempt in this same release
-                                            // already uploaded byte-identical
-                                            // content. Pure no-op, regardless of
-                                            // `replace_existing_artifacts`.
-                                            last_err = None;
-                                            break;
-                                        }
-                                        AlreadyExistsAction::BailReplaceForbidden => {
-                                            // User explicitly set
-                                            // `replace_existing_artifacts: false`
-                                            // and the bytes differ: surface the
-                                            // conflict rather than overwriting.
-                                            // Mirrors GR's `Unrecoverable(err)`
-                                            // return at `github.go:736`.
-                                            return Err(anyhow::anyhow!(err)).with_context(|| {
-                                                format!(
-                                                    "release: artifact '{}' already exists on release '{}' \
-                                                     with different bytes and `replace_existing_artifacts: false` \
-                                                     forbids overwriting (set \
-                                                     `release.replace_existing_artifacts: true` \
-                                                     to permit overwrites)",
-                                                    file_name, tag_c
-                                                )
-                                            });
-                                        }
-                                        AlreadyExistsAction::DeleteAndRetry => {
-                                            // Fall through to the delete-retry
-                                            // arm below (user opted in via
-                                            // `replace_existing_artifacts: true`).
-                                        }
-                                    }
-
-                                    // Size mismatch + user opted in via
-                                    // `replace_existing_artifacts: true`: delete
-                                    // the stale asset and retry. If the delete
-                                    // itself fails (perms, asset disappeared
-                                    // mid-flight, etc.), warn and treat the
-                                    // upload as skipped: a stale asset is
-                                    // better than aborting the release.
-                                    match delete_release_asset_by_name(
-                                        &octo,
-                                        &gh_owner,
-                                        &gh_name,
-                                        release_id_raw,
-                                        &file_name,
-                                        &policy_for_upload,
-                                        Some(&retry_after_for_upload),
-                                    )
-                                    .await
-                                    {
-                                        Ok(_) => {
-                                            overwrite_attempted = true;
-                                            last_err = Some(anyhow::anyhow!(err));
-                                            if attempt < max_upload_attempts {
-                                                let base = std::cmp::min(
-                                                    initial_retry_delay * 2u32.pow(attempt - 1),
-                                                    max_retry_delay,
-                                                );
-                                                tokio::time::sleep(jitter_duration(base)).await;
-                                            }
-                                            continue;
-                                        }
-                                        Err(del_err) => {
-                                            release_log().warn(&format!(
-                                                "could not overwrite existing asset '{file_name}' on release '{tag_c}' \
-                                                 (size mismatch and delete failed: {del_err}); skipping, stale asset kept"
-                                            ));
-                                            last_err = None;
-                                            break;
-                                        }
-                                    }
                                 }
-
-                                // Secondary rate-limit (403/429 with
-                                // GitHub's secondary-RL body): sleep the
-                                // dedicated RL delay (with ±20 % jitter)
-                                // before retrying. Do NOT fall through to
-                                // the primary `check_github_rate_limit`
-                                // path — secondary limits are transient
-                                // burst guards, not quota exhaustion.
-                                if is_secondary_rate_limit(&err) {
-                                    let delay = jitter_duration(secondary_rl_delay(Some(&retry_after_for_upload)));
-                                    release_log().warn(&format!(
-                                        "release: upload of '{file_name}' hit GitHub secondary \
-                                         rate limit; sleeping {:.1}s before retry \
-                                         (attempt {attempt}/{})",
-                                        delay.as_secs_f64(),
-                                        max_upload_attempts,
-                                    ));
-                                    if attempt < max_upload_attempts {
-                                        tokio::time::sleep(delay).await;
-                                    }
-                                    last_err = Some(anyhow::anyhow!(err));
-                                    continue;
-                                }
-
-                                // Primary rate-limit (403/429 without the
-                                // secondary-RL body): probe `/rate_limit`
-                                // and sleep until quota resets.
-                                let is_rate_limited = matches!(
-                                    &err,
-                                    octocrab::Error::GitHub { source, .. }
-                                        if source.status_code.as_u16() == 403
-                                            || source.status_code.as_u16() == 429
+                            }
+                            UploadAttemptOutcome::SecondaryRateLimited => {
+                                // Secondary rate-limit (403/429 with GitHub's
+                                // secondary-RL body): sleep the dedicated RL
+                                // delay (with ±20 % jitter) before retrying. Do
+                                // NOT fall through to the primary
+                                // `check_github_rate_limit` path — secondary
+                                // limits are transient burst guards, not quota
+                                // exhaustion.
+                                let err = result.expect_err(
+                                    "SecondaryRateLimited outcome guarantees Err variant",
                                 );
-
-                                if is_rate_limited {
-                                    release_log().status(&format!(
-                                        "rate limited on upload of '{file_name}', checking rate limits..."
-                                    ));
-                                    check_github_rate_limit(
-                                        &reqwest::Client::new(),
-                                        &token_for_rate_limit,
-                                        100,
-                                    )
-                                    .await;
-                                    last_err = Some(anyhow::anyhow!(err));
-                                    continue;
-                                } else if is_server_error
-                                    || matches!(&err, octocrab::Error::Hyper { .. })
-                                    || matches!(&err, octocrab::Error::Http { .. })
-                                    || matches!(&err, octocrab::Error::Service { .. })
-                                    || matches!(&err, octocrab::Error::Other { .. })
-                                    || matches!(&err, octocrab::Error::Serde { .. })
-                                    || matches!(&err, octocrab::Error::Json { .. })
-                                {
-                                    // Transient transport / proxy issues during upload.
-                                    // Serde / Json here means GitHub returned a non-JSON
-                                    // body (typically an nginx/HAProxy 502/503 HTML page)
-                                    // while our error-mapping expected JSON: always
-                                    // transient, safe to retry. Route the per-attempt
-                                    // warn through the shared `format_retry_warn` helper
-                                    // so this bespoke loop can't drift from the
-                                    // `retry_octocrab_call` helper's format.
-                                    let status = match &err {
-                                        octocrab::Error::GitHub { source, .. } => {
-                                            source.status_code.as_u16()
-                                        }
-                                        _ => 0,
-                                    };
-                                    let label = format!("upload of '{file_name}'");
-                                    release_log().warn(&format_retry_warn(
-                                        &label,
-                                        attempt,
-                                        max_upload_attempts,
-                                        status,
-                                    ));
-                                    last_err = Some(anyhow::anyhow!(err));
-                                    if attempt < max_upload_attempts {
-                                        let base = std::cmp::min(
-                                            initial_retry_delay * 2u32.pow(attempt - 1),
-                                            max_retry_delay,
-                                        );
-                                        tokio::time::sleep(jitter_duration(base)).await;
-                                    }
-                                    continue;
-                                } else {
-                                    // Non-retryable error: fail immediately.
-                                    return Err(anyhow::anyhow!(err)).with_context(|| {
-                                        format!(
-                                            "release: upload artifact '{}' to release '{}'",
-                                            file_name, tag_c
-                                        )
-                                    });
+                                let delay = jitter_duration(secondary_rl_delay(Some(&retry_after_for_upload)));
+                                release_log().warn(&format!(
+                                    "release: upload of '{file_name}' hit GitHub secondary \
+                                     rate limit; sleeping {:.1}s before retry \
+                                     (attempt {attempt}/{})",
+                                    delay.as_secs_f64(),
+                                    max_upload_attempts,
+                                ));
+                                if attempt < max_upload_attempts {
+                                    tokio::time::sleep(delay).await;
                                 }
+                                last_err = Some(anyhow::anyhow!(err));
+                                continue;
+                            }
+                            UploadAttemptOutcome::PrimaryRateLimited => {
+                                // Primary rate-limit (403/429 without the
+                                // secondary-RL body): probe `/rate_limit` and
+                                // sleep until quota resets.
+                                let err = result.expect_err(
+                                    "PrimaryRateLimited outcome guarantees Err variant",
+                                );
+                                release_log().status(&format!(
+                                    "rate limited on upload of '{file_name}', checking rate limits..."
+                                ));
+                                check_github_rate_limit(
+                                    &reqwest::Client::new(),
+                                    &token_for_rate_limit,
+                                    100,
+                                )
+                                .await;
+                                last_err = Some(anyhow::anyhow!(err));
+                                continue;
+                            }
+                            UploadAttemptOutcome::TransientRetry => {
+                                // Transient transport / proxy issues during
+                                // upload. Serde / Json here means GitHub
+                                // returned a non-JSON body (typically an
+                                // nginx/HAProxy 502/503 HTML page) while the
+                                // error-mapping expected JSON: always
+                                // transient, safe to retry. Route the
+                                // per-attempt warn through the shared
+                                // `format_retry_warn` helper so this bespoke
+                                // loop cannot drift from the
+                                // `retry_octocrab_call` helper's format.
+                                let err = result.expect_err(
+                                    "TransientRetry outcome guarantees Err variant",
+                                );
+                                let status = match &err {
+                                    octocrab::Error::GitHub { source, .. } => {
+                                        source.status_code.as_u16()
+                                    }
+                                    _ => 0,
+                                };
+                                let label = format!("upload of '{file_name}'");
+                                release_log().warn(&format_retry_warn(
+                                    &label,
+                                    attempt,
+                                    max_upload_attempts,
+                                    status,
+                                ));
+                                last_err = Some(anyhow::anyhow!(err));
+                                if attempt < max_upload_attempts {
+                                    let base = std::cmp::min(
+                                        initial_retry_delay * 2u32.pow(attempt - 1),
+                                        max_retry_delay,
+                                    );
+                                    tokio::time::sleep(jitter_duration(base)).await;
+                                }
+                                continue;
+                            }
+                            UploadAttemptOutcome::Fatal => {
+                                // Non-retryable error: fail immediately.
+                                let err = result.expect_err(
+                                    "Fatal outcome guarantees Err variant",
+                                );
+                                return Err(anyhow::anyhow!(err)).with_context(|| {
+                                    format!(
+                                        "release: upload artifact '{}' to release '{}'",
+                                        file_name, tag_c
+                                    )
+                                });
                             }
                         }
                     }
@@ -1082,6 +1075,182 @@ pub(crate) fn run_github_backend(
         github.owner.clone(),
         github.name.clone(),
     )))
+}
+
+#[cfg(test)]
+mod find_draft_by_name_tests {
+    //! Behavioural pins for [`find_draft_by_name`] — the paginated draft
+    //! search used by the `replace_existing_draft` and
+    //! `use_existing_draft` paths in `run_github_backend`.
+    //!
+    //! These tests drive a real `octocrab::Octocrab` against an
+    //! in-process loopback responder (the shared
+    //! `spawn_oneshot_http_responder`) so the pagination terminator,
+    //! per-page route shape, and `draft && name match` predicate are
+    //! pinned against the production code path — not the matcher in
+    //! isolation.
+    use super::*;
+    use crate::test_support::{build_test_octocrab, test_retry_policy};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use std::sync::atomic::Ordering;
+
+    /// Build a minimal release JSON list of `count` entries, marking the
+    /// one at `match_idx` (when `Some`) as a draft with `name=target`.
+    /// Every other entry is published (`draft: false`) with a distinct
+    /// name so the predicate's "draft && name match" requirement is
+    /// exercised.
+    fn build_release_list_body(
+        count: usize,
+        match_idx: Option<usize>,
+        target_name: &str,
+    ) -> String {
+        let mut entries = Vec::with_capacity(count);
+        for i in 0..count {
+            let (draft, name) = match match_idx {
+                Some(idx) if idx == i => (true, target_name.to_string()),
+                _ => (false, format!("other-release-{i}")),
+            };
+            entries.push(serde_json::json!({
+                "id": 1000 + i as u64,
+                "node_id": format!("RL_{i}"),
+                "tag_name": format!("v0.0.{i}"),
+                "target_commitish": "main",
+                "name": name,
+                "draft": draft,
+                "prerelease": false,
+                "created_at": "2026-01-01T00:00:00Z",
+                "published_at": null,
+                "author": null,
+                "assets": [],
+                "tarball_url": null,
+                "zipball_url": null,
+                "body": null,
+                "url": format!("https://api.github.com/repos/o/r/releases/{}", 1000 + i),
+                "html_url": format!("https://github.com/o/r/releases/{}", 1000 + i),
+                "assets_url": format!("https://api.github.com/repos/o/r/releases/{}/assets", 1000 + i),
+                "upload_url": format!("https://uploads.github.com/repos/o/r/releases/{}/assets{{?name,label}}", 1000 + i),
+            }));
+        }
+        serde_json::Value::Array(entries).to_string()
+    }
+
+    /// Build a static HTTP response carrying a JSON release-list body.
+    fn build_release_list_response(body: String) -> &'static str {
+        let raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        Box::leak(raw.into_boxed_str())
+    }
+
+    #[tokio::test]
+    async fn single_page_with_matching_draft_returns_some() {
+        let body = build_release_list_body(3, Some(1), "v1.2.3");
+        let (addr, calls) = spawn_oneshot_http_responder(vec![build_release_list_response(body)]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+        let found = find_draft_by_name(&octo, "o", "r", "v1.2.3", &policy, None)
+            .await
+            .expect("draft search must succeed");
+        let release = found.expect("draft with matching name must be found");
+        assert_eq!(release.name.as_deref(), Some("v1.2.3"));
+        assert!(release.draft, "matched release must be a draft");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "single-page search must issue exactly one list-releases call",
+        );
+    }
+
+    #[tokio::test]
+    async fn single_page_no_match_returns_none() {
+        // Three published releases, none match the target name; the
+        // predicate must not coerce a non-draft into a match.
+        let body = build_release_list_body(3, None, "v9.9.9");
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![build_release_list_response(body)]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+        let found = find_draft_by_name(&octo, "o", "r", "v9.9.9", &policy, None)
+            .await
+            .expect("draft search must succeed");
+        assert!(
+            found.is_none(),
+            "no draft matches the target name => Ok(None)",
+        );
+    }
+
+    #[tokio::test]
+    async fn name_matches_but_not_draft_returns_none() {
+        // A *published* release whose name equals the target must NOT
+        // match — the predicate requires `draft && name match`.
+        let body = build_release_list_body(2, None, "ignored");
+        // Patch entry 0 to have the target name but stay non-draft.
+        let mut entries: Vec<serde_json::Value> = serde_json::from_str(&body).expect("array");
+        entries[0]["name"] = serde_json::Value::String("v1.2.3".to_string());
+        entries[0]["draft"] = serde_json::Value::Bool(false);
+        let body = serde_json::Value::Array(entries).to_string();
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![build_release_list_response(body)]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+        let found = find_draft_by_name(&octo, "o", "r", "v1.2.3", &policy, None)
+            .await
+            .expect("draft search must succeed");
+        assert!(
+            found.is_none(),
+            "published release with matching name must NOT count as a draft hit",
+        );
+    }
+
+    #[tokio::test]
+    async fn paginates_across_pages_until_match_found() {
+        // Page 1: 100 non-matching published releases (forces another page).
+        // Page 2: a draft with the matching name in slot 0.
+        let page_1 = build_release_list_body(100, None, "v1.2.3");
+        let page_2 = build_release_list_body(5, Some(0), "v1.2.3");
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            build_release_list_response(page_1),
+            build_release_list_response(page_2),
+        ]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+        let found = find_draft_by_name(&octo, "o", "r", "v1.2.3", &policy, None)
+            .await
+            .expect("paginated draft search must succeed");
+        let release = found.expect("draft on page 2 must be found");
+        assert_eq!(release.name.as_deref(), Some("v1.2.3"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "pagination must consume exactly 2 list-releases calls (full first page + second page)",
+        );
+    }
+
+    #[tokio::test]
+    async fn paginates_to_exhaustion_returns_none() {
+        // Page 1: 100 non-matching entries (full page => continue).
+        // Page 2: 50 non-matching entries (< page size => terminate).
+        let page_1 = build_release_list_body(100, None, "missing");
+        let page_2 = build_release_list_body(50, None, "missing");
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            build_release_list_response(page_1),
+            build_release_list_response(page_2),
+        ]);
+        let octo = build_test_octocrab(addr);
+        let policy = test_retry_policy();
+        let found = find_draft_by_name(&octo, "o", "r", "missing", &policy, None)
+            .await
+            .expect("draft search must succeed even when no match");
+        assert!(
+            found.is_none(),
+            "exhausted listing with no match => Ok(None)",
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "must fetch both pages before terminating on the partial page",
+        );
+    }
 }
 
 #[cfg(test)]

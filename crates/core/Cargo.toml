@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-test-helpers = []
+test-helpers = ["dep:rustls", "dep:rcgen"]
 
 [dev-dependencies]
 anodizer-core = { path = ".", features = ["test-helpers"] }
@@ -40,3 +40,7 @@ reqwest.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+# Optional deps for the `test-helpers` feature (HTTPS responder + self-signed certs).
+rustls = { workspace = true, optional = true }
+rcgen = { workspace = true, optional = true }

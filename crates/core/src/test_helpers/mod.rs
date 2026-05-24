@@ -22,8 +22,11 @@
 //!   (consolidates ~11 inline copies; fixes the v0.3.0 chocolatey /
 //!   v0.3.0 github-rate-limit CI flakes)
 
+pub mod artifact_set;
 pub mod env;
+pub mod https_responder;
 pub mod responder;
+pub mod scripted_responder;
 
 use crate::config::{Config, CrateConfig, Defaults, SignConfig, UpxConfig, WorkspaceConfig};
 use crate::context::{Context, ContextOptions};

@@ -133,6 +133,7 @@ http = "1"
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "tls12", "logging", "native-tokio"] }
 hyper-util = { version = "0.1", features = ["client-legacy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 serial_test = "3"
 schemars = "0.8"

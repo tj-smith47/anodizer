@@ -142,6 +142,61 @@ re-runs publish-only against existing GitHub assets.
 
 ---
 
+## V2 — Silent-default-empty sweep (BLOCKER for next release)
+
+The v0.4.0 winget bug was a `unwrap_or_default()` on missing required
+metadata that serialised to `''` and shipped to a downstream registry
+that then rejected the manifest. The pattern is **silent default for a
+value the downstream contract requires to be non-empty.** That pattern
+likely repeats across other publishers and stages — each one is a
+trap waiting for the next release to spring it.
+
+**Scope of audit (do this before pushing the next release):**
+
+1. **Grep every `unwrap_or_default()`, `unwrap_or_else(.. String::new)`,
+   `unwrap_or("")` site in `crates/stage-publish/**` and `crates/stage-*/**`**
+   that flows into a downstream payload (manifest, formula, request body,
+   git commit, file write). For each, ask:
+   - "If the source metadata is genuinely missing, would the downstream
+     accept the empty value or reject it?"
+   - If reject — replace with `bail!` carrying an actionable message
+     (operator + remediation pointer), mirroring the winget fix.
+   - If accept — leave alone, add a one-line WHY comment explaining
+     the silent default is correct.
+
+2. **Per-publisher checklist of required-non-empty fields** the
+   downstream registry validates. Sources of truth:
+   - winget: schema at `aka.ms/winget-manifest.installer.1.12.0.schema.json`
+   - homebrew: `brew audit --strict` rules
+   - chocolatey: nuspec validation (`InstallerSha256` equivalent: `checksum`)
+   - scoop: bucket validation
+   - krew: krew plugin schema
+   - nix: nixpkgs review checklist
+   - aur: PKGBUILD lint
+   - cargo: cargo publish API rejects empty `description`, `license`
+   - snapcraft: `snapcraft.yaml` validation
+   - winget product_code, locale fields, sha256 (already fixed)
+
+3. **Other surfaces beyond publishers** to sweep:
+   - `stage-release/src/github` — `body`, `name`, `tag_name`, `target_commitish`
+     emitted with empty defaults?
+   - `stage-announce/*` — empty webhook payloads silently posted?
+   - `stage-changelog/*` — empty changelog body?
+   - `stage-source/*` — empty archive name?
+   - `stage-archive/*` — empty checksums?
+
+4. **Output**: a fix-list (or note "verified non-trap" per site). Bundle
+   the fixes into one commit with regression tests per bail, matching
+   the winget pattern (`*_without_X_metadata_bails_with_actionable_error`).
+
+**Why this is a release-blocker**: every silent default is a future
+support ticket from a user whose release shipped a broken artifact.
+Each one is also a winget-style multi-week feedback loop (publisher
+accepts → external service validates async → operator notified later).
+Fail-loud at the source is the cheapest fix point.
+
+---
+
 ## C1 — Coverage gaps left by the 2026-05-24 fixture session
 
 The "test fixtures" session built env_mutex, build_test_octocrab,
