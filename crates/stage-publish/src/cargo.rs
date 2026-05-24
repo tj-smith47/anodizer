@@ -2279,11 +2279,15 @@ fn main() {
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
         );
-        // Inject counter path so the stub can find it. set_var/remove_var
-        // are unsafe on rust 2024 / recent stable (mutating process env
-        // without ordering guarantees); the test is single-threaded so
-        // the contract holds.
-        // SAFETY: single test thread; no other thread reads STUB_COUNTER.
+        // Serialize STUB_COUNTER mutation across tests in the same
+        // binary — the sibling `..._unrelated_failure_windows` test
+        // also mutates this env var; two tests running in parallel
+        // race the set/remove pair and the spawned stub then sees
+        // either the wrong path or NotPresent.
+        let _g = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex above; pair set / remove.
         unsafe { std::env::set_var("STUB_COUNTER", counter.display().to_string()) };
         let result = run_cargo_publish_with_retry(
             &cmd,
@@ -2292,7 +2296,7 @@ fn main() {
             std::time::Duration::from_millis(1),
         )
         .expect("retry harness must succeed after propagation lag");
-        // SAFETY: single test thread; pair with the set above.
+        // SAFETY: serialised by env_mutex above; pair with set.
         unsafe { std::env::remove_var("STUB_COUNTER") };
         assert!(result.status.success(), "final attempt must succeed");
 
@@ -2351,7 +2355,13 @@ fn main() {
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
         );
-        // SAFETY: single test thread; no other thread reads STUB_COUNTER.
+        // Serialize STUB_COUNTER mutation — see the sibling
+        // `..._recovers_from_propagation_lag_windows` test for the
+        // race this guards against.
+        let _g = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex above; pair set / remove.
         unsafe { std::env::set_var("STUB_COUNTER", counter.display().to_string()) };
         let err = run_cargo_publish_with_retry(
             &cmd,
@@ -2360,7 +2370,7 @@ fn main() {
             std::time::Duration::from_millis(1),
         )
         .expect_err("non-propagation failure must surface");
-        // SAFETY: single test thread; pair with the set above.
+        // SAFETY: serialised by env_mutex above; pair with set.
         unsafe { std::env::remove_var("STUB_COUNTER") };
         let chain = format!("{err:#}");
         assert!(
