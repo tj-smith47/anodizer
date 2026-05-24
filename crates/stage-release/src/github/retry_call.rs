@@ -202,19 +202,10 @@ mod tests {
     //! single raw `get` call so the helper's retry + classifier behaviour is
     //! verified end-to-end with a real `octocrab::Error` instead of a mock.
     use super::*;
+    use crate::test_support::build_test_octocrab;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-    use std::net::SocketAddr;
     use std::sync::atomic::Ordering;
     use std::time::Duration;
-
-    fn build_test_octocrab(addr: SocketAddr) -> octocrab::Octocrab {
-        let builder = octocrab::OctocrabBuilder::new()
-            .base_uri(format!("http://{addr}/"))
-            .expect("OctocrabBuilder::base_uri accepts loopback URL");
-        builder
-            .build()
-            .expect("OctocrabBuilder::build succeeds on loopback URL")
-    }
 
     #[tokio::test]
     async fn retries_5xx_then_succeeds() {

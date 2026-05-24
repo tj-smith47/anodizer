@@ -21,6 +21,9 @@ mod release_body;
 mod run;
 
 #[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
 mod tests;
 
 // ---------------------------------------------------------------------------

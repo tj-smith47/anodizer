@@ -22,6 +22,7 @@
 //!   (consolidates ~11 inline copies; fixes the v0.3.0 chocolatey /
 //!   v0.3.0 github-rate-limit CI flakes)
 
+pub mod env;
 pub mod responder;
 
 use crate::config::{Config, CrateConfig, Defaults, SignConfig, UpxConfig, WorkspaceConfig};

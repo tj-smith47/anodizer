@@ -609,7 +609,9 @@ mod tests {
         // Serialize env mutation; cargo test runs tests in parallel
         // within a single binary, and SOURCE_DATE_EPOCH is read by other
         // code paths (e.g. populate_time_vars in core).
-        let _g = sde_env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let _g = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // SAFETY: single-threaded section, guarded by the mutex above.
         unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
 
@@ -622,12 +624,6 @@ mod tests {
         );
 
         unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
-    }
-
-    fn sde_env_mutex() -> &'static std::sync::Mutex<()> {
-        use std::sync::{Mutex, OnceLock};
-        static M: OnceLock<Mutex<()>> = OnceLock::new();
-        M.get_or_init(|| Mutex::new(()))
     }
 
     #[test]

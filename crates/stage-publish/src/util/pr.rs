@@ -468,17 +468,54 @@ pub(crate) fn maybe_submit_pr(
     };
 
     // PR creation: try gh CLI first, fall back to GitHub API.
-    if gh_is_available() {
-        create_pr_via_gh_cli(repo_path, &upstream_slug, &spec, label, log)
-    } else if let Some(ref tok) = token {
-        create_pr_via_api(&upstream, &spec, tok, label, log)
+    match classify_pr_transport(gh_is_available(), token.is_some()) {
+        PrTransport::GhCli => create_pr_via_gh_cli(repo_path, &upstream_slug, &spec, label, log),
+        PrTransport::Api => {
+            let tok = token
+                .as_deref()
+                .expect("classified Api implies token present");
+            create_pr_via_api(&upstream, &spec, tok, label, log)
+        }
+        PrTransport::NoneAvailable => {
+            let msg = format!(
+                "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
+            );
+            log.warn(&msg);
+            // Silent-fail (returning None here) would let dispatch
+            // record Succeeded for a publisher that did no work.
+            Some(PublisherOutcome::Failed(msg))
+        }
+    }
+}
+
+/// Which transport `maybe_submit_pr` / `submit_pr_via_gh_with_opts`
+/// should dispatch to, given the runtime availability of `gh` and a
+/// GitHub token. Pure data so unit tests can pin the decision without
+/// touching the process env or PATH.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PrTransport {
+    /// `gh` CLI is on PATH; prefer it because it can force-push to
+    /// update an existing PR's branch (the API transport cannot).
+    GhCli,
+    /// `gh` is missing but a token resolved — fall back to the
+    /// GitHub REST API.
+    Api,
+    /// Neither `gh` nor a token is available. Callers must surface
+    /// `PublisherOutcome::Failed` here; returning `None` silently
+    /// would let dispatch record `Succeeded` for a publisher that
+    /// did no work.
+    NoneAvailable,
+}
+
+/// Pure classifier for the PR-transport decision. Extracted so the
+/// `gh`/token preference is unit-testable without env-mutation.
+pub(crate) fn classify_pr_transport(gh_available: bool, token_present: bool) -> PrTransport {
+    if gh_available {
+        PrTransport::GhCli
+    } else if token_present {
+        PrTransport::Api
     } else {
-        let msg = format!(
-            "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
-        );
-        log.warn(&msg);
-        // Silent-fail = dispatch records Succeeded (v0.3.0 lie shape).
-        Some(PublisherOutcome::Failed(msg))
+        PrTransport::NoneAvailable
     }
 }
 
@@ -544,32 +581,70 @@ pub(crate) fn submit_pr_via_gh_with_opts(
         update_existing_pr: opts.update_existing_pr,
     };
 
-    if gh_is_available() {
-        create_pr_via_gh_cli(repo_path, upstream_repo, &spec, label, log)
-    } else if let Some(ref tok) = token {
-        if let Some((owner, name)) = upstream_repo.split_once('/') {
-            let upstream = Upstream { owner, name };
-            create_pr_via_api(&upstream, &spec, tok, label, log)
-        } else {
+    match classify_pr_transport(gh_is_available(), token.is_some()) {
+        PrTransport::GhCli => create_pr_via_gh_cli(repo_path, upstream_repo, &spec, label, log),
+        PrTransport::Api => {
+            let tok = token
+                .as_deref()
+                .expect("classified Api implies token present");
+            if let Some((owner, name)) = upstream_repo.split_once('/') {
+                let upstream = Upstream { owner, name };
+                create_pr_via_api(&upstream, &spec, tok, label, log)
+            } else {
+                let msg = format!(
+                    "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"
+                );
+                log.warn(&msg);
+                Some(PublisherOutcome::Failed(msg))
+            }
+        }
+        PrTransport::NoneAvailable => {
             let msg = format!(
-                "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"
+                "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
             );
             log.warn(&msg);
+            // Silent-fail (returning None here) would let dispatch
+            // record Succeeded for a publisher that did no work.
             Some(PublisherOutcome::Failed(msg))
         }
-    } else {
-        let msg = format!(
-            "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
-        );
-        log.warn(&msg);
-        // Silent-fail = dispatch records Succeeded (v0.3.0 lie shape).
-        Some(PublisherOutcome::Failed(msg))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::{PrTransport, classify_pr_transport};
     use anodizer_core::config::{HomebrewCaskConfig, KrewConfig, StringOrBool, WingetConfig};
+
+    /// gh on PATH wins regardless of whether a token is also present —
+    /// gh can force-push to update an existing PR's branch, the API
+    /// transport cannot.
+    #[test]
+    fn classify_pr_transport_prefers_gh_when_available() {
+        assert_eq!(classify_pr_transport(true, false), PrTransport::GhCli);
+        assert_eq!(classify_pr_transport(true, true), PrTransport::GhCli);
+    }
+
+    /// gh missing + token present → API fallback. This is the
+    /// production path on CI runners that have GITHUB_TOKEN injected
+    /// but no gh binary on PATH.
+    #[test]
+    fn classify_pr_transport_falls_back_to_api_when_gh_absent_and_token_present() {
+        assert_eq!(classify_pr_transport(false, true), PrTransport::Api);
+    }
+
+    /// Neither available → NoneAvailable. The caller MUST map this to
+    /// PublisherOutcome::Failed; returning None would let dispatch
+    /// record Succeeded for a publisher that did no work. Pins the
+    /// silent-skip contract fix at the decision-logic boundary.
+    #[test]
+    fn classify_pr_transport_neither_available_returns_none_available() {
+        assert_eq!(
+            classify_pr_transport(false, false),
+            PrTransport::NoneAvailable,
+            "callers map NoneAvailable -> PublisherOutcome::Failed; \
+             returning None here would silently report Succeeded"
+        );
+    }
 
     /// Config field roundtrip: `update_existing_pr` on WingetConfig survives serde.
     #[test]
