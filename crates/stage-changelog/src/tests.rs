@@ -547,6 +547,53 @@ fn test_abbrev_longer_than_hash_uses_full_hash() {
     assert!(md.contains("abc short"), "expected 'abc short' in: {}", md);
 }
 
+/// `abbrev: N` must truncate the 40-char `full_hash` (`%H`), not the
+/// 7-char `hash` (`%h`) — otherwise any abbrev > 7 silently returns
+/// the 7-char short_hash.
+#[test]
+fn test_abbrev_truncates_full_hash_not_short_hash() {
+    let mut ci_long = ci(
+        "feat: long-sha test",
+        "feat",
+        "long-sha test",
+        "abc1234", // simulates the 7-char `%h` short_hash
+    );
+    // `full_hash` carries the 40-char `%H` value; render must read it
+    // rather than the short `hash` field for abbrev > 7.
+    ci_long.full_hash = "abc1234567890123456789012345678901234567".into();
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![ci_long],
+        subgroups: Vec::new(),
+    }];
+    // abbrev=12 must yield 12 chars (`abc123456789`), not a 7-char
+    // fallback (`abc1234`).
+    let md = render_changelog(&grouped, 12, None, "", "git", None, None);
+    assert!(
+        md.contains("abc123456789 long-sha test"),
+        "abbrev=12 must yield 12-char SHA via full_hash; got:\n{md}"
+    );
+    assert!(
+        !md.contains("abc1234 long-sha"),
+        "abbrev=12 must NOT fall back to the 7-char short_hash; got:\n{md}"
+    );
+}
+
+/// Empty `full_hash` (e.g. a fallback CommitInfo with no SHA available)
+/// must not panic when `abbrev > 0` byte-slices into it.
+#[test]
+fn test_abbrev_handles_empty_full_hash_without_panic() {
+    let mut ci_empty = ci("feat: empty-sha test", "feat", "empty-sha test", "");
+    ci_empty.full_hash = String::new();
+    let grouped = vec![GroupedCommits {
+        title: String::new(),
+        commits: vec![ci_empty],
+        subgroups: Vec::new(),
+    }];
+    // Must not panic — render returns empty SHA segment cleanly.
+    let _md = render_changelog(&grouped, 12, None, "", "git", None, None);
+}
+
 #[test]
 fn test_abbrev_default_is_seven() {
     let grouped = vec![GroupedCommits {

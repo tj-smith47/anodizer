@@ -204,12 +204,22 @@ fn render_commit_line(
         // abbrev 0 means full SHA (no truncation).
         commit.full_hash.clone()
     } else {
+        // Truncate the 40-char `full_hash`. `commit.hash` is already
+        // git's `%h` short form (~7 chars) and so cannot honor any
+        // abbrev > ~7 without falling back to a shorter value than
+        // the user requested. abbrev: 12 (a common config) must yield
+        // a 12-char SHA, not a silent 7-char one.
+        //
+        // `get(..a)` is byte-bounds-safe — a panicking `[..a]` slice
+        // would otherwise blow up the github-native fallback path
+        // (`info.full_hash = sha.to_string()` is set only when a SHA
+        // is present; an empty default stays `""` from Default).
         let a = abbrev as usize;
-        if commit.hash.len() > a {
-            commit.hash[..a].to_string()
-        } else {
-            commit.hash.clone()
-        }
+        commit
+            .full_hash
+            .get(..a)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| commit.full_hash.clone())
     };
     let mut vars = TemplateVars::new();
     // SHA respects the `abbrev` config.

@@ -274,6 +274,13 @@ impl NfpmDebConfig {
             && self.signature.is_none()
             && self.fields.is_none()
             && self.scripts.is_none()
+            // `arch_variant` belongs in the emptiness check: when a user
+            // sets only `arch_variant: v3` on the deb block, the omission
+            // path below would treat the whole `deb:` map as empty and
+            // silently drop the variant — losing the microarch the nfpm
+            // packager needs to tag the .deb (`amd64_v3` vs plain
+            // `amd64`).
+            && self.arch_variant.is_none()
     }
 }
 
@@ -393,6 +400,33 @@ pub struct NfpmIpkAlternative {
     pub target: Option<String>,
     /// Symlink name in the alternatives directory.
     pub link_name: Option<String>,
+}
+
+#[cfg(test)]
+mod is_empty_tests {
+    use super::*;
+
+    /// `arch_variant` is the load-bearing single field that, when set
+    /// in isolation, must keep the deb block alive — otherwise the
+    /// "drop empty blocks" path silently dropped microarch tagging
+    /// (`amd64_v3` collapsing to plain `amd64`).
+    #[test]
+    fn deb_arch_variant_alone_is_not_empty() {
+        let cfg = NfpmDebConfig {
+            arch_variant: Some("v3".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            !cfg.is_empty(),
+            "deb block with only arch_variant must NOT be dropped"
+        );
+    }
+
+    /// Sanity: a fully empty deb block IS empty.
+    #[test]
+    fn deb_default_is_empty() {
+        assert!(NfpmDebConfig::default().is_empty());
+    }
 }
 
 /// Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM

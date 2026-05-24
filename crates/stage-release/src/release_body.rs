@@ -113,7 +113,13 @@ pub(crate) fn collect_extra_files(
                     format!("release: invalid extra_files glob pattern '{}'", pattern)
                 })?;
                 let before = results.len();
-                for entry in entries.flatten() {
+                for entry in entries {
+                    let entry = entry.with_context(|| {
+                        format!(
+                            "release: extra_files glob '{}': IO error iterating matches",
+                            pattern
+                        )
+                    })?;
                     if entry.is_file() {
                         results.push((entry, None));
                     }
@@ -131,18 +137,38 @@ pub(crate) fn collect_extra_files(
                     format!("release: invalid extra_files glob pattern '{}'", pattern)
                 })?;
                 let before = results.len();
-                for entry in entries.flatten() {
+                for entry in entries {
+                    let entry = entry.with_context(|| {
+                        format!(
+                            "release: extra_files glob '{}': IO error iterating matches",
+                            pattern
+                        )
+                    })?;
                     if entry.is_file() {
-                        let name = name_template.as_ref().and_then(|tmpl| {
-                            let filename = entry.file_name().unwrap_or_default().to_string_lossy();
-                            let mut vars = ctx.template_vars().clone();
-                            vars.set("ArtifactName", &filename);
-                            vars.set(
-                                "ArtifactExt",
-                                anodizer_core::template::extract_artifact_ext(&filename),
-                            );
-                            anodizer_core::template::render(tmpl, &vars).ok()
-                        });
+                        let name = match name_template.as_ref() {
+                            Some(tmpl) => {
+                                let filename =
+                                    entry.file_name().unwrap_or_default().to_string_lossy();
+                                let mut vars = ctx.template_vars().clone();
+                                vars.set("ArtifactName", &filename);
+                                vars.set(
+                                    "ArtifactExt",
+                                    anodizer_core::template::extract_artifact_ext(&filename),
+                                );
+                                Some(
+                                    anodizer_core::template::render(tmpl, &vars).with_context(
+                                        || {
+                                            format!(
+                                            "release: render extra_files name_template '{}' for '{}'",
+                                            tmpl,
+                                            entry.display()
+                                        )
+                                        },
+                                    )?,
+                                )
+                            }
+                            None => None,
+                        };
                         results.push((entry, name));
                     }
                 }

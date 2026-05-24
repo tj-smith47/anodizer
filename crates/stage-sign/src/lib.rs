@@ -281,18 +281,20 @@ impl Stage for DockerSignStage {
                     let resolved =
                         resolve_sign_args(&args, image_str.as_ref(), &signature_str, None);
 
+                    // Propagate template render errors instead of silently
+                    // falling back to the unrendered template string —
+                    // passing a literal `{{ Artifact }}` to `cosign sign`
+                    // would sign the wrong reference (or fail opaquely).
+                    // Sibling `binary-sign` / `sign` path (process.rs) uses
+                    // the same `?`-propagation shape.
                     let fully_resolved: Vec<String> = resolved
                         .iter()
                         .map(|arg| {
-                            ctx.render_template(arg).unwrap_or_else(|e| {
-                                log.warn(&format!(
-                                    "failed to render docker-sign arg '{}': {}, using raw value",
-                                    arg, e
-                                ));
-                                arg.clone()
+                            ctx.render_template(arg).with_context(|| {
+                                format!("docker-sign [{}]: render arg '{}'", sign_id, arg)
                             })
                         })
-                        .collect();
+                        .collect::<Result<Vec<_>>>()?;
 
                     if ctx.is_dry_run() {
                         log.status(&format!(

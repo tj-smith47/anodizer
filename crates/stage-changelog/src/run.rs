@@ -164,11 +164,30 @@ impl Stage for super::ChangelogStage {
                 .collect();
 
             let mut combined = String::new();
+            // Tracks whether at least one per-crate body came from the
+            // real GitHub generate-notes API (vs. all empty placeholders
+            // because every crate lacked `release.github`). Used below
+            // to set `github_native_changelog` accurately — the flag
+            // signals "body provenance is GitHub" to downstream
+            // consumers, so it must not be set when every body is empty.
+            let mut any_github_body = false;
             for crate_cfg in &crates {
                 let github_cfg = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref());
                 let Some(repo) = github_cfg else {
-                    log.status(&format!(
-                        "github-native: crate '{}' has no release.github config — skipping",
+                    // Warn (not status) so a missing `release.github` on
+                    // a crate that should have one is visible in CI
+                    // output instead of buried in info-level logs.
+                    // Legitimate skip case: monorepos where only the
+                    // top-level CLI crate publishes a GitHub release
+                    // and the library crates are cargo-only — those
+                    // also produce an empty body here, but they have no
+                    // GitHub release to attach it to, so the empty body
+                    // never reaches a user.
+                    log.warn(&format!(
+                        "changelog: use=github-native but crate '{}' has no release.github \
+                         config — skipping (no GitHub release body will be generated for \
+                         this crate; if it should have a release, add release.github.owner \
+                         and release.github.name)",
                         crate_cfg.name
                     ));
                     ctx.stage_outputs
@@ -218,15 +237,25 @@ impl Stage for super::ChangelogStage {
                     .changelogs
                     .insert(crate_cfg.name.clone(), body.clone());
                 combined.push_str(&body);
+                // Provenance flag: in real runs, only true when the API
+                // returned a non-empty body — generate-notes returns 2xx
+                // with empty content when no PRs/commits sit between
+                // the two tags, and downstream consumers reading the
+                // flag as "real release notes were sourced" should not
+                // be misled. In dry-run/snapshot, the body is always
+                // empty (no API call); still flip the flag to convey
+                // intended provenance to downstream stages.
+                if dry_run_or_snapshot || !body.trim().is_empty() {
+                    any_github_body = true;
+                }
             }
 
-            // The `github_native_changelog` flag now represents only "the
-            // changelog body was sourced from GitHub's generate-notes API"
-            // — release_body.rs no longer toggles
-            // `generate_release_notes: true` on the create-release POST
-            // (which is what diverged from GR), but downstream consumers
-            // may still want to know the provenance.
-            ctx.stage_outputs.github_native_changelog = true;
+            // Provenance flag: "the changelog body was sourced from
+            // GitHub's generate-notes API." Set per the
+            // `any_github_body` accumulator above so a configuration
+            // where every per-crate body skipped (missing
+            // `release.github`) doesn't lie about provenance.
+            ctx.stage_outputs.github_native_changelog = any_github_body;
 
             // Wrap with header / footer to match GR's
             // `changelog.go::Run`: header / generated-body / footer joined

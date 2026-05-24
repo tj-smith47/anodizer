@@ -246,6 +246,24 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 let src = Path::new(&entry.src);
                 let do_strip = entry.strip_parent.unwrap_or(false);
 
+                // Mirror the zip-branch behavior: missing extras
+                // hard-fail under strict mode, warn-and-skip otherwise.
+                // Without this guard the `std::fs::File::open` below
+                // hard-fails the tar archive regardless of strict mode
+                // — a referenced file that moves between releases
+                // (CHANGELOG.md renamed, docs reorganized) would kill
+                // the source stage instead of degrading gracefully.
+                if !src.exists() {
+                    if strict {
+                        bail!("source: extra file '{}' not found (strict mode)", entry.src);
+                    }
+                    log.warn(&format!(
+                        "source: extra file '{}' not found, skipping",
+                        entry.src
+                    ));
+                    continue;
+                }
+
                 // Compute destination name inside the prefix.
                 // GoReleaser archivefiles.go:126 — when Destination is empty,
                 // the full (relative) path is used; strip_parent reduces to

@@ -674,6 +674,11 @@ pub(crate) fn run_github_backend(
                 let tag_c = tag_for_upload.clone();
                 let token_for_rate_limit = token_str.clone();
                 let retry_after_for_upload = retry_after_capture.clone();
+                // `policy` is `Copy`; the spawned async move borrows it
+                // implicitly into the future. Bind a fresh copy per
+                // iteration so the for-loop body still owns `policy`
+                // for the next iteration.
+                let policy_for_upload = policy;
 
                 join_set.spawn(async move {
                     let _permit = sem
@@ -691,6 +696,8 @@ pub(crate) fn run_github_backend(
                             &gh_name,
                             release_id_raw,
                             &file_name,
+                            &policy_for_upload,
+                            Some(&retry_after_for_upload),
                         )
                         .await
                         .with_context(|| {
@@ -794,6 +801,8 @@ pub(crate) fn run_github_backend(
                                         &gh_name,
                                         release_id_raw,
                                         &file_name,
+                                        &policy_for_upload,
+                                        Some(&retry_after_for_upload),
                                     )
                                     .await
                                     .with_context(|| {
@@ -854,6 +863,8 @@ pub(crate) fn run_github_backend(
                                         &gh_name,
                                         release_id_raw,
                                         &file_name,
+                                        &policy_for_upload,
+                                        Some(&retry_after_for_upload),
                                     )
                                     .await
                                     {

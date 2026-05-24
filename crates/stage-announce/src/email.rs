@@ -83,8 +83,12 @@ pub fn send_smtp(
     let port = smtp.port;
     let encryption = resolve_encryption(smtp.encryption, port);
 
+    // `resolve_encryption` collapses `Auto` to `Tls`/`Starttls`/`None`
+    // based on the configured port, so `encryption` can never be `Auto`
+    // past this point. Match exhaustively against the resolved variants
+    // and treat `Auto` as a logic bug if it reaches either match.
     let mut transport_builder = match encryption {
-        EmailEncryption::Tls | EmailEncryption::Auto => SmtpTransport::relay(smtp.host)
+        EmailEncryption::Tls => SmtpTransport::relay(smtp.host)
             .context(format!(
                 "failed to create SMTPS transport for {}",
                 smtp.host
@@ -98,6 +102,9 @@ pub fn send_smtp(
         EmailEncryption::None => SmtpTransport::builder_dangerous(smtp.host)
             .port(port)
             .credentials(creds),
+        EmailEncryption::Auto => {
+            unreachable!("Auto resolved to Tls/Starttls/None by resolve_encryption above")
+        }
     };
 
     if smtp.insecure_skip_verify && !matches!(encryption, EmailEncryption::None) {
@@ -105,7 +112,21 @@ pub fn send_smtp(
             .dangerous_accept_invalid_certs(true)
             .build()
             .context("failed to build TLS parameters")?;
-        transport_builder = transport_builder.tls(Tls::Required(tls));
+        // SMTPS (port 465, `encryption: tls`) requires implicit-TLS via
+        // `Tls::Wrapper`. `Tls::Required` is STARTTLS upgrade — passing
+        // it to a transport built with `SmtpTransport::relay` would
+        // switch SMTPS to STARTTLS on a TLS-only port and break the
+        // connection. STARTTLS keeps `Tls::Required` since the transport
+        // was built with `starttls_relay`.
+        let mode = match encryption {
+            EmailEncryption::Tls => Tls::Wrapper(tls),
+            EmailEncryption::Starttls => Tls::Required(tls),
+            EmailEncryption::None => unreachable!("None branch guarded above"),
+            EmailEncryption::Auto => {
+                unreachable!("Auto resolved by resolve_encryption above")
+            }
+        };
+        transport_builder = transport_builder.tls(mode);
     }
     let transport = transport_builder.build();
 

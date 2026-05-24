@@ -412,22 +412,32 @@ impl Stage for NfpmStage {
                             render_in_place(&mut scripts.preremove, ctx)?;
                             render_in_place(&mut scripts.postremove, ctx)?;
                         }
-                        // Template-render signature key_file and key_name
+                        // Template-render signature key_file, key_name, AND
+                        // key_passphrase. Skipping key_passphrase here would
+                        // leave a literal `{{ .Env.X }}` reaching nfpm as
+                        // the passphrase, which silently fails to unlock
+                        // the key — the operator's release dies with a
+                        // confusing "wrong passphrase" or "bad signature"
+                        // surfaced from rpmsign / dpkg-sig rather than the
+                        // real "unrendered template" cause.
                         if let Some(ref mut deb) = rendered_cfg.deb
                             && let Some(ref mut sig) = deb.signature
                         {
                             render_in_place(&mut sig.key_file, ctx)?;
+                            render_in_place(&mut sig.key_passphrase, ctx)?;
                         }
                         if let Some(ref mut rpm) = rendered_cfg.rpm
                             && let Some(ref mut sig) = rpm.signature
                         {
                             render_in_place(&mut sig.key_file, ctx)?;
+                            render_in_place(&mut sig.key_passphrase, ctx)?;
                         }
                         if let Some(ref mut apk) = rendered_cfg.apk
                             && let Some(ref mut sig) = apk.signature
                         {
                             render_in_place(&mut sig.key_file, ctx)?;
                             render_in_place(&mut sig.key_name, ctx)?;
+                            render_in_place(&mut sig.key_passphrase, ctx)?;
                         }
                         // Template-render libdirs
                         if let Some(ref mut libdirs) = rendered_cfg.libdirs {
