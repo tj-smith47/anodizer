@@ -488,40 +488,227 @@ fn run_cargo_publish_with_retry(
 // publish_to_cargo
 // ---------------------------------------------------------------------------
 
-/// Read the `version = "X.Y.Z"` from a crate's Cargo.toml.
-/// Uses a simple line scan rather than a full TOML parse to avoid
-/// pulling in the `toml` crate as a dep of stage-publish.
-fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
-    let manifest = std::path::Path::new(crate_path).join("Cargo.toml");
-    let content = std::fs::read_to_string(&manifest).ok()?;
-    // Look for `version = "..."` in the [package] section (before any
-    // other `[section]` header). This covers both quoted and workspace
-    // forms; workspace references (version.workspace = true) return None
-    // since they don't have a literal version string.
-    let mut in_package = false;
+/// Whether a `[<section>]` Cargo.toml block contains a literal
+/// `version = "..."` or a `version.workspace = true` reference.
+#[derive(Debug, PartialEq, Eq)]
+enum CargoVersionRef {
+    /// `version = "X.Y.Z"` — literal version, return as-is.
+    Literal(String),
+    /// `version.workspace = true` or `version = { workspace = true }` —
+    /// walk up to the workspace root and resolve via `[workspace.package]`.
+    Workspace,
+    /// No version field in the section.
+    None,
+}
+
+/// Scan a Cargo.toml body for the named section's `version` field.
+/// `section_header` is e.g. `"[package]"` or `"[workspace.package]"`.
+///
+/// Terminates the in-section scan only when the next `[header]` is a
+/// SIBLING (not a sub-table of the same logical block). For example,
+/// inside `[workspace.package]` the scan continues past
+/// `[workspace.package.metadata.X]` because that's a child of the
+/// logical block, but stops at `[workspace.dependencies]` because
+/// that's a sibling section.
+///
+/// Lines that begin with `#` are comment-only and skipped. Trailing
+/// `# comment` text after `version = "X.Y.Z"` is also stripped before
+/// parsing the literal — otherwise the value would include the
+/// remainder of the line.
+fn scan_section_version(content: &str, section_header: &str) -> CargoVersionRef {
+    // The section-prefix is `[section_header[..-1] + '.'` — any header
+    // starting with this is a sub-table of the same logical block and
+    // does not end the scan.
+    let sub_prefix = {
+        let trimmed = section_header
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .unwrap_or(section_header);
+        format!("[{trimmed}.")
+    };
+    let mut in_section = false;
     for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed == "[package]" {
-            in_package = true;
+        let trimmed_full = line.trim();
+        // Strip whole-line `#` comments. (Inline `# ...` after a value
+        // is handled per-value below to keep the literal-parse honest.)
+        if trimmed_full.starts_with('#') {
+            continue;
+        }
+        let trimmed = trimmed_full;
+        if trimmed == section_header {
+            in_section = true;
             continue;
         }
         if trimmed.starts_with('[') {
+            if in_section && !trimmed.starts_with(&sub_prefix) {
+                return CargoVersionRef::None;
+            }
+            // Outside the target section, OR a sub-table of it: skip
+            // the header line and keep scanning.
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        // `version.workspace = true` — but only when followed by a key
+        // boundary char so `versioned-foo` / `versions` / `version-spec`
+        // don't get accidentally classified as workspace inherits.
+        if let Some(rest) = strip_key_prefix(trimmed, "version.workspace") {
+            let rest = rest.trim_start().strip_prefix('=').unwrap_or("").trim();
+            if rest.starts_with("true") {
+                return CargoVersionRef::Workspace;
+            }
+        }
+        // `version = "X.Y.Z"` (literal) or `version = { workspace = true }`
+        // (inline-table form). Same key-boundary check.
+        if let Some(rest) = strip_key_prefix(trimmed, "version") {
+            let rest = rest.trim_start().strip_prefix('=').unwrap_or("").trim();
+            // Literal: take the substring between the first and second `"`
+            // so a trailing `# comment` doesn't bleed into the version.
+            if let Some(after) = rest.strip_prefix('"')
+                && let Some(end) = after.find('"')
+            {
+                return CargoVersionRef::Literal(after[..end].to_string());
+            }
+            if rest.starts_with('{')
+                && rest
+                    .trim_start_matches('{')
+                    .trim_end_matches('}')
+                    .split(',')
+                    .any(|kv| kv.trim().starts_with("workspace") && kv.contains("true"))
+            {
+                return CargoVersionRef::Workspace;
+            }
+        }
+    }
+    CargoVersionRef::None
+}
+
+/// `s.strip_prefix(key)` plus a key-boundary check so `version`
+/// doesn't match `versioned` / `versions` / `version-spec`. After the
+/// prefix the next char must be whitespace, `=`, or `.` (for
+/// `version.workspace`). Returns the post-prefix remainder when the
+/// boundary holds, else `None`.
+fn strip_key_prefix<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let rest = line.strip_prefix(key)?;
+    match rest.chars().next() {
+        // EOL after the key alone (`version`) is not a valid key=value
+        // line; reject so callers don't compute an empty `rest`.
+        None => None,
+        Some(c) if c.is_whitespace() || c == '=' || c == '.' => Some(rest),
+        _ => None,
+    }
+}
+
+/// Walk parent directories from `start` looking for a Cargo.toml that
+/// contains a real `[workspace]` (or exactly `[workspace.package]`)
+/// section header. Returns the path to that workspace root manifest.
+/// Walks at most 12 levels to bound runtime.
+///
+/// The header check is anchored to the exact strings — `starts_with`
+/// would falsely accept a leaf-crate manifest that contains only a
+/// sub-table like `[workspace.package.metadata.docs.rs]` (some crates
+/// declare these for workspace-inherited metadata without being a
+/// workspace root themselves).
+fn find_workspace_root_manifest(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    let start_abs = std::fs::canonicalize(start).ok().unwrap_or(start.into());
+    let mut dir: &std::path::Path = start_abs.as_ref();
+    for _ in 0..12 {
+        let candidate = dir.join("Cargo.toml");
+        if candidate.is_file()
+            && let Ok(content) = std::fs::read_to_string(&candidate)
+            && content.lines().any(|l| {
+                let t = l.trim();
+                t == "[workspace]" || t == "[workspace.package]"
+            })
+        {
+            return Some(candidate);
+        }
+        dir = match dir.parent() {
+            Some(p) => p,
+            None => break,
+        };
+    }
+    None
+}
+
+/// Read the `[package].name` literal from a crate's Cargo.toml. Returns
+/// `None` when the manifest is missing, unreadable, or the name field
+/// is absent / template-derived (the simple line scan can only resolve
+/// quoted literals).
+///
+/// Used by the rollback path so the registry/index lookup also tolerates
+/// configs where `CrateConfig.name` differs from the published
+/// `[package].name` — without this, the yank command would target the
+/// default registry (crates.io) for the mismatched crate, leaving the
+/// real registry with a live package.
+fn read_cargo_toml_name(crate_path: &str) -> Option<String> {
+    let manifest = std::path::Path::new(crate_path).join("Cargo.toml");
+    let content = std::fs::read_to_string(&manifest).ok()?;
+    let mut in_package = false;
+    for line in content.lines() {
+        let trimmed_full = line.trim();
+        if trimmed_full.starts_with('#') {
+            continue;
+        }
+        if trimmed_full == "[package]" {
+            in_package = true;
+            continue;
+        }
+        if trimmed_full.starts_with('[') {
             if in_package {
                 break;
             }
             continue;
         }
-        if in_package && let Some(rest) = trimmed.strip_prefix("version") {
-            let rest = rest.trim_start();
-            if let Some(rest) = rest.strip_prefix('=') {
-                let rest = rest.trim();
-                if rest.starts_with('"') {
-                    return rest.trim_matches('"').to_string().into();
-                }
+        if in_package && let Some(rest) = strip_key_prefix(trimmed_full, "name") {
+            let rest = rest.trim_start().strip_prefix('=').unwrap_or("").trim();
+            if let Some(after) = rest.strip_prefix('"')
+                && let Some(end) = after.find('"')
+            {
+                return Some(after[..end].to_string());
             }
         }
     }
     None
+}
+
+/// Read the published version for a crate at `crate_path`.
+///
+/// Resolves three Cargo.toml shapes:
+/// - `version = "X.Y.Z"` in `[package]` → returns `Some("X.Y.Z")`.
+/// - `version.workspace = true` (or `version = { workspace = true }`)
+///   → walks parent dirs for a Cargo.toml with `[workspace]`, reads
+///   `[workspace.package].version`, returns that.
+/// - No version anywhere → `None`.
+///
+/// The workspace-inheritance branch is load-bearing for multi-cadence
+/// workspaces (one crate at v0.2.x while siblings are at v0.3.x).
+/// Falling back to the release-context version in that case would
+/// poll the wrong version on the crates.io index → either a timeout
+/// or a false confirmation.
+fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
+    let manifest = std::path::Path::new(crate_path).join("Cargo.toml");
+    let content = std::fs::read_to_string(&manifest).ok()?;
+    match scan_section_version(&content, "[package]") {
+        CargoVersionRef::Literal(v) => Some(v),
+        CargoVersionRef::None => None,
+        CargoVersionRef::Workspace => {
+            // Walk up from the crate's directory to find the workspace
+            // root Cargo.toml. `crate_path` is typically a relative path
+            // from the repo root (e.g. `crates/core`), so `.parent()` of
+            // its Cargo.toml gives the crate dir; walking up from there
+            // finds the workspace manifest.
+            let ws_manifest = find_workspace_root_manifest(
+                manifest.parent().unwrap_or(std::path::Path::new(".")),
+            )?;
+            let ws_content = std::fs::read_to_string(&ws_manifest).ok()?;
+            match scan_section_version(&ws_content, "[workspace.package]") {
+                CargoVersionRef::Literal(v) => Some(v),
+                _ => None,
+            }
+        }
+    }
 }
 
 pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogger) -> Result<()> {
@@ -872,6 +1059,42 @@ impl anodizer_core::Publisher for CargoPublisher {
         }
         let mut yanked = 0usize;
         let mut failed = 0usize;
+        // Pre-resolve per-crate registry/index so the yank command targets
+        // the same registry the publish path used. Unconditionally yanking
+        // from crates.io (`cargo yank` with no flags) was wrong for any
+        // crate published with `publish.cargo.registry: <name>` or
+        // `publish.cargo.index: <url>` — the wrong registry got the yank
+        // request, leaving the real one with a live package.
+        //
+        // Keyed under BOTH the CrateConfig name AND the Cargo.toml
+        // `[package].name`. The .crate filename carries the latter, but
+        // a config that uses `name: "foo"` for a crate whose
+        // `[package].name = "foo-rs"` would otherwise miss the lookup
+        // and yank from crates.io by default — silently routing the
+        // yank to the wrong registry. Same-key collisions are fine
+        // because they map to the same registry tuple.
+        let all_crates = crate::util::all_crates(ctx);
+        let mut registry_for: std::collections::HashMap<String, (Option<String>, Option<String>)> =
+            std::collections::HashMap::new();
+        for c in &all_crates {
+            let Some(cargo_cfg) = c.publish.as_ref().and_then(|p| p.cargo.as_ref()) else {
+                continue;
+            };
+            let entry = (cargo_cfg.registry.clone(), cargo_cfg.index.clone());
+            registry_for.insert(c.name.clone(), entry.clone());
+            if let Some(pkg_name) = read_cargo_toml_name(&c.path)
+                && pkg_name != c.name
+            {
+                registry_for.insert(pkg_name, entry);
+            }
+        }
+        if ctx.is_dry_run() {
+            log.status(&format!(
+                "(dry-run) would yank {} crate(s) from their configured registries",
+                evidence.artifact_paths.len()
+            ));
+            return Ok(());
+        }
         for path in &evidence.artifact_paths {
             // .crate paths are <name>-<version>.crate; parse name/version.
             // crates.io versions are immutable, so `cargo yank` is the
@@ -879,18 +1102,36 @@ impl anodizer_core::Publisher for CargoPublisher {
             // and any consumer that already resolved against it keeps
             // working. Operators must still bump to recover.
             if let Some((name, version)) = parse_crate_name_version(path) {
-                log.status(&format!("cargo: yank {} {}", name, version));
-                let output = Command::new("cargo")
-                    .args(["yank", "--version", &version, &name])
-                    .output()?;
+                let (registry, index) = registry_for.get(&name).cloned().unwrap_or((None, None));
+                let mut args: Vec<String> = vec![
+                    "yank".into(),
+                    "--version".into(),
+                    version.clone(),
+                    name.clone(),
+                ];
+                if let Some(ref r) = registry {
+                    args.push("--registry".into());
+                    args.push(r.clone());
+                }
+                if let Some(ref idx) = index {
+                    args.push("--index".into());
+                    args.push(idx.clone());
+                }
+                let target = registry
+                    .as_deref()
+                    .or(index.as_deref())
+                    .unwrap_or("crates.io");
+                log.status(&format!("cargo: yank {} {} ({})", name, version, target));
+                let output = Command::new("cargo").args(&args).output()?;
                 if output.status.success() {
                     yanked += 1;
                 } else {
                     failed += 1;
                     log.warn(&format!(
-                        "cargo yank failed for {} {}: {}",
+                        "cargo yank failed for {} {} on {}: {}",
                         name,
                         version,
+                        target,
                         String::from_utf8_lossy(&output.stderr),
                     ));
                 }
@@ -1304,6 +1545,79 @@ mod publisher_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Literal `version = "X.Y.Z"` in [package] is read verbatim.
+    #[test]
+    fn read_cargo_toml_version_literal_in_package() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"foo\"\nversion = \"1.2.3\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_cargo_toml_version(dir.path().to_str().unwrap()),
+            Some("1.2.3".into())
+        );
+    }
+
+    /// `version.workspace = true` resolves via the workspace root's
+    /// `[workspace.package].version`. Without this resolution the
+    /// publish path falls back to the release-context version, which
+    /// is wrong for any multi-cadence workspace.
+    #[test]
+    fn read_cargo_toml_version_workspace_dot_form() {
+        let ws_root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            ws_root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/leaf\"]\n\n[workspace.package]\nversion = \"4.5.6\"\n",
+        )
+        .unwrap();
+        let leaf = ws_root.path().join("crates").join("leaf");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(
+            leaf.join("Cargo.toml"),
+            "[package]\nname = \"leaf\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_cargo_toml_version(leaf.to_str().unwrap()),
+            Some("4.5.6".into())
+        );
+    }
+
+    /// `version = { workspace = true }` (inline-table form) resolves
+    /// the same way as the dotted form.
+    #[test]
+    fn read_cargo_toml_version_workspace_inline_table_form() {
+        let ws_root = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            ws_root.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"leaf\"]\n[workspace.package]\nversion = \"0.9.0\"\n",
+        )
+        .unwrap();
+        let leaf = ws_root.path().join("leaf");
+        std::fs::create_dir_all(&leaf).unwrap();
+        std::fs::write(
+            leaf.join("Cargo.toml"),
+            "[package]\nname = \"leaf\"\nversion = { workspace = true }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_cargo_toml_version(leaf.to_str().unwrap()),
+            Some("0.9.0".into())
+        );
+    }
+
+    /// No version anywhere yields None (publish path falls back to the
+    /// release-context version, preserving prior behavior for
+    /// version-less manifests).
+    #[test]
+    fn read_cargo_toml_version_returns_none_when_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        assert_eq!(read_cargo_toml_version(dir.path().to_str().unwrap()), None);
+    }
 
     #[test]
     fn test_topo_sort_simple() {

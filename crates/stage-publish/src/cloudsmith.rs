@@ -413,19 +413,32 @@ pub(crate) fn publish_to_cloudsmith(
                 anodizer_core::hashing::hex_lower(&hasher.finalize())
             };
 
-            // Pre-check: query Cloudsmith for an existing package with
-            // this filename. If found and md5 matches, skip (idempotent).
-            // If found but md5 differs, bail — we can't fix the mismatch
-            // (the package is immutable on Cloudsmith's side) and silently
-            // re-uploading produces duplicate packages with different hashes.
+            // Pre-check (republish=false only): query Cloudsmith for an
+            // existing package with this filename. If found and md5
+            // matches, skip (idempotent). If found but md5 differs,
+            // bail — we can't fix the mismatch (the package is immutable
+            // on Cloudsmith's side) and silently re-uploading produces
+            // duplicate packages with different hashes.
+            //
+            // The `check_url` / `query` are built unconditionally so the
+            // step-3 409-recovery path below can re-issue the same query
+            // when an upload races against another concurrent CI loop
+            // submitting the same package between pre-check and step-3.
+            let check_url = format!(
+                "{}/packages/{}/{}/",
+                CLOUDSMITH_API_BASE, organization, repository
+            );
+            let check_query = format!("filename:{}", art_name);
             if !republish {
-                let check_url = format!(
-                    "{}/packages/{}/{}/",
-                    CLOUDSMITH_API_BASE, organization, repository
-                );
-                let query = format!("filename:{}", art_name);
                 match check_cloudsmith_package_exists(
-                    &client, &check_url, &query, &token, art_name, &md5_hex, &policy, log,
+                    &client,
+                    &check_url,
+                    &check_query,
+                    &token,
+                    art_name,
+                    &md5_hex,
+                    &policy,
+                    log,
                 )? {
                     CloudsmithPackageState::SkipIdempotent => {
                         log.status(&format!(
@@ -593,14 +606,102 @@ pub(crate) fn publish_to_cloudsmith(
                 package_upload_url, identifier
             ));
             let label = format!("packages/upload/{}", fmt);
-            let (pkg_status, pkg_body) = retry_request(&label, art_name, &policy, log, || {
+            let step3_result = retry_request(&label, art_name, &policy, log, || {
                 client
                     .post(&package_upload_url)
                     .header("Authorization", format!("token {}", token))
                     .header("Accept", "application/json")
                     .json(&package_body)
                     .send()
-            })?;
+            });
+
+            let (pkg_status, pkg_body) = match step3_result {
+                Ok(pair) => pair,
+                Err(err) => {
+                    // Race-recovery: a concurrent CI loop can submit the
+                    // same name+version between our pre-check (or
+                    // first-attempt step-3) and this step-3, returning
+                    // 409/422 here. Without recovery, the upload aborts
+                    // even though the operator's intent — "land this
+                    // artifact on the registry" — was satisfied by the
+                    // racing process. Re-query the remote: if it now
+                    // exists with our md5, treat as idempotent skip; if
+                    // it exists with a different md5, surface the same
+                    // conflict the pre-check would have. Anything else
+                    // (transport failure, 5xx after retries) propagates.
+                    // Walk the anyhow chain to find the upstream HTTP
+                    // status `retry_http_blocking` wrapped into
+                    // `HttpError`. `root_cause()` would unwrap past
+                    // HttpError to the io::Error leaf; `.chain()` keeps
+                    // it visible.
+                    let status_in_chain: Option<u16> = err.chain().find_map(|e| {
+                        e.downcast_ref::<anodizer_core::retry::HttpError>()
+                            .map(|h| h.status)
+                    });
+                    let is_conflict = matches!(status_in_chain, Some(409) | Some(422));
+                    if !is_conflict {
+                        return Err(err);
+                    }
+                    log.warn(&format!(
+                        "cloudsmith: step-3 returned {:?} for '{}'; re-checking remote to \
+                         decide between idempotent skip and real conflict",
+                        status_in_chain, art_name
+                    ));
+                    match check_cloudsmith_package_exists(
+                        &client,
+                        &check_url,
+                        &check_query,
+                        &token,
+                        art_name,
+                        &md5_hex,
+                        &policy,
+                        log,
+                    )? {
+                        CloudsmithPackageState::SkipIdempotent => {
+                            // Bump severity to warn when the user
+                            // explicitly requested `republish: true`:
+                            // they expected to overwrite, and another
+                            // process beat us to landing the same
+                            // md5. Surfacing this above info-level
+                            // makes the unexpected race visible
+                            // instead of buried in verbose logs.
+                            let msg = format!(
+                                "cloudsmith: '{}' already landed with matching md5 \
+                                 (concurrent uploader); treating as idempotent skip",
+                                art_name
+                            );
+                            if republish {
+                                log.warn(&msg);
+                            } else {
+                                log.status(&msg);
+                            }
+                            // Skip target-record: nothing for OUR rollback
+                            // to delete (someone else owns this upload).
+                            continue;
+                        }
+                        CloudsmithPackageState::Md5Mismatch { remote } => {
+                            bail!(
+                                "cloudsmith: step-3 conflict for '{}' in org '{}' repo \
+                                 '{}'; remote md5={} differs from local={}. A concurrent \
+                                 upload submitted different bytes under the same name. \
+                                 Set republish: true to force overwrite, or bump the \
+                                 release.",
+                                art_name,
+                                organization,
+                                repository,
+                                remote,
+                                md5_hex
+                            );
+                        }
+                        CloudsmithPackageState::NotFound => {
+                            // 409/422 but nothing on the feed — surface
+                            // the original error (likely a distribution
+                            // mismatch or policy rejection, not a race).
+                            return Err(err);
+                        }
+                    }
+                }
+            };
 
             let slug = serde_json::from_str::<serde_json::Value>(&pkg_body)
                 .ok()
