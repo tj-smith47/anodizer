@@ -525,19 +525,17 @@ impl Stage for SnapcraftStage {
                             fs::copy(&src, &dest).with_context(|| {
                                 format!("copy extra file {} to {}", src.display(), dest.display())
                             })?;
-                            // Apply file mode: GoReleaser defaults extra
-                            // file mode to 0644 when not specified.
+                            let mode = extra.mode().unwrap_or(0o644);
+                            if mode > 0o7777 {
+                                anyhow::bail!(
+                                    "snapcraft: invalid file mode {:o} for '{}' — \
+                                     must be in range 0-7777 (octal)",
+                                    mode,
+                                    src.display()
+                                );
+                            }
                             #[cfg(unix)]
                             {
-                                let mode = extra.mode().unwrap_or(0o644);
-                                if mode > 0o7777 {
-                                    anyhow::bail!(
-                                        "snapcraft: invalid file mode {:o} for '{}' — \
-                                         must be in range 0-7777 (octal)",
-                                        mode,
-                                        src.display()
-                                    );
-                                }
                                 use std::os::unix::fs::PermissionsExt;
                                 let perms = std::fs::Permissions::from_mode(mode);
                                 std::fs::set_permissions(&dest, perms).with_context(|| {
@@ -562,7 +560,7 @@ impl Stage for SnapcraftStage {
                                         )
                                     })?;
                                 }
-                                if src.exists() {
+                                if src.exists() && src != dest {
                                     fs::copy(&src, &dest).with_context(|| {
                                         format!(
                                             "snapcraft: copy completer {} to {}",

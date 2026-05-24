@@ -103,6 +103,45 @@ Harness extension: `--stages=installers` fixture mode covering all six.
 
 ---
 
+## V1 — Winget v0.4.0 empty `InstallerSha256` root cause
+
+The v0.4.0 winget manifest published with `InstallerSha256: ''` for both
+arm64 and x64, tripping the winget validation pipeline
+(PR microsoft/winget-pkgs#379056, label `Manifest-Validation-Error`).
+
+The immediate fix landed in `crates/stage-publish/src/winget.rs`
+(grep `winget: archive '` and `winget: portable binary '`) — winget
+now bails with an actionable error when an archive or portable binary
+artifact arrives without `sha256` metadata, so the broken manifest
+cannot ship again. The bail is a precondition, not a circumvention:
+the stage now refuses to construct a manifest that winget validation
+would reject.
+
+The deeper root cause is **why** the artifact `sha256` metadata was
+empty when winget ran. Two candidates:
+
+1. The v0.4.0 Release run executed a publish-only flow over assets
+   downloaded fresh from the GitHub release, and the publish-only path
+   does not re-seed `sha256` metadata for downloaded archive artifacts
+   (only `refresh_combined_checksums` runs, which rewrites the
+   combined `checksums.txt` but does not appear to update individual
+   artifact metadata).
+2. The checksum stage was skipped or ran after winget for that flow.
+
+Investigation steps:
+- Inspect the v0.4.0 Release workflow log to see the stage order and
+  whether stage-checksum ran before stage-publish/winget.
+- Audit `refresh_combined_checksums` in `stage-checksum/src/run.rs`:
+  does it write `sha256` back to each artifact's metadata in addition
+  to rewriting the combined sums file?
+- If publish-only is the offender, extend the seed step to populate
+  per-artifact `sha256` metadata from the downloaded asset bytes.
+
+This work blocks the next winget submission for any release that
+re-runs publish-only against existing GitHub assets.
+
+---
+
 ## C1 — Coverage gaps left by the 2026-05-24 fixture session
 
 The "test fixtures" session built env_mutex, build_test_octocrab,

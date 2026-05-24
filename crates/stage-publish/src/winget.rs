@@ -709,6 +709,16 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
                 .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
         };
         let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+        if sha256.is_empty() {
+            anyhow::bail!(
+                "winget: archive '{}' has no sha256 metadata; \
+                 the manifest would publish with InstallerSha256: '' \
+                 and be rejected by winget validation. \
+                 Ensure the checksum stage runs before winget, or that \
+                 the publish flow seeds sha256 onto downloaded assets.",
+                a.path.display()
+            );
+        }
         let wrap_in_directory = a.metadata.get("wrap_in_directory").cloned();
         let binaries = binary_names_by_target
             .get(target)
@@ -749,6 +759,16 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
                 .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
         };
         let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+        if sha256.is_empty() {
+            anyhow::bail!(
+                "winget: portable binary '{}' has no sha256 metadata; \
+                 the manifest would publish with InstallerSha256: '' \
+                 and be rejected by winget validation. \
+                 Ensure the checksum stage runs before winget, or that \
+                 the publish flow seeds sha256 onto downloaded assets.",
+                a.path.display()
+            );
+        }
         let cmd = a
             .metadata
             .get("binary")
@@ -1720,6 +1740,63 @@ mod publisher_tests {
             .build();
         let p = WingetPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);
+    }
+
+    /// v0.4.0 winget PR (microsoft/winget-pkgs#379056) shipped with
+    /// `InstallerSha256: ''` and was rejected by the winget validation
+    /// pipeline with the `Manifest-Validation-Error` label. The publisher
+    /// now refuses to construct a manifest when an archive arrives without
+    /// `sha256` metadata; this test pins that precondition so a future
+    /// regression can't ship a broken manifest again.
+    #[test]
+    fn winget_archive_without_sha256_metadata_bails_with_actionable_error() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+
+        let mut crate_cfg = winget_crate("demo");
+        // publish_to_winget requires license + short_description (no implicit fallbacks).
+        if let Some(pub_cfg) = crate_cfg.publish.as_mut()
+            && let Some(w) = pub_cfg.winget.as_mut()
+        {
+            w.license = Some("MIT".to_string());
+            w.short_description = Some("Demo tool".to_string());
+        }
+
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["demo".to_string()])
+            .build();
+
+        let mut md = HashMap::new();
+        md.insert("format".to_string(), "zip".to_string());
+        md.insert("url".to_string(), "https://example.com/x.zip".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/demo-1.0.0-windows-amd64.zip"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: md,
+            size: None,
+        });
+
+        use anodizer_core::log::Verbosity;
+        let log = StageLogger::new("test-stage", Verbosity::Normal);
+        let err = publish_to_winget(&mut ctx, "demo", &log)
+            .expect_err("publish_to_winget must bail on empty sha256");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no sha256 metadata"),
+            "error must name the missing-sha256 root cause, got: {msg}"
+        );
+        assert!(
+            msg.contains("checksum stage"),
+            "error must point operator at the checksum stage, got: {msg}"
+        );
+        assert!(
+            msg.contains("rejected by winget validation"),
+            "error must explain downstream consequence, got: {msg}"
+        );
     }
 }
 
