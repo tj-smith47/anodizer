@@ -483,7 +483,7 @@ mod tests {
             // reads MCP_GITHUB_TOKEN — see McpPublisher rustdoc).
             let expected_scope = match expected {
                 "krew" => Some("GITHUB_TOKEN pull_request:write"),
-                "mcp" => Some("MCP_GITHUB_TOKEN publish"),
+                "mcp" => Some("MCP_GITHUB_TOKEN status-mutation"),
                 other => panic!("unexpected publisher in fixture: {}", other),
             };
             assert_eq!(
