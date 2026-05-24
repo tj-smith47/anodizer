@@ -24,6 +24,12 @@ pub(crate) enum CommitOutcome {
     NoChanges,
 }
 
+impl CommitOutcome {
+    pub(crate) fn is_pushed(self) -> bool {
+        matches!(self, Self::Pushed)
+    }
+}
+
 /// Optional overrides for the git commit step.
 #[derive(Default)]
 pub(crate) struct CommitOptions<'a> {
@@ -326,6 +332,12 @@ pub(crate) fn commit_and_push_with_opts(
 mod tests {
     use super::*;
     use std::process::Command as Cmd;
+
+    #[test]
+    fn is_pushed_reflects_variant() {
+        assert!(CommitOutcome::Pushed.is_pushed());
+        assert!(!CommitOutcome::NoChanges.is_pushed());
+    }
 
     fn init_bare_remote(dir: &std::path::Path) {
         Cmd::new("git")
