@@ -75,7 +75,16 @@ impl Stage for SrpmStage {
         }
 
         let source_archive = &source_archives[0];
-        let package_name = srpm_cfg.package_name.as_deref().unwrap_or(&project_name);
+        // Template-render `package_name` so users can reference template
+        // vars (e.g. `{{ ProjectName }}` or `{{ .Env.PKG_OVERRIDE }}`).
+        // Without rendering, a literal template string reaches the
+        // .src.rpm filename and the spec file's `Name:` field, producing
+        // an unbuildable rpm.
+        let package_name_raw = srpm_cfg.package_name.as_deref().unwrap_or(&project_name);
+        let package_name_rendered = ctx
+            .render_template(package_name_raw)
+            .with_context(|| format!("srpm: render package_name '{package_name_raw}'"))?;
+        let package_name = package_name_rendered.as_str();
 
         // Read and render the spec file template
         let spec_file = srpm_cfg.spec_file.as_deref().unwrap_or({
@@ -350,6 +359,31 @@ fn generate_default_spec(
 
     // Optional header tags / comments — emit only when configured.
     let mut header_extras = String::new();
+    if let Some(epoch) = cfg.epoch.as_deref()
+        && !epoch.is_empty()
+    {
+        // `Epoch:` is load-bearing for upgrade ordering when users
+        // migrate from a `1:x.y.z`-style version scheme. Silently
+        // dropping it lets rpm compute the wrong "newer than" order
+        // during `dnf upgrade`, pinning operators on an old release
+        // they can't push past without manual epoch surgery.
+        header_extras.push_str(&format!("Epoch:          {epoch}\n"));
+    }
+    if let Some(group) = cfg.group.as_deref() {
+        header_extras.push_str(&format!("Group:           {group}\n"));
+    }
+    if let Some(section) = cfg.section.as_deref() {
+        // `section` is the deb-style classification; rpm has no native
+        // equivalent so surface it as a header comment that downstream
+        // tooling scanning for it can pick up.
+        header_extras.push_str(&format!("# Section: {section}\n"));
+    }
+    if let Some(vendor) = cfg.vendor.as_deref() {
+        header_extras.push_str(&format!("Vendor:         {vendor}\n"));
+    }
+    if let Some(packager) = cfg.packager.as_deref() {
+        header_extras.push_str(&format!("Packager:       {packager}\n"));
+    }
     if let Some(import_path) = cfg.import_path.as_deref() {
         header_extras.push_str(&format!("# ImportPath: {import_path}\n"));
     }
@@ -367,6 +401,66 @@ fn generate_default_spec(
         }
     }
 
+    // Compression macro — `compression: zstd` (or `xz` / `gzip` / `none`)
+    // injects rpmbuild's `_source_payload` + `_source_compressor` macros
+    // so the .src.rpm payload is encoded with the requested algorithm
+    // instead of rpmbuild's gzip default. The `w19.zstdio` /
+    // `w7.xzdio` / `w9.gzdio` / `w0.gzdio` (none → gzip level 0) syntax
+    // is the rpm idiom; users who set `compression:` expect the file
+    // size on disk to reflect their choice.
+    let mut compression_macros = String::new();
+    if let Some(comp) = cfg.compression.as_deref() {
+        let lower = comp.to_ascii_lowercase();
+        let (payload, compressor): (String, String) = match lower.as_str() {
+            "zstd" => ("w19.zstdio".into(), "zstd".into()),
+            "xz" => ("w7.xzdio".into(), "xz".into()),
+            "gzip" => ("w9.gzdio".into(), "gzip".into()),
+            "none" => ("w0.gzdio".into(), "gzip".into()),
+            // Unknown values pass through verbatim — preserves forward-
+            // compat with new rpm payload codecs without requiring a
+            // stage rebuild. Owned Strings avoid the Box::leak footgun
+            // that would grow heap-permanently per call.
+            other => (format!("w9.{other}io"), other.to_string()),
+        };
+        compression_macros.push_str(&format!(
+            "%define _source_payload      {payload}\n%define _source_compressor   {compressor}\n\n"
+        ));
+    }
+
+    // %files — emit `%doc` lines per configured doc path plus a
+    // `%license` line for the license file. Both are honored by
+    // rpmbuild's `%install` machinery when the corresponding files
+    // exist in the build root. Without these the README / LICENSE /
+    // CHANGELOG never make it into the .src.rpm payload even when the
+    // user explicitly listed them.
+    let mut files_block = String::new();
+    if let Some(license_name) = cfg.license_file_name.as_deref() {
+        files_block.push_str(&format!("%license {license_name}\n"));
+    }
+    if let Some(docs) = cfg.docs.as_deref() {
+        for d in docs {
+            files_block.push_str(&format!("%doc {d}\n"));
+        }
+    }
+    // Extra `contents` entries → `Source<N>:` declarations + `%doc`
+    // entries when content_type == "doc". The spec author still owns
+    // `%install`, but the source-files are declared so rpmbuild can
+    // pull them into the SRPM payload.
+    let mut extra_sources = String::new();
+    if let Some(contents) = cfg.contents.as_deref() {
+        for (src_idx, entry) in (1_u32..).zip(contents.iter()) {
+            extra_sources.push_str(&format!("Source{src_idx}:        {src}\n", src = entry.src));
+            let is_doc = entry
+                .content_type
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("doc"))
+                .unwrap_or(false);
+            if is_doc {
+                files_block.push_str(&format!("%doc {dst}\n", dst = entry.dst));
+            }
+        }
+    }
+
     // Optional scriptlets — emit a `%pretrans` / `%posttrans` block that
     // sources the configured file at install time.
     let mut scriptlets = String::new();
@@ -378,14 +472,14 @@ fn generate_default_spec(
     }
 
     format!(
-        r#"Name:           {package_name}
+        r#"{compression_macros}Name:           {package_name}
 Version:        {version_field}
 Release:        1%{{?dist}}
 Summary:        {summary}
 License:        {license}
 URL:            {url}
 Source0:        {source_name}
-{header_extras}
+{extra_sources}{header_extras}
 %description
 {description}
 
@@ -397,7 +491,7 @@ Source0:        {source_name}
 %install
 
 %files
-{scriptlets}
+{files_block}{scriptlets}
 %changelog
 * {date} {maintainer} - {version_field}-1
 - Release {version_field}
@@ -567,6 +661,89 @@ mod tests {
         // template-var semantics — downstream tooling can grep them out).
         assert!(spec.contains("# ImportPath: github.com/me/myapp"));
         assert!(spec.contains("# Bins: myapp-cli"));
+    }
+
+    /// Cover the six optional fields surfaced through
+    /// `generate_default_spec`: epoch, section, compression, docs,
+    /// contents, license_file_name. Each emits the GR/rpm-idiom shape
+    /// that downstream tooling expects to see.
+    #[test]
+    fn test_generate_default_spec_emits_optional_fields() {
+        use anodizer_core::config::NfpmContent;
+        let cfg = SrpmConfig {
+            epoch: Some("1".to_string()),
+            section: Some("utils".to_string()),
+            group: Some("Development/Tools".to_string()),
+            vendor: Some("Acme".to_string()),
+            packager: Some("Acme Build <build@acme.test>".to_string()),
+            compression: Some("zstd".to_string()),
+            license_file_name: Some("LICENSE".to_string()),
+            docs: Some(vec!["README.md".to_string(), "CHANGELOG.md".to_string()]),
+            contents: Some(vec![
+                NfpmContent {
+                    src: "extra/policy.txt".to_string(),
+                    dst: "/usr/share/doc/myapp/policy.txt".to_string(),
+                    content_type: Some("doc".to_string()),
+                    file_info: None,
+                    packager: None,
+                    expand: None,
+                },
+                NfpmContent {
+                    src: "extra/data.bin".to_string(),
+                    dst: "/usr/share/myapp/data.bin".to_string(),
+                    content_type: None,
+                    file_info: None,
+                    packager: None,
+                    expand: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+
+        // epoch — upgrade-ordering tag.
+        assert!(
+            spec.contains("Epoch:          1"),
+            "epoch must emit as RPM Epoch:; got:\n{spec}"
+        );
+        // section — surfaced as header comment (no native rpm tag).
+        assert!(spec.contains("# Section: utils"), "got:\n{spec}");
+        // group + vendor + packager — proper RPM tags.
+        assert!(spec.contains("Group:           Development/Tools"));
+        assert!(spec.contains("Vendor:         Acme"));
+        assert!(spec.contains("Packager:       Acme Build <build@acme.test>"));
+        // compression — rpm macros that swap the source-payload codec.
+        assert!(
+            spec.contains("%define _source_payload      w19.zstdio")
+                && spec.contains("%define _source_compressor   zstd"),
+            "compression: zstd must emit _source_payload + _source_compressor; got:\n{spec}"
+        );
+        // license_file_name + docs — %files entries.
+        assert!(spec.contains("%license LICENSE"));
+        assert!(spec.contains("%doc README.md"));
+        assert!(spec.contains("%doc CHANGELOG.md"));
+        // contents — Source<N>: declarations for each entry, %doc for
+        // type=doc entries.
+        assert!(spec.contains("Source1:        extra/policy.txt"));
+        assert!(spec.contains("Source2:        extra/data.bin"));
+        assert!(
+            spec.contains("%doc /usr/share/doc/myapp/policy.txt"),
+            "contents[type=doc] must add %doc <dst>; got:\n{spec}"
+        );
+    }
+
+    /// Unknown compression values pass through verbatim — preserves
+    /// forward-compat with new rpm payload codecs without requiring a
+    /// stage rebuild.
+    #[test]
+    fn test_generate_default_spec_unknown_compression_passes_through() {
+        let cfg = SrpmConfig {
+            compression: Some("lz4".to_string()),
+            ..Default::default()
+        };
+        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        assert!(spec.contains("%define _source_payload      w9.lz4io"));
+        assert!(spec.contains("%define _source_compressor   lz4"));
     }
 
     #[test]
