@@ -9,6 +9,30 @@ template = "section.html"
 
 Commands and flags exposed by the `anodizer` binary.
 
+## Live invocations
+
+Representative `anodizer-action` `args:` and CLI invocations from
+[anodizer's `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml),
+[`ci.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/ci.yml),
+and [cfgd's `release.yml`](https://github.com/tj-smith47/cfgd/blob/master/.github/workflows/release.yml)
+(snapshot 2026-05-24).
+
+```yaml
+# anodizer ci.yml — snapshot dry-run on every master push
+args: release --snapshot --single-target --clean --dry-run
+
+# anodizer ci.yml — auto-tag from commit directives on master
+args: tag
+
+# anodizer release.yml — determinism shard runs the build pipeline,
+# preserves dist/, then the release job calls release --publish-only.
+args: release --check determinism --preserve-dist
+args: release --publish-only
+
+# cfgd release.yml — split build per workspace crate, with strict gating.
+args: release --verbose --debug --strict --split --clean --crate ${{ needs.resolve.outputs.workspace }}
+```
+
 ## Commands
 
 | Command | Status | Notes |

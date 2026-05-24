@@ -10,6 +10,58 @@ template = "section.html"
 Distribution channels users get the binary from. Each row links to the live
 registry page or release asset.
 
+## Live configuration
+
+Per-crate `publish:` block from [`cfgd/.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml)
+(snapshot 2026-05-24) — every channel in the table below is driven from
+the same block.
+
+```yaml
+publish:
+  # cargo: inherits index_timeout: 600 from defaults.publish.cargo
+  homebrew:
+    repository: { owner: tj-smith47, name: homebrew-tap }
+    directory: Formula
+    install: |
+      bin.install "cfgd"
+    dependencies:
+      - { name: git, type: required }
+
+  scoop:
+    repository: { owner: tj-smith47, name: scoop-bucket }
+    depends: [git]
+    shortcuts: [["cfgd.exe", "cfgd"]]
+
+  chocolatey:
+    repository: { owner: tj-smith47, name: cfgd }
+    authors: "TJ Smith"
+    license: MIT
+    require_license_acceptance: false
+    project_url: "https://github.com/tj-smith47/cfgd"
+    icon_url: "https://raw.githubusercontent.com/tj-smith47/cfgd/main/.github/gear.svg"
+    tags: [configuration, gitops, reconciliation, rust]
+
+  winget:
+    repository: { owner: tj-smith47, name: winget-pkgs }
+    package_identifier: "TJSmith.cfgd"
+    publisher: "TJ Smith"
+
+  krew:
+    repository: { owner: tj-smith47, name: krew-index }
+    short_description: "kubectl plugin for cfgd"
+
+  nix:
+    repository: { owner: tj-smith47, name: nix-pkgs }
+
+# Top-level — snap, GHCR images, source archive, makeselfs:
+snapcrafts:
+  - name: cfgd
+    grade: stable
+    confinement: classic
+dockers:
+  - image_templates: ["ghcr.io/tj-smith47/cfgd:{{ .Tag }}"]
+```
+
 | Channel | Status | Verify |
 |---|---|---|
 | **GitHub Releases** | ✅ Verified | [anodizer v0.1.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1) · [cfgd v0.3.5](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5) |

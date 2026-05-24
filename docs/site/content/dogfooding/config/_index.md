@@ -10,6 +10,59 @@ template = "section.html"
 Top-level configuration keys and the Tera helpers available inside any
 template string. Tera syntax is GoReleaser-compatible.
 
+## Live configuration
+
+Top of [`cfgd/.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml)
+(snapshot 2026-05-24) — every top-level / monorepo / git key in the tables
+below is wired here.
+
+```yaml
+version: 2
+project_name: cfgd
+dist: ./dist
+report_sizes: true
+
+env:
+  - REGISTRY=ghcr.io
+  - RELEASE_TYPE=stable
+
+variables:
+  repo_url: "https://github.com/tj-smith47/cfgd"
+  description: "Declarative, GitOps-style machine configuration management"
+
+git:
+  tag_sort: "-version:refname"
+  ignore_tags: ["nightly"]
+  ignore_tag_prefixes: ["draft-"]
+  prerelease_suffix: "-"
+
+tag:
+  default_bump: none
+  branch_history: full
+  tag_prefix: "v"
+  release_branches: [master]
+  initial_version: "0.3.5"
+
+metadata:
+  description: "Declarative, GitOps-style machine configuration management"
+  homepage: "https://github.com/tj-smith47/cfgd"
+  license: MIT
+  maintainers: ["TJ Smith"]
+  mod_timestamp: "{{ CommitTimestamp }}"
+  full_description: { from_file: README.md }
+  commit_author: { name: TJ Smith, email: tj@jarvispro.io }
+
+# 4 workspace entries — independent release cadences, dep-aware ordering.
+workspaces:
+  - { name: cfgd-core,     crates: [{ name: cfgd-core,     tag_template: "core-v{{ Version }}",     ... }] }
+  - { name: cfgd,          crates: [{ name: cfgd,          tag_template: "v{{ Version }}",          depends_on: [cfgd-core], ... }] }
+  - { name: cfgd-operator, crates: [{ name: cfgd-operator, tag_template: "operator-v{{ Version }}", depends_on: [cfgd-core], ... }] }
+  - { name: cfgd-csi,      crates: [{ name: cfgd-csi,      tag_template: "csi-v{{ Version }}",      depends_on: [cfgd-core], ... }] }
+
+partial:
+  by: goos
+```
+
 ## Top-level config
 
 | Key | Status | Notes |

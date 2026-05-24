@@ -10,6 +10,59 @@ template = "section.html"
 These features exist because Rust's toolchain and packaging conventions
 differ from Go's. They are dogfooded by anodizer and cfgd themselves.
 
+## Live configuration
+
+Excerpt from [`cfgd/.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml)
+(snapshot 2026-05-24) — every feature in the table below is wired here.
+
+```yaml
+# Tag bumper — requires an explicit signal per commit range
+# (Conventional Commits or `#major`/`#minor`/`#patch` tokens).
+tag:
+  default_bump: none
+  branch_history: full
+  tag_prefix: "v"
+  release_branches: [master]
+  initial_version: "0.3.5"
+
+# UPX target-triple globs — Rust triples, not Go GOOS/GOARCH.
+upx:
+  - id: default
+    enabled: true
+    args: ["--best", "--lzma"]
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-apple-darwin
+      - x86_64-pc-windows-msvc
+
+# Workspaces — independent release cadences per crate.
+workspaces:
+  - name: cfgd-core                 # shared library, crates.io only
+    skip: [announce]
+    crates:
+      - name: cfgd-core
+        path: crates/cfgd-core
+        tag_template: "core-v{{ Version }}"
+        version_sync: { enabled: true, mode: cargo }
+        # publish.cargo inherited from defaults (index_timeout: 600)
+
+  - name: cfgd                      # cross-platform CLI
+    crates:
+      - name: cfgd
+        path: crates/cfgd
+        tag_template: "v{{ Version }}"
+        depends_on: [cfgd-core]     # dependency-aware publish ordering
+        version_sync: { enabled: true, mode: cargo }
+        universal_binaries:
+          - { name_template: "{{ ProjectName }}", replace: false }
+        binstall:
+          enabled: true
+          pkg_url: "https://github.com/tj-smith47/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-{ target }.tar.gz"
+          pkg_fmt: tgz
+  # ... cfgd-operator, cfgd-csi follow the same shape
+```
+
 | Feature | Status | Notes |
 |---|---|---|
 | `crates.io publish` | ✅ Verified | Dependency-aware ordering. [anodizer on crates.io](https://crates.io/crates/anodizer) · [cfgd on crates.io](https://crates.io/crates/cfgd). cfgd publishes 4 crates in dependency order on every release |

@@ -12,6 +12,75 @@ keys that drive them. Native binaries for 6 targets ship on every release
 (linux amd64/arm64, darwin amd64/arm64, windows amd64/arm64), built with
 cargo + cargo-zigbuild + cross.
 
+## Live configuration
+
+Build / archive / nfpm / docker / sign blocks from
+[`cfgd/.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml)
+(snapshot 2026-05-24) — every key referenced in the tables below is wired
+here.
+
+```yaml
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+    - aarch64-unknown-linux-gnu
+    - x86_64-apple-darwin
+    - aarch64-apple-darwin
+    - x86_64-pc-windows-msvc
+  cross: auto
+
+# Per-crate (one workspace shown):
+builds:
+  - binary: cfgd
+    mod_timestamp: "{{ CommitTimestamp }}"
+
+archives:
+  - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - { os: windows, formats: [zip] }
+    files: [LICENSE, README.md]
+
+universal_binaries:
+  - { name_template: "{{ ProjectName }}", replace: false }
+
+checksum:
+  name_template: "{{ ArtifactName }}.sha256"
+  algorithm: sha256
+  split: true
+
+# Top-level:
+upx:
+  - id: default
+    enabled: true
+    args: ["--best", "--lzma"]
+    targets: [x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu,
+              x86_64-apple-darwin, x86_64-pc-windows-msvc]
+
+nfpms:
+  - id: cfgd
+    formats: [deb, rpm, apk]
+    maintainer: "TJ Smith <tj@jarvispro.io>"
+    contents:
+      - { src: LICENSE,   dst: /usr/share/doc/cfgd/LICENSE }
+      - { src: README.md, dst: /usr/share/doc/cfgd/README.md }
+
+# docker_v2: pushes a multi-arch image index in one step (no separate manifest).
+docker_v2:
+  - { id: cfgd, image_templates: ["ghcr.io/tj-smith47/cfgd:{{ .Tag }}"], sbom: true }
+
+signs:
+  - { id: cosign-checksum, artifacts: checksum, cmd: cosign }
+  - { id: cosign-source,   artifacts: source,   cmd: cosign }
+docker_signs:
+  - { id: cosign-images, artifacts: manifests, cmd: cosign }
+binary_signs:
+  - { id: cosign-bin,    artifacts: binary,    cmd: cosign }
+
+sboms:
+  - { id: default, cmd: syft, artifacts: archive, documents: ["{{ .ProjectName }}-{{ .Version }}.cdx.json"] }
+```
+
 ## Build
 
 | Key | Status | Notes |

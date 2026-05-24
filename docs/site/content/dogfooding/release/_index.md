@@ -10,6 +10,62 @@ template = "section.html"
 The keys that drive the release itself: GitHub/GitLab/Gitea release surface,
 changelog generation, announcers, cloud uploads, and custom publishers.
 
+## Live configuration
+
+Release / changelog / announce blocks from
+[`cfgd/.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml)
+(snapshot 2026-05-24) — every key in the tables below is wired here.
+
+```yaml
+# Per-crate release section:
+release:
+  github: { owner: tj-smith47, name: cfgd }
+  draft: false
+  prerelease: auto
+  make_latest: auto
+  mode: keep-existing
+  target_commitish: "{{ .Commit }}"
+  discussion_category_name: "Announcements"
+  replace_existing_draft: false
+  replace_existing_artifacts: true
+  name_template: "{{ ProjectName }} {{ Tag }}"
+  header: |
+    What's new in {{ .ProjectName }} {{ .Tag }}.
+  footer: |
+    Released with [anodizer](https://github.com/tj-smith47/anodizer).
+  include_meta: true
+  extra_files:
+    - { glob: "./install.sh", name_template: "install.sh" }
+
+# Top-level changelog (groups + filters):
+changelog:
+  use: git
+  groups:
+    - { title: "Features",  regexp: "^.*feat[(\\w)]*:+.*$",  order: 0 }
+    - { title: "Bug Fixes", regexp: "^.*fix[(\\w)]*:+.*$",   order: 1 }
+    - { title: "Others",    order: 999 }
+  filters:
+    include: ["^feat", "^fix", "^perf", "^revert"]
+    exclude: ["^docs:", "^test:", "^chore:", "^ci:"]
+
+# Top-level announce (only the two live channels):
+announce:
+  webhook:
+    enabled: true
+    endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
+    message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
+  email:
+    enabled: true
+    host: smtp.gmail.com
+    port: 587
+    from: toss45@gmail.com
+    to: ["tj@jarvispro.io"]
+    subject_template: "{{ ProjectName }} {{ Tag }} released"
+
+cloudsmiths:
+  - { id: cfgd, repo: tj-smith47/cfgd, package_format: deb, distros: [ubuntu/jammy] }
+```
+
 ## Release and changelog
 
 | Key | Status | Notes |
