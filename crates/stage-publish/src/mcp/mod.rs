@@ -99,15 +99,21 @@ static EXPERIMENTAL_WARNED: AtomicBool = AtomicBool::new(false);
 /// `--rollback-only` cannot fire a PATCH against a server-version that
 /// was never published.
 pub(crate) fn publish_to_mcp(ctx: &Context, log: &StageLogger) -> Result<Option<McpTarget>> {
-    let registry_url = ctx
-        .config
-        .mcp
-        .registry
+    let registry_url = resolve_registry_url(&ctx.config.mcp);
+    publish_with_registry(ctx, log, registry_url)
+}
+
+/// Resolve the effective registry URL with the standard fallback chain:
+/// trim the configured value, treat empty/whitespace as unset, and fall
+/// back to [`DEFAULT_REGISTRY_URL`]. Pure function over the config so
+/// the fallback is independently testable without spinning up a context
+/// or the publish loop.
+pub(crate) fn resolve_registry_url(mcp: &McpConfig) -> &str {
+    mcp.registry
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(DEFAULT_REGISTRY_URL);
-    publish_with_registry(ctx, log, registry_url)
+        .unwrap_or(DEFAULT_REGISTRY_URL)
 }
 
 /// Test-friendly variant — accepts a registry base URL override. Production

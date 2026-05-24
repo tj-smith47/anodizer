@@ -20,8 +20,9 @@ use anodizer_core::config::{
 use anodizer_core::context::{Context, ContextOptions};
 
 use super::{
-    infer_repository_from_release, publish_with_registry, reset_experimental_warned_for_test,
-    warn_experimental_once, warn_once_lock,
+    DEFAULT_REGISTRY_URL, infer_repository_from_release, publish_with_registry,
+    reset_experimental_warned_for_test, resolve_registry_url, warn_experimental_once,
+    warn_once_lock,
 };
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
@@ -396,5 +397,35 @@ fn inference_no_ops_when_owner_or_name_empty() {
             "owner={owner:?} name={name:?}: source must stay empty, got {:?}",
             mcp.repository.source
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Registry URL fallback
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_registry_url_fallback_matrix() {
+    // The fallback chain is load-bearing: empty/whitespace/None all must
+    // collapse to DEFAULT_REGISTRY_URL so a user who left `mcp.registry`
+    // commented out (or templated to an empty string under a conditional)
+    // still gets a working publish. An explicit override wins verbatim.
+    let cases: &[(Option<&str>, &str, &str)] = &[
+        (None, DEFAULT_REGISTRY_URL, "None → default"),
+        (Some(""), DEFAULT_REGISTRY_URL, "empty → default"),
+        (Some("   "), DEFAULT_REGISTRY_URL, "whitespace → default"),
+        (
+            Some("https://staging.example.com"),
+            "https://staging.example.com",
+            "explicit override wins",
+        ),
+    ];
+    for (input, expected, label) in cases {
+        let mcp = McpConfig {
+            registry: input.map(|s| s.to_string()),
+            ..Default::default()
+        };
+        let got = resolve_registry_url(&mcp);
+        assert_eq!(got, *expected, "case {label}: input={input:?}");
     }
 }
