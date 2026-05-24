@@ -358,6 +358,7 @@ dependencies = [
  "glob",
  "http",
  "hyper-rustls",
+ "hyper-timeout",
  "hyper-util",
  "octocrab",
  "percent-encoding",
@@ -369,6 +370,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
+ "tower",
  "tracing",
 ]
 

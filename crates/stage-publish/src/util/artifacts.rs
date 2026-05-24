@@ -27,8 +27,8 @@ use anodizer_core::context::Context;
 //    separate layer means we can adjust for future drift without touching
 //    the shared inference code.
 //
-// Both `find_artifacts_by_os` and `find_all_platform_artifacts` use these
-// shared helpers so the inference logic lives in exactly one place.
+// Both artifact-search functions use these shared helpers so the inference
+// logic lives in exactly one place.
 
 /// Infer the canonical OS string from a target triple.
 ///
@@ -80,7 +80,7 @@ pub(crate) struct OsArtifact {
 /// shared `infer_os` / `infer_arch` helpers.
 ///
 /// `os_fallback` is used when the OS cannot be determined from the target
-/// triple (e.g. when calling from `find_artifacts_by_os` with a known needle).
+/// triple (e.g. when calling with a known OS needle).
 fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
     let url = a
         .metadata

@@ -117,7 +117,9 @@ tempfile = "3"
 sha1 = "0.10"
 sha2 = "0.10"
 blake2 = "0.10"
+hyper-timeout = "0.5"
 octocrab = "0.44"
+tower = { version = "0.5", default-features = false, features = ["util"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "stream", "rustls-tls"] }
 percent-encoding = "2"

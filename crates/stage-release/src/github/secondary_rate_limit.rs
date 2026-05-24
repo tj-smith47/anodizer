@@ -6,24 +6,30 @@
 //! `"You have exceeded a secondary rate limit"`. GitHub may also include a
 //! `Retry-After` header (integer seconds) as a hint.
 //!
-//! ## `Retry-After` header and octocrab
+//! ## `Retry-After` header capture
 //!
 //! octocrab's `map_github_error` discards response headers when it converts a
 //! non-2xx body into `GitHubError` (the `GitHubError` struct holds only
-//! `message`, `documentation_url`, `errors`, and `status_code`). The
-//! `Retry-After` header is therefore not accessible via the typed error.
+//! `message`, `documentation_url`, `errors`, and `status_code`). To recover
+//! the server's `Retry-After` hint, a tower middleware layer
+//! ([`RetryAfterService`]) intercepts every HTTP response *before* octocrab
+//! processes it and stores the header's integer value in a shared
+//! [`RetryAfterCapture`]. The retry loops then read that captured value via
+//! [`secondary_rl_delay`] and honour it (clamped to [60, 600] seconds) instead
+//! of always falling back to a fixed constant.
 //!
-//! As a practical equivalent: when a secondary rate-limit response is detected,
-//! the upload loop applies a minimum backoff of `SECONDARY_RL_MIN_SECS` seconds
-//! (plus ±20 % jitter) before the next attempt. This is conservative and
-//! honours the spirit of `Retry-After: N ≥ 60` that GitHub's secondary-limit
-//! responses typically carry. A configurable override is available via
-//! `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS`.
-//!
-//! GoReleaser reference: `internal/client/github.go` does not explicitly handle
-//! secondary rate limits. Anodizer adds this as a Rust-first improvement.
+//! GoReleaser parity: `internal/client/github.go` reads the exact
+//! `Retry-After` from go-github's `*AbuseRateLimitError`, clamped with a
+//! 1-minute floor and 10-minute cap.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
 use std::time::Duration;
+
+use tower::{Layer, Service};
 
 /// Minimum sleep when a secondary rate-limit response is detected, absent a
 /// more specific `Retry-After` hint accessible through the API.
@@ -32,6 +38,113 @@ use std::time::Duration;
 /// range from 30–90 seconds. 60 s is the conservative midpoint.
 /// Override via `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS`.
 pub(crate) const SECONDARY_RL_MIN_SECS: u64 = 60;
+
+/// Maximum `Retry-After` value the retry loop will honour (10 minutes).
+/// Values above this are clamped to avoid indefinite stalls from a
+/// misbehaving proxy or pathological server response.
+const RETRY_AFTER_MAX_SECS: u64 = 600;
+
+// ---------------------------------------------------------------------------
+// RetryAfterCapture — shared state read by the retry loops
+// ---------------------------------------------------------------------------
+
+/// Shared capture of the most recent `Retry-After` header value (seconds).
+///
+/// Written by [`RetryAfterService`] on every HTTP response that carries the
+/// header; read by [`secondary_rl_delay`] when deciding how long to sleep
+/// after a secondary rate-limit response.
+#[derive(Clone, Debug)]
+pub(crate) struct RetryAfterCapture(Arc<AtomicU64>);
+
+impl RetryAfterCapture {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(0)))
+    }
+
+    /// Return the last captured `Retry-After` value, or `None` if no header
+    /// has been seen (or the stored value is 0).
+    pub(crate) fn get(&self) -> Option<Duration> {
+        let secs = self.0.load(Ordering::Relaxed);
+        if secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(secs))
+        }
+    }
+
+    /// Store a captured `Retry-After` integer-seconds value.
+    fn set(&self, secs: u64) {
+        self.0.store(secs, Ordering::Relaxed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RetryAfterLayer / RetryAfterService — tower middleware
+// ---------------------------------------------------------------------------
+
+/// Tower [`Layer`] that wraps an inner HTTP service with
+/// [`RetryAfterService`], capturing `Retry-After` headers before octocrab
+/// processes the response.
+#[derive(Clone)]
+pub(crate) struct RetryAfterLayer {
+    capture: RetryAfterCapture,
+}
+
+impl RetryAfterLayer {
+    pub(crate) fn new(capture: RetryAfterCapture) -> Self {
+        Self { capture }
+    }
+}
+
+impl<S> Layer<S> for RetryAfterLayer {
+    type Service = RetryAfterService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        RetryAfterService {
+            inner,
+            capture: self.capture.clone(),
+        }
+    }
+}
+
+/// Tower [`Service`] that intercepts HTTP responses and captures the
+/// `retry-after` header value (integer seconds) before passing the response
+/// through unchanged.
+#[derive(Clone)]
+pub(crate) struct RetryAfterService<S> {
+    inner: S,
+    capture: RetryAfterCapture,
+}
+
+impl<S, ReqBody, ResBody> Service<http::Request<ReqBody>> for RetryAfterService<S>
+where
+    S: Service<http::Request<ReqBody>, Response = http::Response<ResBody>>,
+    S::Future: Send + 'static,
+    S::Error: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: http::Request<ReqBody>) -> Self::Future {
+        let capture = self.capture.clone();
+        let fut = self.inner.call(req);
+        Box::pin(async move {
+            let resp = fut.await?;
+            if let Some(val) = resp.headers().get(http::header::RETRY_AFTER)
+                && let Ok(s) = val.to_str()
+                && let Ok(secs) = s.trim().parse::<u64>()
+            {
+                capture.set(secs);
+            }
+            Ok(resp)
+        })
+    }
+}
 
 /// Returns `true` when `err` looks like a GitHub secondary rate-limit response.
 ///
@@ -66,16 +179,32 @@ pub(crate) fn is_secondary_rate_limit(err: &octocrab::Error) -> bool {
 
 /// Return the delay to apply when a secondary rate-limit response is detected.
 ///
-/// Reads `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` first; falls back to
-/// [`SECONDARY_RL_MIN_SECS`]. Callers should apply `jitter_duration` on top of
-/// the returned value.
-pub(crate) fn secondary_rl_delay() -> Duration {
-    let secs = std::env::var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS")
+/// Precedence (first match wins):
+/// 1. `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` env var — hard override.
+/// 2. `capture` — the server's `Retry-After` header value, clamped to
+///    \[60, 600\] seconds.
+/// 3. [`SECONDARY_RL_MIN_SECS`] (60 s) constant fallback.
+///
+/// Callers should apply `jitter_duration` on top of the returned value.
+pub(crate) fn secondary_rl_delay(capture: Option<&RetryAfterCapture>) -> Duration {
+    // Hard override via env var takes absolute precedence.
+    if let Some(secs) = std::env::var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|&s| s > 0)
-        .unwrap_or(SECONDARY_RL_MIN_SECS);
-    Duration::from_secs(secs)
+    {
+        return Duration::from_secs(secs);
+    }
+
+    // Honour the server's Retry-After header, clamped to [60, 600].
+    if let Some(captured) = capture.and_then(RetryAfterCapture::get) {
+        let secs = captured
+            .as_secs()
+            .clamp(SECONDARY_RL_MIN_SECS, RETRY_AFTER_MAX_SECS);
+        return Duration::from_secs(secs);
+    }
+
+    Duration::from_secs(SECONDARY_RL_MIN_SECS)
 }
 
 #[cfg(test)]
@@ -193,14 +322,13 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn secondary_rl_delay_env_override() {
-        // When ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS is set to a positive
-        // integer, secondary_rl_delay() must return that duration.
-        // SAFETY: `#[serial]` (above) prevents concurrent readers/writers
-        // of this env var across the test suite.
+        // Env var takes absolute precedence — even over a captured value.
         unsafe {
             std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "3");
         }
-        let d = secondary_rl_delay();
+        let cap = RetryAfterCapture::new();
+        cap.set(120);
+        let d = secondary_rl_delay(Some(&cap));
         unsafe {
             std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
         }
@@ -214,8 +342,66 @@ mod tests {
             std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
         }
         assert_eq!(
-            secondary_rl_delay(),
+            secondary_rl_delay(None),
             Duration::from_secs(SECONDARY_RL_MIN_SECS)
+        );
+    }
+
+    #[test]
+    fn retry_after_capture_get_set() {
+        let cap = RetryAfterCapture::new();
+        assert!(cap.get().is_none(), "fresh capture must be None");
+        cap.set(90);
+        assert_eq!(cap.get(), Some(Duration::from_secs(90)));
+        cap.set(0);
+        assert!(cap.get().is_none(), "storing 0 resets to None");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn secondary_rl_delay_prefers_captured_over_constant() {
+        // No env override; captured value of 120 s should be honoured.
+        unsafe {
+            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
+        }
+        let cap = RetryAfterCapture::new();
+        cap.set(120);
+        assert_eq!(
+            secondary_rl_delay(Some(&cap)),
+            Duration::from_secs(120),
+            "captured Retry-After should override the 60 s constant"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn secondary_rl_delay_clamps_low_captured_value() {
+        // A server-sent Retry-After: 5 is below the 60 s floor.
+        unsafe {
+            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
+        }
+        let cap = RetryAfterCapture::new();
+        cap.set(5);
+        assert_eq!(
+            secondary_rl_delay(Some(&cap)),
+            Duration::from_secs(SECONDARY_RL_MIN_SECS),
+            "values below 60 s must be clamped to the floor"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn secondary_rl_delay_clamps_high_captured_value() {
+        // A server-sent Retry-After: 9999 is above the 600 s cap.
+        unsafe {
+            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
+        }
+        let cap = RetryAfterCapture::new();
+        cap.set(9999);
+        assert_eq!(
+            secondary_rl_delay(Some(&cap)),
+            Duration::from_secs(RETRY_AFTER_MAX_SECS),
+            "values above 600 s must be clamped to the cap"
         );
     }
 }

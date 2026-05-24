@@ -2817,9 +2817,9 @@ fn test_build_octocrab_client_default_no_github_urls() {
     // When github_urls is None, build_octocrab_client should succeed
     // with standard GitHub.com endpoints.
     with_tokio(|| {
-        let client = build_octocrab_client("ghp_fake_token_123", &None);
+        let result = build_octocrab_client("ghp_fake_token_123", &None);
         assert!(
-            client.is_ok(),
+            result.is_ok(),
             "default client (no github_urls) should build successfully"
         );
     });
@@ -2834,9 +2834,9 @@ fn test_build_octocrab_client_with_enterprise_api_url() {
             download: None,
             skip_tls_verify: None,
         });
-        let client = build_octocrab_client("ghp_fake_token_123", &urls);
+        let result = build_octocrab_client("ghp_fake_token_123", &urls);
         assert!(
-            client.is_ok(),
+            result.is_ok(),
             "client with enterprise api URL should build successfully"
         );
     });
@@ -2851,9 +2851,9 @@ fn test_build_octocrab_client_with_enterprise_api_and_upload_urls() {
             download: Some("https://github.example.com/".to_string()),
             skip_tls_verify: None,
         });
-        let client = build_octocrab_client("ghp_fake_token_123", &urls);
+        let result = build_octocrab_client("ghp_fake_token_123", &urls);
         assert!(
-            client.is_ok(),
+            result.is_ok(),
             "client with enterprise api + upload URLs should build successfully"
         );
     });
@@ -2868,9 +2868,9 @@ fn test_build_octocrab_client_with_skip_tls_verify() {
             download: None,
             skip_tls_verify: Some(true),
         });
-        let client = build_octocrab_client("ghp_fake_token_123", &urls);
+        let result = build_octocrab_client("ghp_fake_token_123", &urls);
         assert!(
-            client.is_ok(),
+            result.is_ok(),
             "client with skip_tls_verify should build successfully"
         );
     });
@@ -2885,8 +2885,11 @@ fn test_build_octocrab_client_invalid_api_url_errors() {
             download: None,
             skip_tls_verify: None,
         });
-        let result = build_octocrab_client("ghp_fake_token_123", &urls);
-        assert!(result.is_err(), "invalid api URL should produce an error");
+        let bad_result = build_octocrab_client("ghp_fake_token_123", &urls);
+        assert!(
+            bad_result.is_err(),
+            "invalid api URL should produce an error"
+        );
     });
 }
 
@@ -2900,9 +2903,9 @@ fn test_build_octocrab_client_skip_tls_false_uses_normal_path() {
             download: None,
             skip_tls_verify: Some(false),
         });
-        let client = build_octocrab_client("ghp_fake_token_123", &urls);
+        let result = build_octocrab_client("ghp_fake_token_123", &urls);
         assert!(
-            client.is_ok(),
+            result.is_ok(),
             "skip_tls_verify=false should use normal build path"
         );
     });

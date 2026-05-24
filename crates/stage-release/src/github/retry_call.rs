@@ -53,7 +53,7 @@ use std::future::Future;
 
 use anodizer_core::retry::{RetryPolicy, is_retriable, jitter_duration};
 
-use super::secondary_rate_limit::{is_secondary_rate_limit, secondary_rl_delay};
+use super::secondary_rate_limit::{RetryAfterCapture, is_secondary_rate_limit, secondary_rl_delay};
 use crate::release_log;
 
 /// Per-attempt warning line shared by every retry-wrapped octocrab call site
@@ -82,13 +82,15 @@ pub(crate) fn format_retry_warn(label: &str, attempt: u32, max: u32, status: u16
 ///
 /// When a secondary rate-limit response (403/429 with GitHub's secondary-RL
 /// body text) is detected, the helper logs a dedicated warning and sleeps for
-/// `secondary_rl_delay()` (default 60 s, override via
-/// `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS`) with ±20 % jitter before
-/// retrying. The policy's normal exp-backoff delay is skipped for secondary-RL
-/// attempts to avoid doubling the sleep.
+/// `secondary_rl_delay()` — which honours the server's `Retry-After` header
+/// (captured by [`RetryAfterCapture`] middleware), clamped to [60, 600] s,
+/// overridable via `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` — with ±20 %
+/// jitter before retrying. The policy's normal exp-backoff delay is skipped
+/// for secondary-RL attempts to avoid doubling the sleep.
 pub(crate) async fn retry_octocrab_call<T, F, Fut>(
     policy: &RetryPolicy,
     label: &'static str,
+    retry_after: Option<&RetryAfterCapture>,
     mut make_call: F,
 ) -> Result<T, octocrab::Error>
 where
@@ -125,7 +127,7 @@ where
                 // Secondary rate-limit: sleep the dedicated RL delay (with
                 // jitter) instead of the policy's exp-backoff delay.
                 if secondary_rl {
-                    let delay = jitter_duration(secondary_rl_delay());
+                    let delay = jitter_duration(secondary_rl_delay(retry_after));
                     release_log().warn(&format!(
                         "release: {label} hit GitHub secondary rate limit; \
                          sleeping {:.1}s before retry (attempt {attempt}/{max})",
@@ -230,7 +232,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test list", || async {
+            retry_octocrab_call(&policy, "test list", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;
@@ -259,7 +261,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test list", || async {
+            retry_octocrab_call(&policy, "test list", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;
@@ -286,7 +288,7 @@ mod tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test list", || async {
+            retry_octocrab_call(&policy, "test list", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;
@@ -382,7 +384,7 @@ mod tests {
 
         let t0 = Instant::now();
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "test upload", || async {
+            retry_octocrab_call(&policy, "test upload", None, || async {
                 octo.get("/test", None::<&()>).await
             })
             .await;

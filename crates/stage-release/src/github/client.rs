@@ -7,13 +7,15 @@ use octocrab::service::middleware::auth_header::AuthHeaderLayer;
 use octocrab::service::middleware::base_uri::BaseUriLayer;
 use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
 
+use super::secondary_rate_limit::{RetryAfterCapture, RetryAfterLayer};
 use crate::release_log;
 
-// ---------------------------------------------------------------------------
-// build_octocrab_client — GitHub Enterprise URL support
-// ---------------------------------------------------------------------------
-
 /// Build an octocrab client, optionally configured for GitHub Enterprise.
+///
+/// Returns the client together with a [`RetryAfterCapture`] whose tower
+/// middleware layer intercepts every HTTP response and stores the server's
+/// `Retry-After` header value (integer seconds) so the retry loops can
+/// honour it instead of always falling back to a constant.
 ///
 /// When `github_urls` is `None` or has no custom API URL, this produces a
 /// standard GitHub.com client.  When an `api` URL is set, the octocrab
@@ -21,88 +23,21 @@ use crate::release_log;
 /// `upload` is set, `upload_uri` is also overridden (octocrab uses this for
 /// release asset uploads).
 ///
-/// `skip_tls_verify` is supported by constructing a custom `hyper_rustls`
-/// connector whose `rustls::ClientConfig` disables certificate verification.
-/// This is the same approach GoReleaser uses via Go's `InsecureSkipVerify`.
+/// Both the normal and `skip_tls_verify` paths use the manual
+/// `OctocrabBuilder::with_service` / `with_layer` construction so the
+/// `RetryAfterLayer` can be injected into the middleware stack before
+/// octocrab's error mapping discards response headers.
 pub(crate) fn build_octocrab_client(
     token: &str,
     github_urls: &Option<GitHubUrlsConfig>,
-) -> Result<octocrab::Octocrab> {
+) -> Result<(octocrab::Octocrab, RetryAfterCapture)> {
     let skip_tls = github_urls
         .as_ref()
         .and_then(|u| u.skip_tls_verify)
         .unwrap_or(false);
 
-    if skip_tls {
-        // Build a custom hyper client with TLS verification disabled, then
-        // wrap it in octocrab's expected service layer stack.
-        build_octocrab_client_insecure(token, github_urls)
-    } else {
-        // Normal path: use octocrab's built-in hyper client.
-        //
-        // Explicit timeouts are essential for release-asset uploads: without
-        // them the hyper client has `None` for connect/read/write timeouts
-        // (octocrab's defaults) and a stalled upload — common for 10+ MB
-        // artifacts hitting a flaky edge on uploads.github.com — hangs for
-        // minutes until TCP keepalive gives up, compounded 4× by octocrab's
-        // default `RetryConfig::Simple(3)` middleware. A single stall can
-        // consume 5–10 min before surfacing as `Error::Serde` (proxy HTML in
-        // the body). Explicit idle timeouts surface the stall in ~60–90s so
-        // our outer retry loop can take over cleanly.
-        let mut builder = octocrab::Octocrab::builder()
-            .personal_token(token.to_owned())
-            .set_connect_timeout(Some(std::time::Duration::from_secs(30)))
-            .set_read_timeout(Some(std::time::Duration::from_secs(120)))
-            .set_write_timeout(Some(std::time::Duration::from_secs(120)));
+    let capture = RetryAfterCapture::new();
 
-        if let Some(urls) = github_urls {
-            if let Some(api) = &urls.api {
-                builder = builder
-                    .base_uri(api.as_str())
-                    .context("release: invalid github_urls.api URL")?;
-            }
-            if let Some(upload) = &urls.upload {
-                builder = builder
-                    .upload_uri(upload.as_str())
-                    .context("release: invalid github_urls.upload URL")?;
-            }
-        }
-
-        builder.build().context("release: build octocrab client")
-    }
-}
-
-/// Build an octocrab client that skips TLS certificate verification.
-///
-/// This follows octocrab's `custom_client.rs` example pattern: construct a
-/// hyper client with a custom `rustls::ClientConfig` that disables cert
-/// verification, then wrap it in octocrab's middleware layers for auth, base
-/// URI, and headers via `OctocrabBuilder::with_service` / `with_layer`.
-fn build_octocrab_client_insecure(
-    token: &str,
-    github_urls: &Option<GitHubUrlsConfig>,
-) -> Result<octocrab::Octocrab> {
-    release_log().warn("TLS certificate verification disabled for GitHub API — this is insecure");
-
-    // Build a rustls ClientConfig that accepts any server certificate.
-    let crypto_provider = rustls::crypto::ring::default_provider();
-    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(crypto_provider))
-        .with_safe_default_protocol_versions()
-        .context("release: configure TLS protocol versions")?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(DangerousNoCertVerifier::new()))
-        .with_no_client_auth();
-
-    let connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls_config)
-        .https_or_http()
-        .enable_http1()
-        .build();
-
-    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
-        .build(connector);
-
-    // Parse URIs the same way octocrab does.
     let base_uri: http::Uri = if let Some(api) = github_urls.as_ref().and_then(|u| u.api.as_ref()) {
         api.parse()
             .context("release: invalid github_urls.api URL")?
@@ -123,27 +58,94 @@ fn build_octocrab_client_insecure(
                 .unwrap_or_else(|e| panic!("hardcoded URI is valid: {e}"))
         };
 
-    // Follow octocrab's custom_client.rs example: with_service → with_layer
-    // for BaseUri, ExtraHeaders, and AuthHeader, then with_auth → build.
     let auth_header: HeaderValue = format!("Bearer {}", token)
         .parse()
         .context("release: format auth header")?;
 
-    octocrab::OctocrabBuilder::new_empty()
-        .with_service(client)
-        .with_layer(&ExtraHeadersLayer::new(Arc::new(vec![(
-            http::header::USER_AGENT,
-            HeaderValue::from_static("octocrab"),
-        )])))
-        .with_layer(&BaseUriLayer::new(base_uri.clone()))
-        .with_layer(&AuthHeaderLayer::new(
-            Some(auth_header),
-            base_uri,
-            upload_uri,
-        ))
-        .with_auth(octocrab::AuthState::None)
-        .build()
-        .map_err(|e| match e {}) // Infallible → never fails
+    let retry_layer = RetryAfterLayer::new(capture.clone());
+    let headers_layer = ExtraHeadersLayer::new(Arc::new(vec![(
+        http::header::USER_AGENT,
+        HeaderValue::from_static("octocrab"),
+    )]));
+    let base_layer = BaseUriLayer::new(base_uri.clone());
+    let auth_layer = AuthHeaderLayer::new(Some(auth_header), base_uri, upload_uri);
+
+    // Layer order (innermost → outermost):
+    //   hyper client → RetryAfter → ExtraHeaders → BaseUri → AuthHeader
+    //
+    // RetryAfterLayer sits closest to the transport so it sees the raw HTTP
+    // response (with all headers) before any upper layer processes or
+    // transforms it. octocrab's error mapping runs after all layers, so by
+    // the time it strips headers the capture has already stored the value.
+    //
+    // Both branches duplicate the 7-line builder chain because the hyper
+    // client types differ (TimeoutConnector vs plain HttpsConnector) and
+    // naming the body type (`octocrab::body::OctoBody`) is impossible from
+    // outside the crate. Inlining lets type inference resolve it.
+
+    let octo = if skip_tls {
+        release_log()
+            .warn("TLS certificate verification disabled for GitHub API — this is insecure");
+
+        let crypto_provider = rustls::crypto::ring::default_provider();
+        let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(crypto_provider))
+            .with_safe_default_protocol_versions()
+            .context("release: configure TLS protocol versions")?
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(DangerousNoCertVerifier::new()))
+            .with_no_client_auth();
+
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls_config)
+            .https_or_http()
+            .enable_http1()
+            .build();
+
+        let client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(connector);
+
+        octocrab::OctocrabBuilder::new_empty()
+            .with_service(client)
+            .with_layer(&retry_layer)
+            .with_layer(&headers_layer)
+            .with_layer(&base_layer)
+            .with_layer(&auth_layer)
+            .with_auth(octocrab::AuthState::None)
+            .build()
+            .map_err(|e| match e {})?
+    } else {
+        // Explicit timeouts are essential for release-asset uploads: without
+        // them a stalled connection to uploads.github.com can hang for
+        // minutes until TCP keepalive gives up.
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("release: load native TLS root certificates")
+            .https_or_http()
+            .enable_http1()
+            .build();
+
+        let mut timeout = hyper_timeout::TimeoutConnector::new(connector);
+        timeout.set_connect_timeout(Some(std::time::Duration::from_secs(30)));
+        timeout.set_read_timeout(Some(std::time::Duration::from_secs(120)));
+        timeout.set_write_timeout(Some(std::time::Duration::from_secs(120)));
+
+        let client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build(timeout);
+
+        octocrab::OctocrabBuilder::new_empty()
+            .with_service(client)
+            .with_layer(&retry_layer)
+            .with_layer(&headers_layer)
+            .with_layer(&base_layer)
+            .with_layer(&auth_layer)
+            .with_auth(octocrab::AuthState::None)
+            .build()
+            .map_err(|e| match e {})?
+    };
+
+    Ok((octo, capture))
 }
 
 /// A [`rustls::client::danger::ServerCertVerifier`] that accepts all certificates
@@ -152,8 +154,6 @@ fn build_octocrab_client_insecure(
 /// or air-gapped environments.
 #[derive(Debug)]
 struct DangerousNoCertVerifier {
-    /// Pre-computed signature schemes from the ring crypto provider, avoiding
-    /// a fresh `CryptoProvider` allocation on every call to `supported_verify_schemes`.
     schemes: Vec<rustls::SignatureScheme>,
 }
 

@@ -31,7 +31,7 @@ pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit;
 pub(crate) use retry_call::{format_retry_warn, is_octocrab_404, retry_octocrab_call};
-use secondary_rate_limit::{is_secondary_rate_limit, secondary_rl_delay};
+use secondary_rate_limit::{RetryAfterCapture, is_secondary_rate_limit, secondary_rl_delay};
 
 /// Resolve the upload retry loop's per-iteration locals from a [`RetryPolicy`].
 ///
@@ -259,7 +259,8 @@ pub(crate) fn run_github_backend(
         // Wrap octo in Arc up front so the retry-wrapped closures (and the
         // parallel upload tasks downstream) can `Clone` a fresh handle per
         // attempt without moving the original.
-        let octo = Arc::new(build_octocrab_client(&token_str, &github_urls)?);
+        let (octo_raw, retry_after_capture) = build_octocrab_client(&token_str, &github_urls)?;
+        let octo = Arc::new(octo_raw);
         let rate_limit_client = reqwest::Client::new();
 
         // Helper: list all releases (with pagination) and find a draft
@@ -282,6 +283,7 @@ pub(crate) fn run_github_backend(
             repo: &str,
             name: &str,
             policy: &anodizer_core::retry::RetryPolicy,
+            retry_after: Option<&RetryAfterCapture>,
         ) -> Result<Option<octocrab::models::repos::Release>> {
             let mut page: u32 = 1;
             loop {
@@ -290,7 +292,7 @@ pub(crate) fn run_github_backend(
                     owner, repo, page
                 );
                 let releases: Vec<octocrab::models::repos::Release> =
-                    retry_octocrab_call(policy, "list releases", || {
+                    retry_octocrab_call(policy, "list releases", retry_after, || {
                         let route = route.clone();
                         let octo = octo.clone();
                         async move { octo.get(route, None::<&()>).await }
@@ -326,7 +328,7 @@ pub(crate) fn run_github_backend(
         if replace_existing_draft
             && draft
             && let Some(existing) =
-                find_draft_by_name(&octo, &github.owner, &github.name, release_name, &policy)
+                find_draft_by_name(&octo, &github.owner, &github.name, release_name, &policy, Some(&retry_after_capture))
                     .await?
         {
             log.status(&format!(
@@ -336,7 +338,7 @@ pub(crate) fn run_github_backend(
             let existing_id = existing.id.into_inner();
             let owner = github.owner.clone();
             let repo = github.name.clone();
-            retry_octocrab_call(&policy, "delete release", || {
+            retry_octocrab_call(&policy, "delete release", Some(&retry_after_capture), || {
                 let octo = octo.clone();
                 let owner = owner.clone();
                 let repo = repo.clone();
@@ -359,7 +361,7 @@ pub(crate) fn run_github_backend(
         // Handle use_existing_draft: look for an existing draft release
         // with the same NAME and update it instead of creating a new one.
         let existing_draft = if use_existing_draft {
-            match find_draft_by_name(&octo, &github.owner, &github.name, release_name, &policy)
+            match find_draft_by_name(&octo, &github.owner, &github.name, release_name, &policy, Some(&retry_after_capture))
                 .await?
             {
                 Some(existing) => {
@@ -403,7 +405,7 @@ pub(crate) fn run_github_backend(
                 let repo = github.name.clone();
                 let tag_owned = tag.to_string();
                 let lookup: Result<octocrab::models::repos::Release, octocrab::Error> =
-                    retry_octocrab_call(&policy, "get release by tag", || {
+                    retry_octocrab_call(&policy, "get release by tag", Some(&retry_after_capture), || {
                         let octo = octo.clone();
                         let owner = owner.clone();
                         let repo = repo.clone();
@@ -513,7 +515,7 @@ pub(crate) fn run_github_backend(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, existing.id
             );
-            retry_octocrab_call(&policy, "update draft release", || {
+            retry_octocrab_call(&policy, "update draft release", Some(&retry_after_capture), || {
                 let route = route.clone();
                 let body = json_body.clone();
                 let octo = octo.clone();
@@ -552,7 +554,7 @@ pub(crate) fn run_github_backend(
                     serde_json::Value::Bool(existing.draft),
                 );
             }
-            retry_octocrab_call(&policy, "update existing release", || {
+            retry_octocrab_call(&policy, "update existing release", Some(&retry_after_capture), || {
                 let route = route.clone();
                 let body = patch_body.clone();
                 let octo = octo.clone();
@@ -571,7 +573,7 @@ pub(crate) fn run_github_backend(
         } else {
             // Create a new release via POST.
             let route = format!("/repos/{}/{}/releases", github.owner, github.name);
-            retry_octocrab_call(&policy, "create release", || {
+            retry_octocrab_call(&policy, "create release", Some(&retry_after_capture), || {
                 let route = route.clone();
                 let body = json_body.clone();
                 let octo = octo.clone();
@@ -671,6 +673,7 @@ pub(crate) fn run_github_backend(
                 let gh_name = gh_name.clone();
                 let tag_c = tag_for_upload.clone();
                 let token_for_rate_limit = token_str.clone();
+                let retry_after_for_upload = retry_after_capture.clone();
 
                 join_set.spawn(async move {
                     let _permit = sem
@@ -885,7 +888,7 @@ pub(crate) fn run_github_backend(
                                 // path — secondary limits are transient
                                 // burst guards, not quota exhaustion.
                                 if is_secondary_rate_limit(&err) {
-                                    let delay = jitter_duration(secondary_rl_delay());
+                                    let delay = jitter_duration(secondary_rl_delay(Some(&retry_after_for_upload)));
                                     release_log().warn(&format!(
                                         "release: upload of '{file_name}' hit GitHub secondary \
                                          rate limit; sleeping {:.1}s before retry \
@@ -1034,7 +1037,7 @@ pub(crate) fn run_github_backend(
             // controls how aggressively to retry. Defaults (10 attempts, 10s
             // base, 5m cap) match GoReleaser's `pkg/config.Retry` defaults.
             let _published: octocrab::models::repos::Release =
-                retry_octocrab_call(&policy, "publish PATCH", || {
+                retry_octocrab_call(&policy, "publish PATCH", Some(&retry_after_capture), || {
                     let publish_route = publish_route.clone();
                     let publish_body = publish_body.clone();
                     let octo = octo.clone();
@@ -1188,7 +1191,7 @@ mod get_by_tag_lookup_tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<Vec<serde_json::Value>, octocrab::Error> =
-            retry_octocrab_call(&policy, "get release by tag", || async {
+            retry_octocrab_call(&policy, "get release by tag", None, || async {
                 octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
                     .await
             })
@@ -1224,7 +1227,7 @@ mod get_by_tag_lookup_tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<serde_json::Value, octocrab::Error> =
-            retry_octocrab_call(&policy, "get release by tag", || async {
+            retry_octocrab_call(&policy, "get release by tag", None, || async {
                 octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
                     .await
             })
@@ -1261,7 +1264,7 @@ mod get_by_tag_lookup_tests {
             max_delay: Duration::from_millis(2),
         };
         let result: Result<serde_json::Value, octocrab::Error> =
-            retry_octocrab_call(&policy, "get release by tag", || async {
+            retry_octocrab_call(&policy, "get release by tag", None, || async {
                 octo.get("/repos/owner/repo/releases/tags/v1.0.0", None::<&()>)
                     .await
             })
