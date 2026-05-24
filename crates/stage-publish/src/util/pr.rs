@@ -612,8 +612,26 @@ pub(crate) fn submit_pr_via_gh_with_opts(
 
 #[cfg(test)]
 mod tests {
-    use super::{PrTransport, classify_pr_transport};
-    use anodizer_core::config::{HomebrewCaskConfig, KrewConfig, StringOrBool, WingetConfig};
+    use super::{PrOrigin, PrTransport, classify_pr_transport, maybe_submit_pr};
+    use anodizer_core::config::{
+        HomebrewCaskConfig, KrewConfig, PullRequestConfig, RepositoryConfig, StringOrBool,
+        WingetConfig,
+    };
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use std::path::Path;
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("pr-test", Verbosity::Quiet)
+    }
+
+    fn origin() -> PrOrigin<'static> {
+        PrOrigin {
+            repo_owner: "fork-owner",
+            repo_name: "fork-repo",
+            branch_name: "release/v1.2.3",
+            update_existing_pr: false,
+        }
+    }
 
     /// gh on PATH wins regardless of whether a token is also present —
     /// gh can force-push to update an existing PR's branch, the API
@@ -715,5 +733,115 @@ mod tests {
         assert!(msg.contains("updated in place"), "{msg}");
         assert!(msg.contains("winget"), "{msg}");
         assert!(msg.contains("owner:my-app-1.2.3"), "{msg}");
+    }
+
+    /// `maybe_submit_pr` with `repo = None` must short-circuit to `None`
+    /// before ever touching git, gh, or the network. Pins the
+    /// "PR-disabled is the default" contract: a publisher that forgets
+    /// to wire `repo` cannot accidentally open a PR.
+    #[test]
+    fn maybe_submit_pr_returns_none_when_repo_is_none() {
+        let log = quiet_log();
+        let outcome = maybe_submit_pr(
+            Path::new("/nonexistent/should-never-be-touched"),
+            None,
+            &origin(),
+            "title",
+            "body",
+            "label",
+            &log,
+        );
+        assert!(
+            outcome.is_none(),
+            "repo=None must short-circuit before any git/gh/HTTP work"
+        );
+    }
+
+    /// `maybe_submit_pr` with a repo whose `pull_request` field is
+    /// `None` must short-circuit to `None`. Pins the
+    /// pull_request-block-missing branch of the early-return guard.
+    #[test]
+    fn maybe_submit_pr_returns_none_when_pull_request_block_absent() {
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            pull_request: None,
+            ..Default::default()
+        };
+        let outcome = maybe_submit_pr(
+            Path::new("/nonexistent/should-never-be-touched"),
+            Some(&repo),
+            &origin(),
+            "title",
+            "body",
+            "label",
+            &log,
+        );
+        assert!(
+            outcome.is_none(),
+            "pull_request=None must short-circuit before any git/gh/HTTP work"
+        );
+    }
+
+    /// `maybe_submit_pr` with `pull_request.enabled = Some(false)` must
+    /// short-circuit to `None`. Pins the explicit opt-out branch:
+    /// configuring the block but leaving it disabled is NOT a green-light.
+    #[test]
+    fn maybe_submit_pr_returns_none_when_pull_request_disabled() {
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let outcome = maybe_submit_pr(
+            Path::new("/nonexistent/should-never-be-touched"),
+            Some(&repo),
+            &origin(),
+            "title",
+            "body",
+            "label",
+            &log,
+        );
+        assert!(
+            outcome.is_none(),
+            "pull_request.enabled=false must short-circuit before any git/gh/HTTP work"
+        );
+    }
+
+    /// `maybe_submit_pr` with `pull_request.enabled = None` (the field
+    /// defaulted) must short-circuit to `None`. Pins the
+    /// "enabled defaults to off" contract — the early-return guard
+    /// requires `enabled == Some(true)`, not just "block present".
+    #[test]
+    fn maybe_submit_pr_returns_none_when_pull_request_enabled_unset() {
+        let log = quiet_log();
+        let repo = RepositoryConfig {
+            owner: Some("fork-owner".into()),
+            name: Some("fork-repo".into()),
+            pull_request: Some(PullRequestConfig {
+                enabled: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let outcome = maybe_submit_pr(
+            Path::new("/nonexistent/should-never-be-touched"),
+            Some(&repo),
+            &origin(),
+            "title",
+            "body",
+            "label",
+            &log,
+        );
+        assert!(
+            outcome.is_none(),
+            "pull_request.enabled=None must short-circuit before any git/gh/HTTP work"
+        );
     }
 }

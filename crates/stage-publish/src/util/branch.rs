@@ -33,3 +33,64 @@ pub(super) fn fetch_default_branch(owner: &str, name: &str, token: Option<&str>)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::{GitRepoConfig, RepositoryConfig};
+
+    /// `resolve_branch` returns `None` when the entire repo config is absent —
+    /// callers must fall back to the upstream default-branch path rather than
+    /// pushing to a fabricated branch name.
+    #[test]
+    fn resolve_branch_returns_none_when_repo_missing() {
+        assert!(resolve_branch(None).is_none());
+    }
+
+    /// A repo config with no explicit `branch:` also returns `None` so the
+    /// caller defers to the GitHub default-branch lookup.
+    #[test]
+    fn resolve_branch_returns_none_when_branch_unset() {
+        let repo = RepositoryConfig {
+            owner: Some("o".into()),
+            name: Some("n".into()),
+            branch: None,
+            ..Default::default()
+        };
+        assert!(resolve_branch(Some(&repo)).is_none());
+    }
+
+    /// When `branch:` is explicitly set, that exact value is returned —
+    /// the function is a pure projection, no normalisation, no defaulting.
+    #[test]
+    fn resolve_branch_returns_configured_branch_verbatim() {
+        let repo = RepositoryConfig {
+            branch: Some("release/v2".into()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_branch(Some(&repo)), Some("release/v2"));
+    }
+
+    /// Sister fields on the config (e.g. `git.url`) do not interfere — only
+    /// `branch:` is consulted. Guards against a future refactor that
+    /// accidentally swallows the SSH `git.url` into the branch slot.
+    #[test]
+    fn resolve_branch_ignores_unrelated_fields() {
+        let repo = RepositoryConfig {
+            branch: Some("main".into()),
+            git: Some(GitRepoConfig {
+                url: Some("ssh://git@example.com/x.git".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(resolve_branch(Some(&repo)), Some("main"));
+    }
+
+    // `fetch_default_branch` hardcodes the GitHub API base URL, so it
+    // can't be redirected to spawn_oneshot_http_responder without a
+    // production refactor (accept a base URL or inject the client).
+    // Coverage for the 200/404/transport branches is deferred until
+    // that refactor lands — a real-network test would add flakiness
+    // and slow every developer's `cargo test` for marginal value.
+}

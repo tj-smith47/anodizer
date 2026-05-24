@@ -142,6 +142,7 @@ mod tests {
     //! "terminate the process" disposition. The race is bounded by a
     //! 2-second timeout so a regression (handler not installed, signal
     //! lost) fails loudly instead of hanging the test runner.
+    use super::*;
     use tokio::signal::unix::{SignalKind, signal};
 
     #[tokio::test(flavor = "current_thread")]
@@ -185,5 +186,43 @@ mod tests {
         // constant on this target. Catches accidental rename / removal in
         // future tokio releases without needing a tokio runtime.
         let _ = SignalKind::terminate();
+    }
+
+    /// Pin the silent-degrade contract: when the rate-limit HTTP request
+    /// fails at the transport layer (connection refused), the function
+    /// must return promptly instead of propagating or panicking.
+    ///
+    /// We point `api.github.com` at a TCP address that has just been
+    /// closed (bind + drop the listener) so the `client.get(...).send()`
+    /// future resolves to `Err(_)`, exercising the first `Err(_) => return`
+    /// arm at line 42. The 5 s timeout bounds a regression: if the
+    /// silent-degrade arm is removed or replaced with a `.unwrap()`, the
+    /// task panics and the timeout fires.
+    #[tokio::test]
+    async fn transport_failure_silently_degrades() {
+        // Acquire an ephemeral port then drop the listener — subsequent
+        // connects to this address yield `Connection refused`.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        drop(listener);
+
+        // Build a reqwest client whose DNS resolution maps
+        // `api.github.com` to the now-closed loopback port. The hardcoded
+        // `https://api.github.com/rate_limit` URL inside the function
+        // then resolves to a TCP connect that fails immediately.
+        let client = reqwest::Client::builder()
+            .resolve("api.github.com", addr)
+            .build()
+            .expect("reqwest client builds");
+
+        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        // 5 s upper bound — Linux returns `ECONNREFUSED` synchronously,
+        // so the silent-degrade arm should fire in <1 s. If we hang, the
+        // function violated its no-panic / no-bubble contract.
+        let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
+        assert!(
+            res.is_ok(),
+            "check_github_rate_limit must silently degrade on transport failure, not hang"
+        );
     }
 }

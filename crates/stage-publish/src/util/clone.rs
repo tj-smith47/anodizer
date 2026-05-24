@@ -199,3 +199,311 @@ pub(crate) fn clone_repo(
     );
     clone_repo_with_auth(&repo_url, token, tmp_dir, label, log)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::{GitRepoConfig, RepositoryConfig};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use std::process::Command;
+    use std::sync::OnceLock;
+
+    /// Ensure the test process has a git identity. Subprocess `git`
+    /// invocations inside the clone helpers inherit env from the test
+    /// process; without this they bail with "Author identity unknown".
+    /// One-shot via `OnceLock` to avoid the parallel-test set_var race.
+    fn ensure_git_identity() {
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| unsafe {
+            std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+            std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+            std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+            std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+        });
+    }
+
+    /// Build a bare remote with one commit on `master`. Returns the
+    /// filesystem path to the bare repo (suitable as a `git clone` URL).
+    fn make_bare_remote() -> (String, tempfile::TempDir, tempfile::TempDir) {
+        ensure_git_identity();
+        let bare = tempfile::tempdir().expect("bare");
+        let work = tempfile::tempdir().expect("work");
+
+        assert!(
+            Command::new("git")
+                .args(["init", "--bare", "-b", "master"])
+                .arg(bare.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+
+        for args in [
+            vec!["init", "-b", "master"],
+            vec!["config", "user.email", "t@example.invalid"],
+            vec!["config", "user.name", "T"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(&args)
+                    .current_dir(work.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(work.path().join("README"), "hi\n").unwrap();
+        for args in [vec!["add", "README"], vec!["commit", "-m", "initial"]] {
+            assert!(
+                Command::new("git")
+                    .args(&args)
+                    .current_dir(work.path())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        assert!(
+            Command::new("git")
+                .args(["remote", "add", "origin"])
+                .arg(bare.path())
+                .current_dir(work.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["push", "-u", "origin", "master"])
+                .current_dir(work.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+        (bare.path().to_string_lossy().into_owned(), bare, work)
+    }
+
+    // ------------------------------------------------------------------
+    // inject_token_in_url — pure string transform.
+    // ------------------------------------------------------------------
+
+    /// HTTPS URLs get the `x-access-token:<tok>@` prefix injected after
+    /// the scheme — the exact shape `actions/checkout` uses and the only
+    /// shape that works across all GitHub token types per the rustdoc.
+    #[test]
+    fn inject_token_in_url_https_inserts_userinfo() {
+        let out = inject_token_in_url("https://github.com/owner/repo.git", "ghp_xyz");
+        assert_eq!(
+            out,
+            "https://x-access-token:ghp_xyz@github.com/owner/repo.git"
+        );
+    }
+
+    /// Non-HTTPS URLs (SSH, file://, etc.) pass through unchanged — the
+    /// dispatcher routes those to the SSH path, where token-in-URL would
+    /// be both meaningless and confusing.
+    #[test]
+    fn inject_token_in_url_non_https_passthrough() {
+        let ssh = "ssh://git@github.com/owner/repo.git";
+        assert_eq!(inject_token_in_url(ssh, "tok"), ssh);
+        let path = "/tmp/foo/bar";
+        assert_eq!(inject_token_in_url(path, "tok"), path);
+    }
+
+    // ------------------------------------------------------------------
+    // clone_repo_with_auth — token-less happy path against local bare.
+    // ------------------------------------------------------------------
+
+    /// Cloning a real local bare remote with `token = None` must succeed
+    /// and populate the working tree with the committed file. Exercises
+    /// the no-auth branch of `clone_repo_with_auth` end-to-end.
+    #[test]
+    fn clone_repo_with_auth_no_token_clones_local_bare() {
+        let (url, _bare, _work) = make_bare_remote();
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dest = tempfile::tempdir().unwrap();
+        // tempdir creates the dir; git refuses to clone into an existing
+        // non-empty path, but an empty fresh tempdir is fine.
+        clone_repo_with_auth(&url, None, dest.path(), "demo", &log)
+            .expect("clone local bare with no token");
+        assert!(
+            dest.path().join("README").exists(),
+            "expected README from initial commit to be present in clone"
+        );
+    }
+
+    /// A bad URL must surface as an Err (not a panic). `label` should
+    /// appear in the bubbled error to help operators correlate the
+    /// failure with the calling publisher.
+    #[test]
+    fn clone_repo_with_auth_fails_on_bad_url() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dest = tempfile::tempdir().unwrap();
+        let err = clone_repo_with_auth(
+            "/this/path/does/not/exist/zzz.git",
+            None,
+            dest.path(),
+            "demo-label",
+            &log,
+        )
+        .expect_err("expected clone of nonexistent path to fail");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("demo-label"),
+            "expected label in error chain, got: {msg}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // clone_repo_ssh — exercise key-writing + ssh_command pass-through.
+    // ------------------------------------------------------------------
+
+    /// With no `private_key` / `ssh_command`, `clone_repo_ssh` falls
+    /// through to a plain `git clone` (no `GIT_SSH_COMMAND` set). Using
+    /// a local filesystem path as the URL skips the actual SSH transport
+    /// while still exercising the code path that builds the `Command`.
+    #[test]
+    fn clone_repo_ssh_no_key_clones_local_path() {
+        let (url, _bare, _work) = make_bare_remote();
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dest = tempfile::tempdir().unwrap();
+        clone_repo_ssh(&url, None, None, dest.path(), "ssh-test", &log)
+            .expect("ssh clone of local bare with no key");
+        assert!(dest.path().join("README").exists());
+    }
+
+    /// When `private_key` is provided, the helper writes the key to a
+    /// sibling `.anodizer_ssh_key` file with 0o600 perms (Unix). We can
+    /// observe the side-effect even if the clone itself fails downstream,
+    /// because the key write happens BEFORE the spawn. Use a parent dir
+    /// with a not-yet-existing child so the sibling-write logic kicks in.
+    #[cfg(unix)]
+    #[test]
+    fn clone_repo_ssh_private_key_writes_keyfile_with_0600_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("clone-target");
+        // Don't create the dest dir — `git clone` will. We just need
+        // its parent to exist so the sibling `.anodizer_ssh_key` lands
+        // somewhere we can inspect.
+        let _ = clone_repo_ssh(
+            "ssh://git@127.0.0.1:1/never.git",
+            Some("FAKE-KEY-MATERIAL\n"),
+            None,
+            &dest,
+            "ssh-key-test",
+            &log,
+        );
+        // The keyfile lives in the parent of `dest` (see source). Clone
+        // will fail (the SSH URL is fake) but the key write happens
+        // first, so the file should exist.
+        let key_path = dest.parent().unwrap().join(".anodizer_ssh_key");
+        assert!(
+            key_path.exists(),
+            "expected SSH private key sidecar to be written at {}",
+            key_path.display()
+        );
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "key file must be 0600 for ssh to accept it");
+        let body = std::fs::read_to_string(&key_path).unwrap();
+        assert_eq!(body, "FAKE-KEY-MATERIAL\n");
+    }
+
+    // ------------------------------------------------------------------
+    // clone_repo dispatcher — picks SSH vs HTTPS.
+    // ------------------------------------------------------------------
+
+    /// When `repository.git.url` is set, the dispatcher routes to the
+    /// SSH path and ignores the HTTPS fallback owner/name. Local-path
+    /// URL stands in for an SSH URL — `clone_repo_ssh` doesn't enforce
+    /// the scheme, only the dispatcher's discriminator does.
+    #[test]
+    fn clone_repo_dispatcher_uses_git_url_when_set() {
+        let (url, _bare, _work) = make_bare_remote();
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let dest = tempfile::tempdir().unwrap();
+        let repo = RepositoryConfig {
+            git: Some(GitRepoConfig {
+                url: Some(url.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        clone_repo(
+            Some(&repo),
+            "ignored-owner",
+            "ignored-name",
+            None,
+            dest.path(),
+            "dispatch",
+            &log,
+        )
+        .expect("dispatcher should clone via SSH path when git.url is set");
+        assert!(dest.path().join("README").exists());
+    }
+
+    // HTTPS fallback branch coverage is deferred — the production
+    // dispatcher builds `https://github.com/<owner>/<name>.git`
+    // unconditionally on the no-git-url path, so testing that branch
+    // without a real network round-trip would need either a local
+    // HTTPS reverse proxy or a refactor to inject the base URL.
+    // Neither is worth the complexity for a single branch arrow.
+
+    /// A non-"github" `token_type` triggers a warn but does NOT abort
+    /// dispatch — anodizer currently only implements GitHub, but the
+    /// user-facing contract is "warn, don't fail". We assert the warn
+    /// landed in the capture sink, AND that the call proceeded into the
+    /// SSH path (succeeds with our local bare remote).
+    #[test]
+    fn clone_repo_warns_on_non_github_token_type_but_proceeds() {
+        let (url, _bare, _work) = make_bare_remote();
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let dest = tempfile::tempdir().unwrap();
+        let repo = RepositoryConfig {
+            token_type: Some("gitlab".into()),
+            git: Some(GitRepoConfig {
+                url: Some(url.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        clone_repo(Some(&repo), "o", "n", None, dest.path(), "warn-test", &log)
+            .expect("should proceed despite unsupported token_type");
+        assert_eq!(cap.warn_count(), 1, "expected one warn for token_type");
+        let msgs = cap.all_messages();
+        assert!(
+            msgs.iter()
+                .any(|(_, m)| m.contains("token_type") && m.contains("gitlab")),
+            "expected warn naming the offending token_type, got: {msgs:?}"
+        );
+    }
+
+    /// `token_type = "github"` (the supported value) must NOT emit a
+    /// warning. Same for the case-insensitive variants and the empty
+    /// string (treated as "unset" per the source).
+    #[test]
+    fn clone_repo_does_not_warn_for_github_token_type() {
+        let (url, _bare, _work) = make_bare_remote();
+        for tt in ["github", "GitHub", "GITHUB", ""] {
+            let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+            let dest = tempfile::tempdir().unwrap();
+            let repo = RepositoryConfig {
+                token_type: Some(tt.into()),
+                git: Some(GitRepoConfig {
+                    url: Some(url.clone()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            clone_repo(Some(&repo), "o", "n", None, dest.path(), "ok", &log)
+                .expect("should clone cleanly");
+            assert_eq!(
+                cap.warn_count(),
+                0,
+                "expected no warn for token_type={tt:?}"
+            );
+        }
+    }
+}
