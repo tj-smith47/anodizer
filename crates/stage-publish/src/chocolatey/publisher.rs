@@ -187,6 +187,17 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             is_chocolatey_per_crate_configured,
         );
         log.status(&run_start_message(selected.len()));
+        // `processed` counts configured crates the loop ENTERED (post
+        // implicit-all filter, post `is_chocolatey_per_crate_configured`
+        // defensive guard). It is incremented BEFORE
+        // `publish_to_chocolatey` runs, so it includes crates whose
+        // publish path returned Err — the `?` short-circuits the run
+        // without decrementing. The done/no-eligible log uses it to
+        // distinguish "no eligible crate selected" (= 0) from "tried
+        // at least one" (≥ 1). `targets` tracks actual pushes
+        // separately so rollback evidence can't lie about what was
+        // submitted.
+        let mut processed = 0usize;
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
@@ -194,16 +205,21 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                 log.status(&run_skip_unconfigured_message(crate_name));
                 continue;
             }
+            processed += 1;
+            log.status(&run_per_crate_start_message(crate_name));
             // Snapshot the target shape BEFORE the publish path runs so
             // a mid-publish failure still leaves the operator a manual
-            // withdrawal pointer.
-            if let Some(t) = collect_chocolatey_target(ctx, crate_name) {
+            // withdrawal pointer — but only commit the snapshot if the
+            // publish actually pushed (returns Ok(true)). Recording a
+            // target for a skipped run produces a misleading
+            // "manual withdrawal required" warning at rollback time
+            // for a package this run never submitted.
+            let snapshot = collect_chocolatey_target(ctx, crate_name);
+            let pushed = super::publish::publish_to_chocolatey(ctx, crate_name, &log)?;
+            if pushed && let Some(t) = snapshot {
                 targets.push(t);
             }
-            log.status(&run_per_crate_start_message(crate_name));
-            super::publish::publish_to_chocolatey(ctx, crate_name, &log)?;
         }
-        let processed = targets.len();
         if processed == 0 {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
@@ -457,12 +473,14 @@ mod publisher_tests {
     }
 
     /// Run the publisher end-to-end in dry-run mode against a context
-    /// that selects a choco-configured crate. Verifies the run path is
-    /// wired (returns Ok, records target evidence). The log lines
-    /// themselves are written to stderr and asserted indirectly via the
-    /// helper-string tests above.
+    /// that selects a choco-configured crate. Verifies the run path
+    /// executes the configured crate (returns Ok with the "chocolatey"
+    /// evidence name) but does NOT record rollback targets — dry-run
+    /// pushes nothing, so recording a target would later mislead
+    /// rollback into emitting a "manual withdrawal required" warning
+    /// for a package this run never submitted.
     #[test]
-    fn chocolatey_publisher_run_dry_run_records_target() {
+    fn chocolatey_publisher_run_dry_run_executes_without_recording_targets() {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
         let mut ctx = TestContextBuilder::new()
             .crates(vec![choco_crate("demo", None)])
@@ -485,18 +503,19 @@ mod publisher_tests {
         });
         let p = ChocolateyPublisher::new();
         let evidence = p.run(&mut ctx).expect("dry-run publisher.run");
-        // primary_ref + extra.chocolatey_targets must reflect that the
-        // run path actually visited the demo crate (not silently
-        // skipped). Without these the publisher would report
-        // "succeeded" with nothing recorded — indistinguishable from a
-        // real push to a downstream summary.
-        assert_eq!(
-            evidence.primary_ref.as_deref(),
-            Some("https://community.chocolatey.org/packages/demo")
+        assert_eq!(evidence.publisher, "chocolatey");
+        assert!(
+            evidence.primary_ref.is_none(),
+            "dry-run must not record a primary_ref — nothing was pushed; \
+             primary_ref={:?}",
+            evidence.primary_ref
         );
         let targets = decode_chocolatey_targets(&evidence.extra);
-        assert_eq!(targets.len(), 1, "{:?}", targets);
-        assert_eq!(targets[0].crate_name, "demo");
+        assert!(
+            targets.is_empty(),
+            "dry-run must not record rollback targets; got {:?}",
+            targets
+        );
     }
 
     /// When the publisher is registered (a crate has a choco block) but
@@ -540,30 +559,30 @@ mod publisher_tests {
     /// shape, produced by `release --publish-only` with no
     /// `--crate`/`--all`) MUST resolve to implicit-all over every crate
     /// carrying a `publish.chocolatey` block. Without this the publisher
-    /// would emit `run_done_message(0)` and silently report success,
-    /// which is the root-cause failure mode this regression test pins
-    /// against.
+    /// would emit `run_done_message(0)` and silently report success.
+    ///
+    /// Asserted via the non-dry-run path: in dry-run, target snapshots
+    /// aren't recorded (push didn't happen), so the most direct probe
+    /// of "loop body executed for demo" is to call
+    /// `effective_publish_crates` with the same predicate the run loop
+    /// uses. A regression that breaks implicit-all returns an empty
+    /// list here.
     #[test]
-    fn chocolatey_publisher_run_empty_selection_publishes_all_configured() {
-        let mut ctx = TestContextBuilder::new()
+    fn chocolatey_publisher_run_empty_selection_includes_all_configured() {
+        let ctx = TestContextBuilder::new()
             .crates(vec![choco_crate("demo", None)])
             // selected_crates intentionally left at the default Vec::new()
             .dry_run(true)
             .build();
-        let p = ChocolateyPublisher::new();
-        let evidence = p.run(&mut ctx).expect("publisher.run ok");
+        let names = crate::publisher_helpers::effective_publish_crates(
+            &ctx,
+            is_chocolatey_per_crate_configured,
+        );
         assert_eq!(
-            evidence.primary_ref.as_deref(),
-            Some("https://community.chocolatey.org/packages/demo"),
+            names,
+            vec!["demo".to_string()],
             "empty selection must implicitly include every choco-configured crate"
         );
-        let targets = decode_chocolatey_targets(&evidence.extra);
-        assert_eq!(
-            targets.len(),
-            1,
-            "empty selection must produce one target per choco-configured crate"
-        );
-        assert_eq!(targets[0].crate_name, "demo");
     }
 
     /// Implicit-all must still produce empty evidence when zero crates

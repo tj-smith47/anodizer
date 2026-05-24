@@ -751,9 +751,18 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         let log = ctx.logger("publish");
         let mut targets: Vec<AurSourceTarget> = Vec::new();
         let mut any_pushed = false;
-        let selected = ctx.options.selected_crates.clone();
+        // Implicit-all: when --crate is not passed, walk every crate with a
+        // `publish.aur_source` block. Reading `selected_crates` raw here
+        // would silently skip per-crate configs — see
+        // [`crate::publisher_helpers::effective_publish_crates`].
+        let selected = crate::publisher_helpers::effective_publish_crates(
+            ctx,
+            is_aur_source_per_crate_configured,
+        );
         // Per-crate aur_source blocks.
         for crate_name in &selected {
+            // Defensive guard for explicit `--crate=X` selection when X has
+            // no aur_source block; implicit-all is already filtered above.
             if !is_aur_source_per_crate_configured(ctx, crate_name) {
                 continue;
             }

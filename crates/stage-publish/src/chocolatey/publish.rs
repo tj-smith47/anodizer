@@ -13,7 +13,18 @@ use super::package::{
     FeedHashResult, compute_nupkg_hash, create_nupkg, package_feed_hash, push_nupkg,
 };
 
-pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+/// Returns `Ok(true)` when an actual `push_nupkg` happened against the
+/// feed, `Ok(false)` for every skip path (skip=true template, dry-run,
+/// missing API key, hash-match already-published, pending-moderation
+/// without `republish_in_moderation`). The caller MUST use the bool to
+/// gate rollback-evidence recording — recording a target the run never
+/// pushed produces a misleading "manual withdrawal required" warning at
+/// rollback time.
+pub fn publish_to_chocolatey(
+    ctx: &mut Context,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<bool> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "chocolatey")?;
 
     let choco_cfg = publish
@@ -49,7 +60,7 @@ pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLog
                 "chocolatey: skipping publish for '{}' (skip=true)",
                 crate_name
             ));
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -63,7 +74,7 @@ pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLog
                 format!(" to {}/{}", repo_owner, repo_name)
             }
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let version = ctx.version();
@@ -280,8 +291,33 @@ pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLog
         })
     };
     let copyright_rendered = render(choco_cfg.copyright.as_deref());
-    let summary_rendered = render(choco_cfg.summary.as_deref());
-    let release_notes_rendered = render(choco_cfg.release_notes.as_deref());
+    // GoReleaser Pro parity: summary falls back to project-level
+    // `metadata.description` (the 1-line summary), same source the
+    // `description` field already falls back to. The Chocolatey gallery
+    // requires `<summary>`; without this fallback an unset `summary:` in
+    // the choco block emitted an empty tag, which gallery moderators
+    // flag as incomplete metadata.
+    let summary_rendered = render(choco_cfg.summary.as_deref()).or_else(|| {
+        ctx.config.meta_description().map(|s| {
+            anodizer_core::template::render(s, ctx.template_vars())
+                .unwrap_or_else(|_| s.to_string())
+        })
+    });
+    // GoReleaser Pro parity: release_notes falls back to the resolved
+    // `metadata.full_description` (the long-form body, typically
+    // README.md via `from_file:`). Without this fallback an unset
+    // `release_notes:` in the choco block left the nuspec
+    // `<releaseNotes>` empty even when the project carried a
+    // README. `render_template` walks the structured `Metadata` map
+    // populated at context bootstrap.
+    let release_notes_rendered = render(choco_cfg.release_notes.as_deref()).or_else(|| {
+        let resolved = ctx.render_template("{{ Metadata.FullDescription }}").ok()?;
+        if resolved.is_empty() {
+            None
+        } else {
+            Some(resolved)
+        }
+    });
 
     let nuspec = generate_nuspec(&NuspecParams {
         name: choco_cfg.name.as_deref().unwrap_or(crate_name),
@@ -370,7 +406,7 @@ pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLog
             "chocolatey: no API key for '{}', skipping push",
             crate_name
         ));
-        return Ok(());
+        return Ok(false);
     }
 
     let source = choco_cfg
@@ -455,7 +491,7 @@ pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLog
                     ctx.record_publisher_outcome(
                         anodizer_core::PublisherOutcome::PendingModeration,
                     );
-                    return Ok(());
+                    return Ok(false);
                 }
             }
             let local = compute_nupkg_hash(&nupkg_path, &algorithm)?;
@@ -464,7 +500,7 @@ pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLog
                     "chocolatey: skipping '{}-{}' — already published (hash match)",
                     pkg_name, version
                 ));
-                return Ok(());
+                return Ok(false);
             }
             anyhow::bail!(
                 "chocolatey: '{}-{}' is already on the feed but the local nupkg \
@@ -500,7 +536,7 @@ pub fn publish_to_chocolatey(ctx: &mut Context, crate_name: &str, log: &StageLog
     push_nupkg(&nupkg_path, source, &api_key, log, &policy)?;
 
     log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]

@@ -146,13 +146,15 @@ pub(crate) struct Upstream<'a> {
 /// Submit a pull request via the GitHub CLI (`gh pr create`).
 ///
 /// Returns `Some(PublisherOutcome::PendingValidation)` when the call hit
-/// the "PR already exists" branch and `update_existing_pr` was false —
-/// the caller threads that back to dispatch via
-/// `Context::record_publisher_outcome` so the summary table reads
-/// `pending-validation` instead of `succeeded`. Returns `None` in every
-/// other case (success, transport failure, transient retry budget
-/// exhausted). Transport failures already emit a `log.warn` so the
-/// operator sees them; they are not modeled as a distinct outcome.
+/// the "PR already exists" branch and `update_existing_pr` was false, or
+/// `Some(Failed(msg))` when the PR could not be created (transport
+/// failure, retry budget exhausted, non-success exit). Returns `None`
+/// on success, which includes both the newly-created-PR path AND the
+/// `update_existing_pr=true` force-push branch (existing PR was updated
+/// in place — also a success outcome). The caller threads the outcome
+/// back to dispatch via `Context::record_publisher_outcome` so the
+/// summary table reads the real terminal state instead of misreporting
+/// silent failures as `succeeded`.
 fn create_pr_via_gh_cli(
     repo_path: &Path,
     upstream_repo: &str,
@@ -243,14 +245,18 @@ fn create_pr_via_gh_cli(
                 std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
             }
             Err(e) => {
-                log.warn(&format!(
-                    "{label}: could not run gh to create PR: {} -- you may need to create the PR manually", e
-                ));
-                return None;
+                let msg = format!(
+                    "{label}: could not run gh to create PR: {e} -- you may need to create the PR manually"
+                );
+                log.warn(&msg);
+                // Silent-fail would let dispatch record Succeeded.
+                // Return Failed so the report tells the truth;
+                // non-required publishers won't gate the release.
+                return Some(PublisherOutcome::Failed(msg));
             }
         }
     }
-    log.warn(&format!(
+    let msg = format!(
         "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
         last_status
             .map(|s| s.to_string())
@@ -260,8 +266,9 @@ fn create_pr_via_gh_cli(
         } else {
             format!("\n{}", last_stderr)
         }
-    ));
-    None
+    );
+    log.warn(&msg);
+    Some(PublisherOutcome::Failed(msg))
 }
 
 /// Submit a pull request via the GitHub REST API (native fallback when `gh`
@@ -270,12 +277,15 @@ fn create_pr_via_gh_cli(
 /// Uses `POST /repos/{owner}/{repo}/pulls` with token-based auth.
 ///
 /// Returns `Some(PublisherOutcome::PendingValidation)` when the API
-/// returns 422 with a body that names the existing-PR case and the
-/// caller did not opt into `update_existing_pr`. The API transport
-/// cannot force-push (no working tree handy), so `update_existing_pr =
-/// true` is a no-op here — we still warn but the outcome is treated as
-/// the normal in-place success path (`None`). Returns `None` for every
-/// other outcome (success, transport failure).
+/// returns 422 with a body that names the existing-PR case. This holds
+/// whether or not the caller opted into `update_existing_pr`: the API
+/// transport cannot force-push (no working tree handy), so
+/// `update_existing_pr = true` is a no-op here — we warn that the
+/// in-place update needs `gh` CLI but still surface `PendingValidation`
+/// because the open PR did not advance to the new manifest. Returns
+/// `None` on success. Returns `Some(Failed(msg))` for transport
+/// failure, HTTP-client build failure, and non-success HTTP status —
+/// silent-fail would let dispatch record `succeeded`.
 fn create_pr_via_api(
     upstream: &Upstream<'_>,
     spec: &PrSpec<'_>,
@@ -299,8 +309,10 @@ fn create_pr_via_api(
     let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30)) {
         Ok(c) => c,
         Err(e) => {
-            log.warn(&format!("{label}: build HTTP client: {e}"));
-            return None;
+            let msg = format!("{label}: build HTTP client: {e}");
+            log.warn(&msg);
+            // Silent-fail = dispatch records Succeeded; return Failed instead.
+            return Some(PublisherOutcome::Failed(msg));
         }
     };
     let result = client
@@ -333,16 +345,18 @@ fn create_pr_via_api(
                 }
                 return Some(PublisherOutcome::PendingValidation);
             }
-            log.warn(&format!(
+            let msg = format!(
                 "{label}: GitHub API PR creation returned {status} -- you may need to create the PR manually\n{body_text}"
-            ));
-            None
+            );
+            log.warn(&msg);
+            Some(PublisherOutcome::Failed(msg))
         }
         Err(e) => {
-            log.warn(&format!(
+            let msg = format!(
                 "{label}: GitHub API PR creation failed: {e} -- you may need to create the PR manually"
-            ));
-            None
+            );
+            log.warn(&msg);
+            Some(PublisherOutcome::Failed(msg))
         }
     }
 }
@@ -370,12 +384,15 @@ pub(crate) struct PrOrigin<'a> {
 /// using the token from the RepositoryConfig (or `GITHUB_TOKEN` env var).
 ///
 /// Returns `Some(PublisherOutcome::PendingValidation)` when the PR
-/// already exists and could not be updated; callers MUST forward the
-/// value to `Context::record_publisher_outcome` or the dispatch
-/// summary table will misreport the skip as `succeeded`.
+/// already exists and could not be updated, or `Some(Failed(msg))` when
+/// PR creation failed (gh / token absent, transport error, exhausted
+/// retries, non-success HTTP status). Callers MUST forward the value to
+/// `Context::record_publisher_outcome` or the dispatch summary table
+/// will misreport the silent failure as `succeeded`.
 #[must_use = "the returned outcome override must be forwarded to \
               Context::record_publisher_outcome — dropping it silently \
-              misreports a PR-already-exists skip as `succeeded`"]
+              misreports a PR-already-exists skip or a PR-creation failure \
+              as `succeeded`"]
 pub(crate) fn maybe_submit_pr(
     repo_path: &Path,
     repo: Option<&RepositoryConfig>,
@@ -456,10 +473,12 @@ pub(crate) fn maybe_submit_pr(
     } else if let Some(ref tok) = token {
         create_pr_via_api(&upstream, &spec, tok, label, log)
     } else {
-        log.warn(&format!(
+        let msg = format!(
             "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
-        ));
-        None
+        );
+        log.warn(&msg);
+        // Silent-fail = dispatch records Succeeded (v0.3.0 lie shape).
+        Some(PublisherOutcome::Failed(msg))
     }
 }
 
@@ -481,13 +500,16 @@ pub(crate) struct SubmitPrOpts {
 /// can be resolved from the environment.
 ///
 /// Returns `Some(PublisherOutcome::PendingValidation)` when the PR
-/// already exists and could not be updated; callers MUST forward the
-/// value to `Context::record_publisher_outcome` or the dispatch
-/// summary table will misreport the skip as `succeeded`.
+/// already exists and could not be updated, or `Some(Failed(msg))` when
+/// PR creation failed (gh / token absent, transport error, exhausted
+/// retries, non-success HTTP status). Callers MUST forward the value to
+/// `Context::record_publisher_outcome` or the dispatch summary table
+/// will misreport the silent failure as `succeeded`.
 #[allow(clippy::too_many_arguments)]
 #[must_use = "the returned outcome override must be forwarded to \
               Context::record_publisher_outcome — dropping it silently \
-              misreports a PR-already-exists skip as `succeeded`"]
+              misreports a PR-already-exists skip or a PR-creation failure \
+              as `succeeded`"]
 pub(crate) fn submit_pr_via_gh_with_opts(
     repo_path: &Path,
     upstream_repo: &str,
@@ -529,16 +551,19 @@ pub(crate) fn submit_pr_via_gh_with_opts(
             let upstream = Upstream { owner, name };
             create_pr_via_api(&upstream, &spec, tok, label, log)
         } else {
-            log.warn(&format!(
+            let msg = format!(
                 "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"
-            ));
-            None
+            );
+            log.warn(&msg);
+            Some(PublisherOutcome::Failed(msg))
         }
     } else {
-        log.warn(&format!(
+        let msg = format!(
             "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
-        ));
-        None
+        );
+        log.warn(&msg);
+        // Silent-fail = dispatch records Succeeded (v0.3.0 lie shape).
+        Some(PublisherOutcome::Failed(msg))
     }
 }
 
