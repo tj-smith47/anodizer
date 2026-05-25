@@ -1,5 +1,6 @@
 use crate::artifact::ArtifactRegistry;
 use crate::config::Config;
+use crate::env_source::{EnvSource, ProcessEnvSource};
 use crate::git::GitInfo;
 use crate::log::{StageLogger, Verbosity};
 use crate::partial::PartialTarget;
@@ -10,6 +11,7 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Rollback policy after the publish stage. `BestEffort` is the default when
 /// pre-flight ran clean; `None` is the implicit default otherwise (callers
@@ -321,6 +323,14 @@ pub struct Context {
     /// `succeeded`. The slot is single-shot: any unread value is
     /// cleared at the start of every `run` call.
     pub pending_outcome: Option<crate::PublisherOutcome>,
+    /// Injectable environment-variable source. Defaults to
+    /// [`ProcessEnvSource`] (reads `std::env::var`). Tests inject a
+    /// [`MapEnvSource`](crate::MapEnvSource) via
+    /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env)
+    /// so deterministic branches can be exercised without mutating the
+    /// process env. Read through [`Context::env_var`]; replace via
+    /// [`Context::set_env_source`].
+    env_source: Arc<dyn EnvSource>,
     /// Optional in-memory log-capture handle. When `Some`, every logger
     /// produced by [`Context::logger`] attaches it so the test can read
     /// back aggregated counts of `status` / `warn` / etc. calls without
@@ -348,9 +358,30 @@ impl Context {
             publish_report: None,
             determinism: None,
             pending_outcome: None,
+            env_source: Arc::new(ProcessEnvSource),
             #[cfg(feature = "test-helpers")]
             log_capture: None,
         }
+    }
+
+    /// Read an environment variable through the injected source.
+    ///
+    /// Production reads `std::env::var(name).ok()`. Tests inject a
+    /// [`MapEnvSource`](crate::MapEnvSource) via
+    /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env)
+    /// so deterministic branches can be exercised without mutating the
+    /// process env.
+    pub fn env_var(&self, name: &str) -> Option<String> {
+        self.env_source.var(name)
+    }
+
+    /// Replace the injected environment-variable source.
+    ///
+    /// Production migration code uses this when wrapping an
+    /// already-constructed context; tests reach this indirectly through
+    /// [`TestContextBuilder::env`](crate::test_helpers::TestContextBuilder::env).
+    pub fn set_env_source<S: EnvSource + 'static>(&mut self, src: S) {
+        self.env_source = Arc::new(src);
     }
 
     /// Attach an in-memory log-capture sink so every logger derived from
@@ -2516,5 +2547,23 @@ mod tests {
 
         // Project name should be available.
         assert_eq!(v.get("ProjectName"), Some(&"mymonorepo".to_string()));
+    }
+
+    #[test]
+    fn context_env_var_defaults_to_process_env_source() {
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        // A deliberately weird name no real shell will ever export.
+        assert_eq!(ctx.env_var("ANODIZER_T3_UNSET_VAR"), None);
+    }
+
+    #[test]
+    fn context_env_var_routes_to_injected_source() {
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.set_env_source(crate::MapEnvSource::new().with("INJECTED", "yes"));
+        assert_eq!(ctx.env_var("INJECTED"), Some("yes".to_string()));
+        // The injected source REPLACES the process source — `PATH` is set
+        // in every realistic execution environment, but the map does not
+        // know about it, so the read must return `None`.
+        assert_eq!(ctx.env_var("PATH"), None);
     }
 }

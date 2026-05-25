@@ -136,6 +136,7 @@ pub struct TestContextBuilder {
     source: Option<crate::config::SourceConfig>,
     sboms: Vec<crate::config::SbomConfig>,
     project_root: Option<PathBuf>,
+    env_overrides: Vec<(String, String)>,
 }
 
 impl Default for TestContextBuilder {
@@ -177,6 +178,7 @@ impl Default for TestContextBuilder {
             source: None,
             sboms: Vec::new(),
             project_root: None,
+            env_overrides: Vec::new(),
         }
     }
 }
@@ -355,6 +357,18 @@ impl TestContextBuilder {
         self
     }
 
+    /// Add an environment variable override. Calling [`env`](Self::env)
+    /// at least once swaps the built context's env source to a
+    /// [`MapEnvSource`](crate::MapEnvSource) seeded from the
+    /// accumulated overrides — so production code that reads through
+    /// [`Context::env_var`](crate::context::Context::env_var) sees the
+    /// injected values without `std::env::set_var`. Calls accumulate
+    /// (later wins on duplicate key).
+    pub fn env<K: Into<String>, V: Into<String>>(mut self, k: K, v: V) -> Self {
+        self.env_overrides.push((k.into(), v.into()));
+        self
+    }
+
     /// Build the [`Context`] with the configured values.
     #[allow(clippy::field_reassign_with_default)]
     pub fn build(self) -> Context {
@@ -429,6 +443,14 @@ impl TestContextBuilder {
         }
 
         ctx.populate_metadata_var().unwrap();
+
+        if !self.env_overrides.is_empty() {
+            let mut src = crate::MapEnvSource::new();
+            for (k, v) in self.env_overrides {
+                src.set(k, v);
+            }
+            ctx.set_env_source(src);
+        }
 
         ctx
     }
@@ -782,5 +804,25 @@ mod tests {
         assert_eq!(info.semver.minor, 0);
         assert_eq!(info.semver.patch, 0);
         assert_eq!(info.semver.prerelease.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn test_context_builder_env_injects_map_source() {
+        let ctx = TestContextBuilder::new()
+            .env("A", "1")
+            .env("B", "2")
+            .build();
+        assert_eq!(ctx.env_var("A"), Some("1".to_string()));
+        assert_eq!(ctx.env_var("B"), Some("2".to_string()));
+        assert_eq!(ctx.env_var("C"), None);
+    }
+
+    #[test]
+    fn test_context_builder_without_env_uses_process_source() {
+        let ctx = TestContextBuilder::new().build();
+        // An unset name returns None regardless of which source is wired.
+        // The assertion targets the unset-var branch so the test stays
+        // deterministic across CI / dev shells.
+        assert_eq!(ctx.env_var("ANODIZER_T3_UNSET_VAR_X"), None);
     }
 }

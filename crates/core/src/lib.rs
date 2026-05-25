@@ -10,6 +10,7 @@ pub mod determinism_runner;
 pub mod docker_detect;
 pub mod env;
 pub mod env_expand;
+pub mod env_source;
 pub mod extrafiles;
 pub mod git;
 pub mod github_client;
@@ -45,6 +46,7 @@ pub use determinism::DeterminismState;
 pub use determinism_report::{
     AllowList, AllowListEntry, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow,
 };
+pub use env_source::{EnvSource, MapEnvSource, ProcessEnvSource};
 pub use publish_evidence::PublishEvidence;
 pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
