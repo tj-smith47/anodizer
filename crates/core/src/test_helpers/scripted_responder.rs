@@ -114,8 +114,8 @@ pub struct RequestLog {
     pub body: String,
 }
 
-/// Internal route entry, paired with a hit counter so we can enforce
-/// `times` without mutating the user-facing [`ScriptedRoute`].
+/// Internal route entry, paired with a hit counter to enforce `times`
+/// without mutating the user-facing [`ScriptedRoute`].
 struct RouteEntry {
     route: ScriptedRoute,
     hits: AtomicUsize,

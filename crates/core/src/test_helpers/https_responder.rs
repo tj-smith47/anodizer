@@ -156,11 +156,11 @@ fn build_self_signed_server_config() -> ServerConfig {
 }
 
 /// `rustls` requires a process-wide default crypto provider be
-/// installed before any `ServerConfig::builder()` call. With our
-/// workspace features (`ring` only, `default-features = false`) there
-/// is no auto-installed provider, so we install one ourselves on first
-/// use. Subsequent calls are no-ops because `install_default` returns
-/// `Err` once a provider is set — which is exactly the steady state.
+/// installed before any `ServerConfig::builder()` call. The workspace
+/// pulls `ring` only (`default-features = false`), so no provider is
+/// auto-installed; this fn installs one on first use. Subsequent
+/// calls are no-ops: `install_default` returns `Err` once a provider
+/// is set, which is the steady state.
 fn install_default_provider_once() {
     use std::sync::Once;
     static ONCE: Once = Once::new();

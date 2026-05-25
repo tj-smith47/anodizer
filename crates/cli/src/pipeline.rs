@@ -958,14 +958,11 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     let mut p = Pipeline::new();
     p.add(Box::new(ChangelogStage));
     p.add(Box::new(SignStage));
-    // ChecksumStage runs AFTER SignStage so the production-signed bytes
-    // are what get hashed (matching the build pipeline's order). It runs
-    // BEFORE PublishStage so every publisher sees per-artifact `sha256`
-    // metadata even when the preserved-dist artifact catalog dropped it
-    // during GHA shard-merge — v0.4.0 winget shipped with
-    // `InstallerSha256: ''` because nothing in this pipeline backfilled
-    // sha256 onto the merged catalog. The recompute is byte-deterministic
-    // (same bytes → same hash) so it is idempotent across re-runs.
+    // ChecksumStage between SignStage and PublishStage hashes the
+    // production-signed bytes and backfills `sha256` onto every
+    // artifact so each publisher sees the metadata its manifest
+    // schema requires. The recompute is byte-deterministic, so this
+    // is idempotent across re-runs.
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
@@ -1850,13 +1847,11 @@ crates:
         );
     }
 
-    /// v0.4.0 winget shipped with `InstallerSha256: ''` because the
-    /// publish-only pipeline did not re-checksum the preserved-dist
-    /// artifact catalog after GHA shard-merge dropped the per-artifact
-    /// `sha256` metadata from each shard's `artifacts.json`. ChecksumStage
-    /// at this position backfills sha256 onto every artifact so every
-    /// downstream publisher (winget, chocolatey, scoop, krew, …) sees
-    /// the metadata its manifest validation requires.
+    /// Stage order: SignStage → ChecksumStage → PublishStage.
+    /// ChecksumStage must follow Sign so signed bytes are what get
+    /// hashed, and must precede Publish so every publisher
+    /// (winget, chocolatey, scoop, krew, …) sees per-artifact
+    /// `sha256` metadata its manifest schema requires.
     #[test]
     fn publish_only_pipeline_runs_checksum_before_publish_after_sign() {
         let p = build_publish_only_pipeline();

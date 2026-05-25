@@ -395,10 +395,9 @@ mod tests {
         assert!(msg.contains("500"), "{msg}");
     }
 
-    /// Pin the share-payload structure — `distribution.linkedInDistributionTarget`
-    /// (camelCase, empty object) is the wire shape LinkedIn requires, and
-    /// the typo `linkedinDistributionTarget` was a 4xx-class bug in a
-    /// previous session. The structural assert pins us against that drift.
+    /// `distribution.linkedInDistributionTarget` (camelCase, empty
+    /// object) is the wire shape LinkedIn requires; the typo
+    /// `linkedinDistributionTarget` is a 4xx-class regression.
     #[test]
     fn share_payload_distribution_field_is_camel_case() {
         let owner = "urn:li:person:abc";

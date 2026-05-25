@@ -545,19 +545,14 @@ impl Stage for SnapcraftStage {
                         }
                     }
 
-                    // Copy completer scripts referenced by app configs into
-                    // the prime directory. The `completer:` value is a single
-                    // path string used twice: as the source path (resolved
-                    // against `project_root` — mirroring `gio.CopyWithMode`
-                    // in GoReleaser's `internal/pipe/snapcraft/snapcraft.go`,
-                    // which resolves against cwd) AND as the destination
-                    // path inside the snap's prime dir. An absolute value
-                    // collapses the two because `Path::join(absolute)`
+                    // The `completer:` value is a single path used twice:
+                    // as the source (resolved against `project_root`) AND
+                    // as the destination inside the prime dir. An absolute
+                    // value collapses the two because `Path::join(absolute)`
                     // discards the prefix on every platform —
                     // `fs::copy(src, src)` silently succeeds on Linux but
-                    // errors on Windows, which is how the bug shipped to
-                    // v0.4.0. Reject absolute paths at the contract
-                    // boundary instead of papering over the collapse.
+                    // errors on Windows. Reject absolute paths at the
+                    // contract boundary so neither platform can hit it.
                     if let Some(ref apps_map) = snap_cfg.apps {
                         for (app_name, app_cfg) in apps_map.iter() {
                             if let Some(ref completer_path) = app_cfg.completer {

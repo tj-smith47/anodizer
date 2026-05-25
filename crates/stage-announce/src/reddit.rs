@@ -289,9 +289,10 @@ mod tests {
         assert_eq!(super::header_str(&h, "x-ratelimit-remaining"), None);
     }
 
-    /// `log_rate_limit` must NOT panic when only some rate-limit headers
-    /// are present — Reddit emits the trio together in production but
-    /// future API changes (or partial responses) shouldn't crash us.
+    /// `log_rate_limit` must NOT panic when only some rate-limit
+    /// headers are present. Reddit emits the trio together in
+    /// production, but future API changes or partial responses must
+    /// remain non-fatal.
     #[test]
     fn log_rate_limit_handles_partial_headers() {
         use anodizer_core::log::{StageLogger, Verbosity};

@@ -1712,11 +1712,11 @@ mod already_exists_action_derive_tests {
 
 #[cfg(test)]
 mod spec_struct_surface_tests {
-    //! Pin the field surface of the three "context bundles" passed into
-    //! `run_github_backend`. Each is `Clone + Copy` so we can construct a
-    //! struct, copy it, and read every field through the copy — a future
-    //! field removal/rename breaks compilation right here, not at the
-    //! distant call site in `run.rs`.
+    //! Pin the field surface of the three "context bundles" passed
+    //! into `run_github_backend`. Each is `Clone + Copy` so a struct
+    //! can be constructed, copied, and read field-by-field through
+    //! the copy — a future field removal/rename breaks compilation
+    //! here, not at the distant call site in `run.rs`.
     use super::*;
     use octocrab::repos::releases::MakeLatest;
 
@@ -1803,16 +1803,16 @@ mod orchestrator_tests {
     //!
     //! Every test points two URL surfaces at the loopback responder:
     //!
-    //! - `ctx.config.github_urls.api` / `.upload` — consumed by
-    //!   [`build_octocrab_client`] so every octocrab call (list / create /
-    //!   PATCH / asset list / asset delete) routes through `http://addr/`.
-    //!   The release JSON returned by POST /releases carries
-    //!   `upload_url: http://addr/...` so `octo.upload_asset(...).send()`
+    //! - `ctx.config.github_urls.api` / `.upload` — the octocrab
+    //!   builder honors these, so every API call (list / create /
+    //!   PATCH / asset list / asset delete) routes through
+    //!   `http://addr/`. The release JSON returned by POST /releases
+    //!   carries `upload_url: http://addr/...` so `upload_asset(...)`
     //!   POSTs to the same loopback.
-    //! - `ANODIZER_GITHUB_API_BASE` — consumed by
-    //!   [`check_github_rate_limit`]. Pointing it at the same loopback
-    //!   means the proactive `/rate_limit` poll either matches a scripted
-    //!   route or silently degrades on 404, never delaying the test.
+    //! - `ANODIZER_GITHUB_API_BASE` — the rate-limit poll honors this
+    //!   override. Pointing it at the same loopback means the
+    //!   proactive `/rate_limit` poll either matches a scripted route
+    //!   or silently degrades on 404, never delaying the test.
     //!
     //! The env-var mutation is serialised via the shared
     //! [`env_mutex`](anodizer_core::test_helpers::env::env_mutex) so
@@ -2127,8 +2127,9 @@ mod orchestrator_tests {
         let (html_url, dl_base, owner, repo) = result.expect("returns Some on success");
         assert_eq!(owner, "o");
         assert_eq!(repo, "r");
-        // gh_download_base comes from github_urls.download which we set to
-        // the loopback. The html_url is composed deterministically from it.
+        // gh_download_base derives from github_urls.download (set to
+        // the loopback by build_ctx); html_url composes deterministically
+        // from it.
         assert!(
             html_url.contains("/o/r/releases/tag/v1.2.3"),
             "got: {html_url}"

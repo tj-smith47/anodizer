@@ -1742,12 +1742,11 @@ mod publisher_tests {
         assert_publisher_visible_work_contract(&p, &mut ctx);
     }
 
-    /// v0.4.0 winget PR (microsoft/winget-pkgs#379056) shipped with
-    /// `InstallerSha256: ''` and was rejected by the winget validation
-    /// pipeline with the `Manifest-Validation-Error` label. The publisher
-    /// now refuses to construct a manifest when an archive arrives without
-    /// `sha256` metadata; this test pins that precondition so a future
-    /// regression can't ship a broken manifest again.
+    /// A windows archive that arrives at the winget publisher without
+    /// `sha256` metadata MUST bail with an actionable error, not emit
+    /// `InstallerSha256: ''` (which the winget validation pipeline
+    /// rejects). Pins the bail message + the downstream-consequence
+    /// hint pointing the operator at the checksum stage.
     #[test]
     fn winget_archive_without_sha256_metadata_bails_with_actionable_error() {
         use anodizer_core::artifact::{Artifact, ArtifactKind};

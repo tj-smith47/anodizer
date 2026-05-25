@@ -254,9 +254,9 @@ mod http_tests {
     //! the same key.
     //!
     //! The `start_paused` virtual-time runtime is only used for the
-    //! sleep-until-reset test: it lets us assert "the function sleeps
-    //! through the configured reset window" without paying a real
-    //! wall-clock minute per test run. All other tests use the default
+    //! sleep-until-reset test, which asserts the function sleeps
+    //! through the configured reset window without paying a real
+    //! wall-clock minute per run. All other tests use the default
     //! runtime since they exercise return-fast paths.
     use super::*;
     use anodizer_core::test_helpers::env::env_mutex;
@@ -320,12 +320,11 @@ mod http_tests {
         Box::leak(raw.into_boxed_str())
     }
 
-    /// Happy path: `remaining > threshold` means we have quota to spare,
-    /// so the function must return without sleeping and after exactly
-    /// one HTTP round-trip. A regression that flipped the comparison
-    /// operator (e.g. `>=` to `<=`) would sleep for ~3600 s on every
-    /// release and the bounded `timeout` here would fire instead of
-    /// completing in ms.
+    /// `remaining > threshold` means quota is available, so the
+    /// function returns without sleeping after exactly one HTTP
+    /// round-trip. A regression that flipped the comparison operator
+    /// (e.g. `>=` to `<=`) would sleep ~3600 s on every release; the
+    /// bounded `timeout` here fires fast instead.
     #[tokio::test]
     async fn remaining_above_threshold_returns_without_sleep() {
         let body = r#"{"resources":{"core":{"remaining":5000,"reset":9999999999,"limit":5000}}}"#;
@@ -367,11 +366,10 @@ mod http_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    /// 500 Internal Server Error walks the same `!is_success()` branch
-    /// as 401 — separate case because the GitHub API can return either
-    /// on a transient outage and we want both pinned. A regression that
-    /// retried on 5xx (no retry logic lives in this function) would
-    /// inflate the call count above 1.
+    /// 500 walks the same `!is_success()` branch as 401 — pinned
+    /// separately because GitHub can return either on a transient
+    /// outage. A regression that added retry logic to this function
+    /// would inflate the call count above 1.
     #[tokio::test]
     async fn server_error_status_silently_degrades() {
         let resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
@@ -385,12 +383,12 @@ mod http_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    /// Malformed JSON in a 200 response must silently degrade — common
-    /// in the wild when an auth proxy intercepts the request and
-    /// returns an HTML error page with `200`. A regression that
+    /// Malformed JSON in a 200 response must silently degrade —
+    /// common in the wild when an auth proxy intercepts the request
+    /// and returns an HTML error page with `200`. A regression that
     /// unwrapped the parse Result would panic the calling task and
-    /// abort the release. We deliberately send a single `{` so
-    /// `serde_json` rejects it at the first token.
+    /// abort the release. A single `{` ensures `serde_json` rejects
+    /// at the first token.
     #[tokio::test]
     async fn malformed_json_body_silently_degrades() {
         let body = "{";

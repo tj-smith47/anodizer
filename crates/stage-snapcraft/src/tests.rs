@@ -2890,12 +2890,12 @@ fn test_apps_completer_existing_file_is_copied_to_prime() {
         false,
     );
     ctx.options.project_root = Some(tmp.path().to_path_buf());
-    // The contract this test pins: with a valid (relative) completer
-    // source at `<project_root>/<completer>`, the staging branch must
-    // complete without surfacing a `copy completer` error. We can't
-    // assume snapcraft is missing — dev boxes have it installed and
-    // would succeed; CI runners lack it and would error at spawn.
-    // Either outcome proves the completer branch ran clean.
+    // The contract pinned here: with a valid (relative) completer
+    // source at `<project_root>/<completer>`, the staging branch
+    // completes without surfacing a `copy completer` error. The
+    // subsequent snapcraft spawn may succeed (snapcraft installed)
+    // or fail (snapcraft missing); either outcome proves the
+    // completer branch ran clean.
     let result = SnapcraftStage.run(&mut ctx);
     if let Err(err) = result {
         let msg = format!("{err:#}");
@@ -2908,11 +2908,10 @@ fn test_apps_completer_existing_file_is_copied_to_prime() {
 
 #[test]
 fn test_apps_completer_absolute_path_is_rejected_with_actionable_error() {
-    // Regression for v0.4.0: an absolute completer path collapses source
-    // and destination because `Path::join(absolute)` discards the prefix.
-    // On Linux fs::copy(src, src) silently succeeded; on Windows it
-    // erred out and crashed the stage. The contract now rejects
-    // absolute paths up front so neither platform can ship the bug.
+    // An absolute completer path collapses source and destination
+    // because `Path::join(absolute)` discards the prefix on every
+    // platform. The stage rejects absolute paths up front; this pins
+    // the bail message + the app-naming contract.
     let tmp = TempDir::new().unwrap();
     let bin_path = tmp.path().join("myapp");
     std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
