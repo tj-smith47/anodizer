@@ -288,7 +288,8 @@ struct FormulaIdentity<'a> {
 }
 
 /// Clone the tap repo into a tempdir and write the rendered formula.
-/// Returns the on-disk formula path so the commit step can stage it.
+/// Returns the on-disk formula path so the caller can stage it for the
+/// subsequent commit.
 fn clone_tap_and_write_formula(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,
@@ -389,7 +390,9 @@ fn maybe_write_cask_into_tap(
 }
 
 /// Stage the formula (and optional cask), render the commit message, and
-/// run the commit/push round-trip. Logs the per-outcome status line.
+/// run the commit/push round-trip. Logs the per-outcome status line. The
+/// `branch` argument is the pre-resolved push target (None ⇒ default).
+#[allow(clippy::too_many_arguments)]
 fn commit_files_to_tap(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,
@@ -397,6 +400,7 @@ fn commit_files_to_tap(
     tap: &TapLocation<'_>,
     formula_path: &Path,
     cask: &CaskInTapOutcome,
+    branch: Option<&str>,
     log: &StageLogger,
 ) -> Result<crate::util::CommitOutcome> {
     let formula_lossy = formula_path.to_string_lossy();
@@ -419,7 +423,6 @@ fn commit_files_to_tap(
     );
 
     let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
-    let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     let outcome = crate::util::commit_and_push_with_opts(
         tap.repo_path,
         &files_to_commit,
@@ -626,9 +629,19 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
 
     let cask = maybe_write_cask_into_tap(ctx, &hb_cfg_owned, crate_name, tap.repo_path, log)?;
 
-    let outcome = commit_files_to_tap(ctx, &hb_cfg_owned, &ident, &tap, &formula_path, &cask, log)?;
-
     let branch = crate::util::resolve_branch(hb_cfg_owned.repository.as_ref());
+
+    let outcome = commit_files_to_tap(
+        ctx,
+        &hb_cfg_owned,
+        &ident,
+        &tap,
+        &formula_path,
+        &cask,
+        branch,
+        log,
+    )?;
+
     let pr_branch = branch.unwrap_or("main");
     submit_homebrew_pr(
         ctx,
