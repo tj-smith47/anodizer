@@ -438,6 +438,29 @@ impl Stage for super::DockerStage {
                         }
                     }
 
+                    // BuildKit reproducibility note:
+                    //
+                    // `SOURCE_DATE_EPOCH` is exported into the subprocess
+                    // env below when the build stage has seeded
+                    // `ctx.determinism` — that gives every cargo / build
+                    // script invocation a stable epoch, AND any user
+                    // BuildKit stage that reads `$SOURCE_DATE_EPOCH` in
+                    // its Dockerfile (`ARG SOURCE_DATE_EPOCH` + tar
+                    // mtimes inside RUN steps) picks it up.
+                    //
+                    // For byte-stable image layers across rebuilds, the
+                    // user must additionally supply
+                    // `--output=type=image,rewrite-timestamp=true,push=true`
+                    // (or `type=registry,rewrite-timestamp=true`) via
+                    // `flag_templates:` — the attribute is BuildKit's
+                    // output-side knob, not a top-level CLI flag, so it
+                    // cannot be cleanly injected without overriding the
+                    // user's `--push` / `--load` choice. The determinism
+                    // harness's `--stages=docker` mode bypasses this by
+                    // driving its own `docker buildx build --output ...`
+                    // through `core::docker_build` with the attribute
+                    // pre-baked.
+
                     // Evaluate sbom — GoReleaser only adds SBOM in the Publish path (not snapshot).
                     let sbom_enabled = if ctx.is_snapshot() {
                         false
@@ -558,12 +581,29 @@ impl Stage for super::DockerStage {
                             dist: dist.clone(),
                             skip_digest,
                             digest_name_template,
-                            env_vars: ctx
-                                .template_vars()
-                                .all_config_env()
-                                .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect(),
+                            env_vars: {
+                                let mut e: std::collections::BTreeMap<String, String> = ctx
+                                    .template_vars()
+                                    .all_config_env()
+                                    .iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
+                                // Pair with `--rewrite-timestamp` above:
+                                // BuildKit needs `SOURCE_DATE_EPOCH` in the
+                                // build subprocess env to know what value
+                                // to rewrite layer mtimes to. Inherited
+                                // from the harness's hermetic env block;
+                                // re-exported here so non-harness release
+                                // runs with determinism seeded also get
+                                // reproducible images. User-supplied
+                                // `SOURCE_DATE_EPOCH` in `env:` blocks
+                                // wins via the `or_insert` path.
+                                if let Some(det) = ctx.determinism.as_ref() {
+                                    e.entry("SOURCE_DATE_EPOCH".to_string())
+                                        .or_insert_with(|| det.sde.to_string());
+                                }
+                                e
+                            },
                         });
                     }
                 } // end for snapshot_plats

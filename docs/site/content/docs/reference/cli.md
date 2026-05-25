@@ -111,7 +111,7 @@ Run the determinism harness (build pipeline twice, diff artifacts)
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--runs` | — | `2` | Number of from-clean rebuilds to diff |
-| `--stages` | — | — | Optional stage subset (build,archive,sbom,sign,checksum,cargo-package). `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry. |
+| `--stages` | — | — | Optional stage subset (build,archive,sbom,sign,checksum,cargo-package,docker). `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry. `docker` is harness-only — drives `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…` against `<repo>/Dockerfile` to probe OCI image byte-stability without pushing to a registry; skipped when `docker buildx` is unavailable or no Dockerfile exists. |
 | `--targets` | — | — | Restrict the harness to a comma-separated subset of configured target triples. Used by the sharded release workflow so each runner only validates targets it can natively build (Linux runner skips macOS targets, etc.). Forwarded to the child `anodize release --snapshot` subprocess. |
 | `--report` | — | — | JSON report path; default dist/run-<id>/determinism.json |
 | `--snapshot` | — | — | Force snapshot mode on the child release subprocess (artifacts get a `-SNAPSHOT-<sha>` suffix). Default: auto — snapshot off when HEAD is at a tag, on otherwise. |

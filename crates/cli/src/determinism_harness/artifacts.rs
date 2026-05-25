@@ -399,6 +399,13 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
     if lower.contains("/.det-tmp/target/") || lower.starts_with(".det-tmp/target/") {
         return "build".into();
     }
+    // Path-prefix wins over extension matching: the OCI tarball under
+    // `dist/docker/` ends in `.tar` and would otherwise misattribute to
+    // `archive`. Companion `image.digest` lands here too so both
+    // byte-stability inputs group under the same stage row.
+    if lower.starts_with("dist/docker/") || lower.contains("/dist/docker/") {
+        return "docker".into();
+    }
     if lower.ends_with(".sig") || lower.ends_with(".pem") || lower.ends_with(".cert") {
         "sign".into()
     } else if lower.contains("checksums")
@@ -435,6 +442,8 @@ mod tests {
         assert_eq!(infer_stage_from_path("dist/foo.tar.gz"), "archive");
         assert_eq!(infer_stage_from_path("dist/foo.zip"), "archive");
         assert_eq!(infer_stage_from_path("dist/foo.crate"), "cargo-package");
+        assert_eq!(infer_stage_from_path("dist/docker/image.oci.tar"), "docker");
+        assert_eq!(infer_stage_from_path("dist/docker/image.digest"), "docker");
         assert_eq!(infer_stage_from_path("dist/foo.sbom.json"), "sbom");
         assert_eq!(infer_stage_from_path("dist/foo.tar.gz.sig"), "sign");
         assert_eq!(infer_stage_from_path("dist/checksums.txt"), "checksum");

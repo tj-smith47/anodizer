@@ -121,6 +121,43 @@ pub enum StageId {
     /// in cargo's packaging reproducibility — surface the diff in the
     /// report and don't silently pass.
     CargoPackage,
+    /// Docker BuildKit reproducibility probe.
+    ///
+    /// Harness-only stage; not part of `build_release_pipeline` (the
+    /// production `docker` stage is on
+    /// [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`] because
+    /// it talks to a daemon and pushes to registries — neither belongs
+    /// in a hermetic rebuild). When listed in `--stages=docker`, the
+    /// harness invokes
+    /// `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…`
+    /// against the `Dockerfile` at the worktree root per run, emits an
+    /// OCI tarball to disk, SHA-256s the tarball, and records the
+    /// BuildKit-reported image digest. Both fingerprints must match
+    /// across runs for the stage to greenlight.
+    ///
+    /// Known non-determinism the workaround set addresses:
+    /// - **File mtimes inside layers**: `rewrite-timestamp=true` on the
+    ///   OCI exporter rewrites every layer-entry mtime to
+    ///   `SOURCE_DATE_EPOCH` (BuildKit ≥ 0.13). The harness exports
+    ///   `SOURCE_DATE_EPOCH` via [`super::env::build_subprocess_env`].
+    /// - **Provenance + SBOM attestations**: both are disabled
+    ///   (`--provenance=false --sbom=false`) since their bodies embed
+    ///   wall-clock timestamps and BuildKit version strings.
+    /// - **Cosign signature timestamps**: out of scope for this stage.
+    ///   The production sign path uploads transparency-log entries by
+    ///   default (`cosign sign <image>`), and those embed signing
+    ///   timestamps that are non-deterministic by design. A future
+    ///   harness mode that signs the OCI tarball would have to pass
+    ///   `--tlog-upload=false` to opt out of transparency for byte-
+    ///   stable signatures.
+    ///
+    /// Skipped (no drift, no artifact rows) when the worktree has no
+    /// `Dockerfile` at its root — keeps the stage harmless for repos
+    /// that wire docker via config but didn't bootstrap one. Skipped
+    /// (with a one-line eprintln) when `docker buildx` is not reachable
+    /// on the host so the harness stays usable on machines without
+    /// Docker installed.
+    Docker,
 }
 
 impl StageId {
@@ -139,6 +176,7 @@ impl StageId {
             StageId::Sign => "sign",
             StageId::Checksum => "checksum",
             StageId::CargoPackage => "cargo-package",
+            StageId::Docker => "docker",
         }
     }
 }
@@ -359,6 +397,12 @@ impl Harness {
                             "running cargo-package stage for determinism run {}",
                             run_idx
                         )
+                    })?;
+            }
+            if effective_stages.contains(&StageId::Docker) {
+                self.run_docker_stage(worktree.path(), &env)
+                    .with_context(|| {
+                        format!("running docker stage for determinism run {}", run_idx)
                     })?;
             }
             let artifacts = discover_artifacts(worktree.path())?;
@@ -597,6 +641,82 @@ impl Harness {
                     format!("copying {} -> {}", path.display(), target.display())
                 })?;
             }
+        }
+        Ok(())
+    }
+
+    /// Drive the `docker` stage when [`StageId::Docker`] is in the
+    /// requested stage set.
+    ///
+    /// Delegates to [`anodizer_core::docker_build::oci_build_fixture`]
+    /// (the allow-listed subprocess entry point), which runs
+    /// `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…`
+    /// against `<worktree>/Dockerfile`. The emitted OCI tarball is copied
+    /// into `<worktree>/dist/docker/` so the existing
+    /// [`discover_artifacts`] walker picks it up under the normal
+    /// `dist/` surface.
+    ///
+    /// Skipped (Ok no-op) when `<worktree>/Dockerfile` does not exist —
+    /// the harness must stay harmless for repos whose docker config
+    /// points at a non-default path (and for the cargo-package /
+    /// cargo-only test fixtures that share the same harness binary).
+    ///
+    /// Skipped (with `eprintln!`) when `docker buildx` is not reachable
+    /// on the host. The harness is run on minimal images (e.g. the docs
+    /// build container) that legitimately do not have Docker installed;
+    /// failing the whole harness there would block unrelated stages from
+    /// completing.
+    fn run_docker_stage(&self, worktree_path: &Path, env: &HashMap<String, String>) -> Result<()> {
+        let dockerfile = worktree_path.join("Dockerfile");
+        if !dockerfile.exists() {
+            return Ok(());
+        }
+        match anodizer_core::docker_detect::buildx_available() {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                eprintln!(
+                    "warn: docker stage requested but `docker buildx` is not available on PATH; \
+                     skipping for this run (no artifacts emitted)"
+                );
+                return Ok(());
+            }
+        }
+        // Pin the image tag to a deterministic constant so the manifest's
+        // `org.opencontainers.image.ref.name` annotation does not itself
+        // drift between runs based on time-derived names.
+        let output = anodizer_core::docker_build::oci_build_fixture(
+            worktree_path,
+            "anodize/det:harness",
+            env,
+        )?;
+        let dest_dir = worktree_path.join("dist").join("docker");
+        std::fs::create_dir_all(&dest_dir)
+            .with_context(|| format!("creating dest dir {}", dest_dir.display()))?;
+        // Rename to a stable filename so the artifact-discovery walker
+        // surfaces a single canonical row regardless of where buildx
+        // emitted the tarball under the worktree.
+        let target = dest_dir.join("image.oci.tar");
+        std::fs::copy(&output.oci_tar_path, &target).with_context(|| {
+            format!(
+                "copying {} -> {}",
+                output.oci_tar_path.display(),
+                target.display()
+            )
+        })?;
+        // Capture the BuildKit-reported image digest alongside the OCI
+        // tarball so the report records it as a separately-diffed
+        // artifact. The two are independent stability signals: the
+        // tarball hash covers serialized bytes (layer tar member
+        // ordering, manifest serialization), while the iidfile records
+        // BuildKit's pre-serialization manifest digest. Both must be
+        // stable for the image to be declared byte-stable.
+        if let Some(digest) = output.image_digest.as_deref() {
+            std::fs::write(dest_dir.join("image.digest"), digest).with_context(|| {
+                format!(
+                    "writing image digest to {}",
+                    dest_dir.join("image.digest").display()
+                )
+            })?;
         }
         Ok(())
     }

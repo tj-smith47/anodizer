@@ -475,7 +475,7 @@ pub struct CheckDeterminismArgs {
     #[arg(
         long,
         value_name = "stages",
-        help = "Optional stage subset (build,archive,sbom,sign,checksum,cargo-package). `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry."
+        help = "Optional stage subset (build,archive,sbom,sign,checksum,cargo-package,docker). `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry. `docker` is harness-only — drives `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…` against `<repo>/Dockerfile` to probe OCI image byte-stability without pushing to a registry; skipped when `docker buildx` is unavailable or no Dockerfile exists."
     )]
     pub stages: Option<String>,
     #[arg(
