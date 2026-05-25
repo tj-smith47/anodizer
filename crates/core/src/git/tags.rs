@@ -6,8 +6,8 @@ use std::process::Command;
 use crate::config::GitConfig;
 use crate::template::TemplateVars;
 
+use super::git_output_in;
 use super::semver::{SemVer, parse_semver_tag};
-use super::{git_output, git_output_in};
 
 /// Render ignore patterns (both `ignore_tags` and `ignore_tag_prefixes`) through
 /// the template engine when `template_vars` is provided.
@@ -111,7 +111,22 @@ pub fn find_latest_tag_matching(
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
 ) -> Result<Option<String>> {
-    find_latest_tag_matching_with_prefix(tag_template, git_config, template_vars, None)
+    find_latest_tag_matching_in(
+        &std::env::current_dir()?,
+        tag_template,
+        git_config,
+        template_vars,
+    )
+}
+
+/// Path-taking sibling of [`find_latest_tag_matching`].
+pub fn find_latest_tag_matching_in(
+    cwd: &Path,
+    tag_template: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+) -> Result<Option<String>> {
+    find_latest_tag_matching_with_prefix_in(cwd, tag_template, git_config, template_vars, None)
 }
 
 /// Like [`find_latest_tag_matching`], but with optional monorepo prefix filtering.
@@ -122,6 +137,23 @@ pub fn find_latest_tag_matching(
 ///   parses as `v1.2.3` for version comparison).
 /// - The FULL tag (with prefix) is returned as the result.
 pub fn find_latest_tag_matching_with_prefix(
+    tag_template: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    monorepo_prefix: Option<&str>,
+) -> Result<Option<String>> {
+    find_latest_tag_matching_with_prefix_in(
+        &std::env::current_dir()?,
+        tag_template,
+        git_config,
+        template_vars,
+        monorepo_prefix,
+    )
+}
+
+/// Path-taking sibling of [`find_latest_tag_matching_with_prefix`].
+pub fn find_latest_tag_matching_with_prefix_in(
+    cwd: &Path,
     tag_template: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
@@ -172,9 +204,9 @@ pub fn find_latest_tag_matching_with_prefix(
             args.extend_from_slice(&["-c", &suffix_cfg]);
         }
         args.extend_from_slice(&["tag", "--sort", tag_sort, "--list"]);
-        git_output(&args)?
+        git_output_in(cwd, &args)?
     } else {
-        git_output(&["tag", "--list"])?
+        git_output_in(cwd, &["tag", "--list"])?
     };
 
     if tags_output.is_empty() {
@@ -245,13 +277,14 @@ pub fn find_latest_tag_matching_with_prefix(
 /// provided, applies `ignore_tags` (glob match) and `ignore_tag_prefixes`
 /// (starts_with) filters; both lists are template-rendered when
 /// `template_vars` is provided.
-fn collect_semver_tags(
+fn collect_semver_tags_in(
+    cwd: &Path,
     git_args: &[&str],
     prefix: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
 ) -> Result<Vec<String>> {
-    let tags_output = git_output(git_args)?;
+    let tags_output = git_output_in(cwd, git_args)?;
     if tags_output.is_empty() {
         return Ok(vec![]);
     }
@@ -289,7 +322,17 @@ pub fn get_all_semver_tags(
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
 ) -> Result<Vec<String>> {
-    collect_semver_tags(&["tag", "--list"], prefix, git_config, template_vars)
+    get_all_semver_tags_in(&std::env::current_dir()?, prefix, git_config, template_vars)
+}
+
+/// Path-taking sibling of [`get_all_semver_tags`].
+pub fn get_all_semver_tags_in(
+    cwd: &Path,
+    prefix: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+) -> Result<Vec<String>> {
+    collect_semver_tags_in(cwd, &["tag", "--list"], prefix, git_config, template_vars)
 }
 
 /// Get semver tags reachable from HEAD, sorted descending by version.
@@ -301,7 +344,18 @@ pub fn get_branch_semver_tags(
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
 ) -> Result<Vec<String>> {
-    collect_semver_tags(
+    get_branch_semver_tags_in(&std::env::current_dir()?, prefix, git_config, template_vars)
+}
+
+/// Path-taking sibling of [`get_branch_semver_tags`].
+pub fn get_branch_semver_tags_in(
+    cwd: &Path,
+    prefix: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+) -> Result<Vec<String>> {
+    collect_semver_tags_in(
+        cwd,
         &["tag", "--merged", "HEAD", "--list"],
         prefix,
         git_config,
@@ -387,7 +441,22 @@ pub fn find_previous_tag(
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
 ) -> Result<Option<String>> {
-    find_previous_tag_with_prefix(current_tag, git_config, template_vars, None)
+    find_previous_tag_in(
+        &std::env::current_dir()?,
+        current_tag,
+        git_config,
+        template_vars,
+    )
+}
+
+/// Path-taking sibling of [`find_previous_tag`].
+pub fn find_previous_tag_in(
+    cwd: &Path,
+    current_tag: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+) -> Result<Option<String>> {
+    find_previous_tag_with_prefix_in(cwd, current_tag, git_config, template_vars, None)
 }
 
 /// Like [`find_previous_tag`], but with optional monorepo prefix filtering.
@@ -396,6 +465,23 @@ pub fn find_previous_tag(
 /// `git describe` call so only tags from the same subproject are considered.
 /// The full tag (with prefix) is returned.
 pub fn find_previous_tag_with_prefix(
+    current_tag: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    monorepo_prefix: Option<&str>,
+) -> Result<Option<String>> {
+    find_previous_tag_with_prefix_in(
+        &std::env::current_dir()?,
+        current_tag,
+        git_config,
+        template_vars,
+        monorepo_prefix,
+    )
+}
+
+/// Path-taking sibling of [`find_previous_tag_with_prefix`].
+pub fn find_previous_tag_with_prefix_in(
+    cwd: &Path,
     current_tag: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
@@ -432,7 +518,7 @@ pub fn find_previous_tag_with_prefix(
     }
     args.push(&parent_ref);
 
-    match git_output(&args) {
+    match git_output_in(cwd, &args) {
         Ok(tag) if !tag.is_empty() => Ok(Some(tag)),
         _ => Ok(None),
     }
@@ -443,7 +529,12 @@ pub fn find_previous_tag_with_prefix(
 /// Runs `git rev-list --max-parents=0 HEAD` and returns the first line
 /// (repositories with multiple roots will return the oldest).
 pub fn get_first_commit() -> Result<String> {
-    let output = git_output(&["rev-list", "--max-parents=0", "HEAD"])?;
+    get_first_commit_in(&std::env::current_dir()?)
+}
+
+/// Path-taking sibling of [`get_first_commit`].
+pub fn get_first_commit_in(cwd: &Path) -> Result<String> {
+    let output = git_output_in(cwd, &["rev-list", "--max-parents=0", "HEAD"])?;
     // In repos with multiple roots, take the last line (oldest commit).
     output
         .lines()
@@ -461,9 +552,14 @@ pub fn get_first_commit() -> Result<String> {
 /// `subproject1/v1.2.3`), since `git rev-parse` resolves tag refs by
 /// name regardless of slashes or prefixes.
 pub fn tag_points_at_head(tag: &str) -> Result<bool> {
+    tag_points_at_head_in(&std::env::current_dir()?, tag)
+}
+
+/// Path-taking sibling of [`tag_points_at_head`].
+pub fn tag_points_at_head_in(cwd: &Path, tag: &str) -> Result<bool> {
     let deref = format!("{}^{{}}", tag);
-    let tag_sha = git_output(&["rev-parse", &deref])?;
-    let head_sha = git_output(&["rev-parse", "HEAD"])?;
+    let tag_sha = git_output_in(cwd, &["rev-parse", &deref])?;
+    let head_sha = git_output_in(cwd, &["rev-parse", "HEAD"])?;
     Ok(tag_sha == head_sha)
 }
 

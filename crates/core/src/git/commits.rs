@@ -1,7 +1,8 @@
 use anyhow::{Context as _, Result, bail};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::git_output;
+use super::git_output_in;
 
 #[derive(Debug, Clone)]
 pub struct Commit {
@@ -45,9 +46,24 @@ fn parse_commit_output(output: &str) -> Vec<Commit> {
         .collect()
 }
 
+fn cwd_or_dot() -> PathBuf {
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 /// Get commits between two refs, optionally filtered to a path.
 pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> Result<Vec<Commit>> {
-    get_commits_between_paths(
+    get_commits_between_in(&cwd_or_dot(), from, to, path_filter)
+}
+
+/// Path-taking sibling of [`get_commits_between`].
+pub fn get_commits_between_in(
+    cwd: &Path,
+    from: &str,
+    to: &str,
+    path_filter: Option<&str>,
+) -> Result<Vec<Commit>> {
+    get_commits_between_paths_in(
+        cwd,
         from,
         to,
         &path_filter
@@ -59,6 +75,16 @@ pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> R
 
 /// Get commits between two refs, filtered to multiple paths (git log -- path1 path2 ...).
 pub fn get_commits_between_paths(from: &str, to: &str, paths: &[String]) -> Result<Vec<Commit>> {
+    get_commits_between_paths_in(&cwd_or_dot(), from, to, paths)
+}
+
+/// Path-taking sibling of [`get_commits_between_paths`].
+pub fn get_commits_between_paths_in(
+    cwd: &Path,
+    from: &str,
+    to: &str,
+    paths: &[String],
+) -> Result<Vec<Commit>> {
     let range = format!("{}..{}", from, to);
     let mut args = vec![
         "-c".to_string(),
@@ -74,14 +100,20 @@ pub fn get_commits_between_paths(from: &str, to: &str, paths: &[String]) -> Resu
         }
     }
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let output = git_output(&arg_refs)?;
+    let output = git_output_in(cwd, &arg_refs)?;
     Ok(parse_commit_output(&output))
 }
 
 /// Get all commits reachable from HEAD, optionally filtered to a path.
 /// Used for initial releases where there is no previous tag.
 pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
-    get_all_commits_paths(
+    get_all_commits_in(&cwd_or_dot(), path_filter)
+}
+
+/// Path-taking sibling of [`get_all_commits`].
+pub fn get_all_commits_in(cwd: &Path, path_filter: Option<&str>) -> Result<Vec<Commit>> {
+    get_all_commits_paths_in(
+        cwd,
         &path_filter
             .into_iter()
             .map(String::from)
@@ -91,6 +123,11 @@ pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
 
 /// Get all commits reachable from HEAD, filtered to multiple paths.
 pub fn get_all_commits_paths(paths: &[String]) -> Result<Vec<Commit>> {
+    get_all_commits_paths_in(&cwd_or_dot(), paths)
+}
+
+/// Path-taking sibling of [`get_all_commits_paths`].
+pub fn get_all_commits_paths_in(cwd: &Path, paths: &[String]) -> Result<Vec<Commit>> {
     let mut args = vec![
         "-c".to_string(),
         "log.showSignature=false".to_string(),
@@ -105,55 +142,89 @@ pub fn get_all_commits_paths(paths: &[String]) -> Result<Vec<Commit>> {
         }
     }
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    let output = git_output(&arg_refs)?;
+    let output = git_output_in(cwd, &arg_refs)?;
     Ok(parse_commit_output(&output))
 }
 
 /// Get last N commit subjects.
 pub fn get_last_commit_messages(count: usize) -> Result<Vec<String>> {
-    let output = git_output(&[
-        "-c",
-        "log.showSignature=false",
-        "log",
-        &format!("-{count}"),
-        "--pretty=format:%s",
-    ])?;
+    get_last_commit_messages_in(&cwd_or_dot(), count)
+}
+
+/// Path-taking sibling of [`get_last_commit_messages`].
+pub fn get_last_commit_messages_in(cwd: &Path, count: usize) -> Result<Vec<String>> {
+    let output = git_output_in(
+        cwd,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            &format!("-{count}"),
+            "--pretty=format:%s",
+        ],
+    )?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Get commit subjects between two refs.
 pub fn get_commit_messages_between(from: &str, to: &str) -> Result<Vec<String>> {
-    let output = git_output(&[
-        "-c",
-        "log.showSignature=false",
-        "log",
-        "--pretty=format:%s",
-        &format!("{from}..{to}"),
-    ])?;
+    get_commit_messages_between_in(&cwd_or_dot(), from, to)
+}
+
+/// Path-taking sibling of [`get_commit_messages_between`].
+pub fn get_commit_messages_between_in(cwd: &Path, from: &str, to: &str) -> Result<Vec<String>> {
+    let output = git_output_in(
+        cwd,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "--pretty=format:%s",
+            &format!("{from}..{to}"),
+        ],
+    )?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Get the current branch name.
 pub fn get_current_branch() -> Result<String> {
-    git_output(&["rev-parse", "--abbrev-ref", "HEAD"])
+    get_current_branch_in(&cwd_or_dot())
+}
+
+/// Path-taking sibling of [`get_current_branch`].
+pub fn get_current_branch_in(cwd: &Path) -> Result<String> {
+    git_output_in(cwd, &["rev-parse", "--abbrev-ref", "HEAD"])
 }
 
 /// Check if there are any commits since a given tag.
 pub fn has_commits_since_tag(tag: &str) -> Result<bool> {
+    has_commits_since_tag_in(&cwd_or_dot(), tag)
+}
+
+/// Path-taking sibling of [`has_commits_since_tag`].
+pub fn has_commits_since_tag_in(cwd: &Path, tag: &str) -> Result<bool> {
     let range = format!("{}..HEAD", tag);
-    let output = git_output(&["-c", "log.showSignature=false", "log", "--oneline", &range])?;
+    let output = git_output_in(
+        cwd,
+        &["-c", "log.showSignature=false", "log", "--oneline", &range],
+    )?;
     Ok(!output.is_empty())
 }
 
 /// Get the short commit hash of HEAD.
 pub fn get_short_commit() -> Result<String> {
-    git_output(&["rev-parse", "--short", "HEAD"])
+    get_short_commit_in(&cwd_or_dot())
+}
+
+/// Path-taking sibling of [`get_short_commit`].
+pub fn get_short_commit_in(cwd: &Path) -> Result<String> {
+    git_output_in(cwd, &["rev-parse", "--short", "HEAD"])
 }
 
 /// Default short-commit length used across error messages, log
 /// output, and any place that needs to truncate a full SHA for
 /// human display. Matches git's `--short` default (7) — and the
-/// `ShortCommit` template var populated by [`git::detect_git_info`]
+/// `ShortCommit` template var populated by [`super::detect_git_info`]
 /// (which delegates to `git rev-parse --short`).
 pub const SHORT_COMMIT_LEN: usize = 7;
 
@@ -182,49 +253,92 @@ pub fn short_commit_str(commit: &str) -> String {
 /// produce deterministic archives across consecutive commits when
 /// `git_info` was not pre-populated by an earlier pipe.
 pub fn get_head_commit() -> Result<String> {
-    git_output(&["rev-parse", "HEAD"])
+    get_head_commit_in(&cwd_or_dot())
+}
+
+/// Path-taking sibling of [`get_head_commit`].
+pub fn get_head_commit_in(cwd: &Path) -> Result<String> {
+    git_output_in(cwd, &["rev-parse", "HEAD"])
 }
 
 /// Check if there are changes in a path since a given tag.
 pub fn has_changes_since(tag: &str, path: &str) -> Result<bool> {
-    let output = git_output(&["diff", "--name-only", &format!("{}..HEAD", tag), "--", path])?;
+    has_changes_since_in(&cwd_or_dot(), tag, path)
+}
+
+/// Path-taking sibling of [`has_changes_since`].
+pub fn has_changes_since_in(cwd: &Path, tag: &str, path: &str) -> Result<bool> {
+    let output = git_output_in(
+        cwd,
+        &["diff", "--name-only", &format!("{}..HEAD", tag), "--", path],
+    )?;
     Ok(!output.is_empty())
 }
 
 /// Get last N commit subjects that touched a specific path.
 pub fn get_last_commit_messages_path(count: usize, path: &str) -> Result<Vec<String>> {
-    let output = git_output(&[
-        "-c",
-        "log.showSignature=false",
-        "log",
-        &format!("-{count}"),
-        "--pretty=format:%s",
-        "--",
-        path,
-    ])?;
+    get_last_commit_messages_path_in(&cwd_or_dot(), count, path)
+}
+
+/// Path-taking sibling of [`get_last_commit_messages_path`].
+pub fn get_last_commit_messages_path_in(
+    cwd: &Path,
+    count: usize,
+    path: &str,
+) -> Result<Vec<String>> {
+    let output = git_output_in(
+        cwd,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            &format!("-{count}"),
+            "--pretty=format:%s",
+            "--",
+            path,
+        ],
+    )?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Get commit subjects between two refs that touched a specific path.
 pub fn get_commit_messages_between_path(from: &str, to: &str, path: &str) -> Result<Vec<String>> {
-    let output = git_output(&[
-        "-c",
-        "log.showSignature=false",
-        "log",
-        "--pretty=format:%s",
-        &format!("{from}..{to}"),
-        "--",
-        path,
-    ])?;
+    get_commit_messages_between_path_in(&cwd_or_dot(), from, to, path)
+}
+
+/// Path-taking sibling of [`get_commit_messages_between_path`].
+pub fn get_commit_messages_between_path_in(
+    cwd: &Path,
+    from: &str,
+    to: &str,
+    path: &str,
+) -> Result<Vec<String>> {
+    let output = git_output_in(
+        cwd,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "--pretty=format:%s",
+            &format!("{from}..{to}"),
+            "--",
+            path,
+        ],
+    )?;
     Ok(output.lines().map(str::to_string).collect())
 }
 
 /// Stage specific files and create a commit.
 pub fn stage_and_commit(files: &[&str], message: &str) -> Result<()> {
+    stage_and_commit_in(&cwd_or_dot(), files, message)
+}
+
+/// Path-taking sibling of [`stage_and_commit`].
+pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<()> {
     let mut args = vec!["add", "--"];
     args.extend(files.iter().copied());
-    git_output(&args)?;
-    git_output(&["commit", "-m", message])?;
+    git_output_in(cwd, &args)?;
+    git_output_in(cwd, &["commit", "-m", message])?;
     Ok(())
 }
 
@@ -308,6 +422,11 @@ pub fn commit_in(workspace_root: &std::path::Path, message: &str, sign: bool) ->
 /// `Ok(false)` when git fails (e.g. not a git repo) so callers can treat
 /// the absence-of-info case as "no changes".
 pub fn paths_changed_since_tag(tag: &str, paths: &[&str]) -> Result<bool> {
+    paths_changed_since_tag_in(&cwd_or_dot(), tag, paths)
+}
+
+/// Path-taking sibling of [`paths_changed_since_tag`].
+pub fn paths_changed_since_tag_in(cwd: &Path, tag: &str, paths: &[&str]) -> Result<bool> {
     let mut args: Vec<String> = vec![
         "diff".to_string(),
         "--name-only".to_string(),
@@ -318,7 +437,10 @@ pub fn paths_changed_since_tag(tag: &str, paths: &[&str]) -> Result<bool> {
         args.push((*p).to_string());
     }
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = Command::new("git").args(&arg_refs).output()?;
+    let output = Command::new("git")
+        .current_dir(cwd)
+        .args(&arg_refs)
+        .output()?;
     if output.status.success() {
         Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
     } else {
@@ -363,4 +485,77 @@ pub fn head_commit_timestamp_in(repo: &std::path::Path) -> Result<i64> {
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     text.parse::<i64>()
         .with_context(|| format!("git log --format=%ct returned non-i64 timestamp: {}", text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+
+    fn init_repo_with_commits(dir: &Path, files: &[&str]) {
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        for (i, f) in files.iter().enumerate() {
+            std::fs::write(dir.join(f), format!("c{i}")).unwrap();
+            run(&["add", "."]);
+            run(&["commit", "-m", &format!("commit-{i}: {f}")]);
+        }
+    }
+
+    #[test]
+    fn get_head_commit_in_returns_40_char_sha() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(tmp.path(), &["a"]);
+        let sha = get_head_commit_in(tmp.path()).unwrap();
+        assert_eq!(sha.len(), 40);
+    }
+
+    #[test]
+    fn get_short_commit_in_returns_7_char_sha() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(tmp.path(), &["a"]);
+        let short = get_short_commit_in(tmp.path()).unwrap();
+        assert!(short.len() >= 7);
+    }
+
+    #[test]
+    fn has_commits_since_tag_in_returns_false_when_tag_is_head() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_commits(dir, &["a"]);
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+        };
+        run(&["tag", "v1.0.0"]);
+        assert!(!has_commits_since_tag_in(dir, "v1.0.0").unwrap());
+    }
+
+    #[test]
+    fn get_current_branch_in_returns_branch_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo_with_commits(tmp.path(), &["a"]);
+        let branch = get_current_branch_in(tmp.path()).unwrap();
+        assert!(!branch.is_empty());
+    }
 }

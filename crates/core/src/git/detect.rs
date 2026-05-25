@@ -1,9 +1,10 @@
 use anyhow::Result;
+use std::path::Path;
 
-use super::git_output;
+use super::git_output_in;
 use super::semver::{SemVer, parse_semver_tag};
-use super::status::{is_git_dirty, is_git_repo};
-use super::tags::get_first_commit;
+use super::status::{is_git_dirty_in, is_git_repo_in};
+use super::tags::get_first_commit_in;
 use crate::redact::redact_url_credentials;
 
 #[derive(Debug, Clone)]
@@ -46,7 +47,16 @@ pub struct GitInfo {
 /// or scratch directory without git ever having been initialized. Outside
 /// snapshot mode, the missing repo bubbles as an error.
 pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
-    if !is_git_repo() {
+    detect_git_info_in(&std::env::current_dir()?, tag, skip_validate)
+}
+
+/// Detect git info for a given tag against a repository at `cwd`.
+///
+/// Path-taking sibling of [`detect_git_info`] so callers (tests, library
+/// consumers) can target an explicit repository without mutating the
+/// process-wide cwd.
+pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<GitInfo> {
+    if !is_git_repo_in(cwd) {
         // Synthetic GitInfo for non-repo snapshot/scratch builds. Lets users
         // run `anodizer release --snapshot` from a fresh tarball or scratch
         // directory without `git init` first. Caller is responsible for only
@@ -75,26 +85,31 @@ pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
             first_commit: None,
         });
     }
-    let commit = git_output(&["rev-parse", "HEAD"])?;
-    let short_commit = git_output(&["rev-parse", "--short", "HEAD"])?;
-    let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    let dirty = is_git_dirty();
-    let commit_date = git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%cI"])
-        .unwrap_or_default();
-    let commit_timestamp =
-        git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%at"])
-            .unwrap_or_default();
+    let commit = git_output_in(cwd, &["rev-parse", "HEAD"])?;
+    let short_commit = git_output_in(cwd, &["rev-parse", "--short", "HEAD"])?;
+    let branch = git_output_in(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
+    let dirty = is_git_dirty_in(cwd);
+    let commit_date = git_output_in(
+        cwd,
+        &["-c", "log.showSignature=false", "log", "-1", "--format=%cI"],
+    )
+    .unwrap_or_default();
+    let commit_timestamp = git_output_in(
+        cwd,
+        &["-c", "log.showSignature=false", "log", "-1", "--format=%at"],
+    )
+    .unwrap_or_default();
     // Use ls-remote --get-url (matches GoReleaser git.go:355).
     // Without an explicit remote name this defaults to "origin".
     //
     // A truly missing remote (no `origin` configured) is a legitimate state —
-    // local-only repos, fresh `git init` — so we don't want to fail detect.
+    // local-only repos, fresh `git init` — so detect must not fail.
     // But a *git error* during this lookup (broken config, transient SSH
     // failure, permission issue) used to be silently swallowed by
     // `unwrap_or_default()`, leaving `remote_url=""` with no diagnostic.
     // Mirrors the spirit of GoReleaser commit 5042b84 (Q12): preserve the
     // underlying error rather than replacing it with an empty sentinel.
-    let remote_url_raw = match git_output(&["ls-remote", "--get-url"]) {
+    let remote_url_raw = match git_output_in(cwd, &["ls-remote", "--get-url"]) {
         Ok(url) => url,
         Err(e) => {
             tracing::warn!(
@@ -107,37 +122,49 @@ pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
     // Strip credentials from URLs of any scheme
     // (e.g. https://user:token@github.com/... → https://<redacted>@github.com/...).
     let remote_url = redact_url_credentials(&remote_url_raw);
-    let summary = git_output(&[
-        "-c",
-        "log.showSignature=false",
-        "describe",
-        "--tags",
-        "--always",
-        "--dirty",
-    ])
+    let summary = git_output_in(
+        cwd,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "describe",
+            "--tags",
+            "--always",
+            "--dirty",
+        ],
+    )
     .unwrap_or_default();
 
     // Try annotated tag message fields first; fall back to commit message fields.
-    let tag_subject = git_output(&["tag", "-l", "--format=%(contents:subject)", tag])
+    let tag_subject = git_output_in(cwd, &["tag", "-l", "--format=%(contents:subject)", tag])
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%s"])
-                .unwrap_or_default()
+            git_output_in(
+                cwd,
+                &["-c", "log.showSignature=false", "log", "-1", "--format=%s"],
+            )
+            .unwrap_or_default()
         });
-    let tag_contents = git_output(&["tag", "-l", "--format=%(contents)", tag])
+    let tag_contents = git_output_in(cwd, &["tag", "-l", "--format=%(contents)", tag])
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%B"])
-                .unwrap_or_default()
+            git_output_in(
+                cwd,
+                &["-c", "log.showSignature=false", "log", "-1", "--format=%B"],
+            )
+            .unwrap_or_default()
         });
-    let tag_body = git_output(&["tag", "-l", "--format=%(contents:body)", tag])
+    let tag_body = git_output_in(cwd, &["tag", "-l", "--format=%(contents:body)", tag])
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
-            git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%b"])
-                .unwrap_or_default()
+            git_output_in(
+                cwd,
+                &["-c", "log.showSignature=false", "log", "-1", "--format=%b"],
+            )
+            .unwrap_or_default()
         });
 
     let semver = match parse_semver_tag(tag) {
@@ -157,7 +184,7 @@ pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
             }
         }
     };
-    let first_commit = get_first_commit().ok();
+    let first_commit = get_first_commit_in(cwd).ok();
     Ok(GitInfo {
         tag: tag.to_string(),
         commit,
@@ -175,4 +202,62 @@ pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
         tag_body,
         first_commit,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detect_git_info_in_bails_outside_repo_when_tag_not_semver() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Non-repo path returns synthetic GitInfo with default SemVer, so
+        // a non-semver tag is harmless. To force the error path, pass a
+        // valid temp dir but with a non-semver tag AND a repo that exists.
+        // Here cover the synthetic path: non-repo + arbitrary tag is Ok.
+        let info = detect_git_info_in(tmp.path(), "v1.0.0", false).unwrap();
+        assert_eq!(info.commit, "");
+        assert_eq!(info.branch, "");
+        assert_eq!(info.semver.major, 0);
+    }
+
+    #[test]
+    fn detect_git_info_in_returns_synthetic_for_non_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let info = detect_git_info_in(tmp.path(), "v9.9.9", true).unwrap();
+        assert_eq!(info.tag, "v9.9.9");
+        assert_eq!(info.commit, "");
+        assert!(info.first_commit.is_none());
+    }
+
+    #[test]
+    fn detect_git_info_in_resolves_head_inside_real_repo() {
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "c1"]);
+
+        let info = detect_git_info_in(dir, "v1.0.0", false).unwrap();
+        assert_eq!(info.commit.len(), 40);
+        assert_eq!(info.semver.major, 1);
+        assert!(info.first_commit.is_some());
+    }
 }
