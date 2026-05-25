@@ -11,6 +11,7 @@ A Rust-native release pipeline — GoReleaser parity, signed and deterministic b
 [![CI](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml)
 [![Release](https://github.com/tj-smith47/anodizer/actions/workflows/release.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/release.yml)
 [![Docs](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tj-smith47/anodizer/badges/coverage.json)](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/anodizer.svg)](https://crates.io/crates/anodizer)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
