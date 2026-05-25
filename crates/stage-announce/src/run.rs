@@ -563,7 +563,7 @@ impl Announcer for SlackAnnouncer {
                 None => {
                     // Skip-when-empty UX policy: strict_guard bails in
                     // strict mode (collected at end-of-stage); in normal
-                    // mode it warns and we skip just this announcer.
+                    // mode it warns and skips just this announcer.
                     ctx.strict_guard(
                         log,
                         "announce.slack: missing webhook_url (set config or SLACK_WEBHOOK env var)",
@@ -669,10 +669,10 @@ impl Announcer for WebhookAnnouncer {
         // user-supplied `headers.Authorization` wins (case-insensitive,
         // per RFC 7230). Basic auth takes priority over bearer token.
         //
-        // Anodize-additive UX win (locked 2026-04-28): we also send
-        // `User-Agent: anodizer/<version>` (unless the user overrides)
-        // so operators can attribute incoming webhooks to anodizer for
-        // routing, rate-limiting, and audit-log tagging. GoReleaser
+        // Anodize-additive UX win: a `User-Agent: anodizer/<version>`
+        // header is appended (unless the user overrides) so operators
+        // can attribute incoming webhooks to anodizer for routing,
+        // rate-limiting, and audit-log tagging. GoReleaser
         // (`internal/pipe/webhook/webhook.go`) sends a static
         // `User-Agent: goreleaser` with no version suffix; the
         // version-suffixed variant is tradeoff-free (same wire shape,
@@ -1490,8 +1490,8 @@ mod gate_tests {
     // ---- happy-path-pending outcomes must NOT gate announce ----------
 
     /// Construct a `PublisherResult` with an arbitrary outcome — used by
-    /// the variant-specific tests below where we need to exercise outcomes
-    /// the basic `failed_result` helper doesn't reach.
+    /// the variant-specific tests below to exercise outcomes the basic
+    /// `failed_result` helper doesn't reach.
     fn result_with_outcome(
         name: &str,
         group: PublisherGroup,
@@ -1793,8 +1793,8 @@ mod summary_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let summary_path = tmp.path().join("summary.json");
 
-        // No announce config — irrelevant to emit_summary; we are
-        // testing the summary-emission contract directly.
+        // No announce config — irrelevant to emit_summary; the test
+        // exercises the summary-emission contract directly.
         let mut ctx = ctx_with(
             opts_with_summary_path(summary_path.clone()),
             None,
