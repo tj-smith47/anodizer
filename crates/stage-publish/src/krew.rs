@@ -2421,7 +2421,7 @@ mod publisher_tests {
                     "url".to_string(),
                     "https://example.com/mytool-linux-amd64.tar.gz".to_string(),
                 );
-                m.insert("binary".to_string(), "mytool".to_string());
+                m.insert("extra_binaries".to_string(), "mytool".to_string());
                 m
             },
             size: None,
