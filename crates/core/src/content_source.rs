@@ -328,13 +328,17 @@ mod tests {
 
     #[test]
     fn from_url_5xx_exhausts_retries_then_fails() {
-        // POLICY.max_attempts == 3 — provide exactly 3 canned 500s so the
-        // counter pins to 3 and the final error mentions HTTP 500.
-        let (addr, calls) = spawn_oneshot_http_responder(vec![
+        // Drive exactly POLICY.max_attempts canned 500s so the responder
+        // counter pins to the configured retry budget. Wiring through the
+        // const means a future bump of POLICY.max_attempts updates the
+        // test atomically without a stale literal silently passing.
+        let max_attempts = POLICY.max_attempts as usize;
+        let responses: Vec<&'static str> = std::iter::repeat_n(
             "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
-            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
-            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
-        ]);
+            max_attempts,
+        )
+        .collect();
+        let (addr, calls) = spawn_oneshot_http_responder(responses);
         let src = ContentSource::FromUrl {
             from_url: format!("http://{addr}/flaky.md"),
             headers: None,
@@ -344,8 +348,8 @@ mod tests {
         assert!(chain.contains("500"), "status missing from chain: {chain}");
         assert_eq!(
             calls.load(Ordering::SeqCst),
-            3,
-            "all 3 retry attempts must run before bailing"
+            max_attempts as u32,
+            "all POLICY.max_attempts retries must run before bailing"
         );
     }
 }
