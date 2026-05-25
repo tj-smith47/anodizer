@@ -11,7 +11,7 @@
 //! 4. Invoking [`crate::determinism_harness::Harness::run`].
 //! 5. Writing the report JSON and exiting non-zero on drift.
 
-use crate::determinism_harness::{Harness, StageId};
+use crate::determinism_harness::{Harness, StageId, installer_stages};
 use anodizer_cli::CheckDeterminismArgs;
 use anodizer_core::{
     AllowList, AllowListEntry, DeterminismState,
@@ -172,6 +172,12 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
             StageId::Checksum,
         ]
     };
+    // Umbrella selector for every installer-family stage. Operators
+    // type `--stages=installers` to exercise the full set in one shot;
+    // individual family stages (`msi`, `nsis`, ...) remain available
+    // for narrower runs. Delegating to the harness's
+    // `installer_detect::installer_stages` keeps the CLI parser and
+    // harness gate consulting the same source of truth.
     match s {
         None => Ok(default()),
         Some(list) => {
@@ -198,17 +204,40 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                     "checksum" => parsed.push(StageId::Checksum),
                     "cargo-package" => parsed.push(StageId::CargoPackage),
                     "docker" => parsed.push(StageId::Docker),
+                    "msi" => parsed.push(StageId::Msi),
+                    "nsis" => parsed.push(StageId::Nsis),
+                    "dmg" => parsed.push(StageId::Dmg),
+                    "pkg" => parsed.push(StageId::Pkg),
+                    "srpm" => parsed.push(StageId::Srpm),
+                    "installers" => parsed.extend(installer_stages()),
                     other => unknown.push(other.to_string()),
                 }
             }
             if !unknown.is_empty() {
                 return Err(format!(
                     "--stages contained unknown stage(s): {}. \
-                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package, docker.",
+                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package, docker, msi, nsis, dmg, pkg, srpm, installers.",
                     unknown.join(", ")
                 ));
             }
-            Ok(if parsed.is_empty() { default() } else { parsed })
+            // De-dup while preserving insertion order so
+            // `--stages=installers,msi` (umbrella followed by an
+            // individual member) doesn't list `msi` twice in
+            // `stages_under_test`. The first mention wins, matching
+            // the operator's typed intent.
+            let mut seen: std::collections::BTreeSet<&'static str> =
+                std::collections::BTreeSet::new();
+            let mut deduped: Vec<StageId> = Vec::with_capacity(parsed.len());
+            for stage in parsed {
+                if seen.insert(stage.as_str()) {
+                    deduped.push(stage);
+                }
+            }
+            Ok(if deduped.is_empty() {
+                default()
+            } else {
+                deduped
+            })
         }
     }
 }
@@ -367,6 +396,46 @@ mod tests {
             stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             vec!["archive", "checksum"]
         );
+    }
+
+    #[test]
+    fn parse_stages_installers_umbrella_expands_to_full_set() {
+        // `--stages=installers` is the operator-facing shorthand for
+        // every installer-family stage. The expansion must include
+        // nfpm + makeself + srpm + msi + nsis + dmg + pkg in the same
+        // order `installer_stages()` advertises so the harness gate
+        // and the parser stay aligned.
+        let stages = parse_stages(Some("installers")).expect("umbrella token must parse");
+        assert_eq!(
+            stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            vec!["nfpm", "makeself", "srpm", "msi", "nsis", "dmg", "pkg"]
+        );
+    }
+
+    #[test]
+    fn parse_stages_installers_dedupes_against_individual_members() {
+        // `--stages=installers,msi` must not double-list `msi` in the
+        // report's `stages_under_test`. First mention wins so the
+        // operator's typed order is preserved.
+        let stages =
+            parse_stages(Some("installers,msi")).expect("umbrella + individual must parse");
+        let names: Vec<&str> = stages.iter().map(|s| s.as_str()).collect();
+        assert_eq!(names.iter().filter(|n| **n == "msi").count(), 1);
+    }
+
+    #[test]
+    fn parse_stages_accepts_each_individual_installer_token() {
+        // Every individual installer stage token must parse in
+        // isolation so operators can narrow the harness to a single
+        // family (`--stages=msi`) without invoking the umbrella.
+        for token in ["msi", "nsis", "dmg", "pkg", "srpm"] {
+            let stages = parse_stages(Some(token))
+                .unwrap_or_else(|e| panic!("token `{token}` must parse: {e}"));
+            assert_eq!(
+                stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                vec![token]
+            );
+        }
     }
 
     #[test]

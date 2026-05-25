@@ -406,6 +406,27 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
     if lower.starts_with("dist/docker/") || lower.contains("/dist/docker/") {
         return "docker".into();
     }
+    // Installer-family path prefixes: each stage emits artifacts under
+    // a stage-named subdirectory of `dist/`. Path-prefix matching
+    // beats extension matching because `.tar` / `.zip` / `.exe` are
+    // ambiguous between the archive stage and several installer
+    // stages (nsis emits a `.exe` installer; makeself emits a `.run`
+    // that may also surface as `.sh`). Anchor on the directory the
+    // stage owns and the attribution becomes unambiguous.
+    for (prefix, stage) in [
+        ("dist/nfpm/", "nfpm"),
+        ("dist/msi/", "msi"),
+        ("dist/nsis/", "nsis"),
+        ("dist/dmg/", "dmg"),
+        ("dist/pkg/", "pkg"),
+        ("dist/srpm/", "srpm"),
+        ("dist/makeself/", "makeself"),
+        ("dist/snapcraft/", "snapcraft"),
+    ] {
+        if lower.starts_with(prefix) || lower.contains(&format!("/{}", prefix)) {
+            return stage.into();
+        }
+    }
     if lower.ends_with(".sig") || lower.ends_with(".pem") || lower.ends_with(".cert") {
         "sign".into()
     } else if lower.contains("checksums")
@@ -419,6 +440,30 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
         || lower.ends_with(".spdx.json")
     {
         "sbom".into()
+    } else if lower.ends_with(".src.rpm") {
+        // Source RPM produced by `stage-srpm` — guard before the
+        // generic `.rpm` rule below so binary RPM detection doesn't
+        // swallow it. `stage-srpm` should already land under the
+        // `dist/srpm/` prefix above; this is the trailing-fallback
+        // path for builds that emit a `.src.rpm` outside the
+        // canonical directory layout.
+        "srpm".into()
+    } else if lower.ends_with(".rpm") || lower.ends_with(".deb") || lower.ends_with(".apk") {
+        // Binary RPM / DEB / APK packages come from `stage-nfpm`.
+        // Surfaced via the `dist/nfpm/` prefix above for canonical
+        // layouts; this branch catches paths that bypass that prefix.
+        "nfpm".into()
+    } else if lower.ends_with(".msi") {
+        "msi".into()
+    } else if lower.ends_with(".dmg") {
+        "dmg".into()
+    } else if lower.ends_with(".pkg") || lower.ends_with(".mpkg") {
+        "pkg".into()
+    } else if lower.ends_with(".run") {
+        // makeself emits self-extracting shell archives with a `.run`
+        // suffix by convention. Anchored on the suffix because the
+        // file is mode-0755 plain shell, no magic-byte tell.
+        "makeself".into()
     } else if lower.ends_with(".tar.gz")
         || lower.ends_with(".tar.xz")
         || lower.ends_with(".tar.zst")
@@ -455,6 +500,85 @@ mod tests {
             "build"
         );
         assert_eq!(infer_stage_from_path("dist\\foo.tar.gz"), "archive");
+    }
+
+    /// Installer-family stages emit artifacts under their stage-named
+    /// `dist/<stage>/` subdirectory; the `infer_stage_from_path`
+    /// classifier must pick those up so the report's per-stage drift
+    /// counts attribute correctly. Without this, e.g. an MSI installer
+    /// at `dist/msi/anodize-0.4.0.msi` would have shown up under
+    /// `unknown` and the report's `drift` row would not have named
+    /// the responsible stage.
+    #[test]
+    fn stage_inference_classifies_installer_directory_prefixes() {
+        assert_eq!(
+            infer_stage_from_path("dist/nfpm/anodize_0.4.0_amd64.deb"),
+            "nfpm"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/nfpm/anodize-0.4.0-1.x86_64.rpm"),
+            "nfpm"
+        );
+        assert_eq!(infer_stage_from_path("dist/msi/anodize-0.4.0.msi"), "msi");
+        assert_eq!(
+            infer_stage_from_path("dist/nsis/anodize-setup-0.4.0.exe"),
+            "nsis"
+        );
+        assert_eq!(infer_stage_from_path("dist/dmg/anodize-0.4.0.dmg"), "dmg");
+        assert_eq!(infer_stage_from_path("dist/pkg/anodize-0.4.0.pkg"), "pkg");
+        assert_eq!(
+            infer_stage_from_path("dist/srpm/anodize-0.4.0-1.src.rpm"),
+            "srpm"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/makeself/anodize-0.4.0.run"),
+            "makeself"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/snapcraft/anodize_0.4.0_amd64.snap"),
+            "snapcraft"
+        );
+    }
+
+    /// Installer artifacts that escape the canonical `dist/<stage>/`
+    /// layout (e.g. operator-overridden output paths) must still
+    /// attribute to their stage by file extension. Guards the
+    /// trailing-fallback branch of `infer_stage_from_path`.
+    #[test]
+    fn stage_inference_classifies_installer_extensions_outside_prefix() {
+        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.msi"), "msi");
+        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.dmg"), "dmg");
+        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.pkg"), "pkg");
+        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.run"), "makeself");
+        assert_eq!(
+            infer_stage_from_path("dist/anodize-0.4.0-1.src.rpm"),
+            "srpm"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/anodize-0.4.0-1.x86_64.rpm"),
+            "nfpm"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/anodize_0.4.0_amd64.deb"),
+            "nfpm"
+        );
+        assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.apk"), "nfpm");
+    }
+
+    /// `.src.rpm` must beat the generic `.rpm` rule — they're
+    /// produced by different stages (`stage-srpm` vs `stage-nfpm`)
+    /// and a misclassification would make root-causing drift in
+    /// either stage harder.
+    #[test]
+    fn stage_inference_distinguishes_src_rpm_from_binary_rpm() {
+        assert_eq!(
+            infer_stage_from_path("dist/anodize-0.4.0-1.src.rpm"),
+            "srpm"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/anodize-0.4.0-1.x86_64.rpm"),
+            "nfpm"
+        );
     }
 
     /// `discover_artifacts` MUST surface raw cargo binaries from

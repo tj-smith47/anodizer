@@ -51,7 +51,10 @@
 mod artifacts;
 mod drift;
 mod env;
+mod installer_detect;
 mod preserve;
+
+pub use installer_detect::installer_stages;
 
 use anodizer_core::git::worktree::Worktree;
 use anodizer_core::harness_signing::EphemeralSigningKeys;
@@ -158,6 +161,40 @@ pub enum StageId {
     /// on the host so the harness stays usable on machines without
     /// Docker installed.
     Docker,
+    /// MSI installer reproducibility probe (Windows).
+    ///
+    /// Drives the `stage-msi` crate via the child release subprocess
+    /// (`wix` / `candle` / `light` invocations live inside the stage's
+    /// allow-listed spawn surface). Skipped at the harness gate when
+    /// `wix` is not on `PATH`, so the harness stays usable on Linux /
+    /// macOS hosts that lack the WiX toolset.
+    Msi,
+    /// NSIS installer reproducibility probe (Windows).
+    ///
+    /// Drives the `stage-nsis` crate. The `makensis` binary is the
+    /// gating tool; skipped when missing so the harness stays usable
+    /// on hosts without NSIS installed.
+    Nsis,
+    /// DMG installer reproducibility probe (macOS).
+    ///
+    /// Drives the `stage-dmg` crate. Primary tool is `hdiutil` on
+    /// macOS and `mkisofs` on Linux (matching how the stage's spawn
+    /// surface picks its DMG-builder). Skipped when the primary tool
+    /// is missing on the host.
+    Dmg,
+    /// `.pkg` installer reproducibility probe (macOS).
+    ///
+    /// Drives the `stage-pkg` crate via the child release subprocess
+    /// (`pkgbuild` / `productbuild` invocations live inside the
+    /// stage's allow-listed spawn surface). Skipped when `pkgbuild`
+    /// is not on `PATH`.
+    Pkg,
+    /// Source RPM (`.src.rpm`) reproducibility probe.
+    ///
+    /// Drives the `stage-srpm` crate. Primary tool is `rpmbuild`;
+    /// skipped when missing so the harness stays usable on macOS /
+    /// Windows hosts that lack RPM tooling.
+    Srpm,
 }
 
 impl StageId {
@@ -177,6 +214,11 @@ impl StageId {
             StageId::Checksum => "checksum",
             StageId::CargoPackage => "cargo-package",
             StageId::Docker => "docker",
+            StageId::Msi => "msi",
+            StageId::Nsis => "nsis",
+            StageId::Dmg => "dmg",
+            StageId::Pkg => "pkg",
+            StageId::Srpm => "srpm",
         }
     }
 }
@@ -347,6 +389,24 @@ impl Harness {
         } else {
             self.stages.clone()
         };
+
+        // Installer-tool availability gate: drop any installer-family
+        // stage whose primary tool is not on PATH. The pipeline would
+        // otherwise fail at `Command::new("wix")` / `Command::new("rpmbuild")`
+        // mid-run, surfacing as a confusing build error instead of an
+        // honest "tool absent → stage skipped". Non-installer stages
+        // pass through unmodified (sign / docker / cargo-package have
+        // their own gates downstream).
+        let gate = installer_detect::filter_available_installer_stages(&effective_stages);
+        let effective_stages = gate.available;
+        for (stage, tool) in &gate.skipped {
+            eprintln!(
+                "warn: installer stage `{}` requested but `{}` is not on PATH; \
+                 skipping for this run (no artifacts emitted)",
+                stage.as_str(),
+                tool
+            );
+        }
 
         // Provision once: both runs must sign with identical key
         // material, otherwise even byte-deterministic GPG signatures
