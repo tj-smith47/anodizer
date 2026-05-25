@@ -927,3 +927,189 @@ fn is_dynamically_linked_elf64_big_endian_with_pt_interp_returns_true() {
     std::fs::write(&p, &bytes).unwrap();
     assert!(is_dynamically_linked(&p));
 }
+
+// ---------------------------------------------------------------------------
+// Orchestrator dry-run paths — exercise check_skip_guards template branches,
+// resolve_repo_coords template rendering, and the early-exit log surface.
+// These run with `dry_run: true` so no git work happens; the orchestrator
+// dispatches helpers up to `is_dry_run()` and returns Ok(false).
+// ---------------------------------------------------------------------------
+
+/// `skip` is a template string that evaluates to `"true"` — must short-circuit
+/// just like `Bool(true)`. Pins the template-render branch of `check_skip_guards`.
+#[test]
+fn test_publish_to_nix_skip_template_string_true_returns_false() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig, StringOrBool};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        skip: Some(StringOrBool::String("true".to_string())),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let got = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap();
+    assert!(!got);
+}
+
+/// `skip` template that renders to `"false"` does NOT short-circuit —
+/// orchestration proceeds past the guard. With no artifacts present the
+/// pipeline then bails on "no Linux/Darwin archive artifacts", confirming
+/// the skip guard was actually evaluated and rejected.
+#[test]
+fn test_publish_to_nix_skip_template_false_proceeds_past_guard() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig, StringOrBool};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        skip: Some(StringOrBool::String("false".to_string())),
+        license: Some("mit".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    assert!(format!("{err}").contains("no Linux/Darwin archive"));
+}
+
+/// `repository.owner` / `repository.name` are template-rendered. A literal
+/// `{{ .ProjectName }}` placeholder must resolve from `template_vars` before
+/// the dry-run branch logs the destination.
+#[test]
+fn test_publish_to_nix_repo_coords_render_templates() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("{{ .ProjectName }}-org".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, true);
+    ctx.template_vars_mut().set("ProjectName", "myproj");
+    // Dry-run path bails Ok(false) AFTER resolving + logging the repo
+    // coords — successful return means template rendering didn't panic on
+    // the `{{ .ProjectName }}` substitution.
+    assert!(!publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap());
+}
+
+/// `name:` field is template-rendered before the dry-run log. Confirms
+/// the rendered-name path is reachable in dry-run without going through
+/// the full pipeline.
+#[test]
+fn test_publish_to_nix_name_template_rendered_in_dry_run() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        name: Some("{{ .ProjectName }}-tool".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, true);
+    ctx.template_vars_mut().set("ProjectName", "anodize");
+    assert!(!publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap());
+}
+
+/// Project-level `metadata.description` is the fallback when the per-crate
+/// `nix.description` is unset. Pins `resolve_nix_metadata`'s
+/// `or_else(|| ctx.config.meta_description())` chain.
+#[test]
+fn test_publish_to_nix_description_falls_back_to_project_metadata() {
+    use anodizer_core::config::{
+        Config, CrateConfig, MetadataConfig, NixConfig, PublishConfig, RepositoryConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+    let config = Config {
+        metadata: Some(MetadataConfig {
+            description: Some("project-level description".to_string()),
+            license: Some("mit".to_string()),
+            ..Default::default()
+        }),
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                nix: Some(NixConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("myorg".to_string()),
+                        name: Some("nixpkgs-overlay".to_string()),
+                        ..Default::default()
+                    }),
+                    // description omitted → falls back to metadata.description
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: false,
+            ..Default::default()
+        },
+    );
+    // No artifacts → bails on the no-archives guard after passing through
+    // the description-fallback path. Confirms the fallback didn't panic
+    // on a missing per-crate description.
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    assert!(format!("{err}").contains("no Linux/Darwin archive"));
+}
+
+/// Bad homepage template (Tera syntax error) surfaces as a render error
+/// with the crate name in the chain. Pins the
+/// `.with_context(|| "render homepage template for '<crate>'")` plumbing.
+#[test]
+fn test_publish_to_nix_bad_homepage_template_errors_with_crate_name() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        license: Some("mit".to_string()),
+        // Unclosed Tera tag — render must fail loudly.
+        homepage: Some("{{ broken".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("homepage"), "must name field: {msg}");
+    assert!(msg.contains("mytool"), "must name crate: {msg}");
+}
+
+/// `formatter:` is wired but no artifacts present — orchestrator bails on
+/// the no-archives guard BEFORE reaching `run_formatter`. Pins that the
+/// formatter wiring doesn't fire prematurely (would attempt to spawn the
+/// binary against a file that hasn't been written yet).
+#[test]
+fn test_publish_to_nix_formatter_not_invoked_before_archive_resolution() {
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        license: Some("mit".to_string()),
+        formatter: Some("nixfmt".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
+    // Confirms the failure was the archives guard, not a formatter spawn.
+    assert!(format!("{err}").contains("no Linux/Darwin archive"));
+}

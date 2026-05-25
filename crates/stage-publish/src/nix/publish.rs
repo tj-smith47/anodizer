@@ -675,10 +675,432 @@ fn finalize_publish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anodizer_core::config::{
+        ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, NixConfig, NixDependency,
+        WrapInDirectory,
+    };
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("publish", Verbosity::Quiet)
+    }
 
     #[test]
     fn commit_outcome_is_pushed() {
         assert!(util::CommitOutcome::Pushed.is_pushed());
         assert!(!util::CommitOutcome::NoChanges.is_pushed());
+    }
+
+    // -----------------------------------------------------------------
+    // unique_dep_args — declaration order preserved, dupes collapsed.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn unique_dep_args_empty_returns_empty() {
+        assert!(unique_dep_args(&[]).is_empty());
+    }
+
+    #[test]
+    fn unique_dep_args_dedupes_preserving_first_occurrence_order() {
+        let deps = vec![
+            NixDependency {
+                name: "openssl".to_string(),
+                os: Some("linux".to_string()),
+            },
+            NixDependency {
+                name: "openssl".to_string(),
+                os: Some("darwin".to_string()),
+            },
+            NixDependency {
+                name: "git".to_string(),
+                os: None,
+            },
+            NixDependency {
+                name: "openssl".to_string(),
+                os: None,
+            },
+        ];
+        assert_eq!(
+            unique_dep_args(&deps),
+            vec!["openssl".to_string(), "git".to_string()]
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // collect_binary_names — pulled from builds, falls back to name.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn collect_binary_names_falls_back_to_derivation_name_when_no_builds() {
+        let cc = CrateConfig {
+            builds: None,
+            ..Default::default()
+        };
+        assert_eq!(collect_binary_names(&cc, "mytool"), vec!["mytool"]);
+    }
+
+    #[test]
+    fn collect_binary_names_falls_back_when_builds_have_no_binary() {
+        let cc = CrateConfig {
+            builds: Some(vec![BuildConfig {
+                binary: None,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert_eq!(collect_binary_names(&cc, "fallback"), vec!["fallback"]);
+    }
+
+    #[test]
+    fn collect_binary_names_extracts_and_dedupes_preserving_order() {
+        let cc = CrateConfig {
+            builds: Some(vec![
+                BuildConfig {
+                    binary: Some("alpha".to_string()),
+                    ..Default::default()
+                },
+                BuildConfig {
+                    binary: Some("beta".to_string()),
+                    ..Default::default()
+                },
+                BuildConfig {
+                    binary: Some("alpha".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(
+            collect_binary_names(&cc, "ignored"),
+            vec!["alpha".to_string(), "beta".to_string()]
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // build_wrap_program_line — partitioned by `os:` filter.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn build_wrap_program_line_returns_none_when_deps_empty() {
+        assert!(build_wrap_program_line(&[], "mytool").is_none());
+    }
+
+    #[test]
+    fn build_wrap_program_line_all_os_emits_unconditional_list() {
+        let deps = vec![
+            NixDependency {
+                name: "git".to_string(),
+                os: None,
+            },
+            NixDependency {
+                name: "curl".to_string(),
+                os: None,
+            },
+        ];
+        let line = build_wrap_program_line(&deps, "mytool").expect("should emit");
+        assert!(line.contains("wrapProgram $out/bin/mytool"));
+        assert!(line.contains("[ git curl ]"));
+        assert!(!line.contains("isDarwin"));
+        assert!(!line.contains("isLinux"));
+    }
+
+    #[test]
+    fn build_wrap_program_line_partitions_by_os() {
+        let deps = vec![
+            NixDependency {
+                name: "darwin_dep".to_string(),
+                os: Some("darwin".to_string()),
+            },
+            NixDependency {
+                name: "linux_dep".to_string(),
+                os: Some("linux".to_string()),
+            },
+            NixDependency {
+                name: "git".to_string(),
+                os: None,
+            },
+        ];
+        let line = build_wrap_program_line(&deps, "mytool").expect("should emit");
+        assert!(line.contains("lib.optionals stdenvNoCC.isDarwin [ darwin_dep ]"));
+        assert!(line.contains("lib.optionals stdenvNoCC.isLinux [ linux_dep ]"));
+        assert!(line.contains("[ git ]"));
+        // Darwin must precede linux which must precede all-OS bucket.
+        let darwin_pos = line.find("isDarwin").unwrap();
+        let linux_pos = line.find("isLinux").unwrap();
+        assert!(darwin_pos < linux_pos);
+    }
+
+    #[test]
+    fn build_wrap_program_line_unknown_os_string_is_dropped() {
+        let deps = vec![NixDependency {
+            name: "freebsd_dep".to_string(),
+            os: Some("freebsd".to_string()),
+        }];
+        assert!(build_wrap_program_line(&deps, "mytool").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // build_install_lines — custom install vs auto-generated.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn build_install_lines_custom_install_overrides_auto_block() {
+        let nix_cfg = NixConfig {
+            install: Some("custom-line-1\ncustom-line-2".to_string()),
+            ..Default::default()
+        };
+        let cc = CrateConfig::default();
+        let lines = build_install_lines(&nix_cfg, &cc, "mytool", &[], false);
+        assert_eq!(lines, vec!["custom-line-1", "custom-line-2"]);
+    }
+
+    #[test]
+    fn build_install_lines_custom_install_appends_extra_install() {
+        let nix_cfg = NixConfig {
+            install: Some("base".to_string()),
+            extra_install: Some("extra-1\nextra-2".to_string()),
+            ..Default::default()
+        };
+        let cc = CrateConfig::default();
+        let lines = build_install_lines(&nix_cfg, &cc, "mytool", &[], false);
+        assert_eq!(lines, vec!["base", "extra-1", "extra-2"]);
+    }
+
+    #[test]
+    fn build_install_lines_auto_generates_mkdir_and_cp_per_binary() {
+        let nix_cfg = NixConfig::default();
+        let cc = CrateConfig {
+            builds: Some(vec![BuildConfig {
+                binary: Some("mytool".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let lines = build_install_lines(&nix_cfg, &cc, "mytool", &[], false);
+        assert_eq!(lines[0], "mkdir -p $out/bin");
+        assert!(lines.iter().any(|l| l == "cp -vr ./mytool $out/bin/mytool"));
+        assert!(lines.iter().any(|l| l == "chmod +x $out/bin/mytool"));
+    }
+
+    #[test]
+    fn build_install_lines_appends_wrap_program_when_needed() {
+        let nix_cfg = NixConfig::default();
+        let cc = CrateConfig::default();
+        let deps = vec![NixDependency {
+            name: "git".to_string(),
+            os: None,
+        }];
+        let lines = build_install_lines(&nix_cfg, &cc, "mytool", &deps, true);
+        let wrap = lines
+            .iter()
+            .find(|l| l.starts_with("wrapProgram"))
+            .expect("wrap line must be appended");
+        assert!(wrap.contains("[ git ]"));
+    }
+
+    #[test]
+    fn build_install_lines_skips_wrap_program_when_deps_filter_to_empty() {
+        // needs_make_wrapper=true but every dep is OS-filtered to an
+        // unknown OS — build_wrap_program_line returns None, no wrap appended.
+        let nix_cfg = NixConfig::default();
+        let cc = CrateConfig::default();
+        let deps = vec![NixDependency {
+            name: "x".to_string(),
+            os: Some("plan9".to_string()),
+        }];
+        let lines = build_install_lines(&nix_cfg, &cc, "mytool", &deps, true);
+        assert!(!lines.iter().any(|l| l.starts_with("wrapProgram")));
+    }
+
+    // -----------------------------------------------------------------
+    // build_archive_tuples — sha256 guard, url_template, hash conversion.
+    // -----------------------------------------------------------------
+
+    fn os_artifact(os: &str, arch: &str, url: &str, sha256: &str) -> util::OsArtifact {
+        util::OsArtifact {
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+            os: os.to_string(),
+            arch: arch.to_string(),
+            id: None,
+            amd64_variant: None,
+            arm_variant: None,
+            binary: None,
+        }
+    }
+
+    #[test]
+    fn build_archive_tuples_empty_artifact_list_bails() {
+        let cfg = NixConfig::default();
+        let err =
+            build_archive_tuples(&[], &cfg, "mytool", "1.0.0", &quiet_log()).expect_err("no arts");
+        assert!(format!("{err}").contains("no Linux/Darwin archive"));
+    }
+
+    #[test]
+    fn build_archive_tuples_missing_sha256_for_nix_system_bails() {
+        let arts = vec![os_artifact(
+            "linux",
+            "amd64",
+            "https://example.com/x.tar.gz",
+            "",
+        )];
+        let cfg = NixConfig::default();
+        let err = build_archive_tuples(&arts, &cfg, "mytool", "1.0.0", &quiet_log())
+            .expect_err("empty sha256 must bail");
+        let msg = format!("{err}");
+        assert!(msg.contains("sha256"));
+        assert!(msg.contains("mytool"));
+    }
+
+    #[test]
+    fn build_archive_tuples_skips_non_nix_systems_silently() {
+        // Windows artifact has no nix_system mapping; sha256-empty guard
+        // should not trigger for it.
+        let arts = vec![
+            os_artifact("windows", "amd64", "https://example.com/x.zip", ""),
+            os_artifact(
+                "linux",
+                "amd64",
+                "https://example.com/x.tar.gz",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+        ];
+        let cfg = NixConfig::default();
+        let tuples = build_archive_tuples(&arts, &cfg, "mytool", "1.0.0", &quiet_log()).unwrap();
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].0, "x86_64-linux");
+    }
+
+    #[test]
+    fn build_archive_tuples_converts_hex_to_nix_base32() {
+        let arts = vec![os_artifact(
+            "linux",
+            "amd64",
+            "https://example.com/x.tar.gz",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )];
+        let cfg = NixConfig::default();
+        let tuples = build_archive_tuples(&arts, &cfg, "mytool", "1.0.0", &quiet_log()).unwrap();
+        assert_eq!(tuples[0].2.len(), 52, "nix base32 must be 52 chars");
+        assert_ne!(
+            tuples[0].2, arts[0].sha256,
+            "must convert, not pass hex through"
+        );
+    }
+
+    #[test]
+    fn build_archive_tuples_falls_back_to_raw_hex_on_bad_sha256() {
+        // 64-char string that is NOT valid hex — base32 conversion fails,
+        // warn-and-pass-through path runs (still yields a tuple).
+        let bad = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+        let arts = vec![os_artifact(
+            "linux",
+            "amd64",
+            "https://example.com/x.tar.gz",
+            bad,
+        )];
+        let cfg = NixConfig::default();
+        let tuples = build_archive_tuples(&arts, &cfg, "mytool", "1.0.0", &quiet_log()).unwrap();
+        assert_eq!(tuples[0].2, bad, "fallback must preserve raw hex");
+    }
+
+    #[test]
+    fn build_archive_tuples_applies_url_template() {
+        let arts = vec![os_artifact(
+            "linux",
+            "amd64",
+            "https://original/url.tar.gz",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )];
+        let cfg = NixConfig {
+            url_template: Some(
+                "https://mirror.example.com/{{ name }}-{{ version }}-{{ os }}-{{ arch }}.tar.gz"
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+        let tuples = build_archive_tuples(&arts, &cfg, "mytool", "1.2.3", &quiet_log()).unwrap();
+        assert_eq!(
+            tuples[0].1,
+            "https://mirror.example.com/mytool-1.2.3-linux-amd64.tar.gz"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // resolve_source_roots — single-root collapse vs per-system map.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn resolve_source_roots_no_artifacts_yields_dot_default() {
+        let cc = CrateConfig::default();
+        let (single, map) = resolve_source_roots(&cc, &[], "mytool", "1.0.0");
+        assert_eq!(single.as_deref(), Some("."));
+        assert!(map.is_none());
+    }
+
+    #[test]
+    fn resolve_source_roots_uniform_root_collapses_to_single() {
+        let arts = vec![
+            os_artifact("linux", "amd64", "u1", "h1"),
+            os_artifact("darwin", "arm64", "u2", "h2"),
+        ];
+        let cc = CrateConfig {
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                wrap_in_directory: Some(WrapInDirectory::Bool(true)),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let (single, map) = resolve_source_roots(&cc, &arts, "mytool", "1.0.0");
+        assert_eq!(single.as_deref(), Some("mytool-1.0.0"));
+        assert!(map.is_none());
+    }
+
+    #[test]
+    fn resolve_source_roots_disabled_archives_falls_back_to_dot() {
+        let arts = vec![os_artifact("linux", "amd64", "u1", "h1")];
+        let cc = CrateConfig {
+            archives: ArchivesConfig::Disabled,
+            ..Default::default()
+        };
+        let (single, map) = resolve_source_roots(&cc, &arts, "mytool", "1.0.0");
+        assert_eq!(single.as_deref(), Some("."));
+        assert!(map.is_none());
+    }
+
+    #[test]
+    fn resolve_source_roots_divergent_per_id_emits_per_system_map() {
+        let mut linux = os_artifact("linux", "amd64", "u1", "h1");
+        linux.id = Some("linux-archive".to_string());
+        let mut darwin = os_artifact("darwin", "arm64", "u2", "h2");
+        darwin.id = Some("darwin-archive".to_string());
+        let cc = CrateConfig {
+            archives: ArchivesConfig::Configs(vec![
+                ArchiveConfig {
+                    id: Some("linux-archive".to_string()),
+                    wrap_in_directory: Some(WrapInDirectory::Bool(true)),
+                    ..Default::default()
+                },
+                ArchiveConfig {
+                    id: Some("darwin-archive".to_string()),
+                    wrap_in_directory: Some(WrapInDirectory::Bool(false)),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        let (single, map) = resolve_source_roots(&cc, &[linux, darwin], "mytool", "1.0.0");
+        assert!(single.is_none());
+        let entries = map.expect("per-system map must be emitted");
+        assert_eq!(entries.len(), 2);
+        // Sorted by system identifier.
+        assert!(entries[0].system < entries[1].system);
+        let roots: std::collections::HashMap<&str, &str> = entries
+            .iter()
+            .map(|e| (e.system.as_str(), e.root.as_str()))
+            .collect();
+        assert_eq!(roots.get("x86_64-linux"), Some(&"mytool-1.0.0"));
+        assert_eq!(roots.get("aarch64-darwin"), Some(&"."));
     }
 }
