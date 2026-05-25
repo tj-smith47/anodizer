@@ -170,30 +170,16 @@ pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
 }
 
 pub fn run(mut opts: ReleaseOpts) -> Result<()> {
-    // Augment skip BEFORE any stage wiring so the semantic matches
-    // `--skip=release,publish,announce` exactly.
     if opts.prepare {
         apply_prepare_mode_to_skip(&mut opts.skip);
     }
-
-    // `--strict` and `--allow-nondeterministic` are mutually exclusive:
-    // strict mode forbids the determinism stage from suppressing
-    // findings, the allowlist's whole purpose is to suppress one. clap
-    // can't express this directly (--strict lives on the top-level Cli
-    // struct and the allowlist on the Release variant), so the check
-    // runs here.
-    if opts.strict && !opts.allow_nondeterministic.is_empty() {
-        anyhow::bail!(
-            "--strict and --allow-nondeterministic are mutually exclusive (drop --strict if a runtime exemption is required)"
-        );
-    }
+    validate_strict_vs_allowlist(&opts)?;
 
     let log = StageLogger::new(
         "release",
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
     );
 
-    // Check git is available before doing anything else.
     git::check_git_available()?;
 
     if opts.snapshot && opts.nightly {
@@ -204,21 +190,138 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
     let mut config = pipeline::load_config(&config_path)?;
 
-    // If --workspace is specified, resolve the workspace and overlay its config
-    // onto the top-level config (replacing crates, changelog, signs, etc.).
-    // Also capture any workspace-level skip stages for merging into skip_stages.
+    let workspace_skip = apply_workspace_overlay_for_opts(&mut config, &opts, &log)?;
+
+    helpers::infer_project_name(&mut config, &log);
+    helpers::auto_detect_github(&mut config, &log);
+
+    apply_release_meta_overrides(&mut config, &opts)?;
+    enforce_dist_state(&config, &opts, &log)?;
+
+    let all_known_crates = flatten_known_crates(&config);
+    let selected_sorted = resolve_selected_crates(&opts, &all_known_crates, &config, &log)?;
+    let skip_stages = compute_skip_stages(opts.skip.clone(), &workspace_skip, opts.snapshot);
+
+    let release_notes_path = read_release_notes_template(&opts)?;
+    let rollback_mode = parse_rollback_mode(opts.rollback.as_deref())?;
+    let simulate_failure_publishers = resolve_simulate_failure(&mut opts.simulate_failure)?;
+    let runtime_nondeterministic_allowlist =
+        parse_allow_nondeterministic(&opts.allow_nondeterministic)?;
+
+    let ctx_opts = build_context_options(
+        &opts,
+        skip_stages,
+        selected_sorted,
+        rollback_mode,
+        simulate_failure_publishers,
+        runtime_nondeterministic_allowlist,
+    );
+    let mut ctx = Context::new(config.clone(), ctx_opts);
+    helpers::resolve_scm_token_type(&mut ctx, &config);
+    ctx.populate_time_vars();
+    ctx.populate_runtime_vars();
+    ctx.populate_metadata_var()?;
+
+    if ctx.options.rollback_only {
+        return run_rollback_only(&mut ctx);
+    }
+
+    ctx.template_vars_mut()
+        .set("IsPrepare", if opts.prepare { "true" } else { "false" });
+
+    helpers::setup_env(&mut ctx, &config, &log)?;
+    helpers::resolve_git_context(&mut ctx, &config, &log)?;
+
+    run_before_hooks(&ctx, &config, &opts, &log)?;
+    render_release_notes_tmpl(&mut ctx, &config, &opts, release_notes_path, &log)?;
+    enforce_dirty_repo_gate(&ctx)?;
+
+    if ctx.is_nightly() {
+        apply_nightly_template_vars(&mut ctx, &config, &log)?;
+    }
+    if ctx.is_snapshot() {
+        apply_snapshot_template_vars(&mut ctx, &config, &log)?;
+    }
+
+    helpers::write_effective_config(&config, &log)?;
+
+    if !opts.split
+        && let Some(ref milestones) = config.milestones
+    {
+        milestones::preflight_milestones(milestones, &mut ctx, &log)?;
+    }
+
+    if run_publisher_preflight(&mut ctx, &opts, &log)? {
+        return Ok(());
+    }
+
+    if opts.publish_only {
+        return publish_only::run(
+            &mut ctx,
+            &config,
+            &log,
+            publish_only::RunOpts {
+                dry_run: opts.dry_run,
+                no_preflight: opts.no_preflight,
+            },
+        );
+    }
+
+    if opts.split {
+        return split::run_split(&mut ctx, &config, &log);
+    }
+
+    if opts.merge {
+        return split::run_merge(&mut ctx, &config, &log, opts.dry_run, None);
+    }
+
+    let p = pipeline::build_release_pipeline();
+    let result = p.run(&mut ctx, &log);
+
+    if result.is_ok() {
+        run_post_pipeline(&mut ctx, &config, opts.dry_run, &log)?;
+    }
+
+    if result.is_ok() {
+        gate_required_failures(&ctx)?;
+    }
+
+    result
+}
+
+/// `--strict` and `--allow-nondeterministic` are mutually exclusive: strict
+/// mode forbids the determinism stage from suppressing findings, the
+/// allowlist's whole purpose is to suppress one. clap can't express this
+/// directly (--strict lives on the top-level Cli struct and the allowlist on
+/// the Release variant), so the check runs here.
+fn validate_strict_vs_allowlist(opts: &ReleaseOpts) -> Result<()> {
+    if opts.strict && !opts.allow_nondeterministic.is_empty() {
+        anyhow::bail!(
+            "--strict and --allow-nondeterministic are mutually exclusive (drop --strict if a runtime exemption is required)"
+        );
+    }
+    Ok(())
+}
+
+/// Apply the workspace overlay (explicit `--workspace`, or inferred from the
+/// first `--crate` when the top-level config has no crates). Returns the
+/// list of workspace-level skip stages to merge later.
+fn apply_workspace_overlay_for_opts(
+    config: &mut Config,
+    opts: &ReleaseOpts,
+    log: &StageLogger,
+) -> Result<Vec<String>> {
     let mut workspace_skip: Vec<String> = Vec::new();
     if let Some(ref ws_name) = opts.workspace {
-        let ws = resolve_workspace(&config, ws_name)?.clone();
+        let ws = resolve_workspace(config, ws_name)?.clone();
         workspace_skip = ws.skip.clone();
-        helpers::apply_workspace_overlay(&mut config, &ws);
+        helpers::apply_workspace_overlay(config, &ws);
     } else if !opts.crate_names.is_empty() && config.crates.is_empty() {
         // No --workspace given, but --crate X was — infer the workspace that
         // contains X and apply its overlay. Without this, every downstream
-        // stage (publish, release, snapcraft-publish, …) iterates
-        // ctx.config.crates which is empty in workspace-based configs and
-        // silently does nothing. Matches the behaviour users intuitively
-        // expect: "release crate X" should release X's workspace.
+        // stage iterates `ctx.config.crates` which is empty in workspace-based
+        // configs and silently does nothing. Matches user intuition: "release
+        // crate X" should release X's workspace.
         let target = &opts.crate_names[0];
         let ws_for_target = config
             .workspaces
@@ -235,17 +338,16 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
                 target, ws.name
             ));
             workspace_skip = ws.skip.clone();
-            helpers::apply_workspace_overlay(&mut config, &ws);
+            helpers::apply_workspace_overlay(config, &ws);
         }
     }
+    Ok(workspace_skip)
+}
 
-    // Auto-infer project_name from Cargo.toml when not set in config.
-    helpers::infer_project_name(&mut config, &log);
-
-    // Auto-detect GitHub owner/name from git remote
-    helpers::auto_detect_github(&mut config, &log);
-
-    // CLI overrides for release config
+/// Apply CLI overrides that mutate `config.release` (draft / header / footer
+/// and their `_tmpl` variants). `*_tmpl` flags override their plain
+/// counterparts; the template stage renders the content later.
+fn apply_release_meta_overrides(config: &mut Config, opts: &ReleaseOpts) -> Result<()> {
     if opts.draft {
         let release = config.release.get_or_insert_with(Default::default);
         release.draft = Some(true);
@@ -260,8 +362,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         let release = config.release.get_or_insert_with(Default::default);
         release.header = Some(anodizer_core::config::ContentSource::Inline(header_content));
     }
-    // --release-header-tmpl overrides --release-header: file content is
-    // stored as-is and rendered through the template engine by the release stage.
     if let Some(ref header_tmpl_path) = opts.release_header_tmpl {
         let raw = std::fs::read_to_string(header_tmpl_path).with_context(|| {
             format!(
@@ -282,7 +382,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         let release = config.release.get_or_insert_with(Default::default);
         release.footer = Some(anodizer_core::config::ContentSource::Inline(footer_content));
     }
-    // --release-footer-tmpl overrides --release-footer (template-rendered).
     if let Some(ref footer_tmpl_path) = opts.release_footer_tmpl {
         let raw = std::fs::read_to_string(footer_tmpl_path).with_context(|| {
             format!(
@@ -293,7 +392,14 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         let release = config.release.get_or_insert_with(Default::default);
         release.footer = Some(anodizer_core::config::ContentSource::Inline(raw));
     }
+    Ok(())
+}
 
+/// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
+/// otherwise a populated dist is a hard error (GoReleaser's `ErrDirtyDist`).
+/// `--merge` / `--publish-only` / `--rollback-only` skip the non-empty check
+/// because each of those modes requires preserved dist content.
+fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) -> Result<()> {
     if opts.clean && !opts.dry_run {
         let dist = &config.dist;
         if dist.exists() {
@@ -303,13 +409,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         log.status("(dry-run) would clean dist directory");
     }
 
-    // Error if dist directory is non-empty and --clean was not passed
-    // (like GoReleaser's ErrDirtyDist).
-    // Skip in --merge mode: dist must contain split artifacts.
-    // Skip in --publish-only mode: dist must contain the preserved
-    // artifacts + context.json copied from the determinism harness.
-    // Skip in --rollback-only mode: the whole point of the flag is to
-    // read `<dist>/run-<id>/report.json` from a prior populated run.
     if !opts.clean && !opts.merge && !opts.publish_only && !opts.rollback_only {
         let dist = &config.dist;
         if dist.exists()
@@ -322,126 +421,133 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
 
-    // Flatten every known crate — top-level plus anything under workspaces —
-    // so that `--crate X` and `--all` resolve the same way regardless of whether
-    // the config is flat or workspace-based. apply_workspace_overlay already
-    // copies workspace crates into config.crates when --workspace is set, but
-    // without --workspace we still need to look inside workspaces ourselves.
-    let all_known_crates: Vec<CrateConfig> = {
-        let mut acc: Vec<CrateConfig> = config.crates.clone();
-        if let Some(ref ws_list) = config.workspaces {
-            for ws in ws_list {
-                for c in &ws.crates {
-                    if !acc.iter().any(|existing| existing.name == c.name) {
-                        acc.push(c.clone());
-                    }
+/// Flatten every known crate — top-level plus anything under workspaces —
+/// so `--crate X` and `--all` resolve the same way regardless of whether
+/// the config is flat or workspace-based.
+fn flatten_known_crates(config: &Config) -> Vec<CrateConfig> {
+    let mut acc: Vec<CrateConfig> = config.crates.clone();
+    if let Some(ref ws_list) = config.workspaces {
+        for ws in ws_list {
+            for c in &ws.crates {
+                if !acc.iter().any(|existing| existing.name == c.name) {
+                    acc.push(c.clone());
                 }
             }
         }
-        acc
-    };
+    }
+    acc
+}
 
-    // Determine selected crates
+/// Resolve the crate selection (`--all` + change detection, `--all --force`,
+/// or explicit `--crate` list) and topologically sort it.
+fn resolve_selected_crates(
+    opts: &ReleaseOpts,
+    all_known_crates: &[CrateConfig],
+    config: &Config,
+    log: &StageLogger,
+) -> Result<Vec<String>> {
     let selected = if opts.all {
         if opts.force {
-            // --all --force: include every crate
             all_known_crates.iter().map(|c| c.name.clone()).collect()
         } else {
             detect_changed_crates(
-                &all_known_crates,
+                all_known_crates,
                 config.git.as_ref(),
                 config.monorepo_tag_prefix(),
-                &log,
+                log,
             )?
         }
     } else {
         opts.crate_names.clone()
     };
+    Ok(topo_sort_selected(all_known_crates, &selected))
+}
 
-    // Topological sort of selected crates (respect depends_on ordering).
-    // Passing the flattened crate list means --crate cfgd resolves correctly
-    // whether `cfgd` is a top-level crate or lives inside a workspace.
-    let selected_sorted = topo_sort_selected(&all_known_crates, &selected);
-
-    let mut skip_stages = opts.skip;
-    // Merge workspace-level skip stages (e.g., skip: [announce] in workspace config).
-    for stage in &workspace_skip {
+/// Merge CLI / workspace / snapshot-implied skip stages into one list.
+/// Snapshot mode auto-skips every stage that performs an external upload
+/// (`publish`, `snapcraft-publish`, `blob`, `announce`); the release stage
+/// handles snapshot mode internally. Skipping `publish` implies skipping
+/// `announce` (matches GoReleaser).
+fn compute_skip_stages(
+    mut skip_stages: Vec<String>,
+    workspace_skip: &[String],
+    snapshot: bool,
+) -> Vec<String> {
+    for stage in workspace_skip {
         if !skip_stages.iter().any(|s| s == stage) {
             skip_stages.push(stage.clone());
         }
     }
-    // Snapshot mode automatically skips every stage that performs an external
-    // upload: `publish` (registries / package indexes), `snapcraft-publish`
-    // (Snap Store), `blob` (S3 / GCS / Azure object storage), and `announce`.
-    // The release stage is NOT skipped — it handles snapshot mode internally
-    // (e.g. creating draft releases for testing). Matches GoReleaser behaviour
-    // and prevents `--snapshot` from accidentally pushing artifacts upstream.
-    if opts.snapshot {
+    if snapshot {
         for stage in &["publish", "snapcraft-publish", "blob", "announce"] {
             if !skip_stages.iter().any(|s| s == stage) {
                 skip_stages.push(stage.to_string());
             }
         }
     }
-
-    // Skipping publish implies skipping announce (like GoReleaser).
     if skip_stages.contains(&"publish".to_string())
         && !skip_stages.contains(&"announce".to_string())
     {
         skip_stages.push("announce".to_string());
     }
+    skip_stages
+}
 
-    // Determine release notes path: --release-notes-tmpl overrides --release-notes.
-    // Template files are rendered using template vars and written to dist/.
-    let release_notes_path = if let Some(ref tmpl_path) = opts.release_notes_tmpl {
+/// Read the `--release-notes-tmpl` file (when set) so its content can be
+/// rendered post-`populate_*_vars`. `--release-notes-tmpl` overrides
+/// `--release-notes`.
+fn read_release_notes_template(opts: &ReleaseOpts) -> Result<Option<(PathBuf, String)>> {
+    if let Some(ref tmpl_path) = opts.release_notes_tmpl {
         let content = std::fs::read_to_string(tmpl_path).with_context(|| {
             format!(
                 "failed to read release notes template: {}",
                 tmpl_path.display()
             )
         })?;
-        // We'll render the template after context is created (need template vars).
-        // Store raw content for now, render after populate.
-        Some((tmpl_path.clone(), content))
+        Ok(Some((tmpl_path.clone(), content)))
     } else {
-        None
-    };
+        Ok(None)
+    }
+}
 
-    // Translate `--rollback=<v>` into the enum; reject invalid values
-    // up front so the dispatch site can rely on a clean value.
-    let rollback_mode: Option<RollbackMode> = match opts.rollback.as_deref() {
-        Some("none") => Some(RollbackMode::None),
-        Some("best-effort") => Some(RollbackMode::BestEffort),
-        Some(other) => {
-            anyhow::bail!(
-                "invalid --rollback value: {} (expected: none, best-effort)",
-                other
-            );
-        }
-        None => None,
-    };
+/// Translate `--rollback=<v>` into the enum; reject invalid values up front
+/// so the dispatch site can rely on a clean value.
+fn parse_rollback_mode(rollback: Option<&str>) -> Result<Option<RollbackMode>> {
+    match rollback {
+        Some("none") => Ok(Some(RollbackMode::None)),
+        Some("best-effort") => Ok(Some(RollbackMode::BestEffort)),
+        Some(other) => anyhow::bail!(
+            "invalid --rollback value: {} (expected: none, best-effort)",
+            other
+        ),
+        None => Ok(None),
+    }
+}
 
-    // `--simulate-failure` is a test-only flag and is gated by the
-    // `ANODIZE_TEST_HARNESS=1` env var. Production releases that
-    // accidentally set the flag get a hard error rather than silent
-    // pass-through, so the surface cannot be weaponized.
-    let simulate_failure_publishers = if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1")
-    {
-        std::mem::take(&mut opts.simulate_failure)
-    } else if !opts.simulate_failure.is_empty() {
+/// Resolve the `--simulate-failure` list. The flag is test-only and gated by
+/// `ANODIZE_TEST_HARNESS=1`; production releases that accidentally set the
+/// flag get a hard error rather than silent pass-through so the surface
+/// cannot be weaponized.
+fn resolve_simulate_failure(simulate: &mut Vec<String>) -> Result<Vec<String>> {
+    if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") {
+        Ok(std::mem::take(simulate))
+    } else if !simulate.is_empty() {
         anyhow::bail!(
             "--simulate-failure requires ANODIZE_TEST_HARNESS=1 (test-harness gated flag)"
         );
     } else {
-        Vec::new()
-    };
+        Ok(Vec::new())
+    }
+}
 
-    // Translate `--allow-nondeterministic name=reason` (repeatable)
-    // into `(name, reason)` tuples. Empty reasons are rejected so the
-    // run summary always carries a human-readable justification.
-    let runtime_nondeterministic_allowlist: Vec<(String, String)> = opts
-        .allow_nondeterministic
+/// Translate `--allow-nondeterministic name=reason` (repeatable) into
+/// `(name, reason)` tuples. Empty reasons are rejected so the run summary
+/// always carries a human-readable justification.
+fn parse_allow_nondeterministic(entries: &[String]) -> Result<Vec<(String, String)>> {
+    entries
         .iter()
         .map(|s| {
             let (name, reason) = s.split_once('=').ok_or_else(|| {
@@ -452,9 +558,22 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             }
             Ok::<_, anyhow::Error>((name.to_string(), reason.to_string()))
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect()
+}
 
-    let ctx_opts = ContextOptions {
+/// Assemble the [`ContextOptions`] from parsed flags + derived state.
+/// `resume_release` auto-enables under `--publish-only` so the publish
+/// pipeline's `ReleaseStage` and `github-release` publisher target the same
+/// tag without tripping the leftover-asset bail.
+fn build_context_options(
+    opts: &ReleaseOpts,
+    skip_stages: Vec<String>,
+    selected_sorted: Vec<String>,
+    rollback_mode: Option<RollbackMode>,
+    simulate_failure_publishers: Vec<String>,
+    runtime_nondeterministic_allowlist: Vec<(String, String)>,
+) -> ContextOptions {
+    ContextOptions {
         snapshot: opts.snapshot,
         nightly: opts.nightly,
         dry_run: opts.dry_run,
@@ -463,17 +582,11 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         debug: opts.debug,
         skip_stages,
         selected_crates: selected_sorted,
-        token: opts.token,
+        token: opts.token.clone(),
         parallelism: opts.parallelism,
-        single_target: opts.single_target,
-        release_notes_path: opts.release_notes,
+        single_target: opts.single_target.clone(),
+        release_notes_path: opts.release_notes.clone(),
         fail_fast: opts.fail_fast,
-        // `--targets=<csv>` populates `partial_target` so the existing
-        // build-stage filter (`partial.filter_targets`) trims the
-        // configured list down to the requested intersection. `--split`
-        // overwrites this in `run_split()` if used together (split-mode
-        // resolves its target from env vars / host detection, not from
-        // `--targets`), so the precedence is "split wins".
         partial_target: opts
             .targets
             .clone()
@@ -482,21 +595,9 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         publish_only: opts.publish_only,
         project_root: None,
         strict: opts.strict,
-        // Auto-enable resume_release in publish-only mode. The publish-only
-        // pipeline includes ReleaseStage (which creates the GH Release +
-        // uploads assets) AND PublishStage's github-release publisher
-        // (which targets the same release). Without resume_release, the
-        // publisher's pre-flight check sees the release ReleaseStage just
-        // created in THIS SAME RUN as "leftover from a prior failed
-        // attempt" and bails. resume_release tells it to continue into
-        // the existing release — the correct semantic since both code
-        // paths intentionally publish to the same tag.
         resume_release: opts.resume_release || opts.publish_only,
         replace_existing_artifacts: opts.replace_existing,
         skip_post_publish_poll: opts.no_post_publish_poll,
-        // `--no-gate-submitter` flips to `Some(false)`; absent flag
-        // means `None`, which the dispatch site resolves to gate-on
-        // via `unwrap_or(true)`.
         gate_submitter: if opts.no_gate_submitter {
             Some(false)
         } else {
@@ -506,68 +607,47 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         simulate_failure_publishers,
         rollback_only: opts.rollback_only,
         allow_rerun: opts.allow_rerun,
-        from_run: opts.from_run,
+        from_run: opts.from_run.clone(),
         runtime_nondeterministic_allowlist,
-        summary_json_path: opts.summary_json,
-    };
-    let mut ctx = Context::new(config.clone(), ctx_opts);
-    helpers::resolve_scm_token_type(&mut ctx, &config);
-    ctx.populate_time_vars();
-    ctx.populate_runtime_vars();
-    ctx.populate_metadata_var()?;
-
-    // `--rollback-only` short-circuits the pipeline: load the prior run's
-    // `report.json`, re-attempt rollback for every Succeeded /
-    // RollbackFailed entry, persist the result to `rollback.json`, and
-    // return. No build / publish / announce stages run in this mode.
-    //
-    // The rollback-only branch bypasses `Pipeline::run` entirely, so it
-    // must invoke `emit_summary` itself for `--summary-json=<path>` to
-    // land on disk. Without this call, the rollback-only path silently
-    // drops the summary file even though every other code path produces
-    // one. The call wraps both the rollback dispatch result and the
-    // early-error return so the summary fires regardless of how
-    // rollback_only resolved (Ok, Err, missing --from-run, ...).
-    if ctx.options.rollback_only {
-        let outcome = (|| -> Result<()> {
-            // Clone the run id so the borrow on `ctx.options` ends before
-            // `rollback_only::run` takes `&mut ctx`.
-            let run_id = ctx
-                .options
-                .from_run
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("--rollback-only requires --from-run=<id>"))?;
-            let updated_report = anodizer_stage_publish::rollback_only::run(&mut ctx, &run_id)?;
-            ctx.set_publish_report(updated_report);
-            Ok(())
-        })();
-        anodizer_stage_announce::emit_summary(&mut ctx);
-        return outcome;
+        summary_json_path: opts.summary_json.clone(),
     }
+}
 
-    // Populate the GR-Pro `IsPrepare` template var so user templates can
-    // branch on prepare-mode (e.g. emit a different artifact_name for
-    // pre-release archives generated in PR CI). Mirrors `IsRelease` /
-    // `IsMerging` (`crates/core/src/context.rs:557-566`); kept on the CLI
-    // side because `--prepare` is a CLI-only switch (no equivalent
-    // `ctx_opts.prepare` field). Set explicitly to `"true"`/`"false"` so
-    // `{% if IsPrepare %}` evaluates correctly in either branch.
-    ctx.template_vars_mut()
-        .set("IsPrepare", if opts.prepare { "true" } else { "false" });
+/// `--rollback-only` short-circuits the pipeline: load the prior run's
+/// `report.json`, re-attempt rollback for every Succeeded / RollbackFailed
+/// entry, persist the result to `rollback.json`, and return. No build /
+/// publish / announce stages run in this mode.
+///
+/// The rollback-only branch bypasses `Pipeline::run` entirely, so it must
+/// invoke `emit_summary` itself for `--summary-json=<path>` to land on disk.
+/// The call wraps both the rollback dispatch result and the early-error
+/// return so the summary fires regardless of how `rollback_only` resolved.
+fn run_rollback_only(ctx: &mut Context) -> Result<()> {
+    let outcome = (|| -> Result<()> {
+        let run_id = ctx
+            .options
+            .from_run
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("--rollback-only requires --from-run=<id>"))?;
+        let updated_report = anodizer_stage_publish::rollback_only::run(ctx, &run_id)?;
+        ctx.set_publish_report(updated_report);
+        Ok(())
+    })();
+    anodizer_stage_announce::emit_summary(ctx);
+    outcome
+}
 
-    // Populate user-defined env vars into template context
-    helpers::setup_env(&mut ctx, &config, &log)?;
-
-    // Resolve tag and populate git variables before running the pipeline.
-    // GoReleaser runs git.Pipe (index 2) BEFORE before.Pipe (index 7) so
-    // before-hooks can rely on Git.Tag, Git.Commit, etc. in their template
-    // vars (pipeline.go:69,79).
-    helpers::resolve_git_context(&mut ctx, &config, &log)?;
-
-    // Run before-hooks now that env AND git vars are populated. Respect
-    // `--skip=before` (matching GoReleaser's skip.Before). Skip in --merge
-    // and --split modes: CI already validates the code before tagging, and
-    // hook compilation can dirty the working tree.
+/// Run before-hooks once env AND git vars are populated. Respects
+/// `--skip=before` (matches GoReleaser's `skip.Before`). Skipped in
+/// `--merge` / `--split` / `--publish-only` modes — CI already validates
+/// the code before tagging, and hook compilation can dirty the working
+/// tree.
+fn run_before_hooks(
+    ctx: &Context,
+    config: &Config,
+    opts: &ReleaseOpts,
+    log: &StageLogger,
+) -> Result<()> {
     if !opts.merge
         && !opts.split
         && !opts.publish_only
@@ -579,32 +659,38 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             hooks,
             "before",
             opts.dry_run,
-            &log,
+            log,
             Some(ctx.template_vars()),
         )?;
     }
+    Ok(())
+}
 
-    // Render --release-notes-tmpl now that template vars are populated.
-    // This overrides --release-notes.
-    //
-    // Skip in `--publish-only` mode: the preserved dist already
-    // contains a `release-notes.md` written by the upstream
-    // determinism-harness run (the post-pipeline wrote it from the
-    // SAME template vars then). Re-rendering here from the current
-    // tree could clobber it with a divergent version (e.g. if the
-    // operator's local checkout has new commits since the harness
-    // ran). The harness-written file is the authoritative one for
-    // the preserved bytes; respect it.
+/// Render `--release-notes-tmpl` now that template vars are populated and
+/// point `ctx.options.release_notes_path` at the rendered file.
+///
+/// Skipped in `--publish-only` mode: the preserved dist already contains a
+/// `release-notes.md` written by the upstream determinism-harness run from
+/// the SAME template vars. Re-rendering here from the current tree could
+/// clobber it with a divergent version (e.g. if the local checkout has new
+/// commits since the harness ran). The harness-written file is the
+/// authoritative one for the preserved bytes.
+fn render_release_notes_tmpl(
+    ctx: &mut Context,
+    config: &Config,
+    opts: &ReleaseOpts,
+    release_notes_path: Option<(PathBuf, String)>,
+    log: &StageLogger,
+) -> Result<()> {
     if !opts.publish_only
-        && let Some((_tmpl_path, raw_content)) = release_notes_path
+        && let Some((tmpl_path, raw_content)) = release_notes_path
     {
         let rendered = template::render(&raw_content, ctx.template_vars()).with_context(|| {
             format!(
                 "failed to render release notes template: {}",
-                _tmpl_path.display()
+                tmpl_path.display()
             )
         })?;
-        // Write rendered content to dist/release-notes.md and use that as the notes path
         let dist = &config.dist;
         std::fs::create_dir_all(dist).ok();
         let rendered_path = dist.join("release-notes.md");
@@ -617,9 +703,12 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         ctx.options.release_notes_path = Some(rendered_path);
         log.verbose("rendered release notes template");
     }
+    Ok(())
+}
 
-    // Dirty repo gate: error out if the repo has uncommitted changes unless
-    // running in snapshot, nightly, or dry-run mode (matching GoReleaser behaviour).
+/// Dirty repo gate: error out if the repo has uncommitted changes unless
+/// running in snapshot, nightly, or dry-run mode (matches GoReleaser).
+fn enforce_dirty_repo_gate(ctx: &Context) -> Result<()> {
     if git::is_git_dirty() && !ctx.is_snapshot() && !ctx.is_nightly() && !ctx.is_dry_run() {
         let status = git::git_status_porcelain();
         anyhow::bail!(
@@ -627,115 +716,108 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             status
         );
     }
+    Ok(())
+}
 
-    // Apply nightly overrides after git vars are populated.
-    if ctx.is_nightly() {
-        let nightly_cfg = config.nightly.as_ref();
-        // SDE-aware: the nightly date stamp ends up in artifact filenames
-        // (e.g. `anodize-nightly.20260517.tar.gz`), so it must honor
-        // `SOURCE_DATE_EPOCH` to keep the harness's two from-clean rebuilds
-        // byte-stable. `Utc::now()` would re-roll the suffix on the second
-        // run and surface as cross-the-board archive drift.
-        let date_str = anodizer_core::sde::resolve_now()
-            .format("%Y%m%d")
-            .to_string();
+/// Apply nightly overrides after git vars are populated: build the
+/// `<base>-nightly.<YYYYMMDD>` version, override `Version` / `RawVersion`
+/// / `Tag` / `IsNightly` / `ReleaseName` template vars. SDE-aware so the
+/// harness's two from-clean rebuilds stay byte-stable.
+fn apply_nightly_template_vars(
+    ctx: &mut Context,
+    config: &Config,
+    log: &StageLogger,
+) -> Result<()> {
+    let nightly_cfg = config.nightly.as_ref();
+    let date_str = anodizer_core::sde::resolve_now()
+        .format("%Y%m%d")
+        .to_string();
 
-        // Build the nightly version: take existing Version (major.minor.patch) and append
-        // the nightly prerelease suffix.
-        let base_version = ctx
-            .template_vars()
-            .get("Version")
-            .cloned()
-            .unwrap_or_else(|| "0.1.0".to_string());
-        // Strip any existing prerelease suffix to get the numeric base.
-        let numeric_base = base_version
-            .split('-')
-            .next()
-            .unwrap_or(&base_version)
-            .to_string();
-        let nightly_version = format!("{}-nightly.{}", numeric_base, date_str);
+    let base_version = ctx
+        .template_vars()
+        .get("Version")
+        .cloned()
+        .unwrap_or_else(|| "0.1.0".to_string());
+    let numeric_base = base_version
+        .split('-')
+        .next()
+        .unwrap_or(&base_version)
+        .to_string();
+    let nightly_version = format!("{}-nightly.{}", numeric_base, date_str);
 
-        // Override Version, RawVersion, and Tag to nightly values.
-        ctx.template_vars_mut().set("Version", &nightly_version);
-        ctx.template_vars_mut().set("RawVersion", &nightly_version);
+    ctx.template_vars_mut().set("Version", &nightly_version);
+    ctx.template_vars_mut().set("RawVersion", &nightly_version);
 
-        let nightly_tag = nightly_cfg
-            .and_then(|c| c.tag_name.as_deref())
-            .unwrap_or("nightly")
-            .to_string();
-        ctx.template_vars_mut().set("Tag", &nightly_tag);
+    let nightly_tag = nightly_cfg
+        .and_then(|c| c.tag_name.as_deref())
+        .unwrap_or("nightly")
+        .to_string();
+    ctx.template_vars_mut().set("Tag", &nightly_tag);
+    ctx.template_vars_mut().set("IsNightly", "true");
 
-        // IsNightly is already set by populate_git_vars via ctx.options.nightly,
-        // but set it explicitly here too for clarity.
-        ctx.template_vars_mut().set("IsNightly", "true");
+    let name_tmpl = nightly_cfg
+        .and_then(|c| c.name_template.as_deref())
+        .unwrap_or("{{ ProjectName }}-nightly");
+    let release_name = template::render(name_tmpl, ctx.template_vars())
+        .with_context(|| format!("failed to render nightly name_template: {name_tmpl}"))?;
+    ctx.template_vars_mut().set("ReleaseName", &release_name);
 
-        // Render and set the release name from name_template.
-        let name_tmpl = nightly_cfg
-            .and_then(|c| c.name_template.as_deref())
-            .unwrap_or("{{ ProjectName }}-nightly");
-        let release_name = template::render(name_tmpl, ctx.template_vars())
-            .with_context(|| format!("failed to render nightly name_template: {name_tmpl}"))?;
-        ctx.template_vars_mut().set("ReleaseName", &release_name);
+    log.verbose(&format!(
+        "nightly: version={}, tag={}, name={}",
+        nightly_version, nightly_tag, release_name
+    ));
+    Ok(())
+}
 
-        log.verbose(&format!(
-            "nightly: version={}, tag={}, name={}",
-            nightly_version, nightly_tag, release_name
-        ));
+/// Apply the snapshot version template (GoReleaser always applies one).
+/// Default: `"{{ Version }}-SNAPSHOT-{{ ShortCommit }}"` when no snapshot
+/// config exists. `RawVersion` is intentionally preserved as the numeric
+/// semver base (GoReleaser parity).
+fn apply_snapshot_template_vars(
+    ctx: &mut Context,
+    config: &Config,
+    log: &StageLogger,
+) -> Result<()> {
+    let snapshot_tmpl = config
+        .snapshot
+        .as_ref()
+        .map(|s| s.version_template.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("{{ Version }}-SNAPSHOT-{{ ShortCommit }}");
+    let rendered_name =
+        template::render(snapshot_tmpl, ctx.template_vars()).with_context(|| {
+            format!(
+                "failed to render snapshot version_template: {}",
+                snapshot_tmpl
+            )
+        })?;
+    if rendered_name.trim().is_empty() {
+        anyhow::bail!("empty snapshot name after rendering version_template");
     }
+    ctx.template_vars_mut().set("Version", &rendered_name);
+    ctx.template_vars_mut().set("ReleaseName", &rendered_name);
+    log.verbose(&format!(
+        "snapshot: version={}, release_name={}",
+        rendered_name, rendered_name
+    ));
+    Ok(())
+}
 
-    // Apply snapshot version template (GoReleaser always applies one).
-    // Default: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}" when no snapshot config exists.
-    if ctx.is_snapshot() {
-        let snapshot_tmpl = config
-            .snapshot
-            .as_ref()
-            .map(|s| s.version_template.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or("{{ Version }}-SNAPSHOT-{{ ShortCommit }}");
-        let rendered_name =
-            template::render(snapshot_tmpl, ctx.template_vars()).with_context(|| {
-                format!(
-                    "failed to render snapshot version_template: {}",
-                    snapshot_tmpl
-                )
-            })?;
-        // GoReleaser snapshot.go:37-39: empty snapshot name is an error.
-        if rendered_name.trim().is_empty() {
-            anyhow::bail!("empty snapshot name after rendering version_template");
-        }
-        ctx.template_vars_mut().set("Version", &rendered_name);
-        // Note: RawVersion is intentionally NOT overwritten here.
-        // GoReleaser preserves RawVersion as the numeric semver base
-        // (Major.Minor.Patch) even in snapshot mode.
-        ctx.template_vars_mut().set("ReleaseName", &rendered_name);
-        log.verbose(&format!(
-            "snapshot: version={}, release_name={}",
-            rendered_name, rendered_name
-        ));
-    }
-
-    // Dump effective (resolved) config to dist/config.yaml before pipeline runs.
-    // GoReleaser always writes this, including in dry-run mode.
-    helpers::write_effective_config(&config, &log)?;
-
-    // Pre-flight milestone resolution so a misconfigured `milestones:` block
-    // (empty rendered name, unresolvable repo) fails fast — at validate time
-    // — instead of after the full build/archive/sign pipeline. Runs in normal
-    // and `--merge` modes (close_milestones runs in run_post_pipeline for
-    // both). Skipped in `--split` mode: split only emits build artifacts and
-    // exits without invoking run_post_pipeline, so milestone close never runs
-    // there and pre-flighting it would warn about a stage that won't fire.
-    if !opts.split
-        && let Some(ref milestones) = config.milestones
-    {
-        milestones::preflight_milestones(milestones, &mut ctx, &log)?;
-    }
-
-    // Pre-flight publisher-state check. Walk each enabled one-way-door
-    // publisher (cargo, choco, winget, aur) and bail early if the target
-    // version is already submitted / approved / pending — saves an entire
-    // wasted release cycle. Skip in snapshot / dry-run / split modes (no
-    // upstream side-effects) and when `publish` is already in skip_stages.
+/// Run the pre-flight publisher-state check. Returns `Ok(true)` when
+/// `--preflight` (check-only) succeeded and the caller should exit
+/// without continuing into the rest of the pipeline; `Ok(false)`
+/// otherwise.
+///
+/// Walks each enabled one-way-door publisher (cargo, choco, winget, aur)
+/// and bails early if the target version is already submitted / approved
+/// / pending — saving an entire wasted release cycle. Skipped in snapshot
+/// / dry-run / split modes (no upstream side-effects) and when `publish`
+/// is already in `skip_stages`.
+fn run_publisher_preflight(
+    ctx: &mut Context,
+    opts: &ReleaseOpts,
+    log: &StageLogger,
+) -> Result<bool> {
     let should_run_preflight = should_run_preflight_auto(
         opts.no_preflight,
         opts.snapshot,
@@ -744,106 +826,58 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         opts.publish_only,
         ctx.should_skip("publish"),
     );
-    if opts.preflight || should_run_preflight {
-        let report = anodizer_stage_publish::preflight::run_preflight(&mut ctx, &log)?;
-        if report.entries.is_empty() {
-            log.verbose("preflight: no one-way-door publishers configured; skipping check");
-        } else {
-            // Route the report through the stage logger (same channel as
-            // every other status string in this function) instead of a raw
-            // `print!` so verbosity / quiet flags / future redirection
-            // apply uniformly. The Display impl is multi-line; splitting
-            // line-by-line preserves the existing single-line cadence used
-            // by surrounding `log.status` / `log.verbose` calls.
-            for line in report.to_string().trim_end_matches('\n').lines() {
-                log.status(line);
-            }
-        }
-        // `--strict` already plumbs strict mode globally; treat it as
-        // implying preflight-strict. `--strict-preflight` is kept as an
-        // explicit alias for back-compat with anyone who already plumbed
-        // it through their CI.
-        let strict_preflight = opts.strict || opts.strict_preflight;
-        if report.has_blockers(strict_preflight) {
-            let blockers = report.blockers(strict_preflight);
-            let labels: Vec<String> = blockers
-                .iter()
-                .map(|b| format!("{} ({})", b.publisher, b.state.label()))
-                .collect();
-            anyhow::bail!(
-                "preflight: {} publisher(s) blocked the release: {}. \
-                 Resolve upstream (await moderation / merge or close the PR / bump version) \
-                 or re-run with --no-preflight to override.",
-                blockers.len(),
-                labels.join(", ")
-            );
-        }
-        // Resilience-extension blockers (rollback-scope checks +
-        // Publisher::preflight() returns) live in their own channel; bail
-        // when any is present so the operator sees the problem before the
-        // pipeline starts.
-        if !report.blockers.is_empty() {
-            anyhow::bail!(
-                "preflight: {} resilience blocker(s): {}",
-                report.blockers.len(),
-                report.blockers.join("; "),
-            );
-        }
-        log.status(&format!(
-            "preflight: {} publisher(s) clean",
-            report.clean_count()
-        ));
-        // `--preflight` is a check-only mode: exit successfully without
-        // running the rest of the release pipeline.
-        if opts.preflight {
-            return Ok(());
-        }
+    if !(opts.preflight || should_run_preflight) {
+        return Ok(false);
     }
 
-    // --publish-only: load preserved dist + context.json, run only the
-    // sign + publish pipeline. Composed before --split / --merge so the
-    // clap-level conflicts_with chain stays a single source of truth.
-    if opts.publish_only {
-        return publish_only::run(
-            &mut ctx,
-            &config,
-            &log,
-            publish_only::RunOpts {
-                dry_run: opts.dry_run,
-                no_preflight: opts.no_preflight,
-            },
+    let report = anodizer_stage_publish::preflight::run_preflight(ctx, log)?;
+    if report.entries.is_empty() {
+        log.verbose("preflight: no one-way-door publishers configured; skipping check");
+    } else {
+        // Route the report through the stage logger (same channel as every
+        // other status string in this function) instead of a raw `print!` so
+        // verbosity / quiet flags / future redirection apply uniformly. The
+        // Display impl is multi-line; splitting line-by-line preserves the
+        // single-line cadence used by surrounding `log.status` calls.
+        for line in report.to_string().trim_end_matches('\n').lines() {
+            log.status(line);
+        }
+    }
+    // `--strict` already plumbs strict mode globally; treat it as implying
+    // preflight-strict. `--strict-preflight` is kept as an explicit alias for
+    // back-compat with anyone who already plumbed it through their CI.
+    let strict_preflight = opts.strict || opts.strict_preflight;
+    if report.has_blockers(strict_preflight) {
+        let blockers = report.blockers(strict_preflight);
+        let labels: Vec<String> = blockers
+            .iter()
+            .map(|b| format!("{} ({})", b.publisher, b.state.label()))
+            .collect();
+        anyhow::bail!(
+            "preflight: {} publisher(s) blocked the release: {}. \
+             Resolve upstream (await moderation / merge or close the PR / bump version) \
+             or re-run with --no-preflight to override.",
+            blockers.len(),
+            labels.join(", ")
         );
     }
-
-    // --split: run only the build stage, serialize artifacts to dist/, then exit
-    if opts.split {
-        return split::run_split(&mut ctx, &config, &log);
+    // Resilience-extension blockers (rollback-scope checks +
+    // `Publisher::preflight()` returns) live in their own channel; bail when
+    // any is present so the operator sees the problem before the pipeline
+    // starts.
+    if !report.blockers.is_empty() {
+        anyhow::bail!(
+            "preflight: {} resilience blocker(s): {}",
+            report.blockers.len(),
+            report.blockers.join("; "),
+        );
     }
-
-    // --merge: load artifacts from split jobs, then run post-build stages
-    if opts.merge {
-        return split::run_merge(&mut ctx, &config, &log, opts.dry_run, None);
-    }
-
-    let p = pipeline::build_release_pipeline();
-    let result = p.run(&mut ctx, &log);
-
-    if result.is_ok() {
-        run_post_pipeline(&mut ctx, &config, opts.dry_run, &log)?;
-    }
-
-    // Gate: required-publisher failures must surface as a non-zero exit
-    // even when the pipeline body itself returned Ok. The body returns
-    // Ok because per-publisher failures are intentionally non-fatal at
-    // the stage layer (rollback / announce-gating / summary all depend
-    // on the pipeline running to completion). The final exit code, in
-    // contrast, MUST reflect required-publisher failure so CI / shell
-    // callers see the right signal.
-    if result.is_ok() {
-        gate_required_failures(&ctx)?;
-    }
-
-    result
+    log.status(&format!(
+        "preflight: {} publisher(s) clean",
+        report.clean_count()
+    ));
+    // `--preflight` is a check-only mode: signal early-exit to the caller.
+    Ok(opts.preflight)
 }
 
 /// End-of-pipeline gate: bail when any *required* publisher finished in a
