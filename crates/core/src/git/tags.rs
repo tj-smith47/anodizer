@@ -1,12 +1,13 @@
 use anyhow::Result;
 use regex::Regex;
+use std::path::Path;
 use std::process::Command;
 
 use crate::config::GitConfig;
 use crate::template::TemplateVars;
 
-use super::git_output;
 use super::semver::{SemVer, parse_semver_tag};
+use super::{git_output, git_output_in};
 
 /// Render ignore patterns (both `ignore_tags` and `ignore_tag_prefixes`) through
 /// the template engine when `template_vars` is provided.
@@ -316,6 +317,29 @@ pub fn create_and_push_tag(
     log: &crate::log::StageLogger,
     strict: bool,
 ) -> Result<()> {
+    create_and_push_tag_in(
+        &std::env::current_dir()?,
+        tag,
+        message,
+        dry_run,
+        log,
+        strict,
+    )
+}
+
+/// Create an annotated tag in `cwd` and push it if an `origin` remote exists.
+///
+/// Path-taking sibling of [`create_and_push_tag`] so callers (notably the
+/// GitHub-API tag fallback path and tests) can drive tagging against an
+/// explicit repository without mutating the process cwd.
+pub fn create_and_push_tag_in(
+    cwd: &Path,
+    tag: &str,
+    message: &str,
+    dry_run: bool,
+    log: &crate::log::StageLogger,
+    strict: bool,
+) -> Result<()> {
     if dry_run {
         log.status(&format!(
             "(dry-run) would create tag: {} (\"{}\")",
@@ -323,16 +347,17 @@ pub fn create_and_push_tag(
         ));
         return Ok(());
     }
-    git_output(&["tag", "-a", tag, "-m", message])?;
+    git_output_in(cwd, &["tag", "-a", tag, "-m", message])?;
 
     let has_remote = std::process::Command::new("git")
+        .current_dir(cwd)
         .args(["remote", "get-url", "origin"])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
 
     if has_remote {
-        git_output(&["push", "origin", tag])?;
+        git_output_in(cwd, &["push", "origin", tag])?;
     } else if strict {
         anyhow::bail!("no 'origin' remote found, cannot push tag (strict mode)");
     } else {

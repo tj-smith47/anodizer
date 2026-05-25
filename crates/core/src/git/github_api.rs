@@ -1,16 +1,32 @@
 use anyhow::{Context as _, Result, bail};
+use std::path::Path;
 use std::process::Command;
 
-use super::git_output;
-use super::remote::detect_github_repo;
-use super::tags::create_and_push_tag;
+use super::git_output_in;
+use super::remote::detect_github_repo_in;
+use super::tags::create_and_push_tag_in;
 
 /// GET a GitHub API endpoint via the `gh` CLI (single request, no pagination).
 ///
 /// Returns the parsed JSON response. Useful for endpoints that return a single
 /// object (e.g. the Compare API) rather than a paginated array.
 pub fn gh_api_get(endpoint: &str, token: Option<&str>) -> Result<serde_json::Value> {
-    let mut cmd = Command::new("gh");
+    gh_api_get_with_binary(Path::new("gh"), endpoint, token)
+}
+
+/// GET a GitHub API endpoint via `gh_binary` (single request, no pagination).
+///
+/// Path-taking sibling of [`gh_api_get`] so tests can point at a missing or
+/// stub binary inside a `tempfile::tempdir()` without mutating `PATH`.
+/// When `gh_binary` has no separator (e.g. `Path::new("gh")`),
+/// [`Command::new`] falls back to a PATH lookup — the production
+/// behavior — so the wrapper is a true no-op in normal use.
+pub fn gh_api_get_with_binary(
+    gh_binary: &Path,
+    endpoint: &str,
+    token: Option<&str>,
+) -> Result<serde_json::Value> {
+    let mut cmd = Command::new(gh_binary);
     cmd.args(["api", endpoint]);
     if let Some(tok) = token {
         cmd.env("GITHUB_TOKEN", tok);
@@ -19,7 +35,7 @@ pub fn gh_api_get(endpoint: &str, token: Option<&str>) -> Result<serde_json::Val
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
-        .context("failed to spawn gh CLI")?;
+        .with_context(|| format!("failed to spawn gh CLI ({})", gh_binary.display()))?;
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
         let raw = format!("gh api GET {} failed: {}", endpoint, stderr_raw.trim());
@@ -52,7 +68,17 @@ fn redact_gh_stderr(stderr: &str, token: Option<&str>) -> String {
 /// Returns a JSON array of all pages concatenated. The caller is responsible for
 /// ensuring that `gh` is installed and authenticated.
 pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<serde_json::Value>> {
-    let mut cmd = Command::new("gh");
+    gh_api_get_paginated_with_binary(Path::new("gh"), endpoint, token)
+}
+
+/// Paginated GET via `gh_binary`. Path-taking sibling of
+/// [`gh_api_get_paginated`].
+pub fn gh_api_get_paginated_with_binary(
+    gh_binary: &Path,
+    endpoint: &str,
+    token: Option<&str>,
+) -> Result<Vec<serde_json::Value>> {
+    let mut cmd = Command::new(gh_binary);
     cmd.args(["api", "--paginate", endpoint]);
     if let Some(tok) = token {
         cmd.env("GITHUB_TOKEN", tok);
@@ -61,7 +87,7 @@ pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<s
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
-        .context("failed to spawn gh CLI")?;
+        .with_context(|| format!("failed to spawn gh CLI ({})", gh_binary.display()))?;
 
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
@@ -112,22 +138,25 @@ pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<s
     Ok(all_items)
 }
 
-/// POST a JSON body to a GitHub API endpoint via the `gh` CLI.
-///
-/// Returns the parsed JSON response on success. The caller is responsible for
-/// ensuring that `gh` is installed and authenticated.
-fn gh_api_post(endpoint: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+/// POST via `gh_binary`. Internal helper consumed by
+/// [`create_tag_via_github_api_in`]; takes an explicit binary path so
+/// tests can drive the failure path against a missing or stub binary.
+fn gh_api_post_with_binary(
+    gh_binary: &Path,
+    endpoint: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value> {
     use std::io::Write;
 
     let body_str = serde_json::to_string(body)?;
 
-    let mut child = Command::new("gh")
+    let mut child = Command::new(gh_binary)
         .args(["api", "--method", "POST", endpoint, "--input", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .context("failed to spawn gh CLI")?;
+        .with_context(|| format!("failed to spawn gh CLI ({})", gh_binary.display()))?;
 
     if let Some(ref mut stdin) = child.stdin {
         stdin.write_all(body_str.as_bytes())?;
@@ -157,8 +186,36 @@ fn gh_api_post(endpoint: &str, body: &serde_json::Value) -> Result<serde_json::V
 /// installed and authenticated (`gh auth login`). The GitHub API creates a
 /// lightweight tag object pointing at the HEAD commit on the default branch.
 ///
-/// Falls back to [`create_and_push_tag`] if `gh` is not available.
+/// Falls back to [`create_and_push_tag_in`] if `gh` is not available.
 pub fn create_tag_via_github_api(
+    tag: &str,
+    message: &str,
+    dry_run: bool,
+    log: &crate::log::StageLogger,
+    strict: bool,
+) -> Result<()> {
+    create_tag_via_github_api_in(
+        &std::env::current_dir()?,
+        Path::new("gh"),
+        tag,
+        message,
+        dry_run,
+        log,
+        strict,
+    )
+}
+
+/// Path-taking sibling of [`create_tag_via_github_api`].
+///
+/// `cwd` is the repository the tag should be created against (used for
+/// `git remote get-url origin` and `git rev-parse HEAD` lookups, plus
+/// the local `git tag -a` fallback when `gh_binary` is missing).
+/// `gh_binary` is the path to the `gh` CLI; pass `Path::new("gh")` to
+/// keep the production PATH-lookup behavior.
+#[allow(clippy::too_many_arguments)]
+pub fn create_tag_via_github_api_in(
+    cwd: &Path,
+    gh_binary: &Path,
     tag: &str,
     message: &str,
     dry_run: bool,
@@ -174,10 +231,10 @@ pub fn create_tag_via_github_api(
     }
 
     // Detect owner/repo from the origin remote.
-    let (owner, repo) = detect_github_repo()?;
+    let (owner, repo) = detect_github_repo_in(cwd)?;
 
     // Get the current HEAD SHA to point the tag at.
-    let sha = git_output(&["rev-parse", "HEAD"])?;
+    let sha = git_output_in(cwd, &["rev-parse", "HEAD"])?;
 
     let body = serde_json::json!({
         "tag": tag,
@@ -185,14 +242,14 @@ pub fn create_tag_via_github_api(
         "object": sha,
         "type": "commit",
         "tagger": {
-            "name": git_output(&["config", "user.name"]).unwrap_or_else(|_| "anodizer".to_string()),
-            "email": git_output(&["config", "user.email"]).unwrap_or_else(|_| "anodizer@users.noreply.github.com".to_string()),
+            "name": git_output_in(cwd, &["config", "user.name"]).unwrap_or_else(|_| "anodizer".to_string()),
+            "email": git_output_in(cwd, &["config", "user.email"]).unwrap_or_else(|_| "anodizer@users.noreply.github.com".to_string()),
             "date": crate::sde::resolve_now().to_rfc3339(),
         }
     });
 
     let tag_endpoint = format!("/repos/{owner}/{repo}/git/tags");
-    let response = match gh_api_post(&tag_endpoint, &body) {
+    let response = match gh_api_post_with_binary(gh_binary, &tag_endpoint, &body) {
         Ok(resp) => resp,
         Err(e) => {
             if e.to_string().contains("failed to spawn gh CLI") {
@@ -202,7 +259,7 @@ pub fn create_tag_via_github_api(
                     );
                 }
                 log.warn("gh CLI not found, falling back to local git tag + push");
-                return create_and_push_tag(tag, message, dry_run, log, strict);
+                return create_and_push_tag_in(cwd, tag, message, dry_run, log, strict);
             }
             return Err(e);
         }
@@ -218,7 +275,7 @@ pub fn create_tag_via_github_api(
     });
 
     let ref_endpoint = format!("/repos/{owner}/{repo}/git/refs");
-    gh_api_post(&ref_endpoint, &ref_body)?;
+    gh_api_post_with_binary(gh_binary, &ref_endpoint, &ref_body)?;
 
     Ok(())
 }
@@ -269,5 +326,92 @@ mod tests {
         let stderr = "plain error message without credentials";
         let redacted = redact_gh_stderr(stderr, Some(""));
         assert_eq!(redacted, stderr);
+    }
+
+    /// `gh_api_get_with_binary` must surface a user-actionable spawn
+    /// failure when the binary path doesn't exist on disk.
+    ///
+    /// Drives the function with a temp-dir-relative path that points to
+    /// nothing, asserting the error mentions "spawn gh" so the operator
+    /// can correlate it with their missing-`gh` install state.
+    #[test]
+    fn gh_api_get_with_binary_bails_when_binary_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent-gh");
+        let err = gh_api_get_with_binary(&missing, "/repos/x/y", None)
+            .expect_err("missing binary must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spawn gh") || msg.contains(&missing.display().to_string()),
+            "expected actionable error mentioning spawn gh or the binary path, got: {msg}"
+        );
+    }
+
+    /// Same guarantee for the paginated sibling.
+    #[test]
+    fn gh_api_get_paginated_with_binary_bails_when_binary_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent-gh");
+        let err = gh_api_get_paginated_with_binary(&missing, "/repos/x/y", None)
+            .expect_err("missing binary must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("spawn gh") || msg.contains(&missing.display().to_string()),
+            "expected actionable error mentioning spawn gh or the binary path, got: {msg}"
+        );
+    }
+
+    /// `create_tag_via_github_api_in` with `strict=true` must error
+    /// when `cwd` is not a git repo — the inner `detect_github_repo_in`
+    /// drives `git remote get-url origin` and fails there.
+    ///
+    /// Skips when `git` isn't on PATH (mirrors `tool_on_path` patterns
+    /// elsewhere in the suite).
+    #[test]
+    fn create_tag_via_github_api_in_bails_when_not_a_git_repo() {
+        if Command::new("git")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let err = create_tag_via_github_api_in(
+            tmp.path(),
+            Path::new("gh"),
+            "v1.0.0",
+            "msg",
+            false,
+            &log,
+            true,
+        )
+        .expect_err("non-git cwd must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("git") || msg.contains("remote"),
+            "expected error to mention git or remote, got: {msg}"
+        );
+    }
+
+    /// Dry-run short-circuit must also fire on the cwd-injectable entry
+    /// point — covers the new branch without re-hitting the inner
+    /// detection codepath.
+    #[test]
+    fn create_tag_via_github_api_in_dry_run_short_circuits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let result = create_tag_via_github_api_in(
+            tmp.path(),
+            Path::new("gh"),
+            "v1.0.0",
+            "msg",
+            true,
+            &log,
+            false,
+        );
+        assert!(result.is_ok(), "dry-run must succeed: {result:?}");
     }
 }

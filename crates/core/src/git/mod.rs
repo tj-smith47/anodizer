@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use std::path::Path;
 use std::process::Command;
 
 mod commits;
@@ -23,9 +24,13 @@ pub use commits::{
     short_commit_str, stage_and_commit,
 };
 pub use detect::{GitInfo, detect_git_info};
-pub use github_api::{create_tag_via_github_api, gh_api_get, gh_api_get_paginated};
+pub use github_api::{
+    create_tag_via_github_api, create_tag_via_github_api_in, gh_api_get, gh_api_get_paginated,
+    gh_api_get_paginated_with_binary, gh_api_get_with_binary,
+};
 pub use remote::{
-    detect_github_repo, detect_owner_repo, parse_github_remote, parse_remote_owner_repo,
+    detect_github_repo, detect_github_repo_in, detect_owner_repo, detect_owner_repo_in,
+    parse_github_remote, parse_remote_owner_repo,
 };
 pub use semver::{SemVer, parse_semver, parse_semver_tag};
 pub use snapshot_sde::resolve_snapshot_sde;
@@ -34,7 +39,7 @@ pub use status::{
     local_git_user_email, local_git_user_name,
 };
 pub use tags::{
-    create_and_push_tag, extract_tag_prefix, find_latest_tag_matching,
+    create_and_push_tag, create_and_push_tag_in, extract_tag_prefix, find_latest_tag_matching,
     find_latest_tag_matching_with_prefix, find_previous_tag, find_previous_tag_with_prefix,
     get_all_semver_tags, get_branch_semver_tags, get_first_commit, has_version_placeholder,
     head_is_at_tag, list_tags_with_prefix, render_ignore_patterns, strip_monorepo_prefix,
@@ -52,8 +57,26 @@ pub use worktree::Worktree;
 /// token-bearing remote URL git might echo (e.g.
 /// `https://ghp_xxx@github.com/...` produced by an `extraHeader` config
 /// leak) is scrubbed in the bail message.
+///
+/// Inherits the process's current working directory implicitly. For the
+/// cwd-injectable variant used by tests and library callers that don't
+/// own the process cwd, see [`git_output_in`].
 fn git_output(args: &[&str]) -> Result<String> {
-    let output = Command::new("git").args(args).output()?;
+    git_output_in(&std::env::current_dir()?, args)
+}
+
+/// Run `git` in `cwd` and return stdout, trimmed.
+///
+/// Path-taking sibling of [`git_output`] usable by callers that don't own
+/// the process cwd — notably integration / unit tests, which can drive
+/// git against a temporary fixture repo without mutating the
+/// process-wide cwd (which would race every other parallel test).
+///
+/// Same redaction rules apply on failure: stderr is run through
+/// [`crate::redact::redact_process_env`] before being interpolated into
+/// the bail message.
+pub(crate) fn git_output_in(cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = Command::new("git").current_dir(cwd).args(args).output()?;
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
         let raw = format!("git {} failed: {}", args.join(" "), stderr_raw.trim());

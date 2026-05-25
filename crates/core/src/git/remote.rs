@@ -1,6 +1,7 @@
 use anyhow::Result;
+use std::path::Path;
 
-use super::git_output;
+use super::git_output_in;
 use crate::redact::redact_url_credentials;
 
 /// Parse owner and repo name from a GitHub remote URL.
@@ -35,7 +36,17 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
 
 /// Get the GitHub owner/name from the `origin` remote.
 pub fn detect_github_repo() -> Result<(String, String)> {
-    let url = git_output(&["remote", "get-url", "origin"])?;
+    detect_github_repo_in(&std::env::current_dir()?)
+}
+
+/// Get the GitHub owner/name from the `origin` remote configured in `cwd`.
+///
+/// Path-taking sibling of [`detect_github_repo`]; runs
+/// `git remote get-url origin` with an explicit `current_dir` so callers
+/// (including tests against a temporary fixture repo) don't have to
+/// mutate the process-wide cwd.
+pub fn detect_github_repo_in(cwd: &Path) -> Result<(String, String)> {
+    let url = git_output_in(cwd, &["remote", "get-url", "origin"])?;
     parse_github_remote(&url).ok_or_else(|| {
         // Strip inline `<scheme>://<userinfo>@...` userinfo before surfacing
         // the URL in a user-visible error.
@@ -106,7 +117,16 @@ pub fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
 /// Uses [`parse_remote_owner_repo`] which works with any git hosting provider
 /// (GitHub, GitLab, Gitea, etc.).
 pub fn detect_owner_repo() -> Result<(String, String)> {
-    let url = git_output(&["remote", "get-url", "origin"])?;
+    detect_owner_repo_in(&std::env::current_dir()?)
+}
+
+/// Get the owner/repo from the `origin` remote configured in `cwd`,
+/// regardless of SCM host.
+///
+/// Path-taking sibling of [`detect_owner_repo`] for use against an
+/// explicit working directory instead of the process-wide cwd.
+pub fn detect_owner_repo_in(cwd: &Path) -> Result<(String, String)> {
+    let url = git_output_in(cwd, &["remote", "get-url", "origin"])?;
     parse_remote_owner_repo(&url).ok_or_else(|| {
         // Strip inline userinfo before surfacing the URL.
         let safe = redact_url_credentials(&url);
