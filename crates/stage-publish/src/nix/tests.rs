@@ -977,11 +977,13 @@ fn test_publish_to_nix_skip_template_false_proceeds_past_guard() {
 }
 
 /// `repository.owner` / `repository.name` are template-rendered. A literal
-/// `{{ .ProjectName }}` placeholder must resolve from `template_vars` before
-/// the dry-run branch logs the destination.
+/// `{{ .ProjectName }}` placeholder must resolve from `template_vars` AND
+/// the rendered value must reach the dry-run log line — a regression that
+/// silently dropped substitution would still pass an `unwrap()`-only check.
 #[test]
 fn test_publish_to_nix_repo_coords_render_templates() {
     use anodizer_core::config::{NixConfig, RepositoryConfig};
+    use anodizer_core::log::{StageLogger, Verbosity};
     let cfg = NixConfig {
         repository: Some(RepositoryConfig {
             owner: Some("{{ .ProjectName }}-org".to_string()),
@@ -992,30 +994,54 @@ fn test_publish_to_nix_repo_coords_render_templates() {
     };
     let mut ctx = nix_ctx(cfg, true);
     ctx.template_vars_mut().set("ProjectName", "myproj");
-    // Dry-run path bails Ok(false) AFTER resolving + logging the repo
-    // coords — successful return means template rendering didn't panic on
-    // the `{{ .ProjectName }}` substitution.
-    assert!(!publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap());
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Normal);
+    assert!(!publish_to_nix(&mut ctx, "mytool", &log).unwrap());
+    let msgs = capture.all_messages();
+    let rendered_owner = msgs.iter().any(|(_, m)| m.contains("myproj-org"));
+    assert!(
+        rendered_owner,
+        "rendered owner 'myproj-org' must appear in dry-run log; captured: {msgs:?}"
+    );
+    let raw_leaked = msgs.iter().any(|(_, m)| m.contains("{{ .ProjectName }}"));
+    assert!(
+        !raw_leaked,
+        "raw template must not leak past render; captured: {msgs:?}"
+    );
 }
 
-/// `name:` field is template-rendered before the dry-run log. Confirms
-/// the rendered-name path is reachable in dry-run without going through
-/// the full pipeline.
+/// Repository `name:` field is also template-rendered (paired with the
+/// `owner` render covered above). Both halves of the rendered destination
+/// must appear in the dry-run log line — pins the `repo_name` branch of
+/// `resolve_repo_coords` independently of `repo_owner`.
 #[test]
-fn test_publish_to_nix_name_template_rendered_in_dry_run() {
+fn test_publish_to_nix_repo_name_template_rendered_in_dry_run() {
     use anodizer_core::config::{NixConfig, RepositoryConfig};
+    use anodizer_core::log::{StageLogger, Verbosity};
     let cfg = NixConfig {
         repository: Some(RepositoryConfig {
-            owner: Some("myorg".to_string()),
-            name: Some("nixpkgs-overlay".to_string()),
+            owner: Some("static-owner".to_string()),
+            name: Some("{{ .ProjectName }}-pkgs".to_string()),
             ..Default::default()
         }),
-        name: Some("{{ .ProjectName }}-tool".to_string()),
         ..Default::default()
     };
     let mut ctx = nix_ctx(cfg, true);
     ctx.template_vars_mut().set("ProjectName", "anodize");
-    assert!(!publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap());
+    let (log, capture) = StageLogger::with_capture("publish", Verbosity::Normal);
+    assert!(!publish_to_nix(&mut ctx, "mytool", &log).unwrap());
+    let msgs = capture.all_messages();
+    let dry_run_logged = msgs.iter().any(|(_, m)| {
+        m.contains("(dry-run) would publish") && m.contains("static-owner/anodize-pkgs")
+    });
+    assert!(
+        dry_run_logged,
+        "rendered owner/repo 'static-owner/anodize-pkgs' must appear in dry-run log; captured: {msgs:?}"
+    );
+    let raw_leaked = msgs.iter().any(|(_, m)| m.contains("{{ .ProjectName }}"));
+    assert!(
+        !raw_leaked,
+        "raw template must not leak past render; captured: {msgs:?}"
+    );
 }
 
 /// Project-level `metadata.description` is the fallback when the per-crate
