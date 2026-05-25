@@ -391,6 +391,33 @@ pub(crate) fn build_subprocess_env_with_env(
     // Always set CI=true so build scripts know they're in a sealed env.
     env.entry("CI".into()).or_insert_with(|| "true".into());
 
+    // Redirect LLVM coverage profile output OUTSIDE the worktree so an
+    // instrumented anodize child (built via `cargo llvm-cov`) doesn't
+    // drop `default_*.profraw` files into the source tree on process
+    // exit. The LLVM coverage runtime defaults to a relative path
+    // resolved against the process's CWD, which the harness sets to the
+    // worktree root — those .profraw files then get swept up by
+    // `cargo package --allow-dirty` (D1 stage) and embedded in the
+    // `.crate` tarball. Different PIDs across the two harness runs
+    // produce different filenames, so the .crate hashes drift and the
+    // byte-stability test fails.
+    //
+    // The path must be outside the worktree because cargo walks
+    // `.det-tmp/` subdirectories that contain files (cargo's
+    // auto-exclude is `target/`-shaped, not "anything under
+    // `.det-tmp/`"). Falling back to the system temp dir is the simplest
+    // host-OS-portable path that avoids polluting the source tree. The
+    // `%m` (module signature) + `%p` (PID) substitutions remain so
+    // concurrent coverage from multiple subprocesses doesn't collide.
+    // Unconditional — non-instrumented binaries ignore the var.
+    let llvm_profraw = std::env::temp_dir()
+        .join("anodize-harness-llvm")
+        .join("default_%m_%p.profraw");
+    env.insert(
+        "LLVM_PROFILE_FILE".into(),
+        llvm_profraw.to_string_lossy().into_owned(),
+    );
+
     // Inserted last so the harness's ephemeral material wins over any
     // host-leaked credential vars under either the allow-list or the
     // Windows inherit pass.

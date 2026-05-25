@@ -335,6 +335,14 @@ pub(super) fn prune_dump_to_drifted(dump_root: &Path, report: &DeterminismReport
     if !dump_root.exists() {
         return;
     }
+    // Diagnostic escape hatch: `ANODIZE_KEEP_DUMP=1` skips pruning so the
+    // full per-run binary set survives for byte-level diffing. Useful
+    // when chasing residual allowlisted non-determinism that the report
+    // hides under drift_count=0. Off by default to keep the artifact
+    // upload compact in normal CI runs.
+    if std::env::var_os("ANODIZE_KEEP_DUMP").is_some() {
+        return;
+    }
     let drift_names: std::collections::HashSet<&str> =
         report.drift.iter().map(|d| d.artifact.as_str()).collect();
     let Ok(run_dirs) = std::fs::read_dir(dump_root) else {
