@@ -545,5 +545,13 @@ mod tests {
             !chain.contains(token),
             "token leaked into error chain: {chain}"
         );
+        // Positive complement to the absence check: the redactor must
+        // substitute the literal `$GITHUB_TOKEN` marker so a future
+        // change that silently drops stderr (also passing the negative
+        // check) is caught.
+        assert!(
+            chain.contains("$GITHUB_TOKEN"),
+            "redaction must substitute $GITHUB_TOKEN placeholder; chain: {chain}"
+        );
     }
 }
