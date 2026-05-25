@@ -13,10 +13,11 @@
 use anodizer_core::PublisherOutcome;
 use anodizer_core::config::RepositoryConfig;
 use anodizer_core::log::StageLogger;
+use anodizer_core::{EnvSource, ProcessEnvSource};
 use std::path::Path;
 use std::process::Command;
 
-use super::branch::{fetch_default_branch, github_api_base};
+use super::branch::{fetch_default_branch, github_api_base_from};
 use super::cmd::run_cmd_in;
 
 /// Sync a fork with its upstream base repository.
@@ -293,6 +294,22 @@ fn create_pr_via_api(
     label: &str,
     log: &StageLogger,
 ) -> Option<PublisherOutcome> {
+    create_pr_via_api_with_env(upstream, spec, token, label, log, &ProcessEnvSource)
+}
+
+/// Env-injectable form of [`create_pr_via_api`]. Production callers
+/// route through the no-arg version (delegating to [`ProcessEnvSource`]);
+/// tests pass a [`MapEnvSource`](anodizer_core::MapEnvSource) so the
+/// in-process responder address is read from the map instead of the
+/// process env.
+fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
+    upstream: &Upstream<'_>,
+    spec: &PrSpec<'_>,
+    token: &str,
+    label: &str,
+    log: &StageLogger,
+    env: &E,
+) -> Option<PublisherOutcome> {
     let Upstream { owner, name } = *upstream;
     let PrSpec {
         title,
@@ -302,7 +319,7 @@ fn create_pr_via_api(
         draft,
         update_existing_pr,
     } = *spec;
-    let base = github_api_base();
+    let base = github_api_base_from(env);
     let url = format!("{base}/repos/{owner}/{name}/pulls");
     let payload = serde_json::json!({
         "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,
@@ -614,16 +631,16 @@ pub(crate) fn submit_pr_via_gh_with_opts(
 #[cfg(test)]
 mod tests {
     use super::{
-        PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api,
+        PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api_with_env,
         maybe_submit_pr,
     };
+    use anodizer_core::MapEnvSource;
     use anodizer_core::PublisherOutcome;
     use anodizer_core::config::{
         HomebrewCaskConfig, KrewConfig, PullRequestConfig, RepositoryConfig, StringOrBool,
         WingetConfig,
     };
     use anodizer_core::log::{StageLogger, Verbosity};
-    use anodizer_core::test_helpers::env::env_mutex;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
     use std::path::Path;
 
@@ -853,42 +870,14 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // `create_pr_via_api` HTTP coverage. Each test redirects requests
-    // to an in-process responder by setting `ANODIZER_GITHUB_API_BASE`
-    // under the workspace env mutex.
+    // `create_pr_via_api_with_env` HTTP coverage. Each test redirects
+    // requests to an in-process responder by injecting
+    // `ANODIZER_GITHUB_API_BASE` through a [`MapEnvSource`] — no process
+    // env mutation, no env mutex acquisition, no shared state.
     // -----------------------------------------------------------------
 
-    /// RAII guard that sets `ANODIZER_GITHUB_API_BASE` for the duration
-    /// of one test and restores the previous value (or unsets) on drop
-    /// so a panicking test body cannot leak the override.
-    struct BaseOverride {
-        _guard: std::sync::MutexGuard<'static, ()>,
-        previous: Option<String>,
-    }
-
-    impl BaseOverride {
-        fn set(base: &str) -> Self {
-            let guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-            let previous = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
-            // SAFETY: serialised by the workspace env mutex; pair set / restore.
-            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", base) };
-            Self {
-                _guard: guard,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for BaseOverride {
-        fn drop(&mut self) {
-            // SAFETY: still under the env mutex (held by `_guard`).
-            unsafe {
-                match &self.previous {
-                    Some(prev) => std::env::set_var("ANODIZER_GITHUB_API_BASE", prev),
-                    None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
-                }
-            }
-        }
+    fn env_with_base(base: &str) -> MapEnvSource {
+        MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
     }
 
     fn spec(update_existing_pr: bool) -> PrSpec<'static> {
@@ -911,13 +900,14 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         assert!(outcome.is_none(), "201 must be the success path");
     }
 
@@ -934,13 +924,14 @@ mod tests {
             format!("HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {len}\r\n\r\n{body}");
         let resp_static: &'static str = Box::leak(resp.into_boxed_str());
         let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         assert!(
             matches!(outcome, Some(PublisherOutcome::PendingValidation)),
             "422 already-exists must map to PendingValidation; got {outcome:?}"
@@ -961,13 +952,14 @@ mod tests {
             format!("HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {len}\r\n\r\n{body}");
         let resp_static: &'static str = Box::leak(resp.into_boxed_str());
         let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(true), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(true), "tok", "label", &log, &env);
         assert!(
             matches!(outcome, Some(PublisherOutcome::PendingValidation)),
             "API transport cannot force-push; update_existing_pr=true \
@@ -986,13 +978,14 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         assert!(
             matches!(outcome, Some(PublisherOutcome::Failed(_))),
             "500 must map to Failed (silent-skip would let dispatch \
@@ -1011,13 +1004,14 @@ mod tests {
         let resp = format!("HTTP/1.1 401 Unauthorized\r\nContent-Length: {len}\r\n\r\n{body}");
         let resp_static: &'static str = Box::leak(resp.into_boxed_str());
         let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         match outcome {
             Some(PublisherOutcome::Failed(msg)) => {
                 assert!(msg.contains("401"), "Failed msg must cite status: {msg}");
@@ -1034,13 +1028,14 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         assert!(matches!(outcome, Some(PublisherOutcome::Failed(_))));
     }
 
@@ -1050,13 +1045,14 @@ mod tests {
     fn create_pr_via_api_returns_none_on_200_ok() {
         let (addr, _calls) =
             spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         assert!(outcome.is_none(), "any 2xx is success path");
     }
 
@@ -1074,13 +1070,14 @@ mod tests {
             format!("HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: {len}\r\n\r\n{body}");
         let resp_static: &'static str = Box::leak(resp.into_boxed_str());
         let (addr, _calls) = spawn_oneshot_http_responder(vec![resp_static]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
+        let env = env_with_base(&format!("http://{addr}"));
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         assert!(
             matches!(outcome, Some(PublisherOutcome::Failed(_))),
             "422 without 'already exists' phrase is Failed; got {outcome:?}"
@@ -1094,13 +1091,14 @@ mod tests {
     fn create_pr_via_api_transport_failure_returns_failed() {
         // Pick a fixed address that's almost certainly unbound. Any
         // unreachable destination triggers the `Err(e)` arm.
-        let _ov = BaseOverride::set("http://127.0.0.1:1");
+        let env = env_with_base("http://127.0.0.1:1");
         let log = quiet_log();
         let upstream = Upstream {
             owner: "o",
             name: "n",
         };
-        let outcome = create_pr_via_api(&upstream, &spec(false), "tok", "label", &log);
+        let outcome =
+            create_pr_via_api_with_env(&upstream, &spec(false), "tok", "label", &log, &env);
         assert!(
             matches!(outcome, Some(PublisherOutcome::Failed(_))),
             "transport failure must map to Failed; got {outcome:?}"

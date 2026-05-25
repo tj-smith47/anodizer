@@ -29,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use anodizer_core::{EnvSource, ProcessEnvSource};
 use tower::{Layer, Service};
 
 /// Minimum sleep when a secondary rate-limit response is detected, absent a
@@ -177,6 +178,17 @@ pub(crate) fn is_secondary_rate_limit(err: &octocrab::Error) -> bool {
     false
 }
 
+/// Read and parse the `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` env
+/// override. Returns `Some(secs)` only when the var parses to a
+/// strictly positive integer. Pure — exercised exhaustively without
+/// touching the process env by passing a
+/// [`MapEnvSource`](anodizer_core::MapEnvSource).
+fn override_delay_secs_from<E: EnvSource + ?Sized>(env: &E) -> Option<u64> {
+    env.var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+}
+
 /// Return the delay to apply when a secondary rate-limit response is detected.
 ///
 /// Precedence (first match wins):
@@ -187,12 +199,19 @@ pub(crate) fn is_secondary_rate_limit(err: &octocrab::Error) -> bool {
 ///
 /// Callers should apply `jitter_duration` on top of the returned value.
 pub(crate) fn secondary_rl_delay(capture: Option<&RetryAfterCapture>) -> Duration {
+    secondary_rl_delay_with_env(capture, &ProcessEnvSource)
+}
+
+/// Env-injectable form of [`secondary_rl_delay`]. The production entry
+/// point delegates to this via [`ProcessEnvSource`]; tests inject a
+/// [`MapEnvSource`](anodizer_core::MapEnvSource) so the override is
+/// driven without mutating the process env.
+pub(crate) fn secondary_rl_delay_with_env<E: EnvSource + ?Sized>(
+    capture: Option<&RetryAfterCapture>,
+    env: &E,
+) -> Duration {
     // Hard override via env var takes absolute precedence.
-    if let Some(secs) = std::env::var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|&s| s > 0)
-    {
+    if let Some(secs) = override_delay_secs_from(env) {
         return Duration::from_secs(secs);
     }
 
@@ -313,36 +332,28 @@ mod tests {
         );
     }
 
-    // Both env-var tests below mutate ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS,
-    // which is a process-wide side effect. Without `#[serial]` they race
-    // on parallel cargo-test threads and the "default_when_unset" test can
-    // observe the "3" value set by "env_override". The race was unmasked
-    // by the test-responder centralization (faster test runs => tighter
-    // interleaving window); the underlying bug pre-dates that change.
+    // Env-driven tests below inject `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS`
+    // through a [`MapEnvSource`] passed to `secondary_rl_delay_with_env`
+    // — no process env mutation, no `#[serial]` gating required.
+    use anodizer_core::MapEnvSource;
+
     #[test]
-    #[serial_test::serial]
     fn secondary_rl_delay_env_override() {
         // Env var takes absolute precedence — even over a captured value.
-        unsafe {
-            std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "3");
-        }
+        let env = MapEnvSource::new().with("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "3");
         let cap = RetryAfterCapture::new();
         cap.set(120);
-        let d = secondary_rl_delay(Some(&cap));
-        unsafe {
-            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
-        }
-        assert_eq!(d, Duration::from_secs(3));
+        assert_eq!(
+            secondary_rl_delay_with_env(Some(&cap), &env),
+            Duration::from_secs(3)
+        );
     }
 
     #[test]
-    #[serial_test::serial]
     fn secondary_rl_delay_default_when_unset() {
-        unsafe {
-            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
-        }
+        let env = MapEnvSource::new();
         assert_eq!(
-            secondary_rl_delay(None),
+            secondary_rl_delay_with_env(None, &env),
             Duration::from_secs(SECONDARY_RL_MIN_SECS)
         );
     }
@@ -358,50 +369,59 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn secondary_rl_delay_prefers_captured_over_constant() {
         // No env override; captured value of 120 s should be honoured.
-        unsafe {
-            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
-        }
+        let env = MapEnvSource::new();
         let cap = RetryAfterCapture::new();
         cap.set(120);
         assert_eq!(
-            secondary_rl_delay(Some(&cap)),
+            secondary_rl_delay_with_env(Some(&cap), &env),
             Duration::from_secs(120),
             "captured Retry-After should override the 60 s constant"
         );
     }
 
     #[test]
-    #[serial_test::serial]
     fn secondary_rl_delay_clamps_low_captured_value() {
         // A server-sent Retry-After: 5 is below the 60 s floor.
-        unsafe {
-            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
-        }
+        let env = MapEnvSource::new();
         let cap = RetryAfterCapture::new();
         cap.set(5);
         assert_eq!(
-            secondary_rl_delay(Some(&cap)),
+            secondary_rl_delay_with_env(Some(&cap), &env),
             Duration::from_secs(SECONDARY_RL_MIN_SECS),
             "values below 60 s must be clamped to the floor"
         );
     }
 
     #[test]
-    #[serial_test::serial]
     fn secondary_rl_delay_clamps_high_captured_value() {
         // A server-sent Retry-After: 9999 is above the 600 s cap.
-        unsafe {
-            std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
-        }
+        let env = MapEnvSource::new();
         let cap = RetryAfterCapture::new();
         cap.set(9999);
         assert_eq!(
-            secondary_rl_delay(Some(&cap)),
+            secondary_rl_delay_with_env(Some(&cap), &env),
             Duration::from_secs(RETRY_AFTER_MAX_SECS),
             "values above 600 s must be clamped to the cap"
         );
+    }
+
+    /// Empty / non-numeric / zero values for the override env var must
+    /// be rejected by `override_delay_secs_from` so the function falls
+    /// through to the Retry-After / floor branches. A regression that
+    /// accepted "0" or "" would force every secondary-rate-limit retry
+    /// to skip the 60 s floor and hammer the API.
+    #[test]
+    fn override_delay_secs_rejects_zero_empty_and_garbage() {
+        let zero = MapEnvSource::new().with("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "0");
+        let empty = MapEnvSource::new().with("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "");
+        let garbage =
+            MapEnvSource::new().with("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "not-a-number");
+        let unset = MapEnvSource::new();
+        assert_eq!(override_delay_secs_from(&zero), None);
+        assert_eq!(override_delay_secs_from(&empty), None);
+        assert_eq!(override_delay_secs_from(&garbage), None);
+        assert_eq!(override_delay_secs_from(&unset), None);
     }
 }

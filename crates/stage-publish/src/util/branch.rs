@@ -6,21 +6,25 @@
 //! `pub(crate)` keeps the surface tight.
 
 use anodizer_core::config::RepositoryConfig;
+use anodizer_core::{EnvSource, ProcessEnvSource};
 
 /// Resolve the branch to push to from RepositoryConfig.
 pub(crate) fn resolve_branch(repo: Option<&RepositoryConfig>) -> Option<&str> {
     repo.and_then(|r| r.branch.as_deref())
 }
 
-/// Resolve the GitHub REST API base URL. Honors the undocumented
-/// `ANODIZER_GITHUB_API_BASE` env override so unit tests can redirect
-/// requests to an in-process responder; defaults to the canonical
-/// `https://api.github.com` in production where the var is unset. Any
-/// trailing `/` is stripped so callers can unconditionally `format!`
-/// with a `/`-prefixed suffix without producing a double slash.
-pub(super) fn github_api_base() -> String {
-    let raw = std::env::var("ANODIZER_GITHUB_API_BASE")
-        .unwrap_or_else(|_| "https://api.github.com".to_string());
+/// Resolve the GitHub REST API base URL through an injected env
+/// source. Honors the undocumented `ANODIZER_GITHUB_API_BASE` override
+/// so unit tests can redirect requests to an in-process responder via a
+/// [`MapEnvSource`](anodizer_core::MapEnvSource); defaults to the
+/// canonical `https://api.github.com` in production where production
+/// callers pass [`ProcessEnvSource`] and the var is unset. Any trailing
+/// `/` is stripped so callers can unconditionally `format!` with a
+/// `/`-prefixed suffix without producing a double slash.
+pub(super) fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
+    let raw = env
+        .var("ANODIZER_GITHUB_API_BASE")
+        .unwrap_or_else(|| "https://api.github.com".to_string());
     raw.trim_end_matches('/').to_string()
 }
 
@@ -28,7 +32,19 @@ pub(super) fn github_api_base() -> String {
 /// on any failure (token missing, network error, repo not found, parse
 /// failure) so the caller can fall back to a sensible default.
 pub(super) fn fetch_default_branch(owner: &str, name: &str, token: Option<&str>) -> Option<String> {
-    let base = github_api_base();
+    fetch_default_branch_with_env(owner, name, token, &ProcessEnvSource)
+}
+
+/// Env-injectable form of [`fetch_default_branch`] — resolves the API
+/// base through `env` instead of `ProcessEnvSource` so an in-process
+/// responder can intercept the request without mutating the process env.
+pub(super) fn fetch_default_branch_with_env<E: EnvSource + ?Sized>(
+    owner: &str,
+    name: &str,
+    token: Option<&str>,
+    env: &E,
+) -> Option<String> {
+    let base = github_api_base_from(env);
     let url = format!("{base}/repos/{owner}/{name}");
     let mut req = anodizer_core::http::blocking_client(std::time::Duration::from_secs(10))
         .ok()?
@@ -102,46 +118,17 @@ mod tests {
 
     // -----------------------------------------------------------------
     // `fetch_default_branch` HTTP coverage. Each test redirects requests
-    // to an in-process responder by setting `ANODIZER_GITHUB_API_BASE`
-    // under the workspace env mutex (`cargo test` parallelises within a
-    // single binary, and the var is read by sibling tests in this file).
+    // to an in-process responder by injecting `ANODIZER_GITHUB_API_BASE`
+    // through a [`MapEnvSource`] passed to `fetch_default_branch_with_env`
+    // — no process env mutation, no env mutex acquisition, no shared
+    // state with sibling tests.
     // -----------------------------------------------------------------
 
-    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::MapEnvSource;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
-    /// Acquire the env mutex and point `ANODIZER_GITHUB_API_BASE` at the
-    /// given in-process responder. The returned guard restores the
-    /// pre-test env on drop so a panicking test body cannot leak the
-    /// override into sibling tests.
-    struct BaseOverride {
-        _guard: std::sync::MutexGuard<'static, ()>,
-        previous: Option<String>,
-    }
-
-    impl BaseOverride {
-        fn set(base: &str) -> Self {
-            let guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-            let previous = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
-            // SAFETY: serialised by the workspace env mutex; pair set / restore.
-            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", base) };
-            Self {
-                _guard: guard,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for BaseOverride {
-        fn drop(&mut self) {
-            // SAFETY: still under the env mutex (held by `_guard`).
-            unsafe {
-                match &self.previous {
-                    Some(prev) => std::env::set_var("ANODIZER_GITHUB_API_BASE", prev),
-                    None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
-                }
-            }
-        }
+    fn env_with_base(base: &str) -> MapEnvSource {
+        MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
     }
 
     /// 200 with `{"default_branch":"master"}` is the upstream path used
@@ -155,8 +142,8 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"default_branch\":\"master\"}",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
-        let got = fetch_default_branch("o", "n", None);
+        let env = env_with_base(&format!("http://{addr}"));
+        let got = fetch_default_branch_with_env("o", "n", None, &env);
         assert_eq!(got.as_deref(), Some("master"));
     }
 
@@ -167,8 +154,8 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 25\r\n\r\n{\"default_branch\":\"main\"}",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
-        let got = fetch_default_branch("o", "n", None);
+        let env = env_with_base(&format!("http://{addr}"));
+        let got = fetch_default_branch_with_env("o", "n", None, &env);
         assert_eq!(got.as_deref(), Some("main"));
     }
 
@@ -181,8 +168,8 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
-        assert!(fetch_default_branch("o", "n", None).is_none());
+        let env = env_with_base(&format!("http://{addr}"));
+        assert!(fetch_default_branch_with_env("o", "n", None, &env).is_none());
     }
 
     /// 500 returns `None` — the function silently degrades on server
@@ -193,8 +180,8 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
-        assert!(fetch_default_branch("o", "n", None).is_none());
+        let env = env_with_base(&format!("http://{addr}"));
+        assert!(fetch_default_branch_with_env("o", "n", None, &env).is_none());
     }
 
     /// Malformed JSON returns `None`. The body parses with `serde_json`
@@ -206,7 +193,26 @@ mod tests {
         let (addr, _calls) = spawn_oneshot_http_responder(vec![
             "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 17\r\n\r\n<html>oops</html>",
         ]);
-        let _ov = BaseOverride::set(&format!("http://{addr}"));
-        assert!(fetch_default_branch("o", "n", None).is_none());
+        let env = env_with_base(&format!("http://{addr}"));
+        assert!(fetch_default_branch_with_env("o", "n", None, &env).is_none());
+    }
+
+    /// Trailing `/` on the base is stripped so callers can append a
+    /// `/`-prefixed suffix without producing `//repos/...` (which 404s
+    /// on real GitHub). Pure-fn coverage of the env-injection path so a
+    /// regression doesn't require an HTTP responder to surface.
+    #[test]
+    fn github_api_base_from_strips_trailing_slash() {
+        let env = env_with_base("https://example.com/api/");
+        assert_eq!(github_api_base_from(&env), "https://example.com/api");
+    }
+
+    /// Default base URL when the env source has no override is the
+    /// canonical `https://api.github.com`. Pins the production default
+    /// so a regression to a typo'd host doesn't ship silently.
+    #[test]
+    fn github_api_base_from_defaults_when_env_unset() {
+        let env = MapEnvSource::new();
+        assert_eq!(github_api_base_from(&env), "https://api.github.com");
     }
 }

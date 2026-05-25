@@ -17,6 +17,7 @@
 //! it only if a future feature actually queries `/search/users`.
 
 use crate::release_log;
+use anodizer_core::{EnvSource, ProcessEnvSource};
 
 /// Compute the seconds to sleep waiting for the GitHub rate-limit window
 /// to reset. Returns `None` when `remaining > threshold` (no sleep needed).
@@ -42,16 +43,19 @@ pub(crate) fn compute_rate_limit_sleep_secs(
     Some(secs)
 }
 
-/// Resolve the GitHub REST API base URL. Honors the undocumented
-/// `ANODIZER_GITHUB_API_BASE` env override so unit tests can redirect
-/// `/rate_limit` polls to an in-process responder; defaults to the
-/// canonical `https://api.github.com` in production where the var is
+/// Resolve the GitHub REST API base URL through an injected env
+/// source. Honors the undocumented `ANODIZER_GITHUB_API_BASE` override
+/// so unit tests can redirect `/rate_limit` polls to an in-process
+/// responder via a [`MapEnvSource`](anodizer_core::MapEnvSource);
+/// defaults to the canonical `https://api.github.com` in production
+/// where production callers pass [`ProcessEnvSource`] and the var is
 /// unset. Trailing `/` is stripped so the caller can append a
 /// `/`-prefixed suffix without producing a double slash. Mirrors the
 /// sibling helper in `stage-publish/src/util/branch.rs`.
-fn github_api_base() -> String {
-    let raw = std::env::var("ANODIZER_GITHUB_API_BASE")
-        .unwrap_or_else(|_| "https://api.github.com".to_string());
+fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
+    let raw = env
+        .var("ANODIZER_GITHUB_API_BASE")
+        .unwrap_or_else(|| "https://api.github.com".to_string());
     raw.trim_end_matches('/').to_string()
 }
 
@@ -66,7 +70,20 @@ fn github_api_base() -> String {
 /// behaviour where `rateLimitChecker` logs and returns without aborting the
 /// outer release flow.
 pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshold: u64) {
-    let url = format!("{}/rate_limit", github_api_base());
+    check_github_rate_limit_with_env(client, token, threshold, &ProcessEnvSource).await;
+}
+
+/// Env-injectable form of [`check_github_rate_limit`]. The production
+/// entry point delegates to this via [`ProcessEnvSource`]; tests inject
+/// a [`MapEnvSource`](anodizer_core::MapEnvSource) so the responder
+/// address is read from the map instead of the process env.
+pub(crate) async fn check_github_rate_limit_with_env<E: EnvSource + ?Sized>(
+    client: &reqwest::Client,
+    token: &str,
+    threshold: u64,
+    env: &E,
+) {
+    let url = format!("{}/rate_limit", github_api_base_from(env));
     let resp = match client
         .get(&url)
         .header("Authorization", format!("Bearer {}", token))
@@ -263,13 +280,13 @@ mod sigterm_tests {
 mod http_tests {
     //! End-to-end coverage of the `/rate_limit` HTTP path.
     //!
-    //! Each test points `ANODIZER_GITHUB_API_BASE` at an in-process
-    //! HTTPS responder so the production code's call to
-    //! `https://api.github.com/rate_limit` is intercepted without
-    //! touching the real GitHub API. The env var is serialised under
-    //! the workspace `env_mutex()` because `cargo test` parallelises
-    //! within a single binary and sibling tests in this module read
-    //! the same key.
+    //! Each test injects `ANODIZER_GITHUB_API_BASE` through a
+    //! [`MapEnvSource`] passed to
+    //! [`check_github_rate_limit_with_env`] so the production code's
+    //! call to `https://api.github.com/rate_limit` is intercepted
+    //! without touching the real GitHub API and without mutating the
+    //! process env. Tests run in full isolation — no env mutex
+    //! acquisition, no shared state between sibling tests.
     //!
     //! Sleep-path coverage is split: the pure sleep-secs computation is
     //! exercised exhaustively via `compute_rate_limit_sleep_secs` (see
@@ -278,46 +295,14 @@ mod http_tests {
     //! signals is covered by `e2e_sleeps_briefly_when_reset_is_one_second_away`
     //! using a sub-second reset window so the wall-clock cost is bounded.
     use super::*;
-    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::MapEnvSource;
     use anodizer_core::test_helpers::https_responder::{
         https_test_client, spawn_oneshot_https_responder,
     };
     use std::sync::atomic::Ordering;
 
-    /// RAII guard: acquire the workspace env mutex, set
-    /// `ANODIZER_GITHUB_API_BASE` to `base`, restore the prior value on
-    /// drop. The mutex prevents a sibling test in this binary from
-    /// observing a half-swapped env. Unwinding through a panicking test
-    /// body restores the env (Drop runs on stack unwind) so a regression
-    /// doesn't leak the override into the next test.
-    struct BaseOverride {
-        _guard: std::sync::MutexGuard<'static, ()>,
-        previous: Option<String>,
-    }
-
-    impl BaseOverride {
-        fn set(base: &str) -> Self {
-            let guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-            let previous = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
-            // SAFETY: serialised by the env mutex held in `_guard`.
-            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", base) };
-            Self {
-                _guard: guard,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for BaseOverride {
-        fn drop(&mut self) {
-            // SAFETY: still under the env mutex (held by `_guard`).
-            unsafe {
-                match &self.previous {
-                    Some(prev) => std::env::set_var("ANODIZER_GITHUB_API_BASE", prev),
-                    None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
-                }
-            }
-        }
+    fn env_with_base(base: &str) -> MapEnvSource {
+        MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", base)
     }
 
     /// Build a canned `200 OK` HTTPS response carrying the given JSON
@@ -348,10 +333,10 @@ mod http_tests {
     async fn remaining_above_threshold_returns_without_sleep() {
         let body = r#"{"resources":{"core":{"remaining":5000,"reset":9999999999,"limit":5000}}}"#;
         let (addr, calls) = spawn_oneshot_https_responder(vec![canned_json_200(body)]);
-        let _ov = BaseOverride::set(&format!("https://{addr}"));
+        let env = env_with_base(&format!("https://{addr}"));
 
         let client = https_test_client();
-        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let fut = check_github_rate_limit_with_env(&client, "fake-token", 100, &env);
         // 5 s upper bound — happy path is sub-second. Hitting this
         // means the function sleeps when it shouldn't.
         let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
@@ -376,10 +361,10 @@ mod http_tests {
     async fn non_success_status_silently_degrades() {
         let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
         let (addr, calls) = spawn_oneshot_https_responder(vec![resp]);
-        let _ov = BaseOverride::set(&format!("https://{addr}"));
+        let env = env_with_base(&format!("https://{addr}"));
 
         let client = https_test_client();
-        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let fut = check_github_rate_limit_with_env(&client, "fake-token", 100, &env);
         let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
         assert!(res.is_ok(), "401 must silently degrade, not hang or panic");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -393,10 +378,10 @@ mod http_tests {
     async fn server_error_status_silently_degrades() {
         let resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n";
         let (addr, calls) = spawn_oneshot_https_responder(vec![resp]);
-        let _ov = BaseOverride::set(&format!("https://{addr}"));
+        let env = env_with_base(&format!("https://{addr}"));
 
         let client = https_test_client();
-        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let fut = check_github_rate_limit_with_env(&client, "fake-token", 100, &env);
         let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
         assert!(res.is_ok(), "500 must silently degrade");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -418,10 +403,10 @@ mod http_tests {
         );
         let resp: &'static str = Box::leak(raw.into_boxed_str());
         let (addr, calls) = spawn_oneshot_https_responder(vec![resp]);
-        let _ov = BaseOverride::set(&format!("https://{addr}"));
+        let env = env_with_base(&format!("https://{addr}"));
 
         let client = https_test_client();
-        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let fut = check_github_rate_limit_with_env(&client, "fake-token", 100, &env);
         let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
         assert!(
             res.is_ok(),
@@ -439,10 +424,10 @@ mod http_tests {
     async fn missing_pointer_fields_skip_sleep() {
         let body = r#"{"resources":{"other":{"remaining":1}}}"#;
         let (addr, calls) = spawn_oneshot_https_responder(vec![canned_json_200(body)]);
-        let _ov = BaseOverride::set(&format!("https://{addr}"));
+        let env = env_with_base(&format!("https://{addr}"));
 
         let client = https_test_client();
-        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let fut = check_github_rate_limit_with_env(&client, "fake-token", 100, &env);
         let res = tokio::time::timeout(std::time::Duration::from_secs(5), fut).await;
         assert!(
             res.is_ok(),
@@ -451,40 +436,25 @@ mod http_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
-    /// `github_api_base()` strips a trailing slash so callers can
+    /// `github_api_base_from` strips a trailing slash so callers can
     /// unconditionally append `/rate_limit` without producing
     /// `//rate_limit` (which 404s on GitHub). Mirror of the contract
-    /// pinned in `stage-publish/src/util/branch.rs`; tested via the
-    /// public override path because the helper itself is module-private.
+    /// pinned in `stage-publish/src/util/branch.rs`.
     #[test]
     fn base_url_strips_trailing_slash() {
-        let _ov = BaseOverride::set("https://example.com/api/");
-        assert_eq!(github_api_base(), "https://example.com/api");
+        let env = env_with_base("https://example.com/api/");
+        assert_eq!(github_api_base_from(&env), "https://example.com/api");
     }
 
-    /// Default base URL when the env var is unset is the canonical
-    /// `https://api.github.com` — pins the production default so a
-    /// regression to a typo'd host doesn't ship silently (it would
-    /// fail to find the responder under the override too, but the
-    /// blast radius matters: prod calls would be misdirected for every
-    /// user who doesn't set the override).
+    /// Default base URL when the env source has no override is the
+    /// canonical `https://api.github.com` — pins the production default
+    /// so a regression to a typo'd host doesn't ship silently. The empty
+    /// [`MapEnvSource`] mimics a production process where the env var
+    /// has never been exported.
     #[test]
     fn base_url_defaults_to_api_github_com() {
-        // Acquire the env mutex and clear the var to assert the
-        // unset-default branch.
-        let _guard = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        let previous = std::env::var("ANODIZER_GITHUB_API_BASE").ok();
-        // SAFETY: serialised by the env mutex above; restore below.
-        unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
-        let got = github_api_base();
-        // SAFETY: still under the env mutex.
-        unsafe {
-            match previous {
-                Some(prev) => std::env::set_var("ANODIZER_GITHUB_API_BASE", prev),
-                None => std::env::remove_var("ANODIZER_GITHUB_API_BASE"),
-            }
-        }
-        assert_eq!(got, "https://api.github.com");
+        let env = MapEnvSource::new();
+        assert_eq!(github_api_base_from(&env), "https://api.github.com");
     }
 
     /// Drive `check_github_rate_limit` through the real sleep + select
@@ -509,10 +479,10 @@ mod http_tests {
         );
         let (addr, calls) =
             spawn_oneshot_https_responder(vec![canned_json_200(Box::leak(body.into_boxed_str()))]);
-        let _ov = BaseOverride::set(&format!("https://{addr}"));
+        let env = env_with_base(&format!("https://{addr}"));
 
         let client = https_test_client();
-        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let fut = check_github_rate_limit_with_env(&client, "fake-token", 100, &env);
         let res = tokio::time::timeout(std::time::Duration::from_secs(8), fut).await;
         assert!(
             res.is_ok(),
