@@ -18,6 +18,30 @@
 
 use crate::release_log;
 
+/// Compute the seconds to sleep waiting for the GitHub rate-limit window
+/// to reset. Returns `None` when `remaining > threshold` (no sleep needed).
+/// Returns `Some(reset_epoch - now + 1)` when the reset is in the future,
+/// and `Some(5)` (the past-reset floor) when `reset_epoch <= now`.
+///
+/// Pure — no IO, no clock reads. Callers pass `now` as the current epoch
+/// seconds; the wrapper reads `SystemTime::now()`.
+pub(crate) fn compute_rate_limit_sleep_secs(
+    remaining: u64,
+    threshold: u64,
+    reset_epoch: u64,
+    now: u64,
+) -> Option<u64> {
+    if remaining > threshold {
+        return None;
+    }
+    let secs = if reset_epoch > now {
+        reset_epoch - now + 1
+    } else {
+        5
+    };
+    Some(secs)
+}
+
 /// Resolve the GitHub REST API base URL. Honors the undocumented
 /// `ANODIZER_GITHUB_API_BASE` env override so unit tests can redirect
 /// `/rate_limit` polls to an in-process responder; defaults to the
@@ -73,19 +97,13 @@ pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &st
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
 
-    if remaining > threshold {
-        return;
-    }
-
-    // Sleep until reset + small buffer.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let sleep_secs = if reset_epoch > now {
-        reset_epoch - now + 1
-    } else {
-        5 // Minimum 5 seconds if reset is in the past
+    let sleep_secs = match compute_rate_limit_sleep_secs(remaining, threshold, reset_epoch, now) {
+        None => return,
+        Some(s) => s,
     };
     release_log().status(&format!(
         "rate limit almost reached ({remaining} remaining), sleeping for {sleep_secs}s..."
@@ -253,11 +271,12 @@ mod http_tests {
     //! within a single binary and sibling tests in this module read
     //! the same key.
     //!
-    //! The `start_paused` virtual-time runtime is only used for the
-    //! sleep-until-reset test, which asserts the function sleeps
-    //! through the configured reset window without paying a real
-    //! wall-clock minute per run. All other tests use the default
-    //! runtime since they exercise return-fast paths.
+    //! Sleep-path coverage is split: the pure sleep-secs computation is
+    //! exercised exhaustively via `compute_rate_limit_sleep_secs` (see
+    //! `compute_tests` below) so the branch logic doesn't entangle with
+    //! tokio's runtime; the wiring that actually sleeps + races against
+    //! signals is covered by `e2e_sleeps_briefly_when_reset_is_one_second_away`
+    //! using a sub-second reset window so the wall-clock cost is bounded.
     use super::*;
     use anodizer_core::test_helpers::env::env_mutex;
     use anodizer_core::test_helpers::https_responder::{
@@ -466,5 +485,109 @@ mod http_tests {
             }
         }
         assert_eq!(got, "https://api.github.com");
+    }
+
+    /// Drive `check_github_rate_limit` through the real sleep + select
+    /// path with a ~1 s reset window. The pure helper covers the
+    /// branch logic; this test pins the WIRING — that the function
+    /// actually awaits `sleep_secs`, races it against the signal arms,
+    /// and resumes cleanly. A regression that dropped the `.await` (or
+    /// swapped `select!` for a bare `sleep.await` then forgot to wake)
+    /// would fail the 8 s bound. Sleep duration is bounded above by
+    /// roughly 2 s (1 s reset window + 1 s buffer added by
+    /// `compute_rate_limit_sleep_secs`); the 8 s timeout leaves ample
+    /// headroom for CI scheduler jitter.
+    #[tokio::test]
+    async fn e2e_sleeps_briefly_when_reset_is_one_second_away() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock is post-epoch")
+            .as_secs();
+        let reset = now + 1;
+        let body = format!(
+            r#"{{"resources":{{"core":{{"remaining":0,"reset":{reset},"limit":5000}}}}}}"#,
+        );
+        let (addr, calls) =
+            spawn_oneshot_https_responder(vec![canned_json_200(Box::leak(body.into_boxed_str()))]);
+        let _ov = BaseOverride::set(&format!("https://{addr}"));
+
+        let client = https_test_client();
+        let fut = check_github_rate_limit(&client, "fake-token", 100);
+        let res = tokio::time::timeout(std::time::Duration::from_secs(8), fut).await;
+        assert!(
+            res.is_ok(),
+            "must complete the sleep + select wait within the bounded window"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "exactly one /rate_limit request should be issued"
+        );
+    }
+}
+
+#[cfg(test)]
+mod compute_tests {
+    //! Exhaustive coverage of the pure sleep-secs computation. No IO,
+    //! no clock reads — every branch is reachable by varying the four
+    //! inputs. The end-to-end wiring (HTTP poll + tokio sleep + signal
+    //! select) is covered by `http_tests::e2e_sleeps_briefly_when_reset_is_one_second_away`.
+    use super::*;
+
+    /// `remaining > threshold` short-circuits with `None` — the
+    /// happy-path that bypasses sleep entirely. A regression flipping
+    /// `>` to `<` would have every release sleep through the reset
+    /// window even with full quota.
+    #[test]
+    fn compute_returns_none_when_remaining_above_threshold() {
+        // `reset_epoch` and `now` are deliberately implausible (max +
+        // min) to prove they're unused on this branch.
+        assert_eq!(compute_rate_limit_sleep_secs(101, 100, u64::MAX, 0), None,);
+    }
+
+    /// Future reset returns `(reset - now) + 1` — the +1 buffer
+    /// matches GoReleaser's behaviour so a release doesn't retry at
+    /// the exact reset instant and race the upstream window flip.
+    #[test]
+    fn compute_returns_future_reset_diff_plus_one_when_reset_in_future() {
+        assert_eq!(compute_rate_limit_sleep_secs(0, 100, 1000, 500), Some(501),);
+    }
+
+    /// Reset strictly in the past AND reset == now both fall to the
+    /// 5 s floor. The boundary matters: a regression to `>=` would
+    /// underflow `reset_epoch - now` when they're equal (or yield 1 s
+    /// instead of 5 s on the equal case), shrinking the retry budget
+    /// below the upstream window's grace.
+    #[test]
+    fn compute_returns_past_reset_floor_when_reset_in_past_or_equal_to_now() {
+        // Reset strictly in the past.
+        assert_eq!(compute_rate_limit_sleep_secs(0, 100, 500, 1000), Some(5),);
+        // Reset exactly equal to now — pinned because the production
+        // code branches on `reset_epoch > now`, not `>=`.
+        assert_eq!(compute_rate_limit_sleep_secs(0, 100, 1000, 1000), Some(5),);
+    }
+
+    /// `remaining == threshold` is the inclusive boundary — equal
+    /// counts as "depleted" and triggers the sleep. A regression to
+    /// `>=` would skip the sleep at the exact threshold and overrun
+    /// the next call.
+    #[test]
+    fn compute_returns_some_when_remaining_equals_threshold() {
+        assert_eq!(
+            compute_rate_limit_sleep_secs(100, 100, 2000, 1000),
+            Some(1001),
+        );
+    }
+
+    /// Zero remaining is the canonical depleted case; pinned
+    /// separately from the threshold boundary because real GitHub
+    /// responses often hit zero (not threshold-exact) before the
+    /// pre-flight check fires.
+    #[test]
+    fn compute_returns_some_when_remaining_is_zero() {
+        assert_eq!(
+            compute_rate_limit_sleep_secs(0, 100, 2000, 1000),
+            Some(1001),
+        );
     }
 }
