@@ -22,8 +22,8 @@ use super::targets::{
 use super::universal::{build_universal_binary, project_universal_out_path};
 use super::validation::{is_dynamically_linked, strip_glibc_suffix, target_for_validation};
 use super::workspace::{
-    cargo_target_dir, check_workspace_package, ensure_targets_installed, resolve_binary_path,
-    resolve_copy_from, resolve_reproducible_epoch,
+    cargo_target_dir_with_env, check_workspace_package, ensure_targets_installed,
+    resolve_binary_path, resolve_copy_from, resolve_reproducible_epoch_with_env,
 };
 use super::{binstall, version_sync};
 
@@ -232,13 +232,17 @@ impl Stage for super::BuildStage {
                             "snapshot SDE resolution failed; falling back to commit timestamp: {}",
                             err
                         ));
-                        if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
+                        if let Some(epoch) =
+                            resolve_reproducible_epoch_with_env(&commit_timestamp, ctx.env_source())
+                        {
                             ctx.determinism =
                                 Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
                         }
                     }
                 }
-            } else if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
+            } else if let Some(epoch) =
+                resolve_reproducible_epoch_with_env(&commit_timestamp, ctx.env_source())
+            {
                 ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
             }
         }
@@ -580,10 +584,11 @@ impl Stage for super::BuildStage {
                         resolve_target_env(build.env.as_ref(), target, &log, ctx.is_strict())?;
 
                     // Use stripped target name for directory path
-                    let bin_path = cargo_target_dir(raw_target_env.as_ref())
-                        .join(cargo_target_name)
-                        .join(profile)
-                        .join(&output_name);
+                    let bin_path =
+                        cargo_target_dir_with_env(raw_target_env.as_ref(), ctx.env_source())
+                            .join(cargo_target_name)
+                            .join(profile)
+                            .join(&output_name);
 
                     // Handle copy_from: skip compilation, queue for after builds
                     if let Some(src_binary) = &build.copy_from {
@@ -592,10 +597,11 @@ impl Stage for super::BuildStage {
                         } else {
                             src_binary.clone()
                         };
-                        let src_path = cargo_target_dir(raw_target_env.as_ref())
-                            .join(cargo_target_name)
-                            .join(profile)
-                            .join(&src_name);
+                        let src_path =
+                            cargo_target_dir_with_env(raw_target_env.as_ref(), ctx.env_source())
+                                .join(cargo_target_name)
+                                .join(profile)
+                                .join(&src_name);
 
                         // Clear per-target template vars before continuing
                         ctx.template_vars_mut().set("Target", "");
@@ -972,7 +978,9 @@ impl Stage for super::BuildStage {
 
                 // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
                 if job.reproducible && resolved_bin.exists() {
-                    if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
+                    if let Some(epoch) =
+                        resolve_reproducible_epoch_with_env(&commit_timestamp, ctx.env_source())
+                    {
                         anodizer_core::util::set_file_mtime_epoch(&resolved_bin, epoch)?;
                     } else {
                         log.warn(
@@ -1054,6 +1062,7 @@ impl Stage for super::BuildStage {
                 // Each chunk runs in parallel via thread::scope.
                 // Pre/post hooks run inside each thread so they properly bracket
                 // their specific build, matching the sequential path's semantics.
+                let env_source: &dyn anodizer_core::EnvSource = ctx.env_source();
                 let results: Vec<Result<BuildResult>> = std::thread::scope(|s| {
                     let handles: Vec<_> = chunk
                         .iter()
@@ -1161,7 +1170,9 @@ impl Stage for super::BuildStage {
 
                                 // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
                                 if reproducible && bin_path.exists() {
-                                    if let Some(epoch) = resolve_reproducible_epoch(&commit_ts) {
+                                    if let Some(epoch) =
+                                        resolve_reproducible_epoch_with_env(&commit_ts, env_source)
+                                    {
                                         anodizer_core::util::set_file_mtime_epoch(&bin_path, epoch)?;
                                     } else {
                                         warn_log.warn(

@@ -383,8 +383,8 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
                 .repository
                 .as_ref()
                 .and_then(|r| r.token.clone())
-                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-                .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+                .or_else(|| ctx.env_var("ANODIZER_GITHUB_TOKEN"))
+                .or_else(|| ctx.env_var("GITHUB_TOKEN"));
             jobs.push(post_publish::PollJob::Winget {
                 package_identifier: pkg_id,
                 version: version.clone(),

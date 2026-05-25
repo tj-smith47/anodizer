@@ -13,6 +13,7 @@ use std::path::Path;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::url::percent_encode_path_segment;
+use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
 
@@ -129,8 +130,17 @@ fn auth_header(use_job_token: bool) -> &'static str {
 /// 3. the token being used equals `CI_JOB_TOKEN` — so secondary clients built
 ///    during the same CI run (e.g. Homebrew publishing with a personal token)
 ///    still fall back to `PRIVATE-TOKEN`.
-pub(crate) fn resolve_use_job_token(config_flag: bool, token: &str) -> bool {
-    let ci_token = std::env::var("CI_JOB_TOKEN").unwrap_or_default();
+///
+/// Production wires up [`ProcessEnvSource`] via
+/// [`anodizer_core::Context::env_source`]; tests inject a
+/// [`anodizer_core::MapEnvSource`] so the `CI_JOB_TOKEN` branches can
+/// be driven without mutating the process env.
+pub(crate) fn resolve_use_job_token_with_env<E: EnvSource + ?Sized>(
+    config_flag: bool,
+    token: &str,
+    env: &E,
+) -> bool {
+    let ci_token = env.var("CI_JOB_TOKEN").unwrap_or_default();
     if ci_token.is_empty() {
         return false;
     }
@@ -507,8 +517,20 @@ pub(crate) async fn gitlab_upload_asset(
 /// 3. If both fail, default to pre-v17 behavior (`filepath`) — conservative
 ///    approach matching GoReleaser, which returns `isV17 = false` on failure.
 async fn detect_pre_v17_gitlab(client: &Client, api_url: &str) -> bool {
+    detect_pre_v17_gitlab_with_env(client, api_url, &ProcessEnvSource).await
+}
+
+/// Env-injectable form of [`detect_pre_v17_gitlab`]. Production wires up
+/// [`ProcessEnvSource`]; tests inject a
+/// [`anodizer_core::MapEnvSource`] to pin the `CI_SERVER_VERSION` short
+/// circuit without mutating the process env.
+async fn detect_pre_v17_gitlab_with_env<E: EnvSource + ?Sized>(
+    client: &Client,
+    api_url: &str,
+    env: &E,
+) -> bool {
     // 1. Check environment variable first.
-    if let Ok(version_str) = std::env::var("CI_SERVER_VERSION") {
+    if let Some(version_str) = env.var("CI_SERVER_VERSION") {
         return is_pre_v17(&version_str);
     }
 
@@ -867,46 +889,43 @@ mod tests {
     }
 
     // -- resolve_use_job_token -----------------------------------------------
-    // Mutates CI_JOB_TOKEN env var — must run serially to avoid races with
-    // other tests in the workspace that may read the same variable.
+    // Drives the `CI_JOB_TOKEN`-based branches via injected
+    // `MapEnvSource` — no `unsafe set_var`, no env-mutex serialization.
+
+    use anodizer_core::MapEnvSource;
 
     #[test]
-    #[serial_test::serial]
     fn resolve_use_job_token_in_ci_flag_on_tokens_match() {
-        unsafe { std::env::set_var("CI_JOB_TOKEN", "real-ci-token") };
-        assert!(resolve_use_job_token(true, "real-ci-token"));
-        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+        let env = MapEnvSource::new().with("CI_JOB_TOKEN", "real-ci-token");
+        assert!(resolve_use_job_token_with_env(true, "real-ci-token", &env));
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_use_job_token_in_ci_flag_on_tokens_differ() {
-        unsafe { std::env::set_var("CI_JOB_TOKEN", "real-ci-token") };
-        assert!(!resolve_use_job_token(true, "glpat-xyz"));
-        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+        let env = MapEnvSource::new().with("CI_JOB_TOKEN", "real-ci-token");
+        assert!(!resolve_use_job_token_with_env(true, "glpat-xyz", &env));
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_use_job_token_in_ci_flag_off() {
-        unsafe { std::env::set_var("CI_JOB_TOKEN", "real-ci-token") };
-        assert!(!resolve_use_job_token(false, "real-ci-token"));
-        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+        let env = MapEnvSource::new().with("CI_JOB_TOKEN", "real-ci-token");
+        assert!(!resolve_use_job_token_with_env(
+            false,
+            "real-ci-token",
+            &env
+        ));
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_use_job_token_no_ci_env() {
-        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
-        assert!(!resolve_use_job_token(true, "glpat-xyz"));
+        let env = MapEnvSource::new();
+        assert!(!resolve_use_job_token_with_env(true, "glpat-xyz", &env));
     }
 
     #[test]
-    #[serial_test::serial]
     fn resolve_use_job_token_empty_ci_env() {
-        unsafe { std::env::set_var("CI_JOB_TOKEN", "") };
-        assert!(!resolve_use_job_token(true, ""));
-        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+        let env = MapEnvSource::new().with("CI_JOB_TOKEN", "");
+        assert!(!resolve_use_job_token_with_env(true, "", &env));
     }
 
     // -- gitlab_create_release retry behaviour (P1.4) ------------------------

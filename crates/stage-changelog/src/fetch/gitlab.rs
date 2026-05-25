@@ -41,7 +41,7 @@ pub(crate) fn fetch_gitlab_commits(
     // CI_JOB_TOKEN is set, the flag is on, and the provided token equals
     // CI_JOB_TOKEN. Otherwise fall back to PRIVATE-TOKEN.
     let use_job_token = {
-        let ci_token = std::env::var("CI_JOB_TOKEN").unwrap_or_default();
+        let ci_token = ctx.env_var("CI_JOB_TOKEN").unwrap_or_default();
         !ci_token.is_empty() && gitlab_urls.use_job_token.unwrap_or(false) && token == ci_token
     };
     let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);

@@ -9,8 +9,8 @@ use anyhow::{Context as _, Result};
 use crate::dispatch::dispatch;
 use crate::helpers::{
     DEFAULT_DISPLAY_NAME, WEBHOOK_DEFAULT_MESSAGE_TEMPLATE, is_enabled, render_json_template,
-    render_message, require_env, require_env_all, require_non_empty_env, resolve_smtp_port,
-    resolve_webhook_headers,
+    render_message, require_env_all_with_env, require_env_with_env, require_non_empty_env_with_env,
+    resolve_smtp_port, resolve_webhook_headers,
 };
 use crate::{
     bluesky, discord, discourse, email, linkedin, mastodon, mattermost, opencollective, reddit,
@@ -147,16 +147,14 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     if let Some(cfg) = &announce.discord
         && is_enabled(ctx, cfg.enabled.as_ref())?
         && let Err(e) = (|| -> Result<()> {
-            let id = std::env::var("DISCORD_WEBHOOK_ID")
-                .ok()
-                .filter(|s| !s.is_empty());
-            let token = std::env::var("DISCORD_WEBHOOK_TOKEN")
-                .ok()
+            let id = ctx.env_var("DISCORD_WEBHOOK_ID").filter(|s| !s.is_empty());
+            let token = ctx
+                .env_var("DISCORD_WEBHOOK_TOKEN")
                 .filter(|s| !s.is_empty());
             let url = match (id, token) {
                 (Some(id), Some(token)) => {
-                    let base = std::env::var("DISCORD_API")
-                        .ok()
+                    let base = ctx
+                        .env_var("DISCORD_API")
                         .filter(|s| !s.is_empty())
                         .unwrap_or_else(|| "https://discord.com/api".to_string());
                     // Q-disc1: GoReleaser builds the webhook URL via
@@ -268,7 +266,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
                     .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
             )?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            let api_key = require_env("discourse", "DISCOURSE_API_KEY")?;
+            let api_key = require_env_with_env("discourse", "DISCOURSE_API_KEY", ctx.env_source())?;
 
             dispatch(ctx, "discourse", &title, || {
                 discourse::send_discourse(
@@ -294,10 +292,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         && let Err(e) = (|| -> Result<()> {
             let url = match cfg.webhook_url.as_deref() {
                 Some(u) => ctx.render_template(u)?,
-                None => match std::env::var("SLACK_WEBHOOK")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                {
+                None => match ctx.env_var("SLACK_WEBHOOK").filter(|s| !s.is_empty()) {
                     Some(env) => env,
                     None => {
                         // Skip-when-empty UX policy: strict_guard bails in
@@ -405,8 +400,8 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
             // version-suffixed variant is tradeoff-free (same wire shape,
             // strictly more debuggable). Pinned by
             // `test_webhook_user_agent_is_anodizer_versioned`.
-            let basic_auth_env = std::env::var("BASIC_AUTH_HEADER_VALUE").ok();
-            let bearer_token_env = std::env::var("BEARER_TOKEN_HEADER_VALUE").ok();
+            let basic_auth_env = ctx.env_var("BASIC_AUTH_HEADER_VALUE");
+            let bearer_token_env = ctx.env_var("BEARER_TOKEN_HEADER_VALUE");
             let headers = resolve_webhook_headers(
                 user_headers,
                 basic_auth_env.as_deref(),
@@ -450,10 +445,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         && let Err(e) = (|| -> Result<()> {
             let bot_token = match cfg.bot_token.as_deref() {
                 Some(t) => ctx.render_template(t)?,
-                None => match std::env::var("TELEGRAM_TOKEN")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                {
+                None => match ctx.env_var("TELEGRAM_TOKEN").filter(|s| !s.is_empty()) {
                     Some(env) => env,
                     None => {
                         // Skip-when-empty UX: warn-and-skip in normal mode,
@@ -558,10 +550,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         && let Err(e) = (|| -> Result<()> {
             let url = match cfg.webhook_url.as_deref() {
                 Some(u) => ctx.render_template(u)?,
-                None => match std::env::var("TEAMS_WEBHOOK")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                {
+                None => match ctx.env_var("TEAMS_WEBHOOK").filter(|s| !s.is_empty()) {
                     Some(env) => env,
                     None => {
                         ctx.strict_guard(
@@ -601,10 +590,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         && let Err(e) = (|| -> Result<()> {
             let url = match cfg.webhook_url.as_deref() {
                 Some(u) => ctx.render_template(u)?,
-                None => match std::env::var("MATTERMOST_WEBHOOK")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-                {
+                None => match ctx.env_var("MATTERMOST_WEBHOOK").filter(|s| !s.is_empty()) {
                     Some(env) => env,
                     None => {
                         ctx.strict_guard(
@@ -701,7 +687,11 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
             )?;
             let url =
                 ctx.render_template(cfg.url_template.as_deref().unwrap_or("{{ ReleaseURL }}"))?;
-            let creds = require_env_all("reddit", &["REDDIT_SECRET", "REDDIT_PASSWORD"])?;
+            let creds = require_env_all_with_env(
+                "reddit",
+                &["REDDIT_SECRET", "REDDIT_PASSWORD"],
+                ctx.env_source(),
+            )?;
             let secret = &creds[0];
             let password = &creds[1];
             let log = ctx.logger("announce");
@@ -732,7 +722,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         && is_enabled(ctx, cfg.enabled.as_ref())?
         && let Err(e) = (|| -> Result<()> {
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            let creds = require_env_all(
+            let creds = require_env_all_with_env(
                 "twitter",
                 &[
                     "TWITTER_CONSUMER_KEY",
@@ -740,6 +730,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
                     "TWITTER_ACCESS_TOKEN",
                     "TWITTER_ACCESS_TOKEN_SECRET",
                 ],
+                ctx.env_source(),
             )?;
             let consumer_key = &creds[0];
             let consumer_secret = &creds[1];
@@ -789,9 +780,13 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
             // requires for its OAuth refresh flow. Mirror the GR
             // fail-fast here so misconfigured releases die up front
             // instead of mid-announce.
-            let access_token = require_non_empty_env("mastodon", "MASTODON_ACCESS_TOKEN")?;
-            require_non_empty_env("mastodon", "MASTODON_CLIENT_ID")?;
-            require_non_empty_env("mastodon", "MASTODON_CLIENT_SECRET")?;
+            let access_token = require_non_empty_env_with_env(
+                "mastodon",
+                "MASTODON_ACCESS_TOKEN",
+                ctx.env_source(),
+            )?;
+            require_non_empty_env_with_env("mastodon", "MASTODON_CLIENT_ID", ctx.env_source())?;
+            require_non_empty_env_with_env("mastodon", "MASTODON_CLIENT_SECRET", ctx.env_source())?;
             dispatch(ctx, "mastodon", &message, || {
                 mastodon::send_mastodon(&server, &access_token, &message, &retry_policy)
             })
@@ -817,7 +812,8 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
                 }
             };
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            let app_password = require_env("bluesky", "BLUESKY_APP_PASSWORD")?;
+            let app_password =
+                require_env_with_env("bluesky", "BLUESKY_APP_PASSWORD", ctx.env_source())?;
             let release_url = ctx.template_vars().get("ReleaseURL").map(|s| s.to_string());
             let pds_url = cfg
                 .pds_url
@@ -847,9 +843,10 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         && is_enabled(ctx, cfg.enabled.as_ref())?
         && let Err(e) = (|| -> Result<()> {
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            let access_token = require_env("linkedin", "LINKEDIN_ACCESS_TOKEN")?
-                .trim()
-                .to_string();
+            let access_token =
+                require_env_with_env("linkedin", "LINKEDIN_ACCESS_TOKEN", ctx.env_source())?
+                    .trim()
+                    .to_string();
             if access_token
                 .chars()
                 .any(|c| c.is_whitespace() || !c.is_ascii() || c.is_ascii_control())
@@ -899,7 +896,8 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
                     .as_deref()
                     .unwrap_or(opencollective::DEFAULT_MESSAGE_TEMPLATE),
             )?;
-            let token = require_env("opencollective", "OPENCOLLECTIVE_TOKEN")?;
+            let token =
+                require_env_with_env("opencollective", "OPENCOLLECTIVE_TOKEN", ctx.env_source())?;
             opencollective::validate_token_shape(&token)?;
             dispatch(ctx, "opencollective", &title, || {
                 opencollective::send_opencollective(&token, &slug, &title, &html, &retry_policy)
@@ -963,17 +961,15 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
             let smtp_host = cfg
                 .host
                 .clone()
-                .or_else(|| std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty()));
-            let smtp_port_env = std::env::var("SMTP_PORT")
-                .ok()
-                .and_then(|s| s.parse::<u16>().ok());
+                .or_else(|| ctx.env_var("SMTP_HOST").filter(|s| !s.is_empty()));
+            let smtp_port_env = ctx.env_var("SMTP_PORT").and_then(|s| s.parse::<u16>().ok());
             let smtp_port = resolve_smtp_port(cfg.port, smtp_port_env);
 
             if let Some(host) = &smtp_host {
                 let smtp_username = cfg
                     .username
                     .clone()
-                    .or_else(|| std::env::var("SMTP_USERNAME").ok())
+                    .or_else(|| ctx.env_var("SMTP_USERNAME"))
                     .unwrap_or_default();
                 if smtp_username.is_empty() {
                     anyhow::bail!("announce.email: SMTP username is required");
@@ -984,9 +980,9 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
                     anodizer_core::config::EmailEncryption::None
                 );
                 let smtp_password = if needs_password {
-                    require_env("email", "SMTP_PASSWORD")?
+                    require_env_with_env("email", "SMTP_PASSWORD", ctx.env_source())?
                 } else {
-                    std::env::var("SMTP_PASSWORD").unwrap_or_default()
+                    ctx.env_var("SMTP_PASSWORD").unwrap_or_default()
                 };
                 let port = smtp_port;
                 let insecure = cfg.insecure_skip_verify.unwrap_or(false);

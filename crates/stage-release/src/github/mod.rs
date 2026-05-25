@@ -30,7 +30,7 @@ mod upload_outcome;
 
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
-pub(crate) use rate_limit::check_github_rate_limit;
+pub(crate) use rate_limit::check_github_rate_limit_with_env;
 pub(crate) use retry_call::{format_retry_warn, is_octocrab_404, retry_octocrab_call};
 use secondary_rate_limit::{RetryAfterCapture, secondary_rl_delay};
 use upload_outcome::{UploadAttemptOutcome, classify_upload_attempt};
@@ -324,6 +324,12 @@ pub(crate) fn run_github_backend(
     // controls every transient-failure path uniformly.
     let policy = ctx.retry_policy();
 
+    // Resolve the env source as an `Arc` so spawned upload tasks can
+    // clone-and-move it into their `'static` futures, while in-block
+    // helpers read through the borrowed `&dyn` form.
+    let env_source_arc = ctx.env_source_arc();
+    let env_source: &dyn anodizer_core::EnvSource = env_source_arc.as_ref();
+
     // Build the octocrab instance and perform async API calls inside a
     // dedicated tokio runtime (the Stage trait is synchronous).
     let url = rt.block_on(async {
@@ -335,7 +341,7 @@ pub(crate) fn run_github_backend(
         let rate_limit_client = reqwest::Client::new();
 
         // Proactive rate limit check before draft search/release operations.
-        check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
+        check_github_rate_limit_with_env(&rate_limit_client, &token_str, 10, env_source).await;
 
         // Handle replace_existing_draft: check if a draft release with
         // the same NAME exists and delete it.
@@ -403,7 +409,8 @@ pub(crate) fn run_github_backend(
         } else {
             // For new releases, check if a release exists for mode != "replace".
             if release_mode != "replace" {
-                check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
+                check_github_rate_limit_with_env(&rate_limit_client, &token_str, 10, env_source)
+                    .await;
                 // Look up an existing release by tag through the shared retry
                 // helper so a transient 5xx / 429 / transport failure retries
                 // instead of mis-classifying as "no existing release", which
@@ -521,7 +528,7 @@ pub(crate) fn run_github_backend(
         });
 
         // Rate limit check before release create/update API call.
-        check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
+        check_github_rate_limit_with_env(&rate_limit_client, &token_str, 10, env_source).await;
 
         let release = if let Some(ref existing) = existing_draft {
             // Update the existing draft release via PATCH.
@@ -636,8 +643,8 @@ pub(crate) fn run_github_backend(
             // Separate from ctx.options.parallelism (which governs build
             // concurrency) so large artifact lists don't trigger GitHub's
             // secondary rate limit by blasting 100+ uploads simultaneously.
-            let upload_concurrency: usize = std::env::var("ANODIZER_GITHUB_UPLOAD_CONCURRENCY")
-                .ok()
+            let upload_concurrency: usize = ctx
+                .env_var("ANODIZER_GITHUB_UPLOAD_CONCURRENCY")
                 .and_then(|v| v.trim().parse::<u32>().ok())
                 .filter(|&n| n > 0)
                 .or_else(|| {
@@ -688,6 +695,7 @@ pub(crate) fn run_github_backend(
                 let tag_c = tag_for_upload.clone();
                 let token_for_rate_limit = token_str.clone();
                 let retry_after_for_upload = retry_after_capture.clone();
+                let env_for_upload = Arc::clone(&env_source_arc);
                 // `policy` is `Copy`; the spawned async move borrows it
                 // implicitly into the future. Bind a fresh copy per
                 // iteration so the for-loop body still owns `policy`
@@ -919,10 +927,11 @@ pub(crate) fn run_github_backend(
                                 release_log().status(&format!(
                                     "rate limited on upload of '{file_name}', checking rate limits..."
                                 ));
-                                check_github_rate_limit(
+                                check_github_rate_limit_with_env(
                                     &reqwest::Client::new(),
                                     &token_for_rate_limit,
                                     100,
+                                    env_for_upload.as_ref(),
                                 )
                                 .await;
                                 last_err = Some(anyhow::anyhow!(err));
@@ -1013,7 +1022,7 @@ pub(crate) fn run_github_backend(
         // un-draft the release now that all assets are uploaded.
         if !user_wants_draft {
             // Rate limit check before publish (un-draft) PATCH.
-            check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
+            check_github_rate_limit_with_env(&rate_limit_client, &token_str, 10, env_source).await;
             let publish_route = format!(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, release_id_raw
@@ -1810,19 +1819,18 @@ mod orchestrator_tests {
     //!   carries `upload_url: http://addr/...` so `upload_asset(...)`
     //!   POSTs to the same loopback.
     //! - `ANODIZER_GITHUB_API_BASE` — the rate-limit poll honors this
-    //!   override. Pointing it at the same loopback means the
-    //!   proactive `/rate_limit` poll either matches a scripted route
-    //!   or silently degrades on 404, never delaying the test.
+    //!   override. `build_ctx` seeds it through the [`Context`]'s
+    //!   injected [`MapEnvSource`](anodizer_core::MapEnvSource) so
+    //!   the proactive `/rate_limit` poll either matches a scripted
+    //!   route or silently degrades on 404, never delaying the test.
     //!
-    //! The env-var mutation is serialised via the shared
-    //! [`env_mutex`](anodizer_core::test_helpers::env::env_mutex) so
-    //! parallel tests cannot race on `ANODIZER_GITHUB_API_BASE`.
+    //! Env injection is per-[`Context`], so parallel tests cannot race
+    //! and no global env-mutex is required.
 
     use super::*;
     use anodizer_core::config::{CrateConfig, GitHubUrlsConfig, ReleaseConfig, ScmRepoConfig};
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::TestContextBuilder;
-    use anodizer_core::test_helpers::env::env_mutex;
     use anodizer_core::test_helpers::scripted_responder::{
         ScriptedRoute, spawn_scripted_responder_on,
     };
@@ -1830,28 +1838,6 @@ mod orchestrator_tests {
     use std::net::SocketAddr;
     use std::path::PathBuf;
     use tempfile::TempDir;
-
-    const API_BASE_VAR: &str = "ANODIZER_GITHUB_API_BASE";
-
-    /// RAII guard that sets `ANODIZER_GITHUB_API_BASE` on construction and
-    /// removes it on drop. Pairs with the global env-mutex so a panic in
-    /// the test body still restores the env for subsequent tests in the
-    /// same process.
-    struct ApiBaseEnvGuard;
-    impl ApiBaseEnvGuard {
-        fn set(value: &str) -> Self {
-            // SAFETY: callers hold `env_mutex().lock()` for the lifetime
-            // of this guard, so no other test thread mutates env vars.
-            unsafe { std::env::set_var(API_BASE_VAR, value) };
-            Self
-        }
-    }
-    impl Drop for ApiBaseEnvGuard {
-        fn drop(&mut self) {
-            // SAFETY: see `Self::set`.
-            unsafe { std::env::remove_var(API_BASE_VAR) };
-        }
-    }
 
     /// Wrap a JSON body in a `200 OK` HTTP response with the correct
     /// `Content-Length`. Leaks the formatted string because the responder
@@ -1951,15 +1937,17 @@ mod orchestrator_tests {
     /// in [`run_github_backend`] doesn't pad test runs with the production
     /// 10-second default backoff.
     fn build_ctx(addr: SocketAddr) -> Context {
+        let base = format!("http://{addr}");
         let mut ctx = TestContextBuilder::new()
             .project_name("demo")
             .tag("v1.2.3")
             .token(Some("test-token".to_string()))
+            .env("ANODIZER_GITHUB_API_BASE", &base)
             .build();
         ctx.config.github_urls = Some(GitHubUrlsConfig {
-            api: Some(format!("http://{addr}")),
-            upload: Some(format!("http://{addr}")),
-            download: Some(format!("http://{addr}")),
+            api: Some(base.clone()),
+            upload: Some(base.clone()),
+            download: Some(base),
             skip_tls_verify: None,
         });
         ctx.config.retry = Some(anodizer_core::config::RetryConfig {
@@ -2068,7 +2056,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn create_release_and_upload_one_asset_succeeds() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"hello world");
         let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
@@ -2105,7 +2092,6 @@ mod orchestrator_tests {
             },
         ];
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2167,7 +2153,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn replace_existing_draft_deletes_then_creates() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"payload");
         let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
@@ -2213,7 +2198,6 @@ mod orchestrator_tests {
             },
         ];
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2256,7 +2240,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn use_existing_draft_patches_instead_of_posting() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"data");
         let artifact_len = std::fs::metadata(&artifact_path).expect("meta").len();
@@ -2294,7 +2277,6 @@ mod orchestrator_tests {
             },
         ];
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2337,7 +2319,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn empty_artifacts_creates_release_but_uploads_nothing() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
 
@@ -2348,7 +2329,6 @@ mod orchestrator_tests {
             times: Some(1),
         }];
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2388,7 +2368,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn upload_422_with_matching_remote_size_is_idempotent_skip() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         let bytes = b"identical bytes";
         let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
@@ -2427,7 +2406,6 @@ mod orchestrator_tests {
             },
         ];
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2461,7 +2439,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn upload_422_size_mismatch_without_replace_forbidden_bails() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         let bytes = b"local content";
         let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
@@ -2500,7 +2477,6 @@ mod orchestrator_tests {
             },
         ];
         let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2535,7 +2511,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn upload_422_size_mismatch_with_replace_allowed_deletes_and_retries() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         let bytes = b"new content";
         let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
@@ -2600,7 +2575,6 @@ mod orchestrator_tests {
             },
         ];
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2647,14 +2621,12 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn missing_token_errs_before_any_http_call() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
 
         // Spawn the responder with no routes; ANY HTTP call lands in the
         // request log and fails the test.
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| Vec::new());
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2690,7 +2662,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn missing_artifact_file_errs_with_path_in_message() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
 
@@ -2701,7 +2672,6 @@ mod orchestrator_tests {
             times: Some(1),
         }];
         let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();
@@ -2734,7 +2704,6 @@ mod orchestrator_tests {
     // ---------------------------------------------------------------------
     #[test]
     fn skip_upload_creates_release_but_skips_uploads() {
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().expect("tempdir");
         let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"unused");
 
@@ -2748,7 +2717,6 @@ mod orchestrator_tests {
             times: Some(1),
         }];
         let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
-        let _env = ApiBaseEnvGuard::set(&format!("http://{addr}"));
 
         let ctx = build_ctx(addr);
         let crate_cfg = build_crate_cfg();

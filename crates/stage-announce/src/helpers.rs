@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, HashMap};
 use anodizer_core::config::StringOrBool;
 use anodizer_core::context::Context;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
+use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result};
 
 // ---------------------------------------------------------------------------
@@ -51,9 +52,23 @@ pub(crate) fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> R
 /// Read a required env var, bailing with a unified message when it is missing
 /// or empty after trim. Avoids the duplicated `var(...).map_err(...)?; if
 /// empty bail!()` pattern across every provider.
+#[allow(dead_code)]
 pub(crate) fn require_env(provider: &str, name: &str) -> Result<String> {
-    let value = std::env::var(name)
-        .map_err(|_| anyhow::anyhow!("announce.{provider}: {name} env var is required"))?;
+    require_env_with_env(provider, name, &ProcessEnvSource)
+}
+
+/// Env-injectable form of [`require_env`]. Production wires up
+/// [`ProcessEnvSource`]; tests inject a
+/// [`anodizer_core::MapEnvSource`] so the missing/empty branches can
+/// be exercised without mutating the process env.
+pub(crate) fn require_env_with_env<E: EnvSource + ?Sized>(
+    provider: &str,
+    name: &str,
+    env: &E,
+) -> Result<String> {
+    let value = env
+        .var(name)
+        .ok_or_else(|| anyhow::anyhow!("announce.{provider}: {name} env var is required"))?;
     if value.trim().is_empty() {
         anyhow::bail!("announce.{provider}: {name} env var must not be empty");
     }
@@ -71,9 +86,21 @@ pub(crate) fn require_env(provider: &str, name: &str) -> Result<String> {
 /// This helper is intentionally stricter — it bails on **empty after trim**
 /// just like `require_env`, but exists as a named entry-point for the GR
 /// `notEmpty` tag set so call sites read like the GR config they mirror.
+#[allow(dead_code)]
 pub(crate) fn require_non_empty_env(provider: &str, name: &str) -> Result<String> {
-    match std::env::var(name) {
-        Ok(v) if !v.trim().is_empty() => Ok(v),
+    require_non_empty_env_with_env(provider, name, &ProcessEnvSource)
+}
+
+/// Env-injectable form of [`require_non_empty_env`]. Production wires
+/// up [`ProcessEnvSource`]; tests inject a
+/// [`anodizer_core::MapEnvSource`].
+pub(crate) fn require_non_empty_env_with_env<E: EnvSource + ?Sized>(
+    provider: &str,
+    name: &str,
+    env: &E,
+) -> Result<String> {
+    match env.var(name) {
+        Some(v) if !v.trim().is_empty() => Ok(v),
         _ => Err(anyhow::anyhow!(
             "announce.{provider}: {name} env var is required and must not be empty"
         )),
@@ -83,17 +110,30 @@ pub(crate) fn require_non_empty_env(provider: &str, name: &str) -> Result<String
 /// Read multiple required env vars in one shot, returning a single error that
 /// lists every missing/empty var so users can fix them all at once instead of
 /// hitting one error per CI run.
+#[allow(dead_code)]
 pub(crate) fn require_env_all(provider: &str, names: &[&str]) -> Result<Vec<String>> {
+    require_env_all_with_env(provider, names, &ProcessEnvSource)
+}
+
+/// Env-injectable form of [`require_env_all`]. Production wires up
+/// [`ProcessEnvSource`]; tests inject a
+/// [`anodizer_core::MapEnvSource`] so the missing/empty aggregation
+/// can be driven deterministically.
+pub(crate) fn require_env_all_with_env<E: EnvSource + ?Sized>(
+    provider: &str,
+    names: &[&str],
+    env: &E,
+) -> Result<Vec<String>> {
     let mut missing: Vec<String> = Vec::new();
     let mut values: Vec<String> = Vec::with_capacity(names.len());
     for name in names {
-        match std::env::var(name) {
-            Ok(v) if !v.trim().is_empty() => values.push(v),
-            Ok(_) => {
+        match env.var(name) {
+            Some(v) if !v.trim().is_empty() => values.push(v),
+            Some(_) => {
                 missing.push(format!("{name} (empty)"));
                 values.push(String::new());
             }
-            Err(_) => {
+            None => {
                 missing.push((*name).to_string());
                 values.push(String::new());
             }

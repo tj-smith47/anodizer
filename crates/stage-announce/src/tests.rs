@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use anodizer_core::MapEnvSource;
 use anodizer_core::config::{
     AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, DiscourseAnnounce, EmailAnnounce,
     LinkedInAnnounce, MastodonAnnounce, MattermostAnnounce, OpenCollectiveAnnounce, RedditAnnounce,
@@ -21,12 +22,27 @@ fn make_ctx(announce: Option<AnnounceConfig>) -> Context {
     config.project_name = "myapp".to_string();
     config.announce = announce;
     let mut ctx = Context::new(config, ContextOptions::default());
+    // Tests drive announce credentials through the injected env
+    // source — start every test with an empty map so process env
+    // leakage from sibling crates can't satisfy a "missing token"
+    // assertion.
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     ctx
+}
+
+/// Override a [`Context`]'s env source with the supplied key/value
+/// pairs. Returns the same `ctx` for chaining.
+fn set_test_env(ctx: &mut Context, vars: &[(&str, &str)]) {
+    let mut src = MapEnvSource::new();
+    for (k, v) in vars {
+        src = src.with(*k, *v);
+    }
+    ctx.set_env_source(src);
 }
 
 #[test]
@@ -333,9 +349,7 @@ fn test_dry_run_telegram_does_not_send() {
 }
 
 #[test]
-#[serial]
 fn test_missing_telegram_bot_token_returns_error() {
-    unsafe { std::env::remove_var("TELEGRAM_TOKEN") };
     let announce = AnnounceConfig {
         telegram: Some(TelegramAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -354,14 +368,13 @@ fn test_missing_telegram_bot_token_returns_error() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
 #[test]
-#[serial]
 fn test_missing_telegram_bot_token_warn_and_skip() {
-    unsafe { std::env::remove_var("TELEGRAM_TOKEN") };
     let announce = AnnounceConfig {
         telegram: Some(TelegramAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -375,6 +388,7 @@ fn test_missing_telegram_bot_token_warn_and_skip() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     AnnounceStage
         .run(&mut ctx)
@@ -882,8 +896,6 @@ fn test_skips_disabled_reddit() {
 #[test]
 #[serial]
 fn test_dry_run_reddit() {
-    unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
-    unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -903,21 +915,24 @@ fn test_dry_run_reddit() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(
+        &mut ctx,
+        &[
+            ("REDDIT_SECRET", "testsecret"),
+            ("REDDIT_PASSWORD", "testpass"),
+        ],
+    );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    unsafe { std::env::remove_var("REDDIT_SECRET") };
-    unsafe { std::env::remove_var("REDDIT_PASSWORD") };
 }
 
 #[test]
 #[serial]
 fn test_missing_reddit_application_id_returns_error() {
-    unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
-    unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -937,21 +952,18 @@ fn test_missing_reddit_application_id_returns_error() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing application_id"),
         "expected 'missing application_id' error, got: {err}"
     );
-    unsafe { std::env::remove_var("REDDIT_SECRET") };
-    unsafe { std::env::remove_var("REDDIT_PASSWORD") };
 }
 
 #[test]
 #[serial]
 fn test_missing_reddit_application_id_warn_and_skip() {
-    unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
-    unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -966,15 +978,11 @@ fn test_missing_reddit_application_id_warn_and_skip() {
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing reddit application_id must skip cleanly, not error");
-    unsafe { std::env::remove_var("REDDIT_SECRET") };
-    unsafe { std::env::remove_var("REDDIT_PASSWORD") };
 }
 
 #[test]
 #[serial]
 fn test_missing_reddit_username_warn_and_skip() {
-    unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
-    unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -989,15 +997,11 @@ fn test_missing_reddit_username_warn_and_skip() {
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing reddit username must skip cleanly, not error");
-    unsafe { std::env::remove_var("REDDIT_SECRET") };
-    unsafe { std::env::remove_var("REDDIT_PASSWORD") };
 }
 
 #[test]
 #[serial]
 fn test_missing_reddit_username_returns_error() {
-    unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
-    unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1017,21 +1021,18 @@ fn test_missing_reddit_username_returns_error() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing username"),
         "expected 'missing username' error, got: {err}"
     );
-    unsafe { std::env::remove_var("REDDIT_SECRET") };
-    unsafe { std::env::remove_var("REDDIT_PASSWORD") };
 }
 
 #[test]
 #[serial]
 fn test_missing_reddit_sub_warn_and_skip() {
-    unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
-    unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1046,15 +1047,11 @@ fn test_missing_reddit_sub_warn_and_skip() {
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing reddit sub must skip cleanly, not error");
-    unsafe { std::env::remove_var("REDDIT_SECRET") };
-    unsafe { std::env::remove_var("REDDIT_PASSWORD") };
 }
 
 #[test]
 #[serial]
 fn test_missing_reddit_sub_returns_error() {
-    unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
-    unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
     let announce = AnnounceConfig {
         reddit: Some(RedditAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1074,14 +1071,13 @@ fn test_missing_reddit_sub_returns_error() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing sub"),
         "expected 'missing sub' error, got: {err}"
     );
-    unsafe { std::env::remove_var("REDDIT_SECRET") };
-    unsafe { std::env::remove_var("REDDIT_PASSWORD") };
 }
 
 // ----------------------------------------------------------------
@@ -1104,10 +1100,6 @@ fn test_skips_disabled_twitter() {
 #[test]
 #[serial]
 fn test_dry_run_twitter() {
-    unsafe { std::env::set_var("TWITTER_CONSUMER_KEY", "ck") };
-    unsafe { std::env::set_var("TWITTER_CONSUMER_SECRET", "cs") };
-    unsafe { std::env::set_var("TWITTER_ACCESS_TOKEN", "at") };
-    unsafe { std::env::set_var("TWITTER_ACCESS_TOKEN_SECRET", "ats") };
     let announce = AnnounceConfig {
         twitter: Some(TwitterAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1126,26 +1118,26 @@ fn test_dry_run_twitter() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(
+        &mut ctx,
+        &[
+            ("TWITTER_CONSUMER_KEY", "ck"),
+            ("TWITTER_CONSUMER_SECRET", "cs"),
+            ("TWITTER_ACCESS_TOKEN", "at"),
+            ("TWITTER_ACCESS_TOKEN_SECRET", "ats"),
+        ],
+    );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    unsafe { std::env::remove_var("TWITTER_CONSUMER_KEY") };
-    unsafe { std::env::remove_var("TWITTER_CONSUMER_SECRET") };
-    unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN") };
-    unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN_SECRET") };
 }
 
 #[test]
 #[serial]
 fn test_twitter_missing_env_var_returns_error() {
-    // Ensure env vars are not set
-    unsafe { std::env::remove_var("TWITTER_CONSUMER_KEY") };
-    unsafe { std::env::remove_var("TWITTER_CONSUMER_SECRET") };
-    unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN") };
-    unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN_SECRET") };
     let announce = AnnounceConfig {
         twitter: Some(TwitterAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1157,6 +1149,7 @@ fn test_twitter_missing_env_var_returns_error() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
@@ -1189,28 +1182,22 @@ fn test_skips_disabled_mastodon() {
 
 /// Q-mast1: GoReleaser marks `MASTODON_CLIENT_ID` and
 /// `MASTODON_CLIENT_SECRET` as `notEmpty` alongside `MASTODON_ACCESS_TOKEN`.
-/// Tests that just need a happy-path Mastodon dry-run go through this helper
-/// so all three env vars are set in lockstep.
-fn set_mastodon_creds() {
-    unsafe {
-        std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token");
-        std::env::set_var("MASTODON_CLIENT_ID", "test-client-id");
-        std::env::set_var("MASTODON_CLIENT_SECRET", "test-client-secret");
-    }
-}
-
-fn clear_mastodon_creds() {
-    unsafe {
-        std::env::remove_var("MASTODON_ACCESS_TOKEN");
-        std::env::remove_var("MASTODON_CLIENT_ID");
-        std::env::remove_var("MASTODON_CLIENT_SECRET");
-    }
+/// Tests that just need a happy-path Mastodon dry-run inject all three
+/// creds via the [`Context`]'s env source.
+fn set_mastodon_creds(ctx: &mut Context) {
+    set_test_env(
+        ctx,
+        &[
+            ("MASTODON_ACCESS_TOKEN", "test-token"),
+            ("MASTODON_CLIENT_ID", "test-client-id"),
+            ("MASTODON_CLIENT_SECRET", "test-client-secret"),
+        ],
+    );
 }
 
 #[test]
 #[serial]
 fn test_dry_run_mastodon() {
-    set_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1230,19 +1217,17 @@ fn test_dry_run_mastodon() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_mastodon_creds(&mut ctx);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    clear_mastodon_creds();
 }
 
 #[test]
-#[serial]
 fn test_mastodon_missing_server_returns_error() {
-    set_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1260,19 +1245,17 @@ fn test_mastodon_missing_server_returns_error() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_mastodon_creds(&mut ctx);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing server"),
         "expected 'missing server' error, got: {err}"
     );
-    clear_mastodon_creds();
 }
 
 #[test]
-#[serial]
 fn test_mastodon_missing_server_warn_and_skip() {
-    set_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1285,17 +1268,15 @@ fn test_mastodon_missing_server_warn_and_skip() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    set_mastodon_creds(&mut ctx);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing mastodon server must skip cleanly, not error");
-    clear_mastodon_creds();
 }
 
 #[test]
-#[serial]
 fn test_mastodon_missing_env_var_returns_error() {
-    clear_mastodon_creds();
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1308,6 +1289,7 @@ fn test_mastodon_missing_env_var_returns_error() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
@@ -1340,14 +1322,7 @@ fn test_mastodon_empty_server_skips() {
 /// must fail-fast when it is missing instead of silently proceeding with
 /// only the access token.
 #[test]
-#[serial]
 fn test_mastodon_missing_client_id_returns_error() {
-    clear_mastodon_creds();
-    unsafe {
-        std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token");
-        std::env::set_var("MASTODON_CLIENT_SECRET", "test-secret");
-        // MASTODON_CLIENT_ID intentionally unset
-    }
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1360,6 +1335,14 @@ fn test_mastodon_missing_client_id_returns_error() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    set_test_env(
+        &mut ctx,
+        &[
+            ("MASTODON_ACCESS_TOKEN", "test-token"),
+            ("MASTODON_CLIENT_SECRET", "test-secret"),
+            // MASTODON_CLIENT_ID intentionally unset
+        ],
+    );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
@@ -1370,19 +1353,11 @@ fn test_mastodon_missing_client_id_returns_error() {
         err.to_string().contains("MASTODON_CLIENT_ID"),
         "expected MASTODON_CLIENT_ID error, got: {err}"
     );
-    clear_mastodon_creds();
 }
 
 /// Q-mast1 (the second half): `MASTODON_CLIENT_SECRET` is `notEmpty` in GR.
 #[test]
-#[serial]
 fn test_mastodon_missing_client_secret_returns_error() {
-    clear_mastodon_creds();
-    unsafe {
-        std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token");
-        std::env::set_var("MASTODON_CLIENT_ID", "test-id");
-        // MASTODON_CLIENT_SECRET intentionally unset
-    }
     let announce = AnnounceConfig {
         mastodon: Some(MastodonAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1395,6 +1370,14 @@ fn test_mastodon_missing_client_secret_returns_error() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    set_test_env(
+        &mut ctx,
+        &[
+            ("MASTODON_ACCESS_TOKEN", "test-token"),
+            ("MASTODON_CLIENT_ID", "test-id"),
+            // MASTODON_CLIENT_SECRET intentionally unset
+        ],
+    );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
@@ -1405,7 +1388,6 @@ fn test_mastodon_missing_client_secret_returns_error() {
         err.to_string().contains("MASTODON_CLIENT_SECRET"),
         "expected MASTODON_CLIENT_SECRET error, got: {err}"
     );
-    clear_mastodon_creds();
 }
 
 /// Q-tg1: the Telegram default template MUST NOT use Tera's `~` concatenation
@@ -1491,10 +1473,8 @@ fn test_skips_disabled_bluesky() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-#[serial]
 #[test]
 fn test_dry_run_bluesky() {
-    unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
     let announce = AnnounceConfig {
         bluesky: Some(BlueskyAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1512,19 +1492,17 @@ fn test_dry_run_bluesky() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "test_pass")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
 }
 
-#[serial]
 #[test]
 fn test_bluesky_missing_username_errors() {
-    unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
     let announce = AnnounceConfig {
         bluesky: Some(BlueskyAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1543,19 +1521,17 @@ fn test_bluesky_missing_username_errors() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "test_pass")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing username"),
         "expected 'missing username' error, got: {err}"
     );
-    unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
 }
 
-#[serial]
 #[test]
 fn test_bluesky_missing_username_warn_and_skip() {
-    unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
     let announce = AnnounceConfig {
         bluesky: Some(BlueskyAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1566,16 +1542,14 @@ fn test_bluesky_missing_username_warn_and_skip() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "test_pass")]);
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing bluesky username must skip cleanly, not error");
-    unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
 }
 
-#[serial]
 #[test]
 fn test_bluesky_missing_env_var_errors() {
-    unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
     let announce = AnnounceConfig {
         bluesky: Some(BlueskyAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1593,10 +1567,8 @@ fn test_bluesky_missing_env_var_errors() {
     );
 }
 
-#[serial]
 #[test]
 fn test_bluesky_empty_env_var_errors() {
-    unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "") };
     let announce = AnnounceConfig {
         bluesky: Some(BlueskyAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1607,12 +1579,12 @@ fn test_bluesky_empty_env_var_errors() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "")]);
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("must not be empty"),
         "expected 'must not be empty' error, got: {err}"
     );
-    unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
 }
 
 // ----------------------------------------------------------------
@@ -1632,15 +1604,8 @@ fn test_skips_disabled_linkedin() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-#[serial]
 #[test]
 fn test_dry_run_linkedin() {
-    unsafe {
-        std::env::set_var(
-            "LINKEDIN_ACCESS_TOKEN",
-            "AQXopaque_test_token_long_enough_to_pass_validation_xx",
-        )
-    };
     let announce = AnnounceConfig {
         linkedin: Some(LinkedInAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1659,19 +1624,23 @@ fn test_dry_run_linkedin() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(
+        &mut ctx,
+        &[(
+            "LINKEDIN_ACCESS_TOKEN",
+            "AQXopaque_test_token_long_enough_to_pass_validation_xx",
+        )],
+    );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
 }
 
-#[serial]
 #[test]
 fn test_linkedin_missing_env_var_errors() {
-    unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
     let announce = AnnounceConfig {
         linkedin: Some(LinkedInAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1683,6 +1652,7 @@ fn test_linkedin_missing_env_var_errors() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
@@ -1695,10 +1665,8 @@ fn test_linkedin_missing_env_var_errors() {
     );
 }
 
-#[serial]
 #[test]
 fn test_linkedin_empty_env_var_errors() {
-    unsafe { std::env::set_var("LINKEDIN_ACCESS_TOKEN", "") };
     let announce = AnnounceConfig {
         linkedin: Some(LinkedInAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1707,12 +1675,12 @@ fn test_linkedin_empty_env_var_errors() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("LINKEDIN_ACCESS_TOKEN", "")]);
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("must not be empty"),
         "expected 'must not be empty' error, got: {err}"
     );
-    unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
 }
 
 // ----------------------------------------------------------------
@@ -1733,15 +1701,8 @@ fn test_skips_disabled_opencollective() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-#[serial]
 #[test]
 fn test_dry_run_opencollective() {
-    unsafe {
-        std::env::set_var(
-            "OPENCOLLECTIVE_TOKEN",
-            "test_token_long_enough_to_pass_validation_check_xx",
-        )
-    };
     let announce = AnnounceConfig {
         opencollective: Some(OpenCollectiveAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1759,13 +1720,19 @@ fn test_dry_run_opencollective() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(
+        &mut ctx,
+        &[(
+            "OPENCOLLECTIVE_TOKEN",
+            "test_token_long_enough_to_pass_validation_check_xx",
+        )],
+    );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
 }
 
 #[test]
@@ -1826,10 +1793,8 @@ fn test_opencollective_empty_slug_skips() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-#[serial]
 #[test]
 fn test_opencollective_missing_env_var_errors() {
-    unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
     let announce = AnnounceConfig {
         opencollective: Some(OpenCollectiveAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1842,6 +1807,7 @@ fn test_opencollective_missing_env_var_errors() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
@@ -1854,10 +1820,8 @@ fn test_opencollective_missing_env_var_errors() {
     );
 }
 
-#[serial]
 #[test]
 fn test_opencollective_empty_env_var_errors() {
-    unsafe { std::env::set_var("OPENCOLLECTIVE_TOKEN", "") };
     let announce = AnnounceConfig {
         opencollective: Some(OpenCollectiveAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1867,12 +1831,12 @@ fn test_opencollective_empty_env_var_errors() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("OPENCOLLECTIVE_TOKEN", "")]);
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("must not be empty"),
         "expected 'must not be empty' error, got: {err}"
     );
-    unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
 }
 
 // ----------------------------------------------------------------
@@ -1894,10 +1858,8 @@ fn test_skips_disabled_discourse() {
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
-#[serial]
 #[test]
 fn test_dry_run_discourse() {
-    unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1920,19 +1882,17 @@ fn test_dry_run_discourse() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
     assert!(AnnounceStage.run(&mut ctx).is_ok());
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
 }
 
-#[serial]
 #[test]
 fn test_missing_discourse_server_returns_error() {
-    unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1951,19 +1911,17 @@ fn test_missing_discourse_server_returns_error() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing server"),
         "expected 'missing server' error, got: {err}"
     );
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
 }
 
-#[serial]
 #[test]
 fn test_missing_discourse_server_warn_and_skip() {
-    unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -1974,16 +1932,14 @@ fn test_missing_discourse_server_warn_and_skip() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing discourse server must skip cleanly, not error");
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
 }
 
-#[serial]
 #[test]
 fn test_missing_discourse_category_id_returns_error() {
-    unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2002,19 +1958,17 @@ fn test_missing_discourse_category_id_returns_error() {
         ..Default::default()
     };
     let mut ctx = Context::new(config, opts);
+    set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing category_id"),
         "expected 'missing category_id' error, got: {err}"
     );
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
 }
 
-#[serial]
 #[test]
 fn test_missing_discourse_category_id_warn_and_skip() {
-    unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2025,16 +1979,14 @@ fn test_missing_discourse_category_id_warn_and_skip() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing discourse category_id must skip cleanly, not error");
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
 }
 
-#[serial]
 #[test]
 fn test_zero_discourse_category_id_returns_error() {
-    unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2045,18 +1997,16 @@ fn test_zero_discourse_category_id_returns_error() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("category_id must be non-zero"),
         "expected 'category_id must be non-zero' error, got: {err}"
     );
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
 }
 
-#[serial]
 #[test]
 fn test_discourse_missing_env_var_errors() {
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2070,6 +2020,7 @@ fn test_discourse_missing_env_var_errors() {
     config.project_name = "myapp".to_string();
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
@@ -2082,10 +2033,8 @@ fn test_discourse_missing_env_var_errors() {
     );
 }
 
-#[serial]
 #[test]
 fn test_discourse_empty_env_var_errors() {
-    unsafe { std::env::set_var("DISCOURSE_API_KEY", "") };
     let announce = AnnounceConfig {
         discourse: Some(DiscourseAnnounce {
             enabled: Some(StringOrBool::Bool(true)),
@@ -2096,12 +2045,12 @@ fn test_discourse_empty_env_var_errors() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
+    set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "")]);
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("must not be empty"),
         "expected 'must not be empty' error, got: {err}"
     );
-    unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
 }
 
 // ----------------------------------------------------------------

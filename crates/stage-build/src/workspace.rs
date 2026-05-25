@@ -6,6 +6,7 @@ use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
+use anodizer_core::{EnvSource, ProcessEnvSource};
 
 // ---------------------------------------------------------------------------
 // check_workspace_package — validate --package flag for workspace crates
@@ -98,41 +99,44 @@ pub(crate) fn resolve_binary_path(expected: &Path, crate_path: &str) -> PathBuf 
 }
 
 // ---------------------------------------------------------------------------
-// cargo_target_dir — respect CARGO_TARGET_DIR / CARGO_BUILD_TARGET_DIR env vars
+// cargo_target_dir_with_env — respect CARGO_TARGET_DIR / CARGO_BUILD_TARGET_DIR
 // ---------------------------------------------------------------------------
 
-/// Return the Cargo target directory.
+/// Return the Cargo target directory, honoring per-build env config
+/// (`build.env`) first and then falling back to `CARGO_TARGET_DIR` /
+/// `CARGO_BUILD_TARGET_DIR` from the injected env source, finally
+/// defaulting to `target`. Production wires up
+/// [`anodizer_core::ProcessEnvSource`] via
+/// [`anodizer_core::Context::env_source`]; tests inject a
+/// [`anodizer_core::MapEnvSource`] so the fallback branches can be
+/// exercised without mutating the process env.
 ///
-/// Checks per-build env vars (from `build.env` config) first, then falls back
-/// to `CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR` from the process
-/// environment, and finally defaults to `target`.
-///
-/// The `build_env` parameter carries the per-target env map from config, which
-/// is passed to the cargo Command but also needs to be reflected here so that
-/// the predicted binary path matches where cargo actually writes it.
-pub(crate) fn cargo_target_dir(build_env: Option<&HashMap<String, String>>) -> PathBuf {
+/// The `build_env` parameter carries the per-target env map from
+/// config, which is passed to the cargo Command but also needs to be
+/// reflected here so that the predicted binary path matches where
+/// cargo actually writes it.
+pub(crate) fn cargo_target_dir_with_env<E: EnvSource + ?Sized>(
+    build_env: Option<&HashMap<String, String>>,
+    env: &E,
+) -> PathBuf {
     // Check per-build env vars first — these override process env
-    if let Some(env) = build_env {
-        if let Some(dir) = env.get("CARGO_TARGET_DIR")
+    if let Some(map) = build_env {
+        if let Some(dir) = map.get("CARGO_TARGET_DIR")
             && !dir.is_empty()
         {
             return PathBuf::from(dir);
         }
-        if let Some(dir) = env.get("CARGO_BUILD_TARGET_DIR")
+        if let Some(dir) = map.get("CARGO_BUILD_TARGET_DIR")
             && !dir.is_empty()
         {
             return PathBuf::from(dir);
         }
     }
-    // Fall back to process environment
-    if let Ok(dir) = std::env::var("CARGO_TARGET_DIR")
-        && !dir.is_empty()
-    {
+    // Fall back to the injected env source
+    if let Some(dir) = env.var("CARGO_TARGET_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(dir);
     }
-    if let Ok(dir) = std::env::var("CARGO_BUILD_TARGET_DIR")
-        && !dir.is_empty()
-    {
+    if let Some(dir) = env.var("CARGO_BUILD_TARGET_DIR").filter(|d| !d.is_empty()) {
         return PathBuf::from(dir);
     }
     PathBuf::from("target")
@@ -143,8 +147,19 @@ pub(crate) fn cargo_target_dir(build_env: Option<&HashMap<String, String>>) -> P
 // ---------------------------------------------------------------------------
 
 pub fn resolve_reproducible_epoch(commit_timestamp: &str) -> Option<i64> {
-    let epoch = std::env::var("SOURCE_DATE_EPOCH")
-        .ok()
+    resolve_reproducible_epoch_with_env(commit_timestamp, &ProcessEnvSource)
+}
+
+/// Env-injectable form of [`resolve_reproducible_epoch`]. Production
+/// wires up [`ProcessEnvSource`]; tests inject a
+/// [`anodizer_core::MapEnvSource`] so the `SOURCE_DATE_EPOCH` override
+/// can be driven without mutating the process env.
+pub fn resolve_reproducible_epoch_with_env<E: EnvSource + ?Sized>(
+    commit_timestamp: &str,
+    env: &E,
+) -> Option<i64> {
+    let epoch = env
+        .var("SOURCE_DATE_EPOCH")
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| commit_timestamp.parse::<i64>().unwrap_or(0));
     if epoch > 0 { Some(epoch) } else { None }

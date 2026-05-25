@@ -287,21 +287,12 @@ fn create_pr_via_gh_cli(
 /// `None` on success. Returns `Some(Failed(msg))` for transport
 /// failure, HTTP-client build failure, and non-success HTTP status —
 /// silent-fail would let dispatch record `succeeded`.
-fn create_pr_via_api(
-    upstream: &Upstream<'_>,
-    spec: &PrSpec<'_>,
-    token: &str,
-    label: &str,
-    log: &StageLogger,
-) -> Option<PublisherOutcome> {
-    create_pr_via_api_with_env(upstream, spec, token, label, log, &ProcessEnvSource)
-}
-
-/// Env-injectable form of [`create_pr_via_api`]. Production callers
-/// route through the no-arg version (delegating to [`ProcessEnvSource`]);
-/// tests pass a [`MapEnvSource`](anodizer_core::MapEnvSource) so the
-/// in-process responder address is read from the map instead of the
-/// process env.
+///
+/// Production callers thread `ctx.env_source()` so the
+/// `ANODIZER_GITHUB_API_BASE` override (undocumented test hook) routes
+/// through the injected [`EnvSource`]. Tests pass a
+/// [`MapEnvSource`](anodizer_core::MapEnvSource) so the in-process
+/// responder address is read from the map instead of the process env.
 fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
     upstream: &Upstream<'_>,
     spec: &PrSpec<'_>,
@@ -420,6 +411,37 @@ pub(crate) fn maybe_submit_pr(
     label: &str,
     log: &StageLogger,
 ) -> Option<PublisherOutcome> {
+    maybe_submit_pr_with_env(
+        repo_path,
+        repo,
+        origin,
+        title,
+        body,
+        label,
+        log,
+        &ProcessEnvSource,
+    )
+}
+
+/// Env-injectable sibling of [`maybe_submit_pr`]. Production routes
+/// through the no-env form (delegating to [`ProcessEnvSource`]); the
+/// caller wires up `ctx.env_source()` when threading the lookup through
+/// a [`crate::Context`].
+#[allow(clippy::too_many_arguments)]
+#[must_use = "the returned outcome override must be forwarded to \
+              Context::record_publisher_outcome — dropping it silently \
+              misreports a PR-already-exists skip or a PR-creation failure \
+              as `succeeded`"]
+pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
+    repo_path: &Path,
+    repo: Option<&RepositoryConfig>,
+    origin: &PrOrigin<'_>,
+    title: &str,
+    body: &str,
+    label: &str,
+    log: &StageLogger,
+    env: &E,
+) -> Option<PublisherOutcome> {
     let PrOrigin {
         repo_owner,
         repo_name,
@@ -449,8 +471,8 @@ pub(crate) fn maybe_submit_pr(
         .unwrap_or("main");
     let token = repo
         .and_then(|r| r.token.clone())
-        .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+        .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
+        .or_else(|| env.var("GITHUB_TOKEN"));
 
     // Fork sync: when the PR targets a different upstream repository, sync first.
     let is_cross_repo = upstream_owner != repo_owner || upstream_name != repo_name;
@@ -492,7 +514,7 @@ pub(crate) fn maybe_submit_pr(
             let tok = token
                 .as_deref()
                 .expect("classified Api implies token present");
-            create_pr_via_api(&upstream, &spec, tok, label, log)
+            create_pr_via_api_with_env(&upstream, &spec, tok, label, log, env)
         }
         PrTransport::NoneAvailable => {
             let msg = format!(
@@ -575,9 +597,42 @@ pub(crate) fn submit_pr_via_gh_with_opts(
     log: &StageLogger,
     opts: SubmitPrOpts,
 ) -> Option<PublisherOutcome> {
-    let token = std::env::var("ANODIZER_GITHUB_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+    submit_pr_via_gh_with_opts_with_env(
+        repo_path,
+        upstream_repo,
+        head,
+        title,
+        body,
+        label,
+        log,
+        opts,
+        &ProcessEnvSource,
+    )
+}
+
+/// Env-injectable sibling of [`submit_pr_via_gh_with_opts`]. Production
+/// routes through the no-env form (delegating to [`ProcessEnvSource`]);
+/// the caller wires `ctx.env_source()` when threading lookups through a
+/// [`crate::Context`].
+#[allow(clippy::too_many_arguments)]
+#[must_use = "the returned outcome override must be forwarded to \
+              Context::record_publisher_outcome — dropping it silently \
+              misreports a PR-already-exists skip or a PR-creation failure \
+              as `succeeded`"]
+pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
+    repo_path: &Path,
+    upstream_repo: &str,
+    head: &str,
+    title: &str,
+    body: &str,
+    label: &str,
+    log: &StageLogger,
+    opts: SubmitPrOpts,
+    env: &E,
+) -> Option<PublisherOutcome> {
+    let token = env
+        .var("ANODIZER_GITHUB_TOKEN")
+        .or_else(|| env.var("GITHUB_TOKEN"));
 
     // Discover the upstream's actual default branch. Hardcoding "main" breaks
     // PR creation against repos whose default is "master" (e.g.
@@ -607,7 +662,7 @@ pub(crate) fn submit_pr_via_gh_with_opts(
                 .expect("classified Api implies token present");
             if let Some((owner, name)) = upstream_repo.split_once('/') {
                 let upstream = Upstream { owner, name };
-                create_pr_via_api(&upstream, &spec, tok, label, log)
+                create_pr_via_api_with_env(&upstream, &spec, tok, label, log, env)
             } else {
                 let msg = format!(
                     "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"

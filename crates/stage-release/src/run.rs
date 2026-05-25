@@ -568,9 +568,10 @@ impl Stage for super::ReleaseStage {
                     // Match GoReleaser's `checkUseJobToken`: only send JOB-TOKEN
                     // when CI_JOB_TOKEN is set, the flag is on, and the token
                     // equals CI_JOB_TOKEN. Otherwise fall back to PRIVATE-TOKEN.
-                    let use_job_token = gitlab::resolve_use_job_token(
+                    let use_job_token = gitlab::resolve_use_job_token_with_env(
                         gitlab_urls.use_job_token.unwrap_or(false),
                         &token_str,
+                        ctx.env_source(),
                     );
                     let use_pkg_registry =
                         gitlab_urls.use_package_registry.unwrap_or(false) || use_job_token;

@@ -23,8 +23,8 @@ use crate::yaml::DEFAULT_SNAP_NAME_TEMPLATE;
 // wipe-then-pack sequence is atomic across parallel workers.
 static SNAPCRAFT_CACHE_LOCK: Mutex<()> = Mutex::new(());
 
-fn clear_snapcraft_cache() {
-    if let Ok(home) = std::env::var("HOME") {
+fn clear_snapcraft_cache(home: Option<&str>) {
+    if let Some(home) = home {
         let cache = PathBuf::from(home).join(".cache/snapcraft/download");
         let _ = std::fs::remove_dir_all(&cache);
     }
@@ -647,6 +647,11 @@ impl Stage for SnapcraftStage {
         // for serial registration below.
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
+            // Resolve HOME once through the context's injected env source
+            // so parallel workers consume a fixed value (and tests can
+            // drive the path via `MapEnvSource` without mutating the
+            // process env).
+            let home_for_cache = ctx.env_var("HOME");
             let run_job = |job: &SnapcraftJob| -> Result<Artifact> {
                 let thread_log = anodizer_core::log::StageLogger::new("snapcraft", log.verbosity());
 
@@ -656,7 +661,7 @@ impl Stage for SnapcraftStage {
                 let _cache_guard = SNAPCRAFT_CACHE_LOCK
                     .lock()
                     .map_err(|_| anyhow::anyhow!("snapcraft cache lock poisoned"))?;
-                clear_snapcraft_cache();
+                clear_snapcraft_cache(home_for_cache.as_deref());
 
                 thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
 

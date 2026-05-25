@@ -392,6 +392,15 @@ impl Context {
         self.env_source.as_ref()
     }
 
+    /// Clone the injected environment-variable source as an `Arc` so
+    /// callers can move it into a `tokio::spawn` future or any other
+    /// `'static` closure. Production-default value is
+    /// [`ProcessEnvSource`]; tests may replace it via
+    /// [`Context::set_env_source`].
+    pub fn env_source_arc(&self) -> Arc<dyn EnvSource> {
+        Arc::clone(&self.env_source)
+    }
+
     /// Attach an in-memory log-capture sink so every logger derived from
     /// this context via [`Context::logger`] records to it. Intended for
     /// tests; production callers leave this `None`.

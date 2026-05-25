@@ -17,7 +17,9 @@
 //! it only if a future feature actually queries `/search/users`.
 
 use crate::release_log;
-use anodizer_core::{EnvSource, ProcessEnvSource};
+use anodizer_core::EnvSource;
+#[cfg(test)]
+use anodizer_core::ProcessEnvSource;
 
 /// Compute the seconds to sleep waiting for the GitHub rate-limit window
 /// to reset. Returns `None` when `remaining > threshold` (no sleep needed).
@@ -69,6 +71,11 @@ fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
 /// degrade to "continue and hope for the best", matching the upstream
 /// behaviour where `rateLimitChecker` logs and returns without aborting the
 /// outer release flow.
+///
+/// Process-env-fed shim retained for the transport-failure test (which
+/// pins the `silently degrade on connect refused` contract through the
+/// default `ProcessEnvSource`).
+#[cfg(test)]
 pub(crate) async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshold: u64) {
     check_github_rate_limit_with_env(client, token, threshold, &ProcessEnvSource).await;
 }

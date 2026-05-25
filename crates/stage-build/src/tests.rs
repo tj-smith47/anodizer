@@ -5,7 +5,6 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::{BuildIgnore, BuildOverride, CrossStrategy};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::stage::Stage;
-use serial_test::serial;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -46,7 +45,7 @@ use super::targets::{DEFAULT_TARGETS, KNOWN_TARGETS};
 use super::targets::{find_matching_override, is_target_ignored, resolve_target_env};
 use super::universal::build_universal_binary;
 use super::validation::{is_dynamically_linked, strip_glibc_suffix, target_for_validation};
-use super::workspace::{cargo_target_dir, check_workspace_package, resolve_reproducible_epoch};
+use super::workspace::check_workspace_package;
 
 fn test_logger() -> StageLogger {
     StageLogger::new("build", Verbosity::Normal)
@@ -1557,117 +1556,83 @@ fn test_default_targets_has_six_entries() {
 
 // ---- cargo_target_dir tests ----
 //
-// NOTE: These tests manipulate process-wide env vars, which is inherently
-// racy with other tests. We save/restore the original values and run
-// serially via unique test names (cargo test runs each #[test] in its own
-// thread but the env is shared). The save/restore pattern minimises
-// interference.
+// Drives the env-fallback branches via injected `MapEnvSource` — no
+// `unsafe set_var`, no serial-test contention with sibling crates that
+// read `CARGO_TARGET_DIR` from the live process env.
 
-/// SAFETY: `set_var` / `remove_var` are unsafe in edition 2024 because
-/// they mutate process-wide state. These test helpers are only called
-/// from single-threaded test bodies.
-fn with_clean_target_env<F: FnOnce()>(f: F) {
-    let saved1 = std::env::var("CARGO_TARGET_DIR").ok();
-    let saved2 = std::env::var("CARGO_BUILD_TARGET_DIR").ok();
-    // SAFETY: test-only, env mutation is intentional
-    unsafe {
-        std::env::remove_var("CARGO_TARGET_DIR");
-        std::env::remove_var("CARGO_BUILD_TARGET_DIR");
-    }
-    f();
-    // Restore
-    unsafe {
-        match saved1 {
-            Some(v) => std::env::set_var("CARGO_TARGET_DIR", v),
-            None => std::env::remove_var("CARGO_TARGET_DIR"),
-        }
-        match saved2 {
-            Some(v) => std::env::set_var("CARGO_BUILD_TARGET_DIR", v),
-            None => std::env::remove_var("CARGO_BUILD_TARGET_DIR"),
-        }
-    }
-}
+use super::workspace::cargo_target_dir_with_env;
+use anodizer_core::MapEnvSource;
 
 #[test]
-#[serial]
 fn test_cargo_target_dir_default() {
-    with_clean_target_env(|| {
-        assert_eq!(cargo_target_dir(None), PathBuf::from("target"));
-    });
+    let env = MapEnvSource::new();
+    assert_eq!(
+        cargo_target_dir_with_env(None, &env),
+        PathBuf::from("target")
+    );
 }
 
 #[test]
-#[serial]
 fn test_cargo_target_dir_from_env() {
-    with_clean_target_env(|| {
-        // SAFETY: test-only env mutation
-        unsafe { std::env::set_var("CARGO_TARGET_DIR", "/tmp/my-target") };
-        assert_eq!(cargo_target_dir(None), PathBuf::from("/tmp/my-target"));
-    });
+    let env = MapEnvSource::new().with("CARGO_TARGET_DIR", "/tmp/my-target");
+    assert_eq!(
+        cargo_target_dir_with_env(None, &env),
+        PathBuf::from("/tmp/my-target")
+    );
 }
 
 #[test]
-#[serial]
 fn test_cargo_target_dir_empty_falls_through() {
-    with_clean_target_env(|| {
-        // SAFETY: test-only env mutation
-        unsafe { std::env::set_var("CARGO_TARGET_DIR", "") };
-        assert_eq!(cargo_target_dir(None), PathBuf::from("target"));
-    });
+    let env = MapEnvSource::new().with("CARGO_TARGET_DIR", "");
+    assert_eq!(
+        cargo_target_dir_with_env(None, &env),
+        PathBuf::from("target")
+    );
 }
 
 #[test]
-#[serial]
 fn test_cargo_build_target_dir_fallback() {
-    with_clean_target_env(|| {
-        // SAFETY: test-only env mutation
-        unsafe { std::env::set_var("CARGO_BUILD_TARGET_DIR", "/tmp/build-target") };
-        assert_eq!(cargo_target_dir(None), PathBuf::from("/tmp/build-target"));
-    });
+    let env = MapEnvSource::new().with("CARGO_BUILD_TARGET_DIR", "/tmp/build-target");
+    assert_eq!(
+        cargo_target_dir_with_env(None, &env),
+        PathBuf::from("/tmp/build-target")
+    );
 }
 
 #[test]
-#[serial]
 fn test_cargo_target_dir_takes_precedence() {
-    with_clean_target_env(|| {
-        // SAFETY: test-only env mutation
-        unsafe {
-            std::env::set_var("CARGO_TARGET_DIR", "/tmp/primary");
-            std::env::set_var("CARGO_BUILD_TARGET_DIR", "/tmp/secondary");
-        }
-        assert_eq!(cargo_target_dir(None), PathBuf::from("/tmp/primary"));
-    });
+    let env = MapEnvSource::new()
+        .with("CARGO_TARGET_DIR", "/tmp/primary")
+        .with("CARGO_BUILD_TARGET_DIR", "/tmp/secondary");
+    assert_eq!(
+        cargo_target_dir_with_env(None, &env),
+        PathBuf::from("/tmp/primary")
+    );
 }
 
 #[test]
-#[serial]
 fn test_cargo_target_dir_from_build_env() {
-    with_clean_target_env(|| {
-        let mut env = HashMap::new();
-        env.insert(
-            "CARGO_TARGET_DIR".to_string(),
-            "/tmp/build-env-target".to_string(),
-        );
-        assert_eq!(
-            cargo_target_dir(Some(&env)),
-            PathBuf::from("/tmp/build-env-target")
-        );
-    });
+    let env_src = MapEnvSource::new();
+    let mut env = HashMap::new();
+    env.insert(
+        "CARGO_TARGET_DIR".to_string(),
+        "/tmp/build-env-target".to_string(),
+    );
+    assert_eq!(
+        cargo_target_dir_with_env(Some(&env), &env_src),
+        PathBuf::from("/tmp/build-env-target")
+    );
 }
 
 #[test]
-#[serial]
 fn test_cargo_target_dir_build_env_overrides_process_env() {
-    with_clean_target_env(|| {
-        // SAFETY: test-only env mutation
-        unsafe { std::env::set_var("CARGO_TARGET_DIR", "/tmp/process-env") };
-        let mut env = HashMap::new();
-        env.insert("CARGO_TARGET_DIR".to_string(), "/tmp/build-env".to_string());
-        assert_eq!(
-            cargo_target_dir(Some(&env)),
-            PathBuf::from("/tmp/build-env")
-        );
-    });
+    let env_src = MapEnvSource::new().with("CARGO_TARGET_DIR", "/tmp/process-env");
+    let mut env = HashMap::new();
+    env.insert("CARGO_TARGET_DIR".to_string(), "/tmp/build-env".to_string());
+    assert_eq!(
+        cargo_target_dir_with_env(Some(&env), &env_src),
+        PathBuf::from("/tmp/build-env")
+    );
 }
 
 // ---- Fix 5: resolve_build_program tests ----
@@ -1816,30 +1781,29 @@ fn detect_cross_strategy_for_target_with_host(host: &str, target: &str) -> Cross
 
 // ---- Fix 5: resolve_reproducible_epoch tests ----
 
+use super::workspace::resolve_reproducible_epoch_with_env;
+
 #[test]
 fn test_resolve_reproducible_epoch_from_timestamp() {
-    // Unset SOURCE_DATE_EPOCH to test the commit_timestamp fallback path.
-    // Safety: set_var/remove_var are unsafe in edition 2024 due to potential
-    // data races. This test runs sequentially and restores the env var.
-    let saved = std::env::var("SOURCE_DATE_EPOCH").ok();
-    unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
-    let epoch = resolve_reproducible_epoch("1700000000");
-    if let Some(val) = saved {
-        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", val) };
-    }
+    // No SOURCE_DATE_EPOCH override — exercise the commit_timestamp
+    // fallback path through the injected env source.
+    let env = MapEnvSource::new();
+    let epoch = resolve_reproducible_epoch_with_env("1700000000", &env);
     assert_eq!(epoch, Some(1700000000));
 }
 
 #[test]
 fn test_resolve_reproducible_epoch_invalid_timestamp() {
-    // Safety: same rationale as above — temporary env manipulation in a test.
-    let saved = std::env::var("SOURCE_DATE_EPOCH").ok();
-    unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
-    let epoch = resolve_reproducible_epoch("not-a-number");
-    if let Some(val) = saved {
-        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", val) };
-    }
+    let env = MapEnvSource::new();
+    let epoch = resolve_reproducible_epoch_with_env("not-a-number", &env);
     assert_eq!(epoch, None);
+}
+
+#[test]
+fn test_resolve_reproducible_epoch_uses_source_date_epoch_when_set() {
+    let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1234567890");
+    let epoch = resolve_reproducible_epoch_with_env("1700000000", &env);
+    assert_eq!(epoch, Some(1234567890));
 }
 
 // ---- Fix 5: config parsing with hooks test ----
