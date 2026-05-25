@@ -10,11 +10,12 @@
 .zig-cache/
 docs/site/public/
 CLAUDE.local.md
-.claude/
-# Un-ignore load-bearing CI / hook helpers under .claude/. Everything else
-# under .claude/ stays on disk but is intentionally local-only.
-!.claude/
+# Ignore everything under .claude/ except the two load-bearing CI scripts.
+# `.claude/*` (not `.claude/`) keeps the directory itself traversable so
+# the per-file re-includes below are actually evaluated.
+.claude/*
 !.claude/scripts/
+.claude/scripts/*
 !.claude/scripts/coverage-percent.sh
 !.claude/scripts/publish-coverage.sh
 # Coverage artifact emitted by `task coverage:check`.
