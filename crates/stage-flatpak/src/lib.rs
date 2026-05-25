@@ -143,6 +143,630 @@ struct FlatpakJob {
     cfg_id: Option<String>,
 }
 
+/// Collect crates that declare at least one `flatpaks:` config and are not
+/// excluded by the active `--crates` selection.
+fn collect_flatpak_crates(
+    ctx: &Context,
+    selected: &[String],
+) -> Vec<anodizer_core::config::CrateConfig> {
+    ctx.config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter(|c| c.flatpaks.is_some())
+        .cloned()
+        .collect()
+}
+
+/// Returns true when at least one flatpak config across the supplied crates is
+/// not skipped by its `skip:` template.
+fn any_flatpak_enabled(
+    ctx: &Context,
+    crates: &[anodizer_core::config::CrateConfig],
+) -> Result<bool> {
+    for c in crates {
+        let Some(cfgs) = c.flatpaks.as_ref() else {
+            continue;
+        };
+        for cfg in cfgs {
+            let off = match cfg.skip.as_ref() {
+                Some(d) => d
+                    .try_evaluates_to_true(|s| ctx.render_template(s))
+                    .with_context(|| {
+                        format!("flatpak: render skip template for crate {}", c.name)
+                    })?,
+                None => false,
+            };
+            if !off {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Confirm both `flatpak-builder` and `flatpak` are on PATH; bail otherwise.
+fn require_flatpak_tools() -> Result<()> {
+    if !anodizer_core::util::find_binary("flatpak-builder") {
+        anyhow::bail!(
+            "flatpak-builder not found on PATH; install Flatpak to create Flatpak bundles"
+        );
+    }
+    if !anodizer_core::util::find_binary("flatpak") {
+        anyhow::bail!("flatpak not found on PATH; install Flatpak to create Flatpak bundles");
+    }
+    Ok(())
+}
+
+/// Resolve the `Version` template variable, warning and defaulting when unset.
+fn resolve_flatpak_version(ctx: &Context, log: &anodizer_core::log::StageLogger) -> String {
+    ctx.template_vars()
+        .get("Version")
+        .cloned()
+        .unwrap_or_else(|| {
+            log.warn("no Version template variable set; using 0.0.0 for Flatpak bundle version");
+            "0.0.0".to_string()
+        })
+}
+
+/// Validate the four required fields on a `FlatpakConfig` and return their
+/// non-empty `&str` views.
+fn validate_flatpak_required_fields<'a>(
+    flatpak_cfg: &'a anodizer_core::config::FlatpakConfig,
+    crate_name: &str,
+) -> Result<(&'a str, &'a str, &'a str, &'a str)> {
+    let app_id = flatpak_cfg
+        .app_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("flatpak: app_id is required for crate '{}'", crate_name))?;
+    let runtime = flatpak_cfg
+        .runtime
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("flatpak: runtime is required for crate '{}'", crate_name)
+        })?;
+    let runtime_version = flatpak_cfg
+        .runtime_version
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "flatpak: runtime_version is required for crate '{}'",
+                crate_name
+            )
+        })?;
+    let sdk = flatpak_cfg
+        .sdk
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("flatpak: sdk is required for crate '{}'", crate_name))?;
+    Ok((app_id, runtime, runtime_version, sdk))
+}
+
+/// Collect Linux binary artifacts for the given crate.
+fn collect_linux_binaries(ctx: &Context, crate_name: &str) -> Vec<Artifact> {
+    ctx.artifacts
+        .by_kind_and_crate(ArtifactKind::Binary, crate_name)
+        .into_iter()
+        .filter(|b| {
+            b.target
+                .as_deref()
+                .map(anodizer_core::target::is_linux)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Filter linux binaries to those matching the `ids:` allow-list (build id or
+/// binary name). A `None` or empty filter is a no-op.
+fn filter_binaries_by_ids(binaries: &mut Vec<Artifact>, filter_ids: Option<&Vec<String>>) {
+    if let Some(filter_ids) = filter_ids
+        && !filter_ids.is_empty()
+    {
+        binaries.retain(|b| {
+            b.metadata
+                .get("id")
+                .map(|id| filter_ids.contains(id))
+                .unwrap_or(false)
+                || b.metadata
+                    .get("name")
+                    .map(|n| filter_ids.contains(n))
+                    .unwrap_or(false)
+        });
+    }
+}
+
+/// Map filtered binaries onto `(target, path, flatpak_arch)` tuples,
+/// dropping any architecture Flatpak doesn't support.
+fn map_to_supported_arches(binaries: &[Artifact]) -> Vec<(Option<String>, PathBuf, String)> {
+    binaries
+        .iter()
+        .filter_map(|b| {
+            let (_, arch) = os_arch_from_target(b.target.as_deref());
+            arch_to_flatpak(&arch)
+                .map(|flatpak_arch| (b.target.clone(), b.path.clone(), flatpak_arch.to_string()))
+        })
+        .collect()
+}
+
+/// Render the bundle output filename via `name_template`, defaulting to
+/// `DEFAULT_NAME_TEMPLATE`, and force a `.flatpak` suffix.
+fn render_output_filename(
+    ctx: &Context,
+    flatpak_cfg: &anodizer_core::config::FlatpakConfig,
+    crate_name: &str,
+    target: &Option<String>,
+) -> Result<String> {
+    let name_template = flatpak_cfg
+        .name_template
+        .as_deref()
+        .unwrap_or(DEFAULT_NAME_TEMPLATE);
+    let rendered = ctx.render_template(name_template).with_context(|| {
+        format!(
+            "flatpak: render name template for crate {} target {:?}",
+            crate_name, target
+        )
+    })?;
+    Ok(if rendered.to_lowercase().ends_with(".flatpak") {
+        rendered
+    } else {
+        format!("{rendered}.flatpak")
+    })
+}
+
+/// Build the manifest JSON model plus the parallel `(sources, build_commands)`
+/// vectors. Returns the assembled [`Manifest`].
+#[allow(clippy::too_many_arguments)]
+fn build_manifest(
+    app_id: &str,
+    runtime: &str,
+    runtime_version: &str,
+    sdk: &str,
+    command: &str,
+    finish_args: Vec<String>,
+    binary_name: &str,
+    extra_file_names: &[String],
+) -> Manifest {
+    let mut sources = vec![ManifestSource {
+        type_: "file".to_string(),
+        path: binary_name.to_string(),
+        dest_filename: None,
+    }];
+    let mut build_commands = vec![format!(
+        "install -Dm755 {binary_name} /app/bin/{binary_name}"
+    )];
+
+    for extra_name in extra_file_names {
+        sources.push(ManifestSource {
+            type_: "file".to_string(),
+            path: extra_name.clone(),
+            dest_filename: None,
+        });
+        build_commands.push(format!(
+            "install -Dm644 {extra_name} /app/share/{app_id}/{extra_name}"
+        ));
+    }
+
+    Manifest {
+        id: app_id.to_string(),
+        runtime: runtime.to_string(),
+        runtime_version: runtime_version.to_string(),
+        sdk: sdk.to_string(),
+        command: command.to_string(),
+        finish_args,
+        modules: vec![ManifestModule {
+            name: app_id.to_string(),
+            buildsystem: "simple".to_string(),
+            build_commands,
+            sources,
+        }],
+    }
+}
+
+/// Build the dry-run [`Artifact`] for a single Flatpak bundle, logging the
+/// would-do messages.
+fn dry_run_artifact(
+    log: &anodizer_core::log::StageLogger,
+    flatpak_cfg: &anodizer_core::config::FlatpakConfig,
+    crate_name: &str,
+    target: &Option<String>,
+    output_name: &str,
+    output_path: PathBuf,
+) -> Artifact {
+    log.status(&format!(
+        "(dry-run) would create Flatpak bundle {} for crate {} target {:?}",
+        output_name, crate_name, target
+    ));
+
+    if let Some(ts) = &flatpak_cfg.mod_timestamp {
+        log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
+    }
+
+    let mut metadata = HashMap::from([("format".to_string(), "flatpak".to_string())]);
+    if let Some(id) = &flatpak_cfg.id {
+        metadata.insert("id".to_string(), id.clone());
+    }
+    Artifact {
+        kind: ArtifactKind::Flatpak,
+        name: String::new(),
+        path: output_path,
+        target: target.clone(),
+        crate_name: crate_name.to_string(),
+        metadata,
+        size: None,
+    }
+}
+
+/// Compose the two subprocess argument vectors used by the parallel phase.
+fn build_subprocess_args(
+    app_id: &str,
+    version: &str,
+    flatpak_arch: &str,
+    output_path: &std::path::Path,
+) -> (Vec<String>, Vec<String>) {
+    let builder_args = vec![
+        "flatpak-builder".to_string(),
+        "--force-clean".to_string(),
+        format!("--arch={flatpak_arch}"),
+        format!("--default-branch={version}"),
+        "--repo=repo".to_string(),
+        "build".to_string(),
+        format!("{app_id}.json"),
+    ];
+    let bundle_args = vec![
+        "flatpak".to_string(),
+        "build-bundle".to_string(),
+        format!("--arch={flatpak_arch}"),
+        "repo".to_string(),
+        output_path.to_string_lossy().into_owned(),
+        app_id.to_string(),
+        version.to_string(),
+    ];
+    (builder_args, bundle_args)
+}
+
+/// Stage the work directory for a Flatpak job: copy binary + extra files,
+/// write the manifest JSON, and apply mod_timestamp to the work dir.
+/// Returns the pre-parsed `(mtime, repr)` to stamp the output file later.
+#[allow(clippy::too_many_arguments)]
+fn stage_work_dir(
+    ctx: &Context,
+    log: &anodizer_core::log::StageLogger,
+    flatpak_cfg: &anodizer_core::config::FlatpakConfig,
+    work_dir: &std::path::Path,
+    output_dir: &std::path::Path,
+    binary_path: &std::path::Path,
+    binary_name: &str,
+    manifest: &Manifest,
+    app_id: &str,
+) -> Result<(Option<std::time::SystemTime>, Option<String>)> {
+    fs::create_dir_all(work_dir)
+        .with_context(|| format!("create Flatpak work dir: {}", work_dir.display()))?;
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("create Flatpak output dir: {}", output_dir.display()))?;
+
+    let staged_binary = work_dir.join(binary_name);
+    fs::copy(binary_path, &staged_binary).with_context(|| {
+        format!(
+            "copy binary {} to {}",
+            binary_path.display(),
+            staged_binary.display()
+        )
+    })?;
+
+    // The staged binary must be executable so `install -Dm755` inside the
+    // sandbox produces a runnable `/app/bin/<name>`.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(&staged_binary, perms).with_context(|| {
+            format!(
+                "flatpak: set executable permission on {}",
+                staged_binary.display()
+            )
+        })?;
+    }
+
+    if let Some(extra_files) = &flatpak_cfg.extra_files {
+        for (entry, dst_name) in resolve_extra_file_specs(extra_files, log) {
+            let dst = work_dir.join(&dst_name);
+            fs::copy(&entry, &dst)
+                .with_context(|| format!("copy extra file {} to work dir", entry.display()))?;
+        }
+    }
+
+    let manifest_json =
+        serde_json::to_string_pretty(manifest).context("flatpak: serialize manifest JSON")?;
+    let manifest_path = work_dir.join(format!("{app_id}.json"));
+    fs::write(&manifest_path, &manifest_json)
+        .with_context(|| format!("flatpak: write manifest to {}", manifest_path.display()))?;
+
+    if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp {
+        let ts = ctx
+            .render_template(ts_tmpl)
+            .with_context(|| "flatpak: render mod_timestamp template")?;
+        anodizer_core::util::apply_mod_timestamp(work_dir, &ts, log)?;
+        let mtime = anodizer_core::util::parse_mod_timestamp(&ts)?;
+        Ok((Some(mtime), Some(ts)))
+    } else {
+        Ok((None, None))
+    }
+}
+
+/// Run a single [`FlatpakJob`] in the parallel phase: invoke flatpak-builder,
+/// then `flatpak build-bundle`, then stamp the output file's mtime if set.
+fn run_flatpak_job(job: &FlatpakJob, verbosity: anodizer_core::log::Verbosity) -> Result<Artifact> {
+    let thread_log = anodizer_core::log::StageLogger::new("flatpak", verbosity);
+
+    thread_log.status(&format!("running: {}", job.builder_args.join(" ")));
+    let output = Command::new(&job.builder_args[0])
+        .args(&job.builder_args[1..])
+        .current_dir(&job.work_dir)
+        .output()
+        .with_context(|| {
+            format!(
+                "execute flatpak-builder for crate {} target {:?}",
+                job.crate_name, job.target
+            )
+        })?;
+    thread_log.check_output(output, "flatpak-builder")?;
+
+    thread_log.status(&format!("running: {}", job.bundle_args.join(" ")));
+    let output = Command::new(&job.bundle_args[0])
+        .args(&job.bundle_args[1..])
+        .current_dir(&job.work_dir)
+        .output()
+        .with_context(|| {
+            format!(
+                "execute flatpak build-bundle for crate {} target {:?}",
+                job.crate_name, job.target
+            )
+        })?;
+    thread_log.check_output(output, "flatpak build-bundle")?;
+
+    if let (Some(mtime), Some(repr)) = (job.output_mtime, job.output_mtime_repr.as_deref())
+        && job.output_path.exists()
+    {
+        anodizer_core::util::set_file_mtime(&job.output_path, mtime)?;
+        thread_log.status(&format!(
+            "applied mod_timestamp={repr} to {}",
+            job.output_path.display()
+        ));
+    }
+
+    thread_log.status(&format!(
+        "created Flatpak bundle {} for crate {} target {:?}",
+        job.output_name, job.crate_name, job.target
+    ));
+
+    let mut metadata = HashMap::from([("format".to_string(), "flatpak".to_string())]);
+    if let Some(id) = &job.cfg_id {
+        metadata.insert("id".to_string(), id.clone());
+    }
+    Ok(Artifact {
+        kind: ArtifactKind::Flatpak,
+        name: String::new(),
+        path: job.output_path.clone(),
+        target: job.target.clone(),
+        crate_name: job.crate_name.clone(),
+        metadata,
+        size: None,
+    })
+}
+
+/// Output of [`process_binary_iteration`]: either a finished dry-run artifact
+/// or a staged live job waiting on the parallel phase.
+enum BinaryOutcome {
+    DryRun(Artifact),
+    Job(FlatpakJob),
+}
+
+/// Stage one `(target, binary, flatpak_arch)` triple for a given flatpak
+/// config: render templates, build the manifest, and either prepare the
+/// dry-run artifact or the live `FlatpakJob`. The caller is responsible for
+/// collecting `archives_to_remove` entries from `flatpak_cfg.replace`; this
+/// helper performs the lookup against `ctx.artifacts` in both branches via
+/// the returned [`BinaryOutcome`] plus the supplied `replace_sink` callback.
+#[allow(clippy::too_many_arguments)]
+fn process_binary_iteration(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    dist: &std::path::Path,
+    krate: &anodizer_core::config::CrateConfig,
+    flatpak_cfg: &anodizer_core::config::FlatpakConfig,
+    app_id: &str,
+    runtime: &str,
+    runtime_version: &str,
+    sdk: &str,
+    version: &str,
+    target: &Option<String>,
+    binary_path: &std::path::Path,
+    flatpak_arch: &str,
+    dry_run: bool,
+    archives_to_remove: &mut Vec<PathBuf>,
+) -> Result<BinaryOutcome> {
+    let (os, arch) = os_arch_from_target(target.as_deref());
+    ctx.template_vars_mut().set("Os", &os);
+    ctx.template_vars_mut().set("Arch", &arch);
+    ctx.template_vars_mut()
+        .set("Target", target.as_deref().unwrap_or(""));
+
+    let output_name = render_output_filename(ctx, flatpak_cfg, &krate.name, target)?;
+
+    let output_dir = dist.join("flatpak");
+    let output_path = output_dir.join(&output_name);
+    let work_dir = dist.join("flatpak").join(&krate.name).join(flatpak_arch);
+
+    let binary_name = binary_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&krate.name);
+    let command = flatpak_cfg.command.as_deref().unwrap_or(binary_name);
+    let finish_args = flatpak_cfg.finish_args.clone().unwrap_or_default();
+
+    let extra_file_names: Vec<String> = if let Some(extra_files) = &flatpak_cfg.extra_files {
+        resolve_extra_file_specs(extra_files, log)
+            .into_iter()
+            .map(|(_, dst)| dst)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let manifest = build_manifest(
+        app_id,
+        runtime,
+        runtime_version,
+        sdk,
+        command,
+        finish_args,
+        binary_name,
+        &extra_file_names,
+    );
+
+    if dry_run {
+        let artifact = dry_run_artifact(
+            log,
+            flatpak_cfg,
+            &krate.name,
+            target,
+            &output_name,
+            output_path,
+        );
+        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
+            flatpak_cfg.replace,
+            &ctx.artifacts,
+            &krate.name,
+            target.as_deref(),
+        ));
+        return Ok(BinaryOutcome::DryRun(artifact));
+    }
+
+    let (output_mtime, output_mtime_repr) = stage_work_dir(
+        ctx,
+        log,
+        flatpak_cfg,
+        &work_dir,
+        &output_dir,
+        binary_path,
+        binary_name,
+        &manifest,
+        app_id,
+    )?;
+
+    let (builder_args, bundle_args) =
+        build_subprocess_args(app_id, version, flatpak_arch, &output_path);
+
+    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
+        flatpak_cfg.replace,
+        &ctx.artifacts,
+        &krate.name,
+        target.as_deref(),
+    ));
+
+    Ok(BinaryOutcome::Job(FlatpakJob {
+        work_dir,
+        output_name,
+        output_path,
+        builder_args,
+        bundle_args,
+        output_mtime,
+        output_mtime_repr,
+        target: target.clone(),
+        crate_name: krate.name.clone(),
+        cfg_id: flatpak_cfg.id.clone(),
+    }))
+}
+
+/// Process a single `flatpak_cfg` entry for a crate: validate, filter binaries,
+/// then iterate per binary via [`process_binary_iteration`], appending results
+/// into the supplied accumulators.
+#[allow(clippy::too_many_arguments)]
+fn process_flatpak_cfg(
+    ctx: &mut Context,
+    log: &anodizer_core::log::StageLogger,
+    dist: &std::path::Path,
+    krate: &anodizer_core::config::CrateConfig,
+    flatpak_cfg: &anodizer_core::config::FlatpakConfig,
+    linux_binaries: &[Artifact],
+    version: &str,
+    dry_run: bool,
+    new_artifacts: &mut Vec<Artifact>,
+    jobs: &mut Vec<FlatpakJob>,
+    archives_to_remove: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if let Some(ref d) = flatpak_cfg.skip {
+        let off = d
+            .try_evaluates_to_true(|s| ctx.render_template(s))
+            .with_context(|| format!("flatpak: render skip template for crate {}", krate.name))?;
+        if off {
+            log.status(&format!("flatpak config skipped for crate {}", krate.name));
+            return Ok(());
+        }
+    }
+
+    let (app_id, runtime, runtime_version, sdk) =
+        validate_flatpak_required_fields(flatpak_cfg, &krate.name)?;
+
+    let mut filtered = linux_binaries.to_vec();
+    filter_binaries_by_ids(&mut filtered, flatpak_cfg.ids.as_ref());
+
+    if filtered.is_empty() && linux_binaries.is_empty() {
+        log.warn(&format!(
+            "no Linux binary artifacts found for crate '{}'; \
+             skipping Flatpak generation (expected binaries targeting linux)",
+            krate.name
+        ));
+        return Ok(());
+    }
+    if filtered.is_empty() {
+        log.warn(&format!(
+            "ids filter {:?} matched no binaries for crate '{}'; skipping",
+            flatpak_cfg.ids, krate.name
+        ));
+        return Ok(());
+    }
+
+    let effective_binaries = map_to_supported_arches(&filtered);
+    if effective_binaries.is_empty() {
+        log.warn(&format!(
+            "no supported architectures (amd64/arm64) found for crate '{}'; skipping Flatpak",
+            krate.name
+        ));
+        return Ok(());
+    }
+
+    for (target, binary_path, flatpak_arch) in &effective_binaries {
+        let outcome = process_binary_iteration(
+            ctx,
+            log,
+            dist,
+            krate,
+            flatpak_cfg,
+            app_id,
+            runtime,
+            runtime_version,
+            sdk,
+            version,
+            target,
+            binary_path,
+            flatpak_arch,
+            dry_run,
+            archives_to_remove,
+        )?;
+        match outcome {
+            BinaryOutcome::DryRun(artifact) => new_artifacts.push(artifact),
+            BinaryOutcome::Job(job) => jobs.push(job),
+        }
+    }
+
+    Ok(())
+}
+
 impl Stage for FlatpakStage {
     fn name(&self) -> &str {
         "flatpak"
@@ -155,73 +779,20 @@ impl Stage for FlatpakStage {
         let dist = ctx.config.dist.clone();
         let parallelism = ctx.options.parallelism.max(1);
 
-        // Collect crates that have flatpaks config
-        let crates: Vec<_> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| c.flatpaks.is_some())
-            .cloned()
-            .collect();
-
+        let crates = collect_flatpak_crates(ctx, &selected);
         if crates.is_empty() {
             return Ok(());
         }
 
-        // Check if any flatpak config is actually enabled before requiring tools
-        let mut has_enabled = false;
-        for c in &crates {
-            let Some(cfgs) = c.flatpaks.as_ref() else {
-                continue;
-            };
-            for cfg in cfgs {
-                let off = match cfg.skip.as_ref() {
-                    Some(d) => d
-                        .try_evaluates_to_true(|s| ctx.render_template(s))
-                        .with_context(|| {
-                            format!("flatpak: render skip template for crate {}", c.name)
-                        })?,
-                    None => false,
-                };
-                if !off {
-                    has_enabled = true;
-                    break;
-                }
-            }
-            if has_enabled {
-                break;
-            }
-        }
-        if !has_enabled {
+        if !any_flatpak_enabled(ctx, &crates)? {
             return Ok(());
         }
 
-        // Check tool availability once for the entire stage
         if !dry_run {
-            if !anodizer_core::util::find_binary("flatpak-builder") {
-                anyhow::bail!(
-                    "flatpak-builder not found on PATH; install Flatpak to create Flatpak bundles"
-                );
-            }
-            if !anodizer_core::util::find_binary("flatpak") {
-                anyhow::bail!(
-                    "flatpak not found on PATH; install Flatpak to create Flatpak bundles"
-                );
-            }
+            require_flatpak_tools()?;
         }
 
-        // Resolve version from template vars
-        let version = ctx
-            .template_vars()
-            .get("Version")
-            .cloned()
-            .unwrap_or_else(|| {
-                log.warn(
-                    "no Version template variable set; using 0.0.0 for Flatpak bundle version",
-                );
-                "0.0.0".to_string()
-            });
+        let version = resolve_flatpak_version(ctx, &log);
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
@@ -232,450 +803,42 @@ impl Stage for FlatpakStage {
                 continue;
             };
 
-            // Collect Linux binary artifacts for this crate
-            let linux_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodizer_core::target::is_linux)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
+            let linux_binaries = collect_linux_binaries(ctx, &krate.name);
 
             for flatpak_cfg in flatpak_configs {
-                // Skip configs marked skip:
-                if let Some(ref d) = flatpak_cfg.skip {
-                    let off = d
-                        .try_evaluates_to_true(|s| ctx.render_template(s))
-                        .with_context(|| {
-                            format!("flatpak: render skip template for crate {}", krate.name)
-                        })?;
-                    if off {
-                        log.status(&format!("flatpak config skipped for crate {}", krate.name));
-                        continue;
-                    }
-                }
-
-                // Validate required fields
-                let app_id = flatpak_cfg
-                    .app_id
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("flatpak: app_id is required for crate '{}'", krate.name)
-                    })?;
-
-                let runtime = flatpak_cfg
-                    .runtime
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("flatpak: runtime is required for crate '{}'", krate.name)
-                    })?;
-
-                let runtime_version = flatpak_cfg
-                    .runtime_version
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "flatpak: runtime_version is required for crate '{}'",
-                            krate.name
-                        )
-                    })?;
-
-                let sdk = flatpak_cfg
-                    .sdk
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("flatpak: sdk is required for crate '{}'", krate.name)
-                    })?;
-
-                // Filter by build IDs if specified
-                let mut filtered = linux_binaries.clone();
-                if let Some(ref filter_ids) = flatpak_cfg.ids
-                    && !filter_ids.is_empty()
-                {
-                    filtered.retain(|b| {
-                        b.metadata
-                            .get("id")
-                            .map(|id| filter_ids.contains(id))
-                            .unwrap_or(false)
-                            || b.metadata
-                                .get("name")
-                                .map(|n| filter_ids.contains(n))
-                                .unwrap_or(false)
-                    });
-                }
-
-                // Warn and skip if no Linux binaries found
-                if filtered.is_empty() && linux_binaries.is_empty() {
-                    log.warn(&format!(
-                        "no Linux binary artifacts found for crate '{}'; \
-                         skipping Flatpak generation (expected binaries targeting linux)",
-                        krate.name
-                    ));
-                    continue;
-                }
-                if filtered.is_empty() {
-                    log.warn(&format!(
-                        "ids filter {:?} matched no binaries for crate '{}'; skipping",
-                        flatpak_cfg.ids, krate.name
-                    ));
-                    continue;
-                }
-
-                // Filter to only supported architectures (amd64/arm64)
-                let effective_binaries: Vec<(Option<String>, PathBuf, String)> = filtered
-                    .iter()
-                    .filter_map(|b| {
-                        let (_, arch) = os_arch_from_target(b.target.as_deref());
-                        arch_to_flatpak(&arch).map(|flatpak_arch| {
-                            (b.target.clone(), b.path.clone(), flatpak_arch.to_string())
-                        })
-                    })
-                    .collect();
-
-                if effective_binaries.is_empty() {
-                    log.warn(&format!(
-                        "no supported architectures (amd64/arm64) found for crate '{}'; skipping Flatpak",
-                        krate.name
-                    ));
-                    continue;
-                }
-
-                for (target, binary_path, flatpak_arch) in &effective_binaries {
-                    // Derive Os/Arch from the target triple for template rendering
-                    let (os, arch) = os_arch_from_target(target.as_deref());
-
-                    // Set Os/Arch/Target in template vars for this iteration
-                    ctx.template_vars_mut().set("Os", &os);
-                    ctx.template_vars_mut().set("Arch", &arch);
-                    ctx.template_vars_mut()
-                        .set("Target", target.as_deref().unwrap_or(""));
-
-                    // Determine output filename from name template or default
-                    let name_template = flatpak_cfg
-                        .name_template
-                        .as_deref()
-                        .unwrap_or(DEFAULT_NAME_TEMPLATE);
-
-                    let output_name = ctx.render_template(name_template).with_context(|| {
-                        format!(
-                            "flatpak: render name template for crate {} target {:?}",
-                            krate.name, target
-                        )
-                    })?;
-
-                    // Ensure the filename ends with .flatpak
-                    let output_name = if output_name.to_lowercase().ends_with(".flatpak") {
-                        output_name
-                    } else {
-                        format!("{output_name}.flatpak")
-                    };
-
-                    // Output goes in a clean flat directory: dist/flatpak/
-                    let output_dir = dist.join("flatpak");
-                    let output_path = output_dir.join(&output_name);
-
-                    // Build work happens in a separate subdirectory
-                    let work_dir = dist.join("flatpak").join(&krate.name).join(flatpak_arch);
-
-                    // Derive the binary name from the file path
-                    let binary_name = binary_path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(&krate.name);
-
-                    // Determine command: config command or binary name
-                    let command = flatpak_cfg.command.as_deref().unwrap_or(binary_name);
-
-                    // Build finish_args
-                    let finish_args = flatpak_cfg.finish_args.clone().unwrap_or_default();
-
-                    // Resolve extra_files globs to concrete file names
-                    let extra_file_names: Vec<String> =
-                        if let Some(extra_files) = &flatpak_cfg.extra_files {
-                            resolve_extra_file_specs(extra_files, &log)
-                                .into_iter()
-                                .map(|(_, dst)| dst)
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
-
-                    // Build manifest sources and build_commands
-                    let mut sources = vec![ManifestSource {
-                        type_: "file".to_string(),
-                        path: binary_name.to_string(),
-                        dest_filename: None,
-                    }];
-                    let mut build_commands = vec![format!(
-                        "install -Dm755 {binary_name} /app/bin/{binary_name}"
-                    )];
-
-                    for extra_name in &extra_file_names {
-                        sources.push(ManifestSource {
-                            type_: "file".to_string(),
-                            path: extra_name.clone(),
-                            dest_filename: None,
-                        });
-                        build_commands.push(format!(
-                            "install -Dm644 {extra_name} /app/share/{app_id}/{extra_name}"
-                        ));
-                    }
-
-                    // Build the manifest
-                    let manifest = Manifest {
-                        id: app_id.to_string(),
-                        runtime: runtime.to_string(),
-                        runtime_version: runtime_version.to_string(),
-                        sdk: sdk.to_string(),
-                        command: command.to_string(),
-                        finish_args,
-                        modules: vec![ManifestModule {
-                            name: app_id.to_string(),
-                            buildsystem: "simple".to_string(),
-                            build_commands,
-                            sources,
-                        }],
-                    };
-
-                    if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would create Flatpak bundle {} for crate {} target {:?}",
-                            output_name, krate.name, target
-                        ));
-
-                        if let Some(ts) = &flatpak_cfg.mod_timestamp {
-                            log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
-                        }
-
-                        new_artifacts.push(Artifact {
-                            kind: ArtifactKind::Flatpak,
-                            name: String::new(),
-                            path: output_path,
-                            target: target.clone(),
-                            crate_name: krate.name.clone(),
-                            metadata: {
-                                let mut m =
-                                    HashMap::from([("format".to_string(), "flatpak".to_string())]);
-                                if let Some(id) = &flatpak_cfg.id {
-                                    m.insert("id".to_string(), id.clone());
-                                }
-                                m
-                            },
-                            size: None,
-                        });
-
-                        // If replace is set, mark archives for this crate+target for removal
-                        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
-                            flatpak_cfg.replace,
-                            &ctx.artifacts,
-                            &krate.name,
-                            target.as_deref(),
-                        ));
-
-                        continue;
-                    }
-
-                    // Live mode — create working directory and output directory
-                    fs::create_dir_all(&work_dir).with_context(|| {
-                        format!("create Flatpak work dir: {}", work_dir.display())
-                    })?;
-                    fs::create_dir_all(&output_dir).with_context(|| {
-                        format!("create Flatpak output dir: {}", output_dir.display())
-                    })?;
-
-                    // Copy binary to working dir
-                    let staged_binary = work_dir.join(binary_name);
-                    fs::copy(binary_path, &staged_binary).with_context(|| {
-                        format!(
-                            "copy binary {} to {}",
-                            binary_path.display(),
-                            staged_binary.display()
-                        )
-                    })?;
-
-                    // Set permissions to 0o755 (rwxr-xr-x), consistent with install -Dm755
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        let perms = std::fs::Permissions::from_mode(0o755);
-                        std::fs::set_permissions(&staged_binary, perms).with_context(|| {
-                            format!(
-                                "flatpak: set executable permission on {}",
-                                staged_binary.display()
-                            )
-                        })?;
-                    }
-
-                    // Copy extra files into working dir
-                    if let Some(extra_files) = &flatpak_cfg.extra_files {
-                        for (entry, dst_name) in resolve_extra_file_specs(extra_files, &log) {
-                            let dst = work_dir.join(&dst_name);
-                            fs::copy(&entry, &dst).with_context(|| {
-                                format!("copy extra file {} to work dir", entry.display())
-                            })?;
-                        }
-                    }
-
-                    // Write manifest as {app_id}.json in working dir
-                    let manifest_json = serde_json::to_string_pretty(&manifest)
-                        .context("flatpak: serialize manifest JSON")?;
-                    let manifest_path = work_dir.join(format!("{app_id}.json"));
-                    fs::write(&manifest_path, &manifest_json).with_context(|| {
-                        format!("flatpak: write manifest to {}", manifest_path.display())
-                    })?;
-
-                    // Render mod_timestamp once in Step 1 and pre-parse the
-                    // mtime so Step 2 (parallel) doesn't touch ctx.
-                    let (output_mtime, output_mtime_repr) =
-                        if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp {
-                            let ts = ctx
-                                .render_template(ts_tmpl)
-                                .with_context(|| "flatpak: render mod_timestamp template")?;
-                            anodizer_core::util::apply_mod_timestamp(&work_dir, &ts, &log)?;
-                            let mtime = anodizer_core::util::parse_mod_timestamp(&ts)?;
-                            (Some(mtime), Some(ts))
-                        } else {
-                            (None, None)
-                        };
-
-                    // Pre-compute the two subprocess arg vectors so Step 2
-                    // can just run them without re-deriving from cfg.
-                    let builder_args = vec![
-                        "flatpak-builder".to_string(),
-                        "--force-clean".to_string(),
-                        format!("--arch={flatpak_arch}"),
-                        format!("--default-branch={version}"),
-                        "--repo=repo".to_string(),
-                        "build".to_string(),
-                        format!("{app_id}.json"),
-                    ];
-                    let bundle_args = vec![
-                        "flatpak".to_string(),
-                        "build-bundle".to_string(),
-                        format!("--arch={flatpak_arch}"),
-                        "repo".to_string(),
-                        output_path.to_string_lossy().into_owned(),
-                        app_id.to_string(),
-                        version.clone(),
-                    ];
-
-                    // If replace is set, mark archives for this crate+target
-                    // for removal — do it now while ctx.artifacts is
-                    // accessible. Step 2 workers never touch ctx.
-                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
-                        flatpak_cfg.replace,
-                        &ctx.artifacts,
-                        &krate.name,
-                        target.as_deref(),
-                    ));
-
-                    jobs.push(FlatpakJob {
-                        work_dir,
-                        output_name: output_name.clone(),
-                        output_path: output_path.clone(),
-                        builder_args,
-                        bundle_args,
-                        output_mtime,
-                        output_mtime_repr,
-                        target: target.clone(),
-                        crate_name: krate.name.clone(),
-                        cfg_id: flatpak_cfg.id.clone(),
-                    });
-                }
+                process_flatpak_cfg(
+                    ctx,
+                    &log,
+                    &dist,
+                    krate,
+                    flatpak_cfg,
+                    &linux_binaries,
+                    &version,
+                    dry_run,
+                    &mut new_artifacts,
+                    &mut jobs,
+                    &mut archives_to_remove,
+                )?;
             }
         }
 
         anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
-        // ----------------------------------------------------------------
-        // Parallel: run flatpak-builder + flatpak build-bundle for each
-        // job. Bounded concurrency via chunks(parallelism).
-        // ----------------------------------------------------------------
         if !jobs.is_empty() {
-            let run_job = |job: &FlatpakJob| -> Result<Artifact> {
-                let thread_log = anodizer_core::log::StageLogger::new("flatpak", log.verbosity());
-
-                thread_log.status(&format!("running: {}", job.builder_args.join(" ")));
-                let output = Command::new(&job.builder_args[0])
-                    .args(&job.builder_args[1..])
-                    .current_dir(&job.work_dir)
-                    .output()
-                    .with_context(|| {
-                        format!(
-                            "execute flatpak-builder for crate {} target {:?}",
-                            job.crate_name, job.target
-                        )
-                    })?;
-                thread_log.check_output(output, "flatpak-builder")?;
-
-                thread_log.status(&format!("running: {}", job.bundle_args.join(" ")));
-                let output = Command::new(&job.bundle_args[0])
-                    .args(&job.bundle_args[1..])
-                    .current_dir(&job.work_dir)
-                    .output()
-                    .with_context(|| {
-                        format!(
-                            "execute flatpak build-bundle for crate {} target {:?}",
-                            job.crate_name, job.target
-                        )
-                    })?;
-                thread_log.check_output(output, "flatpak build-bundle")?;
-
-                if let (Some(mtime), Some(repr)) =
-                    (job.output_mtime, job.output_mtime_repr.as_deref())
-                    && job.output_path.exists()
-                {
-                    anodizer_core::util::set_file_mtime(&job.output_path, mtime)?;
-                    thread_log.status(&format!(
-                        "applied mod_timestamp={repr} to {}",
-                        job.output_path.display()
-                    ));
-                }
-
-                thread_log.status(&format!(
-                    "created Flatpak bundle {} for crate {} target {:?}",
-                    job.output_name, job.crate_name, job.target
-                ));
-
-                let mut metadata = HashMap::from([("format".to_string(), "flatpak".to_string())]);
-                if let Some(id) = &job.cfg_id {
-                    metadata.insert("id".to_string(), id.clone());
-                }
-                Ok(Artifact {
-                    kind: ArtifactKind::Flatpak,
-                    name: String::new(),
-                    path: job.output_path.clone(),
-                    target: job.target.clone(),
-                    crate_name: job.crate_name.clone(),
-                    metadata,
-                    size: None,
-                })
-            };
-
+            let verbosity = log.verbosity();
             let results = anodizer_core::parallel::run_parallel_chunks(
                 &jobs,
                 parallelism,
                 "flatpak",
-                run_job,
+                |job| run_flatpak_job(job, verbosity),
             )?;
             new_artifacts.extend(results);
         }
 
-        // Remove replaced archives
         if !archives_to_remove.is_empty() {
             ctx.artifacts.remove_by_paths(&archives_to_remove);
         }
 
-        // Register new Flatpak artifacts
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
         }
