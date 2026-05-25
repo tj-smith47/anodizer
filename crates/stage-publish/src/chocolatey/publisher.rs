@@ -305,19 +305,20 @@ mod publisher_tests {
 
     #[test]
     fn chocolatey_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("chocolatey");
         let p = ChocolateyPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg = crate::publisher_helpers::rollback_empty_warning_msg(
-            "chocolatey",
-            "submitted packages",
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("chocolatey")
+                && m.contains("submitted packages")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
         );
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("submitted packages"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
-        assert!(msg.contains("manually"), "{msg}");
     }
 
     #[test]

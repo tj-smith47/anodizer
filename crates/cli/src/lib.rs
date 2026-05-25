@@ -475,7 +475,7 @@ pub struct CheckDeterminismArgs {
     #[arg(
         long,
         value_name = "stages",
-        help = "Optional stage subset (build,archive,sbom,sign,checksum)"
+        help = "Optional stage subset (build,archive,sbom,sign,checksum,cargo-package). `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry."
     )]
     pub stages: Option<String>,
     #[arg(

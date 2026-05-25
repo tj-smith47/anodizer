@@ -17,6 +17,7 @@ mod entries;
 mod file_specs;
 mod formats;
 mod run;
+mod run_helpers;
 
 #[cfg(test)]
 mod tests;

@@ -857,19 +857,20 @@ mod publisher_tests {
 
     #[test]
     fn aur_source_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("upstream-aur");
         let p = AurSourcePublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg = crate::publisher_helpers::rollback_empty_warning_msg(
-            "upstream-aur",
-            "recorded force-pushes",
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("upstream-aur")
+                && m.contains("recorded force-pushes")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
         );
-        assert!(msg.starts_with("upstream-aur:"), "{msg}");
-        assert!(msg.contains("recorded force-pushes"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
-        assert!(msg.contains("manually"), "{msg}");
     }
 
     #[test]

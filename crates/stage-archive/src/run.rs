@@ -1,27 +1,24 @@
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
-use flate2::Compression;
-use flate2::write::GzEncoder;
-
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodizer_core::config::{
-    ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride, VALID_ARCHIVE_FORMATS,
-};
+use anodizer_core::config::{ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride};
 use anodizer_core::context::Context;
 use anodizer_core::hooks::run_hooks;
 use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
+use anyhow::{Context as _, Result, bail};
 
-use crate::entries::{
-    ArchiveEntry, deduplicate_entries, sort_entries, write_archive_entries, write_zip_entries,
-};
+use crate::entries::{ArchiveEntry, deduplicate_entries, sort_entries};
 use crate::file_specs::{
     ResolvedExtraFile, render_file_info, resolve_default_extra_files, resolve_file_specs,
 };
-use crate::formats::{self, copy_binary, create_gz, create_xz};
+use crate::formats;
+use crate::run_helpers::{
+    clear_archive_template_vars, resolve_archive_mtime, validate_archive_configs,
+    write_archive_in_format,
+};
 use crate::{
     ArchiveStage, default_binary_name_template, default_name_template,
     default_name_template_multi_crate,
@@ -124,44 +121,7 @@ impl Stage for ArchiveStage {
             })
             .collect();
 
-        // Early validation: reject unknown archive format strings before doing
-        // any I/O so typos are surfaced immediately.
-        for (_crate_name, _crate_dir, archive_cfgs) in &work {
-            for cfg in archive_cfgs {
-                if let Some(ref fmts) = cfg.formats {
-                    for fmt in fmts {
-                        if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
-                            bail!(
-                                "unsupported archive format: {fmt} (valid: {})",
-                                VALID_ARCHIVE_FORMATS.join(", ")
-                            );
-                        }
-                    }
-                }
-                if let Some(ref overrides) = cfg.format_overrides {
-                    for ov in overrides {
-                        // GoReleaser warns when format_overrides entries have
-                        // empty goos or empty format.
-                        if ov.os.is_empty() {
-                            log.warn("format_override has empty goos/os value");
-                        }
-                        if ov.formats.as_ref().is_none_or(|f| f.is_empty()) {
-                            log.warn("format_override has empty formats value");
-                        }
-                        if let Some(ref fmts) = ov.formats {
-                            for fmt in fmts {
-                                if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
-                                    bail!(
-                                        "unsupported archive format: {fmt} (valid: {})",
-                                        VALID_ARCHIVE_FORMATS.join(", ")
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        validate_archive_configs(&work, &log)?;
 
         // Ensure dist directory exists
         fs::create_dir_all(&dist)
@@ -671,43 +631,7 @@ impl Stage for ArchiveStage {
                     let path_refs: Vec<&Path> =
                         all_src_paths.iter().map(PathBuf::as_path).collect();
 
-                    // Determine reproducible mtime. Priority:
-                    //   1. `reproducible: true` on any crate build → CommitTimestamp
-                    //      (explicit opt-in for full Rust reproducibility).
-                    //   2. SOURCE_DATE_EPOCH env var → use that (standard external override).
-                    //   3. CommitTimestamp fallback → deterministic by default.
-                    //
-                    // The fallback is load-bearing for release-asset idempotency:
-                    // anodizer-action's outer retry wrapper re-runs the pipeline on
-                    // transient downstream failures (e.g. snapcraft cache race,
-                    // crates.io 429). Without a stable mtime, each re-run embeds the
-                    // download-artifact extraction time into each archive entry,
-                    // producing byte-divergent archives. GitHub's ReleaseAsset API then
-                    // rejects the re-upload with `already_exists` (size mismatch),
-                    // defeating stage-release's size-based idempotency path.
-                    //
-                    // If neither CommitTimestamp nor SOURCE_DATE_EPOCH is available
-                    // (e.g. non-git snapshot outside a workflow), `None` falls back to
-                    // filesystem mtime — preserves prior behavior for that edge case.
-                    let source_date_epoch: Option<u64> = {
-                        let any_reproducible = ctx.config.crates.iter().any(|c| {
-                            c.builds.as_ref().is_some_and(|builds| {
-                                builds.iter().any(|b| b.reproducible.unwrap_or(false))
-                            })
-                        });
-                        let commit_ts = ctx
-                            .template_vars()
-                            .get("CommitTimestamp")
-                            .and_then(|ts| ts.parse::<u64>().ok());
-                        if any_reproducible {
-                            commit_ts
-                        } else {
-                            std::env::var("SOURCE_DATE_EPOCH")
-                                .ok()
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .or(commit_ts)
-                        }
-                    };
+                    let source_date_epoch: Option<u64> = resolve_archive_mtime(ctx);
 
                     for format in &formats_to_produce {
                         // "none" format: skip archive creation entirely for this target
@@ -763,151 +687,14 @@ impl Stage for ArchiveStage {
                             ));
                         } else {
                             log.status(&format!("creating {}", archive_path.display()));
-                            match format.as_str() {
-                                "zip" => {
-                                    let out_file =
-                                        File::create(&archive_path).with_context(|| {
-                                            format!("create zip: {}", archive_path.display())
-                                        })?;
-                                    let mut zip = zip::ZipWriter::new(out_file);
-                                    let owned: Vec<ArchiveEntry> = all_entries
-                                        .iter()
-                                        .map(|e| ArchiveEntry {
-                                            src: e.src.clone(),
-                                            archive_name: e.archive_name.clone(),
-                                            info: e.info.clone(),
-                                        })
-                                        .collect();
-                                    write_zip_entries(&mut zip, &owned, source_date_epoch)?;
-                                    zip.finish().context("zip: finish")?;
-                                }
-                                "tar.gz" | "tgz" => {
-                                    let out_file =
-                                        File::create(&archive_path).with_context(|| {
-                                            format!("create tar.gz: {}", archive_path.display())
-                                        })?;
-                                    let enc = GzEncoder::new(out_file, Compression::best());
-                                    let mut tar = tar::Builder::new(enc);
-                                    let owned: Vec<ArchiveEntry> = all_entries
-                                        .iter()
-                                        .map(|e| ArchiveEntry {
-                                            src: e.src.clone(),
-                                            archive_name: e.archive_name.clone(),
-                                            info: e.info.clone(),
-                                        })
-                                        .collect();
-                                    write_archive_entries(
-                                        &mut tar,
-                                        &owned,
-                                        source_date_epoch,
-                                        "tar.gz",
-                                    )?;
-                                    tar.finish().context("tar.gz: finish")?;
-                                }
-                                "tar.xz" | "txz" => {
-                                    let out_file =
-                                        File::create(&archive_path).with_context(|| {
-                                            format!("create tar.xz: {}", archive_path.display())
-                                        })?;
-                                    let enc = xz2::write::XzEncoder::new(out_file, 9);
-                                    let mut tar = tar::Builder::new(enc);
-                                    let owned: Vec<ArchiveEntry> = all_entries
-                                        .iter()
-                                        .map(|e| ArchiveEntry {
-                                            src: e.src.clone(),
-                                            archive_name: e.archive_name.clone(),
-                                            info: e.info.clone(),
-                                        })
-                                        .collect();
-                                    write_archive_entries(
-                                        &mut tar,
-                                        &owned,
-                                        source_date_epoch,
-                                        "tar.xz",
-                                    )?;
-                                    tar.finish().context("tar.xz: finish")?;
-                                }
-                                "tar.zst" | "tzst" => {
-                                    let out_file =
-                                        File::create(&archive_path).with_context(|| {
-                                            format!("create tar.zst: {}", archive_path.display())
-                                        })?;
-                                    let enc = zstd::Encoder::new(out_file, 3)
-                                        .context("tar.zst: create zstd encoder")?;
-                                    let mut tar = tar::Builder::new(enc);
-                                    let owned: Vec<ArchiveEntry> = all_entries
-                                        .iter()
-                                        .map(|e| ArchiveEntry {
-                                            src: e.src.clone(),
-                                            archive_name: e.archive_name.clone(),
-                                            info: e.info.clone(),
-                                        })
-                                        .collect();
-                                    write_archive_entries(
-                                        &mut tar,
-                                        &owned,
-                                        source_date_epoch,
-                                        "tar.zst",
-                                    )?;
-                                    let enc = tar.into_inner().context("tar.zst: finish tar")?;
-                                    enc.finish().context("tar.zst: finish zstd")?;
-                                }
-                                "tar" => {
-                                    let out_file =
-                                        File::create(&archive_path).with_context(|| {
-                                            format!("create tar: {}", archive_path.display())
-                                        })?;
-                                    let mut tar = tar::Builder::new(out_file);
-                                    let owned: Vec<ArchiveEntry> = all_entries
-                                        .iter()
-                                        .map(|e| ArchiveEntry {
-                                            src: e.src.clone(),
-                                            archive_name: e.archive_name.clone(),
-                                            info: e.info.clone(),
-                                        })
-                                        .collect();
-                                    write_archive_entries(
-                                        &mut tar,
-                                        &owned,
-                                        source_date_epoch,
-                                        "tar",
-                                    )?;
-                                    tar.finish().context("tar: finish")?;
-                                }
-                                "gz" => {
-                                    if path_refs.is_empty() {
-                                        bail!("gz format requires at least one file");
-                                    }
-                                    if path_refs.len() > 1 {
-                                        log.warn(&format!(
-                                            "gz format only compresses a single file; {} extra files will be skipped",
-                                            path_refs.len() - 1
-                                        ));
-                                    }
-                                    create_gz(path_refs[0], &archive_path)?;
-                                }
-                                "xz" => {
-                                    // Mirrors GoReleaser commit bb532b6
-                                    // (pkg/archive/xz/xz.go): xz is a
-                                    // single-file format. Multiple inputs
-                                    // are a hard error, not a warning —
-                                    // upstream returns
-                                    // `xz: failed to add %s, only one file
-                                    // can be archived in xz format`.
-                                    if path_refs.is_empty() {
-                                        bail!("xz format requires exactly one file");
-                                    }
-                                    if path_refs.len() > 1 {
-                                        bail!(
-                                            "xz: failed to add {}, only one file can be archived in xz format",
-                                            path_refs[1].display()
-                                        );
-                                    }
-                                    create_xz(path_refs[0], &archive_path)?;
-                                }
-                                "binary" => copy_binary(&path_refs, &archive_path)?,
-                                _ => bail!("unsupported archive format: {format}"),
-                            }
+                            write_archive_in_format(
+                                format,
+                                &archive_path,
+                                &all_entries,
+                                &path_refs,
+                                source_date_epoch,
+                                &log,
+                            )?;
                         }
 
                         // Update stage-scoped template vars for downstream stages
@@ -1065,15 +852,7 @@ impl Stage for ArchiveStage {
         ctx.template_vars_mut()
             .set("ProjectName", &original_project_name);
 
-        // Clear per-target template vars so they don't leak to downstream stages.
-        ctx.template_vars_mut().set("Os", "");
-        ctx.template_vars_mut().set("Arch", "");
-        ctx.template_vars_mut().set("Target", "");
-        ctx.template_vars_mut().set("Binary", "");
-        ctx.template_vars_mut().set("ArtifactName", "");
-        ctx.template_vars_mut().set("ArtifactPath", "");
-        ctx.template_vars_mut().set("ArtifactExt", "");
-        ctx.template_vars_mut().set("ArtifactID", "");
+        clear_archive_template_vars(ctx);
 
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);

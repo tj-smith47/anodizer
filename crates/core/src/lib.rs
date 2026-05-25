@@ -1,5 +1,6 @@
 pub mod artifact;
 pub mod cargo_lock;
+pub mod cargo_package;
 pub mod config;
 pub mod content_source;
 pub mod context;

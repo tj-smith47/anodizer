@@ -1,11 +1,11 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::artifact::{Artifact, ArtifactKind};
-use anodizer_core::config::{BuildConfig, BuildIgnore, BuildOverride, CrossStrategy, HookEntry};
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::{BuildConfig, BuildIgnore, BuildOverride, CrossStrategy};
 use anodizer_core::context::Context;
 use anodizer_core::env_expand::expand_env as expand_env_vars;
 use anodizer_core::hooks::run_hooks;
@@ -13,19 +13,22 @@ use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
 
 use super::command::{
-    BuildCommand, build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
+    build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
 };
 use super::profile::{detect_amd64_variant, detect_cargo_profile};
 use super::targets::{
     DEFAULT_TARGETS, KNOWN_TARGETS, find_matching_override, is_target_ignored, resolve_target_env,
 };
-use super::universal::{build_universal_binary, project_universal_out_path};
-use super::validation::{is_dynamically_linked, strip_glibc_suffix, target_for_validation};
+use super::validation::{strip_glibc_suffix, target_for_validation};
 use super::workspace::{
     cargo_target_dir_with_env, check_workspace_package, ensure_targets_installed,
     resolve_binary_path, resolve_copy_from, resolve_reproducible_epoch_with_env,
 };
-use super::{binstall, version_sync};
+
+use crate::run_helpers::{
+    BuildJob, BuildResult, add_artifact, apply_source_mutations, process_universal_binaries,
+    seed_determinism_state,
+};
 
 // ---------------------------------------------------------------------------
 // BuildStage
@@ -72,127 +75,12 @@ impl Stage for super::BuildStage {
             .cloned()
             .collect();
 
-        // --- Version sync + binstall: source-mutating steps ---
-        // Snapshot builds never mutate source files. The resolved version in
-        // snapshot mode is a synthetic identifier (e.g. `0.3.4-SNAPSHOT-abc`),
-        // and writing that — or worse, downgrading Cargo.toml when the working
-        // tree is ahead of the latest tag — corrupts the working copy. Binstall
-        // metadata in snapshot mode would reference a non-existent tag URL.
-        let version = ctx
-            .template_vars()
-            .get("RawVersion")
-            .or_else(|| ctx.template_vars().get("Version"))
-            .cloned()
-            .unwrap_or_default();
-        let is_snapshot = ctx.is_snapshot();
-        for crate_cfg in &crates {
-            if let Some(ref vs) = crate_cfg.version_sync
-                && vs.enabled.unwrap_or(false)
-            {
-                if is_snapshot {
-                    log.verbose(&format!(
-                        "version-sync: skipping {} (snapshot mode does not mutate source files)",
-                        crate_cfg.path
-                    ));
-                } else if !version.is_empty() {
-                    version_sync::sync_version(&crate_cfg.path, &version, dry_run, &log)?;
-                }
-            }
-            if let Some(ref bs) = crate_cfg.binstall
-                && bs.enabled.unwrap_or(false)
-            {
-                if is_snapshot {
-                    log.verbose(&format!(
-                        "binstall: skipping {} (snapshot mode does not mutate source files)",
-                        crate_cfg.path
-                    ));
-                } else {
-                    binstall::generate_binstall_metadata(&crate_cfg.path, bs, ctx, dry_run)?;
-                }
-            }
-        }
+        apply_source_mutations(ctx, &crates, dry_run, &log)?;
 
         // -----------------------------------------------------------------
         // Flatten the nested (crate, build, target) loops into a list of
         // BuildJob descriptors. No compilation happens here.
         // -----------------------------------------------------------------
-
-        /// A fully-resolved description of one build unit.
-        struct BuildJob {
-            /// The build command to execute (None for copy_from jobs).
-            cmd: Option<BuildCommand>,
-            /// For copy_from jobs: source path + destination path.
-            copy_from: Option<(PathBuf, PathBuf)>,
-            /// Expected output binary path.
-            bin_path: PathBuf,
-            /// Artifact kind to register.
-            artifact_kind: ArtifactKind,
-            /// Target triple.
-            target: String,
-            /// Crate name.
-            crate_name: String,
-            /// Binary name (for metadata).
-            binary_name: String,
-            /// Build config ID (for downstream filtering).
-            build_id: Option<String>,
-            /// Whether reproducible mtime should be applied.
-            reproducible: bool,
-            /// Pre-build hooks to execute before compilation.
-            pre_hooks: Vec<HookEntry>,
-            /// Post-build hooks to execute after compilation.
-            post_hooks: Vec<HookEntry>,
-            /// When true, output binaries to flat dist/ instead of dist/{target}/.
-            no_unique_dist_dir: bool,
-            /// Crate path (for workspace root resolution).
-            crate_path: String,
-            /// Optional mod_timestamp override for the built binary.
-            mod_timestamp: Option<String>,
-            /// Detected amd64 microarchitecture variant (e.g. "v2", "v3", "v4")
-            /// from RUSTFLAGS `-C target-cpu=x86-64-vN`.
-            amd64_variant: Option<String>,
-        }
-
-        /// Result of executing a build job.
-        struct BuildResult {
-            bin_path: PathBuf,
-            artifact_kind: ArtifactKind,
-            target: String,
-            crate_name: String,
-            binary_name: String,
-            build_id: Option<String>,
-            no_unique_dist_dir: bool,
-            amd64_variant: Option<String>,
-        }
-
-        /// Builds the metadata map for build-output artifacts. Always populates
-        /// the `id` invariant — every artifact created via this helper carries
-        /// `id`, defaulting to the binary name when `build.id` is unset.
-        ///
-        /// Other artifact kinds (Snap, DockerImage, Sbom, …) are constructed
-        /// elsewhere and may not carry `id`, so consumers reading
-        /// `metadata.get("id")` (e.g. `stage-publish/util.rs`,
-        /// `cli/commands/publisher.rs`, `stage-upx`) should still
-        /// `Option`-handle unless they know the artifact source kind.
-        fn artifact_meta(
-            binary: &str,
-            build_id: &Option<String>,
-            amd64_variant: &Option<String>,
-        ) -> HashMap<String, String> {
-            // GoReleaser's Build pipe always populates the `id` metadata key
-            // (defaults to ProjectName at Default()-time). Mirror that here:
-            // if `build.id` is unset, default to the binary name so downstream
-            // filters (universal_binaries, archives, signs, …) can rely on
-            // `id` being present without falling back to `binary`-key lookups.
-            let id = build_id.clone().unwrap_or_else(|| binary.to_string());
-            let mut m = HashMap::from([
-                ("binary".to_string(), binary.to_string()),
-                ("id".to_string(), id),
-            ]);
-            if let Some(v) = amd64_variant {
-                m.insert("amd64_variant".to_string(), v.clone());
-            }
-            m
-        }
 
         let mut build_jobs: Vec<BuildJob> = Vec::new();
         let mut copy_jobs: Vec<BuildJob> = Vec::new();
@@ -203,62 +91,7 @@ impl Stage for super::BuildStage {
             .cloned()
             .unwrap_or_else(|| "0".to_string());
 
-        // Seed the run-wide determinism state from SOURCE_DATE_EPOCH (or the
-        // commit timestamp fallback). Downstream stages — stage-sbom in
-        // particular — read `ctx.determinism.sde` to derive byte-stable
-        // timestamps. Initialized lazily so test contexts without a clean
-        // commit can still proceed; missing SDE simply leaves the field as
-        // `None` and downstream stages fall back to template vars.
-        //
-        // Snapshot mode: delegate to `git::resolve_snapshot_sde`, which
-        // picks `ANODIZE_SOURCE_DATE_EPOCH` > HEAD timestamp (clean tree)
-        // > HEAD + dirty-tree-hash. Replaces the prior "snapshot falls
-        // back to commit_timestamp or 0" path so snapshot-mode runs are
-        // reproducible across invocations of the same tree state.
-        if ctx.determinism.is_none() {
-            if ctx.options.snapshot {
-                let repo = ctx
-                    .options
-                    .project_root
-                    .clone()
-                    .unwrap_or_else(|| PathBuf::from("."));
-                match anodizer_core::git::resolve_snapshot_sde(&repo) {
-                    Ok(epoch) => {
-                        ctx.determinism =
-                            Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
-                    }
-                    Err(err) => {
-                        log.status(&format!(
-                            "snapshot SDE resolution failed; falling back to commit timestamp: {}",
-                            err
-                        ));
-                        if let Some(epoch) =
-                            resolve_reproducible_epoch_with_env(&commit_timestamp, ctx.env_source())
-                        {
-                            ctx.determinism =
-                                Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
-                        }
-                    }
-                }
-            } else if let Some(epoch) =
-                resolve_reproducible_epoch_with_env(&commit_timestamp, ctx.env_source())
-            {
-                ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch)?);
-            }
-        }
-
-        // Append the operator-supplied runtime allow-list (from
-        // `--allow-nondeterministic <name>=<reason>` at the CLI) onto
-        // the freshly-seeded DeterminismState. Done here (not in the
-        // CLI) so the determinism state remains the single source of
-        // truth: every downstream consumer (run summary, release body,
-        // harness allow-list) reads `ctx.determinism.runtime_allowlist`
-        // instead of poking back into `ctx.options`.
-        if let Some(state) = ctx.determinism.as_mut() {
-            for (name, reason) in &ctx.options.runtime_nondeterministic_allowlist {
-                state.append_runtime(name.clone(), reason.clone());
-            }
-        }
+        seed_determinism_state(ctx, &commit_timestamp, &log)?;
 
         for crate_cfg in &crates {
             // Determine builds for this crate
@@ -812,75 +645,6 @@ impl Stage for super::BuildStage {
         let template_vars = ctx.template_vars().clone();
         let dist_dir = ctx.config.dist.clone();
 
-        // Helper: register a build artifact, respecting no_unique_dist_dir.
-        // When no_unique_dist_dir is true, the binary is copied from cargo's
-        // target/{triple}/{profile}/ to a flat {dist}/{name} path, and that
-        // flattened path is registered as the artifact. In dry-run mode, the
-        // flat path is registered without actually copying.
-        let add_artifact = |ctx: &mut Context,
-                            job_bin_path: &Path,
-                            artifact_kind: ArtifactKind,
-                            target: &str,
-                            crate_name: &str,
-                            binary_name: &str,
-                            build_id: &Option<String>,
-                            no_unique_dist_dir: bool,
-                            amd64_variant: &Option<String>|
-         -> Result<()> {
-            ctx.template_vars_mut().set("Binary", binary_name);
-            let mut meta = artifact_meta(binary_name, build_id, amd64_variant);
-
-            let artifact_path = if no_unique_dist_dir {
-                meta.insert("no_unique_dist_dir".to_string(), "true".to_string());
-                // Flatten: copy binary to dist/{name} instead of keeping the
-                // per-target cargo output path.
-                let file_name = job_bin_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| binary_name.to_string());
-                let flat_path = dist_dir.join(&file_name);
-                if !dry_run {
-                    if let Some(parent) = flat_path.parent() {
-                        std::fs::create_dir_all(parent).with_context(|| {
-                            format!("failed to create dist dir: {}", parent.display())
-                        })?;
-                    }
-                    if job_bin_path.exists() {
-                        std::fs::copy(job_bin_path, &flat_path).with_context(|| {
-                            format!(
-                                "no_unique_dist_dir: failed to copy {} -> {}",
-                                job_bin_path.display(),
-                                flat_path.display()
-                            )
-                        })?;
-                    }
-                }
-                flat_path
-            } else {
-                job_bin_path.to_path_buf()
-            };
-
-            // Check for ELF dynamic linking and store in metadata
-            if artifact_path.exists() && is_dynamically_linked(&artifact_path) {
-                meta.insert("DynamicallyLinked".to_string(), "true".to_string());
-            }
-
-            let artifact_name = artifact_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| artifact_path.display().to_string());
-            ctx.artifacts.add(Artifact {
-                kind: artifact_kind,
-                name: artifact_name,
-                path: artifact_path,
-                target: Some(target.to_string()),
-                crate_name: crate_name.to_string(),
-                metadata: meta,
-                size: None,
-            });
-            Ok(())
-        };
-
         if dry_run {
             // Dry-run: just log what would happen, register artifacts sequentially.
             for job in build_jobs.iter().chain(copy_jobs.iter()) {
@@ -915,6 +679,8 @@ impl Stage for super::BuildStage {
                 }
                 add_artifact(
                     ctx,
+                    &dist_dir,
+                    dry_run,
                     &job.bin_path,
                     job.artifact_kind,
                     &job.target,
@@ -1018,6 +784,8 @@ impl Stage for super::BuildStage {
 
                 add_artifact(
                     ctx,
+                    &dist_dir,
+                    dry_run,
                     &resolved_bin,
                     job.artifact_kind,
                     &job.target,
@@ -1039,6 +807,8 @@ impl Stage for super::BuildStage {
 
                 add_artifact(
                     ctx,
+                    &dist_dir,
+                    dry_run,
                     &job.bin_path,
                     job.artifact_kind,
                     &job.target,
@@ -1239,6 +1009,8 @@ impl Stage for super::BuildStage {
                     ));
                     add_artifact(
                         ctx,
+                        &dist_dir,
+                        dry_run,
                         &r.bin_path,
                         r.artifact_kind,
                         &r.target,
@@ -1261,6 +1033,8 @@ impl Stage for super::BuildStage {
 
                 add_artifact(
                     ctx,
+                    &dist_dir,
+                    dry_run,
                     &job.bin_path,
                     job.artifact_kind,
                     &job.target,
@@ -1273,26 +1047,7 @@ impl Stage for super::BuildStage {
             }
         }
 
-        // --- Universal binaries (macOS lipo) ---
-        let mut seen_universal_outputs: std::collections::HashSet<std::path::PathBuf> =
-            std::collections::HashSet::new();
-        for crate_cfg in &crates {
-            if let Some(ref ub_configs) = crate_cfg.universal_binaries {
-                for ub in ub_configs {
-                    let projected = project_universal_out_path(crate_cfg.name.as_str(), ub, ctx)?;
-                    if let Some(existing) = projected.as_ref()
-                        && !seen_universal_outputs.insert(existing.clone())
-                    {
-                        anyhow::bail!(
-                            "build: two universal_binaries entries resolve to the same output path \
-                             {:?}; set distinct `name_template` or `id` values to disambiguate",
-                            existing
-                        );
-                    }
-                    build_universal_binary(crate_cfg.name.as_str(), ub, ctx, dry_run)?;
-                }
-            }
-        }
+        process_universal_binaries(ctx, &crates, dry_run)?;
 
         Ok(())
     }

@@ -988,24 +988,25 @@ mod publisher_tests {
 
     #[test]
     fn dockerhub_rollback_warns_when_no_targets_recorded() {
-        // Empty evidence — rollback emits a single warn and returns Ok.
-        // The warn text comes from the shared `rollback_empty_warning_msg`
-        // helper; we pin the shape via the helper rather than intercepting
-        // stderr (eprintln! cannot be portably captured from the same
-        // process).
+        // Empty evidence drives rollback into the no-targets branch.
+        // The capture pins that production actually invoked `log.warn`
+        // with the helper-formatted message — a hand-constructed expected
+        // string compared against the helper output would pass even if
+        // the rollback body forgot the warn entirely.
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("dockerhub");
         let p = DockerhubPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg = crate::publisher_helpers::rollback_empty_warning_msg(
-            "dockerhub",
-            "description-sync targets",
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("dockerhub")
+                && m.contains("description-sync targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
         );
-        assert!(msg.starts_with("dockerhub:"), "{msg}");
-        assert!(msg.contains("description-sync targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
-        assert!(msg.contains("manually"), "{msg}");
     }
 
     /// Defense-in-depth: a serialized `DockerhubTarget` carries no

@@ -87,6 +87,40 @@ pub enum StageId {
     Sbom,
     Sign,
     Checksum,
+    /// `cargo package` byte-stability probe.
+    ///
+    /// Harness-only stage; not part of `build_release_pipeline`. When
+    /// listed in `--stages=cargo-package`, the harness runs
+    /// `cargo package --no-verify --allow-dirty` for every crate
+    /// declared in `.anodizer.yaml` (or the workspace root when none
+    /// are declared) per run, hashes the resulting `.crate` tarballs,
+    /// and diffs them across runs.
+    ///
+    /// Why a dedicated stage: `cargo publish` (the production path)
+    /// packages internally then uploads. The packaging step has a
+    /// long-running non-determinism story (file mtimes,
+    /// `.cargo_vcs_info.json` contents, tar member ordering); cargo
+    /// has fixed most of these since 1.74 but the harness needs to
+    /// detect regressions in our own packaging stack and pin any
+    /// remaining sources.
+    ///
+    /// Known non-determinism the workaround set addresses:
+    /// - **File mtimes inside the tar**: `SOURCE_DATE_EPOCH` is
+    ///   exported via [`super::env::build_subprocess_env`] and cargo
+    ///   canonicalizes mtimes to it since 1.74.
+    /// - **tar member ordering**: cargo sorts entries since 1.74; no
+    ///   per-call workaround required.
+    /// - **`.cargo_vcs_info.json`**: cargo writes the git sha + dirty
+    ///   flag; the harness's per-run worktree is detached at the same
+    ///   commit, so the sha is stable. The dirty flag depends on
+    ///   whether the worktree was perturbed before packaging; for a
+    ///   fresh `git worktree add --detach <tmp> <commit>` it should
+    ///   read `false`.
+    ///
+    /// Any drift detected after the workarounds is a real regression
+    /// in cargo's packaging reproducibility — surface the diff in the
+    /// report and don't silently pass.
+    CargoPackage,
 }
 
 impl StageId {
@@ -104,6 +138,7 @@ impl StageId {
             StageId::Sbom => "sbom",
             StageId::Sign => "sign",
             StageId::Checksum => "checksum",
+            StageId::CargoPackage => "cargo-package",
         }
     }
 }
@@ -317,6 +352,15 @@ impl Harness {
             let env = self.build_isolated_env(&worktree, signing_keys.as_ref())?;
             self.run_build_pipeline(worktree.path(), &env, &effective_stages)
                 .with_context(|| format!("building pipeline for determinism run {}", run_idx))?;
+            if effective_stages.contains(&StageId::CargoPackage) {
+                self.run_cargo_package(worktree.path(), &env)
+                    .with_context(|| {
+                        format!(
+                            "running cargo-package stage for determinism run {}",
+                            run_idx
+                        )
+                    })?;
+            }
             let artifacts = discover_artifacts(worktree.path())?;
             // `--inject-drift=<stage>` (test-harness gated): mutate the
             // first artifact of the named stage before hashing so the
@@ -497,6 +541,64 @@ impl Harness {
             &extra_skip,
             self.child_snapshot,
         )
+    }
+
+    /// Drive the `cargo-package` stage when [`StageId::CargoPackage`] is
+    /// in the requested stage set.
+    ///
+    /// Delegates to [`anodizer_core::cargo_package::package_workspace`]
+    /// (the allow-listed subprocess entry point), then copies the
+    /// emitted `<cargo_target>/package/*.crate` into
+    /// `<worktree>/dist/cargo-package/` so the existing
+    /// [`discover_artifacts`] walker picks them up under the normal
+    /// `dist/` surface.
+    ///
+    /// `SOURCE_DATE_EPOCH` is already in `env` — the harness exports it
+    /// from [`Harness::sde`] via [`super::env::build_subprocess_env`].
+    /// cargo (≥ 1.74) canonicalizes mtimes inside the `.crate` tar to
+    /// the supplied epoch and sorts tar members alphabetically, which
+    /// covers the two leading non-determinism sources. Residual drift
+    /// (`.cargo_vcs_info.json` contents, registry path embedding,
+    /// future cargo regressions) will appear in the report's `drift`
+    /// section instead of silently passing.
+    fn run_cargo_package(&self, worktree_path: &Path, env: &HashMap<String, String>) -> Result<()> {
+        anodizer_core::cargo_package::package_workspace(worktree_path, env)?;
+        // cargo writes to `<cargo_target>/package/<name>-<version>.crate`
+        // where `cargo_target` came from `CARGO_TARGET_DIR` in the env
+        // block. The env block sets `CARGO_TARGET_DIR=<worktree>/.det-tmp/target`
+        // so the .crate files land there.
+        let source = worktree_path
+            .join(".det-tmp")
+            .join("target")
+            .join("package");
+        let dest = worktree_path.join("dist").join("cargo-package");
+        std::fs::create_dir_all(&dest)
+            .with_context(|| format!("creating dest dir {}", dest.display()))?;
+        if !source.exists() {
+            // No `.crate` files emitted (e.g. workspace virtual manifest
+            // with no `[package]` member). Treat as a no-op so the harness
+            // doesn't fail when an operator points it at a virtual
+            // workspace by mistake — the resulting drift report will be
+            // empty for the cargo-package stage, which correctly reflects
+            // "nothing exercised".
+            return Ok(());
+        }
+        for entry in
+            std::fs::read_dir(&source).with_context(|| format!("reading {}", source.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("crate") {
+                let name = path
+                    .file_name()
+                    .with_context(|| format!("crate path lacks filename: {}", path.display()))?;
+                let target = dest.join(name);
+                std::fs::copy(&path, &target).with_context(|| {
+                    format!("copying {} -> {}", path.display(), target.display())
+                })?;
+            }
+        }
+        Ok(())
     }
 
     /// Aggregate per-run hashes into the final report.

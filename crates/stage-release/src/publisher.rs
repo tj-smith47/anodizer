@@ -656,15 +656,20 @@ mod publisher_tests {
 
     #[test]
     fn github_release_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("github-release");
         let p = GithubReleasePublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg = anodizer_core::rollback_empty_warning_msg("github-release", "release targets");
-        assert!(msg.starts_with("github-release:"), "{msg}");
-        assert!(msg.contains("release targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("github-release")
+                && m.contains("release targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     #[test]

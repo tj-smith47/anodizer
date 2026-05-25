@@ -1537,18 +1537,25 @@ mod publisher_tests {
 
     #[test]
     fn cloudsmith_rollback_warns_when_no_targets_recorded() {
-        // Empty evidence — rollback emits a single warn and returns Ok.
-        // The warn text is pinned by the helper-string assertion below.
+        // Empty evidence drives rollback into the no-targets branch.
+        // The capture pins that production actually invoked `log.warn`
+        // with the helper-formatted message — a hand-constructed expected
+        // string compared against the helper output would pass even if
+        // the rollback body forgot the warn entirely.
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("cloudsmith");
         let p = CloudsmithPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg =
-            crate::publisher_helpers::rollback_empty_warning_msg("cloudsmith", "upload targets");
-        assert!(msg.starts_with("cloudsmith:"), "{msg}");
-        assert!(msg.contains("upload targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("cloudsmith")
+                && m.contains("upload targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     /// Important #4 — per-target warn message renders a real cleanup

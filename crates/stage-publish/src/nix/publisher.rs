@@ -313,17 +313,20 @@ mod publisher_tests {
 
     #[test]
     fn nix_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("nix");
         let p = NixPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg =
-            crate::publisher_helpers::rollback_empty_warning_msg("nix", "overlay clone targets");
-        assert!(msg.starts_with("nix:"), "{msg}");
-        assert!(msg.contains("overlay clone targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
-        assert!(msg.contains("manually"), "{msg}");
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("nix")
+                && m.contains("overlay clone targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     #[test]

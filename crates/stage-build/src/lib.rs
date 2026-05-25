@@ -47,6 +47,7 @@ pub use workspace::{resolve_reproducible_epoch, resolve_reproducible_epoch_with_
 pub struct BuildStage;
 
 mod run;
+mod run_helpers;
 
 // ---------------------------------------------------------------------------
 // Tests

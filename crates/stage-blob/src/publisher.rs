@@ -393,18 +393,20 @@ mod publisher_tests {
 
     #[test]
     fn blob_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("blob");
         let p = BlobPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        // The warn message comes from the core shared helper so blob's
-        // empty-evidence wording stays consistent with the stage-publish
-        // publishers.
-        let msg = anodizer_core::rollback_empty_warning_msg("blob", "upload targets");
-        assert!(msg.starts_with("blob:"), "{msg}");
-        assert!(msg.contains("upload targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("blob")
+                && m.contains("upload targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     /// Important #3 — evidence carries only files that actually uploaded,

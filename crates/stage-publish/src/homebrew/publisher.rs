@@ -414,17 +414,20 @@ mod publisher_tests {
 
     #[test]
     fn homebrew_rollback_warns_when_no_targets_recorded() {
+        let capture = anodizer_core::log::LogCapture::new();
         let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
         let evidence = PublishEvidence::new("homebrew");
         let p = HomebrewPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
 
-        let msg =
-            crate::publisher_helpers::rollback_empty_warning_msg("homebrew", "tap clone targets");
-        assert!(msg.starts_with("homebrew:"), "{msg}");
-        assert!(msg.contains("tap clone targets"), "{msg}");
-        assert!(msg.contains("verify"), "{msg}");
-        assert!(msg.contains("manually"), "{msg}");
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("homebrew")
+                && m.contains("tap clone targets")
+                && m.contains("verify")),
+            "expected captured warn naming publisher + target-noun + 'verify'; got: {warns:?}"
+        );
     }
 
     #[test]

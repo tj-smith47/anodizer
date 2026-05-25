@@ -196,13 +196,14 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                     "sbom" => parsed.push(StageId::Sbom),
                     "sign" => parsed.push(StageId::Sign),
                     "checksum" => parsed.push(StageId::Checksum),
+                    "cargo-package" => parsed.push(StageId::CargoPackage),
                     other => unknown.push(other.to_string()),
                 }
             }
             if !unknown.is_empty() {
                 return Err(format!(
                     "--stages contained unknown stage(s): {}. \
-                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum.",
+                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package.",
                     unknown.join(", ")
                 ));
             }
