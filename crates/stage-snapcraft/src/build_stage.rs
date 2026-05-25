@@ -351,6 +351,11 @@ impl Stage for SnapcraftStage {
                     ctx.template_vars_mut()
                         .set("Amd64", if arch == "amd64" { "v1" } else { "" });
                     ctx.template_vars_mut().set("Mips", "");
+                    // `{{ .Target }}` is an optional template variable consumed only
+                    // by user-provided `name_template:` values; empty signals a
+                    // host-target build (no triple) and Tera renders the
+                    // interpolation as the empty string — valid per the snapcraft
+                    // schema's free-form name field.
                     ctx.template_vars_mut()
                         .set("Target", target.as_deref().unwrap_or(""));
                     let tmpl = snap_cfg

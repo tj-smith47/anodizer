@@ -444,6 +444,12 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .or_else(|| ctx.config.meta_description())
         .unwrap_or(crate_name);
     let description = util::render_or_warn(ctx, log, "aur.description", description_raw);
+    // PKGBUILD `license=()` is documented as RECOMMENDED but not required
+    // per the Arch wiki (https://wiki.archlinux.org/title/PKGBUILD#license);
+    // makepkg builds without complaint when the array contains an empty
+    // string. The Tera template emits `license=('{{ license }}')`
+    // unconditionally — empty produces `license=('')` which `namcap` lints
+    // but neither `makepkg` nor AUR uploads reject.
     let license = aur_cfg
         .license
         .clone()
@@ -472,6 +478,11 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .maintainers
         .clone()
         .unwrap_or_else(|| ctx.config.meta_maintainers().to_vec());
+    // The Vec fields below default to empty when unset. The PKGBUILD_TEMPLATE
+    // wraps each in a `{% if X | length > 0 %}...{% endif %}` guard so the
+    // emitted PKGBUILD omits the corresponding `<key>=(...)` line entirely
+    // when the list is empty — all of these arrays are optional per the
+    // PKGBUILD spec (https://wiki.archlinux.org/title/PKGBUILD).
     let contributors = aur_cfg.contributors.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
@@ -517,6 +528,28 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         );
     }
 
+    // The PKGBUILD `sha256sums_<arch>=('...')` array is consumed by
+    // `makepkg`'s integrity check (per
+    // https://wiki.archlinux.org/title/PKGBUILD#sha256sums). An empty
+    // hash string `('')` is silently accepted by makepkg but disables the
+    // verification — installers would download an unverified tarball.
+    // Bail before emitting a PKGBUILD whose hashes cannot prove
+    // tarball integrity.
+    if let Some(empty) = linux_artifacts.iter().find(|a| a.sha256.is_empty()) {
+        anyhow::bail!(
+            "aur: artifact for crate '{}' at url '{}' (os={}, arch={}) is \
+             missing required sha256 metadata. The generated PKGBUILD would \
+             emit `sha256sums_<arch>=('')`, which disables makepkg's \
+             integrity check and ships an unverified tarball. Check \
+             dist/artifacts.json for the archive entry's metadata.sha256 \
+             and re-run `task release` from a clean dist/ if the field is \
+             absent or empty.",
+            crate_name,
+            empty.url,
+            empty.os,
+            empty.arch,
+        );
+    }
     let sources: Vec<(String, String, String)> = {
         // Deduplicate by architecture — AUR -bin packages expect one source per
         // architecture. When multiple artifacts share the same arch (e.g.
@@ -1394,6 +1427,65 @@ mod publisher_tests {
             .build();
         let p = AurOurPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);
+    }
+
+    /// Building an AUR PKGBUILD for a linux artifact whose `sha256`
+    /// metadata is empty must bail with an actionable error. Defaulting
+    /// to `""` would emit `sha256sums_<arch>=('')` in the generated
+    /// PKGBUILD, which silently disables makepkg's integrity check and
+    /// ships an unverified tarball. The bail message must name the
+    /// publisher, the field, the offending artifact context, and a
+    /// next-step hint.
+    #[test]
+    fn aur_sha256_empty_metadata_bails_with_actionable_error() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::AurConfig;
+        let mut c = aur_crate("mytool");
+        if let Some(ref mut publish) = c.publish
+            && let Some(ref mut aur) = publish.aur
+        {
+            *aur = AurConfig {
+                git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+                license: Some("MIT".to_string()),
+                ..Default::default()
+            };
+        }
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![c])
+            .selected_crates(vec!["mytool".to_string()])
+            .build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/mytool-linux-amd64.tar.gz"),
+            name: "mytool-linux-amd64.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "mytool".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "url".to_string(),
+                    "https://example.com/mytool-linux-amd64.tar.gz".to_string(),
+                );
+                m
+            },
+            size: None,
+        });
+        let log =
+            anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        let err = publish_to_aur(&ctx, "mytool", &log).expect_err("missing sha256 must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("aur:") && msg.contains("sha256"),
+            "error must name publisher + field; got: {msg}"
+        );
+        assert!(
+            msg.contains("mytool"),
+            "error must name the offending crate; got: {msg}"
+        );
+        assert!(
+            msg.contains("dist/artifacts.json") || msg.contains("re-run"),
+            "error must include a next-step hint; got: {msg}"
+        );
     }
 }
 

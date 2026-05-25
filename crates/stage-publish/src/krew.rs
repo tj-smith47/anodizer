@@ -717,6 +717,24 @@ pub fn publish_to_krew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -
             crate_name
         );
     }
+    // The Krew schema requires `spec.platforms[].sha256` to be a non-empty
+    // hex digest — krew's `addURIAndSha` validator rejects manifests with
+    // empty hashes ("Hash validation failed"). Empty sha256 metadata
+    // would silently produce an unusable plugin manifest.
+    if let Some(empty) = all_artifacts.iter().find(|a| a.sha256.is_empty()) {
+        anyhow::bail!(
+            "krew: artifact for crate '{}' at url '{}' (os={}, arch={}) is \
+             missing required sha256 metadata. The generated krew plugin \
+             manifest would embed an empty `sha256:` field, which krew \
+             rejects at install time. Check dist/artifacts.json for the \
+             archive entry's metadata.sha256, and re-run `task release` from \
+             a clean dist/ if the field is absent or empty.",
+            crate_name,
+            empty.url,
+            empty.os,
+            empty.arch,
+        );
+    }
     let platforms = {
         let mut plats = artifacts_to_platforms(&all_artifacts, crate_name);
         if let Some(tmpl) = url_template {
@@ -2354,5 +2372,76 @@ mod publisher_tests {
             .build();
         let p = KrewPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);
+    }
+
+    /// Building a krew plugin manifest for an artifact whose `sha256`
+    /// metadata is empty must bail with an actionable error. Defaulting
+    /// to `""` would embed an empty `sha256:` field in the rendered
+    /// manifest, which krew's `addURIAndSha` validator rejects at
+    /// install time. The bail message must name the publisher, the
+    /// field, the offending artifact context, and a next-step hint.
+    #[test]
+    fn krew_sha256_empty_metadata_bails_with_actionable_error() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{
+            Config, CrateConfig, KrewConfig, PublishConfig, RepositoryConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "mytool".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    krew: Some(KrewConfig {
+                        repository: Some(RepositoryConfig {
+                            owner: Some("acme".to_string()),
+                            name: Some("krew-index-fork".to_string()),
+                            ..Default::default()
+                        }),
+                        short_description: Some("a kubectl plugin".to_string()),
+                        description: Some("a kubectl plugin".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/mytool-linux-amd64.tar.gz"),
+            name: "mytool-linux-amd64.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "mytool".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert(
+                    "url".to_string(),
+                    "https://example.com/mytool-linux-amd64.tar.gz".to_string(),
+                );
+                m.insert("binary".to_string(), "mytool".to_string());
+                m
+            },
+            size: None,
+        });
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let err = publish_to_krew(&mut ctx, "mytool", &log).expect_err("missing sha256 must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("krew:") && msg.contains("sha256"),
+            "error must name publisher + field; got: {msg}"
+        );
+        assert!(
+            msg.contains("mytool"),
+            "error must name the offending crate; got: {msg}"
+        );
+        assert!(
+            msg.contains("dist/artifacts.json") || msg.contains("re-run"),
+            "error must include a next-step hint; got: {msg}"
+        );
     }
 }

@@ -705,6 +705,58 @@ fn test_publish_to_nix_no_artifacts_errors() {
     assert!(msg.contains("mytool"));
 }
 
+/// Building a Nix derivation for an artifact whose `sha256` metadata is
+/// empty must bail with an actionable error. Defaulting to `""` would
+/// embed an empty `sha256 = "";` in the rendered `fetchurl`
+/// fixed-output derivation, which `nix-build` rejects. The bail
+/// message must name the publisher, the field, the offending artifact
+/// context, and a next-step hint.
+#[test]
+fn nix_sha256_empty_metadata_bails_with_actionable_error() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{NixConfig, RepositoryConfig};
+    let cfg = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        license: Some("mit".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = nix_ctx(cfg, false);
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: std::path::PathBuf::from("/tmp/mytool-linux-amd64.tar.gz"),
+        name: "mytool-linux-amd64.tar.gz".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert(
+                "url".to_string(),
+                "https://example.com/mytool-linux-amd64.tar.gz".to_string(),
+            );
+            m
+        },
+        size: None,
+    });
+    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).expect_err("missing sha256 must bail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("nix:") && msg.contains("sha256"),
+        "error must name publisher + field; got: {msg}"
+    );
+    assert!(
+        msg.contains("mytool"),
+        "error must name the offending crate; got: {msg}"
+    );
+    assert!(
+        msg.contains("dist/artifacts.json") || msg.contains("re-run"),
+        "error must include a next-step hint; got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // `is_dynamically_linked` — ELF PT_INTERP detection.
 // ---------------------------------------------------------------------------

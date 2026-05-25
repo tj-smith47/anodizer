@@ -56,6 +56,15 @@ pub fn generate_snap_yaml(
     // Build apps section — if args is set, append it to command.
     // When no apps are configured, generate a default app entry using the
     // first binary's name (like GoReleaser does).
+    //
+    // The per-app Vec / BTreeMap fields below (plugs / environment / after /
+    // aliases / before / command_chain / extensions / passthrough / slots /
+    // sockets) all default to empty when unset. Each corresponding field on
+    // `SnapcraftYamlApp` (yaml.rs) is annotated with `#[serde(skip_serializing_if
+    // = "is_empty_vec" | "BTreeMap::is_empty")]`, so empty collections produce
+    // zero YAML output — matching the snapcraft schema where every per-app
+    // attribute except `command` is optional
+    // (https://snapcraft.io/docs/snapcraft-app-and-service-metadata).
     let apps: BTreeMap<String, SnapcraftYamlApp> = if let Some(app_map) = config.apps.as_ref()
         && !app_map.is_empty()
     {
@@ -173,6 +182,12 @@ pub fn generate_snap_yaml(
         // Always omit `icon:` here so the generated snap.yaml stays schema-clean
         // regardless of whether the user configured the field.
         icon: None,
+        // The top-level `assumes` / `plugs` / `hooks` collections all default
+        // to empty when the user omits them; the SnapcraftYaml struct fields
+        // (yaml.rs) are annotated with `#[serde(skip_serializing_if =
+        // "is_empty_vec" | "BTreeMap::is_empty")]` so empty values produce
+        // zero YAML output — these top-level keys are all optional per the
+        // snap.yaml schema (https://snapcraft.io/docs/snap-format).
         assumes: if has_apps {
             config.assumes.clone().unwrap_or_default()
         } else {

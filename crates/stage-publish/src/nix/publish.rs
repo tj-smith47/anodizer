@@ -74,6 +74,11 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
 
     let version = ctx.version();
     // GoReleaser Pro parity: fall back to project `metadata.*` when nix config unset.
+    // The `description`/`homepage`/`license`/`main_program` Tera variables
+    // below are each gated by `{% if X %}...{% endif %}` blocks in
+    // NIX_TEMPLATE — an empty string suppresses the corresponding
+    // `meta.<field>` attribute, which is valid under the Nix `meta` schema
+    // (every attribute under `meta` is optional per nixpkgs convention).
     let description_raw = nix_cfg
         .description
         .as_deref()
@@ -122,6 +127,29 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
 
     let url_template = nix_cfg.url_template.as_deref();
 
+    // The Nix derivation's `fetchurl { sha256 = ...; }` is a content-addressed
+    // fixed-output derivation — `nix-build` refuses to evaluate when the hash
+    // attribute is empty or a placeholder, and downstream consumers cannot
+    // install a derivation whose source hash fails to verify. Bail before
+    // emitting a broken expression rather than letting the empty default ship.
+    if let Some(empty) = all_artifacts
+        .iter()
+        .find(|a| nix_system(&a.os, &a.arch).is_some() && a.sha256.is_empty())
+    {
+        anyhow::bail!(
+            "nix: artifact for crate '{}' at url '{}' (os={}, arch={}) is \
+             missing required sha256 metadata. The generated Nix derivation \
+             would embed an empty `sha256 = \"\";`, which `nix-build` rejects \
+             (the fetchurl fixed-output derivation cannot verify the source). \
+             Check dist/artifacts.json for the archive entry's metadata.sha256 \
+             and re-run `task release` from a clean dist/ if the field is \
+             absent or empty.",
+            crate_name,
+            empty.url,
+            empty.os,
+            empty.arch,
+        );
+    }
     let archives: Vec<(String, String, String)> = all_artifacts
         .iter()
         .filter_map(|a| {
@@ -133,18 +161,14 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
             };
             // convert hex SHA256 to nix-native base32 format
             // (the same output as `nix-hash --type sha256 --flat --base32`).
-            let nix_hash = if a.sha256.is_empty() {
-                a.sha256.clone()
-            } else {
-                match hex_sha256_to_nix_base32(&a.sha256) {
-                    Ok(h) => h,
-                    Err(e) => {
-                        log.warn(&format!(
-                            "nix: failed to convert SHA256 to nix base32 for {}: {}; using raw hex",
-                            a.url, e
-                        ));
-                        a.sha256.clone()
-                    }
+            let nix_hash = match hex_sha256_to_nix_base32(&a.sha256) {
+                Ok(h) => h,
+                Err(e) => {
+                    log.warn(&format!(
+                        "nix: failed to convert SHA256 to nix base32 for {}: {}; using raw hex",
+                        a.url, e
+                    ));
+                    a.sha256.clone()
                 }
             };
             Some((system, download_url, nix_hash))
