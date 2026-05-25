@@ -3,10 +3,12 @@
 use super::cask::generate_cask_from_context;
 use super::commit_msg::render_commit_msg;
 use super::formula::{FormulaOptions, generate_formula_with_opts};
+use anodizer_core::config::HomebrewConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
+use std::path::{Path, PathBuf};
 
 /// Format preference for homebrew taps: `.tar.gz` (canonical) then `tgz`
 /// (alias for the same wire format).
@@ -44,53 +46,24 @@ pub(crate) fn disambiguate_homebrew_archives(
         .collect())
 }
 
-/// Render and push a Homebrew formula/cask for `crate_name`.
-///
-/// Returns `Ok(true)` when an actual git push was made to the tap repo;
-/// `Ok(false)` when the publish was skipped (skip_upload, dry-run, or
-/// any future early-exit guard). The caller (Publisher::run) uses the
-/// boolean to decide whether to record rollback evidence — if no push
-/// happened there's nothing to revert, and recording phantom evidence
-/// would cause the rollback orchestrator to attempt a git revert HEAD
-/// in a temp clone that has nothing this run actually changed.
-pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
-    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
+/// Resolved metadata strings for the formula: description, license,
+/// homepage, and the rendered formula name. All fields are post-Tera
+/// (rendered through `ctx.render_template`) and fall back to project
+/// `metadata.*` per GoReleaser Pro parity.
+struct ResolvedMetadata {
+    description: String,
+    license: Option<String>,
+    homepage: Option<String>,
+    formula_name: String,
+}
 
-    let hb_cfg = publish
-        .homebrew
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
-
-    // Check skip_upload before doing any work.
-    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log) {
-        log.status(&format!(
-            "homebrew: skipping upload for '{}' (skip_upload={})",
-            crate_name,
-            hb_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
-        return Ok(false);
-    }
-
-    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("homebrew: no repository config for '{}'", crate_name))?;
-
-    if ctx.is_dry_run() {
-        log.status(&format!(
-            "(dry-run) would update Homebrew tap {}/{} for '{}'",
-            repo_owner, repo_name, crate_name
-        ));
-        return Ok(false);
-    }
-
-    let version = ctx.version();
-
-    // GoReleaser Pro parity: fall back to project-level `metadata.*` when the
-    // homebrew config's own field is unset. `metadata.description` / `homepage`
-    // / `license` is consumed here (config-must-wire).
+/// Resolve formula metadata strings with project-level `metadata.*` fallbacks
+/// and Tera rendering applied.
+fn resolve_homebrew_metadata(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+) -> ResolvedMetadata {
     let description_raw = hb_cfg
         .description
         .as_deref()
@@ -104,25 +77,48 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         .as_deref()
         .or_else(|| ctx.config.meta_license())
         .map(|l| ctx.render_template(l).unwrap_or_else(|_| l.to_string()));
-    let homepage_rendered = hb_cfg
+    let homepage = hb_cfg
         .homepage
         .as_deref()
         .or_else(|| ctx.config.meta_homepage())
         .map(|h| ctx.render_template(h).unwrap_or_else(|_| h.to_string()));
+    let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
+    let formula_name = ctx
+        .render_template(formula_name_raw)
+        .unwrap_or_else(|_| formula_name_raw.to_string());
+    ResolvedMetadata {
+        description,
+        license,
+        homepage,
+        formula_name,
+    }
+}
 
-    // Build template vars so install/test/extra_install/post_install can use
-    // {{ name }} and {{ version }} (GoReleaser parity).
+/// Pre-rendered Ruby code blocks emitted into the formula body.
+struct RenderedFormulaCode {
+    install: String,
+    test: String,
+    extra_install: Option<String>,
+    post_install: Option<String>,
+}
+
+/// Build the `install`, `test`, `extra_install`, and `post_install` blocks
+/// from config + artifact metadata. Auto-generates multi-binary install
+/// lines from ExtraBinaries metadata when no explicit install is set
+/// (GoReleaser parity).
+fn render_install_and_test_blocks(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+    version: &str,
+) -> RenderedFormulaCode {
     let mut tmpl_vars = TemplateVars::new();
     tmpl_vars.set("name", crate_name);
-    tmpl_vars.set("version", &version);
+    tmpl_vars.set("version", version);
 
-    // Auto-generate multi-binary install lines from ExtraBinaries artifact
-    // metadata when no explicit install is configured (GoReleaser parity:
-    // installs() reads artifact.ExtraBinaries to produce sorted bin.install lines).
     let install_raw = if let Some(ref custom_install) = hb_cfg.install {
         custom_install.clone()
     } else {
-        // Collect binary names from archive metadata across all matching artifacts.
         let mut bin_names = std::collections::BTreeSet::new();
         for art in ctx
             .artifacts
@@ -132,7 +128,6 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
                 bin_names.insert(name);
             }
         }
-        // For UploadableBinary artifacts, use "filename" => "binary_name" syntax.
         for art in ctx.artifacts.by_kind_and_crate(
             anodizer_core::artifact::ArtifactKind::UploadableBinary,
             crate_name,
@@ -161,44 +156,34 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         .test
         .clone()
         .unwrap_or_else(|| format!("system \"#{{bin}}/{}\", \"--version\"", crate_name));
-    let test_block = template::render(&test_raw, &tmpl_vars).unwrap_or_else(|_| test_raw.clone());
+    let test = template::render(&test_raw, &tmpl_vars).unwrap_or_else(|_| test_raw.clone());
 
-    // Template-render extra_install and post_install if provided.
-    let extra_install_rendered = hb_cfg
+    let extra_install = hb_cfg
         .extra_install
         .as_deref()
         .map(|s| template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string()));
-    let post_install_rendered = hb_cfg
+    let post_install = hb_cfg
         .post_install
         .as_deref()
         .map(|s| template::render(s, &tmpl_vars).unwrap_or_else(|_| s.to_string()));
+    RenderedFormulaCode {
+        install,
+        test,
+        extra_install,
+        post_install,
+    }
+}
 
-    // Derive GitHub slug (owner/repo) for homepage fallback.
-    let github_slug = _crate_cfg
-        .release
-        .as_ref()
-        .and_then(|r| r.github.as_ref())
-        .map(|gh| format!("{}/{}", gh.owner, gh.name));
-
-    let opts = FormulaOptions {
-        homepage: homepage_rendered.as_deref(),
-        github_slug,
-        dependencies: hb_cfg.dependencies.as_deref(),
-        conflicts: hb_cfg.conflicts.as_deref(),
-        caveats: hb_cfg.caveats.as_deref(),
-        extra_install: extra_install_rendered.as_deref(),
-        post_install: post_install_rendered.as_deref(),
-        download_strategy: hb_cfg.download_strategy.as_deref(),
-        url_headers: hb_cfg.url_headers.as_deref(),
-        custom_require: hb_cfg.custom_require.as_deref(),
-        custom_block: hb_cfg.custom_block.as_deref(),
-        plist: hb_cfg.plist.as_deref(),
-        service: hb_cfg.service.as_deref(),
-    };
-
-    // Collect Archive and Binary artifacts for this crate to build the formula entries.
-    // GoReleaser supports both UploadableArchive and UploadableBinary types here.
-    // Apply IDs + amd64_variant/arm_variant filter.
+/// Collect, filter, and disambiguate archive entries (Archive +
+/// UploadableBinary) for the formula. Returns `(target, url, sha256)`
+/// tuples ready to feed into the formula renderer.
+fn collect_archive_entries(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+    version: &str,
+    log: &StageLogger,
+) -> Result<Vec<(String, String, String)>> {
     let ids_filter = hb_cfg.ids.as_deref();
     let amd64_variant = hb_cfg.amd64_variant.as_deref().or(Some("v1"));
     // GoReleaser defaults Goarm to "6" for Homebrew (brew.go:85)
@@ -253,7 +238,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
             // otherwise use the artifact metadata URL (from the release stage).
             let url = if let Some(tmpl) = hb_cfg.url_template.as_deref() {
                 let (os, arch) = anodizer_core::target::map_target(target);
-                crate::util::render_url_template_with_ctx(ctx, tmpl, a.name(), &version, &arch, &os)
+                crate::util::render_url_template_with_ctx(ctx, tmpl, a.name(), version, &arch, &os)
             } else {
                 a.metadata.get("url")?.to_string()
             };
@@ -266,15 +251,9 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         })
         .collect();
 
-    // Disambiguate: when ids: is unset and multiple archives share an OS/arch
-    // key, prefer .tar.gz over other formats (most-conventional Homebrew archive).
     let archive_data =
         disambiguate_homebrew_archives(raw_archive_data, ids_filter.is_some(), crate_name, log)?;
 
-    //
-    // — empty archive set after filtering produces a broken formula with
-    // empty url/sha256. Bail with an actionable error that cites the filters
-    // the user would need to adjust to get a match.
     if archive_data.is_empty() {
         let ids_hint = ids_filter
             .map(|ids| format!("ids={ids:?}"))
@@ -289,42 +268,35 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
              Archive or UploadableBinary artifact must match."
         );
     }
+    Ok(archive_data)
+}
 
-    let archives: Vec<(&str, &str, &str)> = archive_data
-        .iter()
-        .map(|(t, u, s)| (t.as_str(), u.as_str(), s.as_str()))
-        .collect();
+/// Owner/name/clone-path triple describing the tap checkout. Bundled to
+/// keep helper signatures readable.
+struct TapLocation<'a> {
+    repo_owner: &'a str,
+    repo_name: &'a str,
+    repo_path: &'a Path,
+}
 
-    // Use name override if set, otherwise crate name; render through template engine.
-    let formula_name_raw = hb_cfg.name.as_deref().unwrap_or(crate_name);
-    let formula_name_rendered = ctx
-        .render_template(formula_name_raw)
-        .unwrap_or_else(|_| formula_name_raw.to_string());
-    let formula_name = formula_name_rendered.as_str();
+/// Identity strings threaded through the commit/log/PR helpers: the crate
+/// being published, the rendered formula name, and the version tag.
+struct FormulaIdentity<'a> {
+    crate_name: &'a str,
+    formula_name: &'a str,
+    version: &'a str,
+}
 
-    let formula = generate_formula_with_opts(
-        &super::formula::FormulaCore {
-            name: formula_name,
-            version: &version,
-            description: &description,
-            // FORMULA_TEMPLATE wraps `license` in `{% if license %}`, so empty
-            // string renders as no `license` stanza. Homebrew formulae accept
-            // omitting the license line (lint warns but does not error); the
-            // formula remains installable.
-            license: license.as_deref().unwrap_or(""),
-        },
-        &archives,
-        &super::formula::FormulaCode {
-            install: &install,
-            test: &test_block,
-        },
-        &opts,
-    )?;
-
-    // Clone tap repo, write formula, commit, push.
-    let tmp_dir = tempfile::tempdir().context("homebrew: create temp dir")?;
-    let repo_path = tmp_dir.path();
-
+/// Clone the tap repo into a tempdir and write the rendered formula.
+/// Returns the on-disk formula path so the commit step can stage it.
+fn clone_tap_and_write_formula(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    tap: &TapLocation<'_>,
+    formula_name: &str,
+    formula: &str,
+    log: &StageLogger,
+) -> Result<PathBuf> {
     let token = crate::util::resolve_repo_token(
         ctx,
         hb_cfg.repository.as_ref(),
@@ -332,10 +304,10 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     );
     crate::util::clone_repo(
         hb_cfg.repository.as_ref(),
-        &repo_owner,
-        &repo_name,
+        tap.repo_owner,
+        tap.repo_name,
         token.as_deref(),
-        repo_path,
+        tap.repo_path,
         "homebrew",
         log,
     )?;
@@ -347,82 +319,109 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     // the root); GoReleaser brew.go behaves the same way.
     let directory = hb_cfg.directory.clone().unwrap_or_default();
     let formula_dir = if directory.is_empty() {
-        repo_path.to_path_buf()
+        tap.repo_path.to_path_buf()
     } else {
-        repo_path.join(&directory)
+        tap.repo_path.join(&directory)
     };
     std::fs::create_dir_all(&formula_dir)
         .with_context(|| format!("homebrew: create formula dir {}", formula_dir.display()))?;
 
     let formula_path = formula_dir.join(format!("{}.rb", formula_name));
-    std::fs::write(&formula_path, &formula)
+    std::fs::write(&formula_path, formula)
         .with_context(|| format!("homebrew: write formula {}", formula_path.display()))?;
 
     log.status(&format!(
         "wrote Homebrew formula: {}",
         formula_path.display()
     ));
+    Ok(formula_path)
+}
 
-    // If a cask config is present, generate and write the cask file into the
-    // same clone so we commit and push everything in one shot (avoiding a
-    // redundant second clone/commit/push cycle).
-    let mut cask_name_for_log: Option<String> = None;
-    let mut cask_path_lossy: Option<String> = None;
+/// Side-result of optionally writing a cask file into the same tap clone.
+#[derive(Default)]
+struct CaskInTapOutcome {
+    /// Cask name (for log/PR-body decoration) when a cask was written.
+    cask_name: Option<String>,
+    /// On-disk path of the written cask (for `git add`) when one was written.
+    cask_path: Option<PathBuf>,
+}
 
-    if let Some(cask_cfg) = hb_cfg.cask.as_ref() {
-        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
-            log.status(&format!(
-                "homebrew cask: skipping upload for '{}' (skip_upload={})",
-                crate_name,
-                cask_cfg
-                    .skip_upload
-                    .as_ref()
-                    .map(|v| v.as_str())
-                    .unwrap_or("")
-            ));
-        } else {
-            let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
-
-            let casks_dir = repo_path.join("Casks");
-            std::fs::create_dir_all(&casks_dir).with_context(|| {
-                format!("homebrew cask: create Casks dir {}", casks_dir.display())
-            })?;
-
-            let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
-            std::fs::write(&cask_path, &cask_result.content).with_context(|| {
-                format!("homebrew cask: write cask file {}", cask_path.display())
-            })?;
-
-            log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
-            cask_path_lossy = Some(cask_path.to_string_lossy().into_owned());
-            cask_name_for_log = Some(cask_result.cask_name);
-        }
+/// When a cask config is present alongside the formula config, generate and
+/// write the cask into the same tap clone so the commit/push covers both
+/// files in a single round-trip.
+fn maybe_write_cask_into_tap(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    crate_name: &str,
+    repo_path: &Path,
+    log: &StageLogger,
+) -> Result<CaskInTapOutcome> {
+    let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
+        return Ok(CaskInTapOutcome::default());
+    };
+    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log) {
+        log.status(&format!(
+            "homebrew cask: skipping upload for '{}' (skip_upload={})",
+            crate_name,
+            cask_cfg
+                .skip_upload
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("")
+        ));
+        return Ok(CaskInTapOutcome::default());
     }
+    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
 
-    // Build the list of files to commit: always the formula, plus the cask if present.
+    let casks_dir = repo_path.join("Casks");
+    std::fs::create_dir_all(&casks_dir)
+        .with_context(|| format!("homebrew cask: create Casks dir {}", casks_dir.display()))?;
+
+    let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
+    std::fs::write(&cask_path, &cask_result.content)
+        .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
+
+    log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+    Ok(CaskInTapOutcome {
+        cask_name: Some(cask_result.cask_name),
+        cask_path: Some(cask_path),
+    })
+}
+
+/// Stage the formula (and optional cask), render the commit message, and
+/// run the commit/push round-trip. Logs the per-outcome status line.
+fn commit_files_to_tap(
+    ctx: &Context,
+    hb_cfg: &HomebrewConfig,
+    ident: &FormulaIdentity<'_>,
+    tap: &TapLocation<'_>,
+    formula_path: &Path,
+    cask: &CaskInTapOutcome,
+    log: &StageLogger,
+) -> Result<crate::util::CommitOutcome> {
     let formula_lossy = formula_path.to_string_lossy();
+    let cask_lossy = cask.cask_path.as_ref().map(|p| p.to_string_lossy());
     let mut files_to_commit: Vec<&str> = vec![&formula_lossy];
-    if let Some(ref cask_lossy) = cask_path_lossy {
-        files_to_commit.push(cask_lossy);
+    if let Some(ref cl) = cask_lossy {
+        files_to_commit.push(cl);
     }
 
-    // Render commit message from template or use default.
-    let kind = if cask_name_for_log.is_some() {
+    let kind = if cask.cask_name.is_some() {
         "formula and cask"
     } else {
         "formula"
     };
     let commit_msg = render_commit_msg(
         hb_cfg.commit_msg_template.as_deref(),
-        formula_name,
-        &version,
+        ident.formula_name,
+        ident.version,
         kind,
     );
 
     let commit_opts = crate::util::resolve_commit_opts(ctx, hb_cfg.commit_author.as_ref());
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     let outcome = crate::util::commit_and_push_with_opts(
-        repo_path,
+        tap.repo_path,
         &files_to_commit,
         &commit_msg,
         branch,
@@ -431,29 +430,43 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     )?;
     match outcome {
         crate::util::CommitOutcome::Pushed => {
-            if let Some(ref cask_name) = cask_name_for_log {
+            if let Some(ref cask_name) = cask.cask_name {
                 log.status(&format!(
                     "Homebrew tap {}/{} updated with formula '{}' and cask '{}'",
-                    repo_owner, repo_name, formula_name, cask_name
+                    tap.repo_owner, tap.repo_name, ident.formula_name, cask_name
                 ));
             } else {
                 log.status(&format!(
                     "Homebrew tap {}/{} updated for '{}'",
-                    repo_owner, repo_name, crate_name
+                    tap.repo_owner, tap.repo_name, ident.crate_name
                 ));
             }
         }
         crate::util::CommitOutcome::NoChanges => {
             log.status(&format!(
                 "homebrew: nothing to push, formula for '{}' already up to date",
-                formula_name
+                ident.formula_name
             ));
         }
     }
+    Ok(outcome)
+}
 
-    // Submit a PR if pull_request.enabled is set.
-    let pr_branch = branch.unwrap_or("main");
-    let (pr_title, pr_body) = if let Some(ref cask_name) = cask_name_for_log {
+/// Submit (or record) the optional PR for the tap update. The PR title
+/// and body switch between formula-only and formula+cask phrasings to
+/// match the kind of file(s) that were committed.
+fn submit_homebrew_pr(
+    ctx: &mut Context,
+    repo_for_pr: Option<anodizer_core::config::RepositoryConfig>,
+    ident: &FormulaIdentity<'_>,
+    tap: &TapLocation<'_>,
+    cask_name: Option<&str>,
+    pr_branch: &str,
+    log: &StageLogger,
+) {
+    let formula_name = ident.formula_name;
+    let version = ident.version;
+    let (pr_title, pr_body) = if let Some(cask_name) = cask_name {
         (
             format!(
                 "Update {} formula and {} cask to {}",
@@ -473,19 +486,13 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
             ),
         )
     };
-    // Clone the repository config so the `maybe_submit_pr` call no
-    // longer borrows from `ctx.config` (via `hb_cfg`). NLL then drops
-    // the `hb_cfg` / `publish` immutable borrows, which makes the
-    // subsequent `&mut ctx` call legal. The config is a handful of
-    // strings — clone cost is trivial.
-    let repo_for_pr = hb_cfg.repository.clone();
 
     let pr_outcome = crate::util::maybe_submit_pr(
-        repo_path,
+        tap.repo_path,
         repo_for_pr.as_ref(),
         &crate::util::PrOrigin {
-            repo_owner: &repo_owner,
-            repo_name: &repo_name,
+            repo_owner: tap.repo_owner,
+            repo_name: tap.repo_name,
             branch_name: pr_branch,
             // Homebrew formula publishes commit directly to the tap
             // branch; the optional PR is informational. The cask/winget/krew
@@ -499,10 +506,139 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         log,
     );
 
-    // Surface PR-already-exists skips to the dispatch summary table.
     if let Some(pr_outcome) = pr_outcome {
         ctx.record_publisher_outcome(pr_outcome);
     }
+}
+
+/// Render and push a Homebrew formula/cask for `crate_name`.
+///
+/// Returns `Ok(true)` when an actual git push was made to the tap repo;
+/// `Ok(false)` when the publish was skipped (skip_upload, dry-run, or
+/// any future early-exit guard). The caller (Publisher::run) uses the
+/// boolean to decide whether to record rollback evidence — if no push
+/// happened there's nothing to revert, and recording phantom evidence
+/// would cause the rollback orchestrator to attempt a git revert HEAD
+/// in a temp clone that has nothing this run actually changed.
+pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+    let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
+
+    let hb_cfg = publish
+        .homebrew
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
+
+    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log) {
+        log.status(&format!(
+            "homebrew: skipping upload for '{}' (skip_upload={})",
+            crate_name,
+            hb_cfg
+                .skip_upload
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("")
+        ));
+        return Ok(false);
+    }
+
+    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(hb_cfg.repository.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("homebrew: no repository config for '{}'", crate_name))?;
+
+    if ctx.is_dry_run() {
+        log.status(&format!(
+            "(dry-run) would update Homebrew tap {}/{} for '{}'",
+            repo_owner, repo_name, crate_name
+        ));
+        return Ok(false);
+    }
+
+    let version = ctx.version();
+
+    // Clone the borrowed config slices upfront so the later `&mut ctx` calls
+    // (record_publisher_outcome, maybe_submit_pr) don't conflict with the
+    // immutable borrow held by `hb_cfg` / `publish`.
+    let hb_cfg_owned: HomebrewConfig = hb_cfg.clone();
+    let github_slug = crate_cfg
+        .release
+        .as_ref()
+        .and_then(|r| r.github.as_ref())
+        .map(|gh| format!("{}/{}", gh.owner, gh.name));
+
+    let meta = resolve_homebrew_metadata(ctx, &hb_cfg_owned, crate_name);
+    let code = render_install_and_test_blocks(ctx, &hb_cfg_owned, crate_name, &version);
+
+    let opts = FormulaOptions {
+        homepage: meta.homepage.as_deref(),
+        github_slug,
+        dependencies: hb_cfg_owned.dependencies.as_deref(),
+        conflicts: hb_cfg_owned.conflicts.as_deref(),
+        caveats: hb_cfg_owned.caveats.as_deref(),
+        extra_install: code.extra_install.as_deref(),
+        post_install: code.post_install.as_deref(),
+        download_strategy: hb_cfg_owned.download_strategy.as_deref(),
+        url_headers: hb_cfg_owned.url_headers.as_deref(),
+        custom_require: hb_cfg_owned.custom_require.as_deref(),
+        custom_block: hb_cfg_owned.custom_block.as_deref(),
+        plist: hb_cfg_owned.plist.as_deref(),
+        service: hb_cfg_owned.service.as_deref(),
+    };
+
+    let archive_data = collect_archive_entries(ctx, &hb_cfg_owned, crate_name, &version, log)?;
+    let archives: Vec<(&str, &str, &str)> = archive_data
+        .iter()
+        .map(|(t, u, s)| (t.as_str(), u.as_str(), s.as_str()))
+        .collect();
+
+    let formula_name = meta.formula_name.as_str();
+    let formula = generate_formula_with_opts(
+        &super::formula::FormulaCore {
+            name: formula_name,
+            version: &version,
+            description: &meta.description,
+            // FORMULA_TEMPLATE wraps `license` in `{% if license %}`, so empty
+            // string renders as no `license` stanza. Homebrew formulae accept
+            // omitting the license line (lint warns but does not error); the
+            // formula remains installable.
+            license: meta.license.as_deref().unwrap_or(""),
+        },
+        &archives,
+        &super::formula::FormulaCode {
+            install: &code.install,
+            test: &code.test,
+        },
+        &opts,
+    )?;
+
+    let tmp_dir = tempfile::tempdir().context("homebrew: create temp dir")?;
+    let tap = TapLocation {
+        repo_owner: &repo_owner,
+        repo_name: &repo_name,
+        repo_path: tmp_dir.path(),
+    };
+    let ident = FormulaIdentity {
+        crate_name,
+        formula_name,
+        version: &version,
+    };
+
+    let formula_path =
+        clone_tap_and_write_formula(ctx, &hb_cfg_owned, &tap, formula_name, &formula, log)?;
+
+    let cask = maybe_write_cask_into_tap(ctx, &hb_cfg_owned, crate_name, tap.repo_path, log)?;
+
+    let outcome = commit_files_to_tap(ctx, &hb_cfg_owned, &ident, &tap, &formula_path, &cask, log)?;
+
+    let branch = crate::util::resolve_branch(hb_cfg_owned.repository.as_ref());
+    let pr_branch = branch.unwrap_or("main");
+    submit_homebrew_pr(
+        ctx,
+        hb_cfg_owned.repository.clone(),
+        &ident,
+        &tap,
+        cask.cask_name.as_deref(),
+        pr_branch,
+        log,
+    );
 
     Ok(outcome.is_pushed())
 }
