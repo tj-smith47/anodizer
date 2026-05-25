@@ -174,7 +174,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // Resolve username from config, falling back to DOCKER_USERNAME.
         // Bail early when neither is set so config errors surface even in
         // dry-run.
-        let username_env = std::env::var("DOCKER_USERNAME").ok();
+        let username_env = ctx.env_var("DOCKER_USERNAME");
         let username = match entry.username.as_deref() {
             Some(u) if !u.is_empty() => u.to_string(),
             _ => match username_env.as_deref() {
@@ -248,7 +248,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // will hard-fail later) so a typo'd secret_name doesn't slip
         // through unnoticed during config-test runs.
         let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
-        if ctx.is_dry_run() && std::env::var(secret_name).ok().is_none() {
+        if ctx.is_dry_run() && ctx.env_var(secret_name).is_none() {
             log.warn(&format!(
                 "dockerhub: secret env '{}' is not set; live mode will fail authentication",
                 secret_name
@@ -290,9 +290,9 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         }
 
         // Authenticate: POST to get JWT token.
-        let password = std::env::var(secret_name).with_context(|| {
-            format!("dockerhub: environment variable '{}' not set", secret_name)
-        })?;
+        let password = ctx
+            .env_var(secret_name)
+            .ok_or_else(|| anyhow!("dockerhub: environment variable '{}' not set", secret_name))?;
 
         let login_body = serde_json::json!({
             "username": username,
@@ -435,15 +435,18 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
 /// snapshotted `description` / `full_description`. Used exclusively by
 /// [`DockerhubPublisher::rollback`].
 ///
-/// Credentials are re-resolved at rollback time from the live process
-/// env (`std::env::var(t.secret_env_var)`); the password value never
-/// crosses [`PublishEvidence::extra`]. A target whose snapshot was
-/// entirely `None` (rare — neither field was readable at publish
-/// time) is a no-op: there is nothing to restore.
-fn restore_dockerhub_target(
+/// Credentials are re-resolved at rollback time from the injected env
+/// source — production wires up [`anodizer_core::ProcessEnvSource`];
+/// tests inject a [`anodizer_core::MapEnvSource`] so the missing-env
+/// branch can be exercised without mutating the process env. The
+/// password value never crosses [`PublishEvidence::extra`]. A target
+/// whose snapshot was entirely `None` (rare — neither field was
+/// readable at publish time) is a no-op: there is nothing to restore.
+fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
     client: &reqwest::blocking::Client,
     policy: &RetryPolicy,
     target: &DockerhubTarget,
+    env: &E,
 ) -> Result<()> {
     let mut patch_body = serde_json::Map::new();
     if let Some(ref d) = target.snapshot_description {
@@ -462,10 +465,11 @@ fn restore_dockerhub_target(
         return Ok(());
     }
 
-    let password = std::env::var(&target.secret_env_var).with_context(|| {
-        format!(
+    let password = env.var(&target.secret_env_var).ok_or_else(|| {
+        anyhow!(
             "dockerhub: env var '{}' not set; cannot re-authenticate to restore '{}'",
-            target.secret_env_var, target.target
+            target.secret_env_var,
+            target.target
         )
     })?;
 
@@ -628,11 +632,12 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             }
         };
         let policy = ctx.retry_policy();
+        let env = ctx.env_source();
 
         let mut restored = 0usize;
         let mut failed = 0usize;
         for t in &targets {
-            match restore_dockerhub_target(&client, &policy, t) {
+            match restore_dockerhub_target_with_env(&client, &policy, t, env) {
                 Ok(()) => {
                     restored += 1;
                     log.status(&format!(
@@ -1100,12 +1105,13 @@ mod publisher_tests {
     /// PATCH-body construction round-trip: a snapshot with both
     /// description and full_description set produces a PATCH body
     /// carrying exactly those keys. The live-HTTP path goes through
-    /// `restore_dockerhub_target` (also exercised by the missing-env
-    /// and empty-snapshot tests below); this test pins the body shape
-    /// without spinning up the responder — login + PATCH both hit the
-    /// hard-coded `https://hub.docker.com` host, so a unit-level
-    /// happy-path requires either redirecting login (an artificial
-    /// fixture) or running against the real registry (integration).
+    /// `restore_dockerhub_target_with_env` (also exercised by the
+    /// missing-env and empty-snapshot tests below); this test pins
+    /// the body shape without spinning up the responder — login +
+    /// PATCH both hit the hard-coded `https://hub.docker.com` host,
+    /// so a unit-level happy-path requires either redirecting login
+    /// (an artificial fixture) or running against the real registry
+    /// (integration).
     #[test]
     fn dockerhub_restore_body_contains_snapshot_fields() {
         let t = DockerhubTarget {
@@ -1173,12 +1179,15 @@ mod publisher_tests {
         // Note: the unreachable URL + unset env var would normally
         // make this fail loudly. The no-op short-circuit must fire
         // before either is touched.
-        restore_dockerhub_target(&client, &policy, &t).expect("no-op when snapshot empty");
+        let env = anodizer_core::MapEnvSource::new();
+        restore_dockerhub_target_with_env(&client, &policy, &t, &env)
+            .expect("no-op when snapshot empty");
     }
 
     /// Missing env var → restore returns Err with a recognizable
-    /// message naming the env var. Defends the operator-facing hint
-    /// shape that the `Publisher::rollback` warn line interpolates.
+    /// message naming the env var. Drives the lookup through an empty
+    /// [`MapEnvSource`] so the assertion holds regardless of the
+    /// ambient process env (no thread-race on `remove_var`).
     #[test]
     fn dockerhub_restore_errors_when_env_missing() {
         let client = reqwest::blocking::Client::builder()
@@ -1190,15 +1199,7 @@ mod publisher_tests {
             base_delay: std::time::Duration::from_millis(1),
             max_delay: std::time::Duration::from_millis(2),
         };
-        // Pick an env var name that is overwhelmingly unlikely to be
-        // set in any test environment. No call to `std::env::remove_var`
-        // — that would race other tests in the same process under
-        // `cargo test`'s default thread-pool runner.
         let env_var = "DOCKER_PASSWORD_INTENTIONALLY_UNSET_FOR_DOCKERHUB_TEST_ABCDEF";
-        assert!(
-            std::env::var(env_var).is_err(),
-            "guard: this test requires the env var to be unset"
-        );
         let t = DockerhubTarget {
             target: "myorg/myapp".into(),
             repo_url: "http://127.0.0.1:1/unreachable".into(),
@@ -1209,7 +1210,9 @@ mod publisher_tests {
             snapshot_description: Some("prior".into()),
             snapshot_full_description: None,
         };
-        let err = restore_dockerhub_target(&client, &policy, &t).expect_err("env missing");
+        let env = anodizer_core::MapEnvSource::new();
+        let err =
+            restore_dockerhub_target_with_env(&client, &policy, &t, &env).expect_err("env missing");
         let chain = format!("{err:#}");
         assert!(
             chain.contains(env_var),

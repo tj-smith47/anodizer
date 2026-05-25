@@ -3,7 +3,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -356,10 +356,12 @@ pub(crate) fn publish_to_cloudsmith(
 
         // --- Live mode ---
         // Resolve token from environment.
-        let token = std::env::var(&secret_name_rendered).with_context(|| {
-            format!(
+        let token = ctx.env_var(&secret_name_rendered).ok_or_else(|| {
+            anyhow!(
                 "cloudsmith: environment variable '{}' not set (needed for org '{}' repo '{}')",
-                secret_name_rendered, organization, repository
+                secret_name_rendered,
+                organization,
+                repository
             )
         })?;
 
@@ -918,7 +920,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         // anything, so fall back to the warn-only manual-cleanup
         // checklist for every target. `CLOUDSMITH_API_KEY` is the
         // rollback-scope env name declared by `rollback_scope_needed`.
-        let token = std::env::var("CLOUDSMITH_API_KEY").ok();
+        let token = ctx.env_var("CLOUDSMITH_API_KEY");
         if token.is_none() {
             log.warn(
                 "cloudsmith: CLOUDSMITH_API_KEY not set; emitting manual-cleanup checklist instead of DELETE",
@@ -1708,16 +1710,11 @@ mod publisher_tests {
     // also absent here to make doubly sure no network call fires.
     #[test]
     fn cloudsmith_rollback_falls_back_to_warn_when_slug_missing() {
-        // SAFETY: env mutation is serialized at the binary level — this
-        // test does not touch any env var another test relies on. Clear
-        // the rollback token explicitly so the warn-only path is forced
-        // for both the no-slug and the no-token reasons.
-        // SAFETY: see comment above; unsafe is required for std env API.
-        unsafe {
-            std::env::remove_var("CLOUDSMITH_API_KEY");
-        }
-
+        // Inject an empty env source so `CLOUDSMITH_API_KEY` resolves
+        // unset regardless of the ambient process env; the warn-only
+        // path is forced for both the no-slug AND no-token reasons.
         let mut ctx = TestContextBuilder::new().build();
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
         let targets = vec![
             CloudsmithTarget {
                 org: "acme".to_string(),

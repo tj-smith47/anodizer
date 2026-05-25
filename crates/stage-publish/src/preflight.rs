@@ -718,7 +718,7 @@ fn run_publisher_preflight_extension(
     for p in &publishers {
         // ---- rollback scope check ------------------------------------
         if let Some(label) = p.rollback_scope_needed()
-            && !crate::scope::scope_available(label)
+            && !crate::scope::scope_available_with_env(label, ctx.env_source())
         {
             let msg = crate::scope::warn_scope_unavailable_msg("preflight", p.name(), label);
             if ctx.options.strict {

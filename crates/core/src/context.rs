@@ -384,6 +384,14 @@ impl Context {
         self.env_source = Arc::new(src);
     }
 
+    /// Borrow the injected environment-variable source as a trait
+    /// object so callers can pass it into helpers that take
+    /// `&dyn EnvSource` / `&E: EnvSource + ?Sized` without re-binding
+    /// each var through [`Context::env_var`].
+    pub fn env_source(&self) -> &dyn EnvSource {
+        self.env_source.as_ref()
+    }
+
     /// Attach an in-memory log-capture sink so every logger derived from
     /// this context via [`Context::logger`] records to it. Intended for
     /// tests; production callers leave this `None`.

@@ -273,7 +273,7 @@ pub(crate) fn run_with_publishers(
         // there: a clear "not enough scope to roll this back; fix the
         // env and retry" signal in the replay state file.
         if let Some(label) = publisher.rollback_scope_needed()
-            && !crate::scope::scope_available(label)
+            && !crate::scope::scope_available_with_env(label, ctx.env_source())
         {
             skipped_no_scope += 1;
             report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;

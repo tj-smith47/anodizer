@@ -949,9 +949,9 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         // the legacy bearer ladder so existing rollbacks don't silently
         // break.
         let structured = decode_artifactory_targets(&evidence.extra);
-        let token_env = std::env::var("ARTIFACTORY_TOKEN")
-            .or_else(|_| std::env::var("ARTIFACTORY_SECRET"))
-            .ok();
+        let token_env = ctx
+            .env_var("ARTIFACTORY_TOKEN")
+            .or_else(|| ctx.env_var("ARTIFACTORY_SECRET"));
         let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))
         {
             Ok(c) => c,

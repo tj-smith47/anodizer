@@ -20,10 +20,12 @@
 //! 4xx fast-fails so a bad token surfaces immediately instead of after
 //! a 10-attempt sleep cascade.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anodizer_core::url::percent_encode_unreserved;
+use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
@@ -101,6 +103,27 @@ pub fn provider_for(
     token: &str,
     policy: &RetryPolicy,
 ) -> Box<dyn McpAuthProvider> {
+    provider_for_with_env(
+        method,
+        registry_url,
+        token,
+        policy,
+        Arc::new(ProcessEnvSource),
+    )
+}
+
+/// Env-injectable form of [`provider_for`]. Production wires up
+/// [`ProcessEnvSource`]; unit tests pass an
+/// [`anodizer_core::MapEnvSource`] so the env-driven fallbacks
+/// (`MCP_GITHUB_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN`) can
+/// be exercised without mutating the process env.
+pub fn provider_for_with_env(
+    method: McpAuthMethod,
+    registry_url: &str,
+    token: &str,
+    policy: &RetryPolicy,
+    env: Arc<dyn EnvSource>,
+) -> Box<dyn McpAuthProvider> {
     match method {
         McpAuthMethod::None => Box::new(NoneAuthProvider {
             registry_url: registry_url.to_string(),
@@ -111,10 +134,12 @@ pub fn provider_for(
             registry_url: registry_url.to_string(),
             token: token.to_string(),
             policy: *policy,
+            env: Arc::clone(&env),
         }),
         McpAuthMethod::GithubOidc => Box::new(GithubOidcAuthProvider {
             registry_url: registry_url.to_string(),
             policy: *policy,
+            env: Arc::clone(&env),
         }),
     }
 }
@@ -184,6 +209,10 @@ pub struct GithubAtAuthProvider {
     pub registry_url: String,
     pub token: String,
     pub policy: RetryPolicy,
+    /// Injected env source for resolving the `MCP_GITHUB_TOKEN`
+    /// fallback. Production passes [`ProcessEnvSource`]; tests inject
+    /// a [`anodizer_core::MapEnvSource`].
+    pub env: Arc<dyn EnvSource>,
 }
 
 impl McpAuthProvider for GithubAtAuthProvider {
@@ -194,7 +223,7 @@ impl McpAuthProvider for GithubAtAuthProvider {
         // string sentinel; the explicit `is_empty()` check below fails
         // fast with a single actionable error covering both states.
         let github_token = if self.token.is_empty() {
-            std::env::var("MCP_GITHUB_TOKEN").unwrap_or_default()
+            self.env.var("MCP_GITHUB_TOKEN").unwrap_or_default()
         } else {
             self.token.clone()
         };
@@ -260,24 +289,35 @@ impl McpAuthProvider for GithubAtAuthProvider {
 pub struct GithubOidcAuthProvider {
     pub registry_url: String,
     pub policy: RetryPolicy,
+    /// Injected env source for the Actions OIDC token fetch
+    /// (`ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN`).
+    /// Production passes [`ProcessEnvSource`]; tests inject a
+    /// [`anodizer_core::MapEnvSource`].
+    pub env: Arc<dyn EnvSource>,
 }
 
 impl McpAuthProvider for GithubOidcAuthProvider {
     fn get_token(&self) -> Result<String> {
-        let request_url = std::env::var("ACTIONS_ID_TOKEN_REQUEST_URL").map_err(|_| {
-            anyhow::anyhow!(
-                "mcp: auth.type=github-oidc requires ACTIONS_ID_TOKEN_REQUEST_URL \
+        let request_url = self
+            .env
+            .var("ACTIONS_ID_TOKEN_REQUEST_URL")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mcp: auth.type=github-oidc requires ACTIONS_ID_TOKEN_REQUEST_URL \
                  (set automatically by GitHub Actions runners with id-token: write \
                  permission)"
-            )
-        })?;
-        let request_token = std::env::var("ACTIONS_ID_TOKEN_REQUEST_TOKEN").map_err(|_| {
-            anyhow::anyhow!(
-                "mcp: auth.type=github-oidc requires ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+                )
+            })?;
+        let request_token = self
+            .env
+            .var("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "mcp: auth.type=github-oidc requires ACTIONS_ID_TOKEN_REQUEST_TOKEN \
                  (set automatically by GitHub Actions runners with id-token: write \
                  permission)"
-            )
-        })?;
+                )
+            })?;
         if request_url.is_empty() || request_token.is_empty() {
             anyhow::bail!(
                 "mcp: auth.type=github-oidc: ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN \

@@ -61,24 +61,41 @@ pub(crate) fn warn_scope_unavailable_msg(prefix: &str, publisher: &str, label: &
 /// The sibling `resolve_token` helper covers a *narrower* problem:
 /// "given a `Context` and a publisher-specific env-var hint, produce
 /// the resolved token string (with fallbacks)". This helper is broader
-/// and has no `Context` — it answers "is the env var named by an
-/// arbitrary scope label set?" for any rollback-scope label the
-/// publisher returns. Routing through `resolve_token` would force
-/// the rollback path to thread `Context` everywhere just to do an
-/// env-var presence check, and would still need a special case for
-/// non-`GITHUB_TOKEN` labels (e.g. `KREW_INDEX_TOKEN write`). The two
-/// helpers share the `ANODIZER_GITHUB_TOKEN` alias by design; the
-/// duplication is bounded to that one block.
+/// — it answers "is the env var named by an arbitrary scope label
+/// set?" for any rollback-scope label the publisher returns. Routing
+/// through `resolve_token` would force the rollback path to thread
+/// `Context` everywhere just to do an env-var presence check, and
+/// would still need a special case for non-`GITHUB_TOKEN` labels
+/// (e.g. `KREW_INDEX_TOKEN write`). The two helpers share the
+/// `ANODIZER_GITHUB_TOKEN` alias by design; the duplication is
+/// bounded to that one block.
+///
+/// Delegates to [`scope_available_with_env`] against
+/// [`anodizer_core::ProcessEnvSource`]; rollback / preflight call
+/// sites that already hold a [`Context`] route through
+/// [`scope_available_with_env`] directly so the lookup honors any
+/// injected [`MapEnvSource`](anodizer_core::MapEnvSource).
+#[allow(dead_code)]
 pub(crate) fn scope_available(label: &str) -> bool {
+    scope_available_with_env(label, &anodizer_core::ProcessEnvSource)
+}
+
+/// Env-injectable form of [`scope_available`]. Production call sites
+/// in `rollback.rs` / `rollback_only.rs` / `preflight.rs` thread the
+/// active [`Context`]'s env source through here so a unit test can
+/// drive the available/unavailable branches without mutating the
+/// process env.
+pub(crate) fn scope_available_with_env<E: anodizer_core::EnvSource + ?Sized>(
+    label: &str,
+    env: &E,
+) -> bool {
     let env_var = label.split_once(' ').map(|(v, _)| v).unwrap_or(label);
-    if std::env::var(env_var)
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
+    if env.var(env_var).map(|v| !v.is_empty()).unwrap_or(false) {
         return true;
     }
     if env_var == "GITHUB_TOKEN"
-        && std::env::var("ANODIZER_GITHUB_TOKEN")
+        && env
+            .var("ANODIZER_GITHUB_TOKEN")
             .map(|v| !v.is_empty())
             .unwrap_or(false)
     {
@@ -90,88 +107,49 @@ pub(crate) fn scope_available(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
-
-    /// Helper to atomically swap an env var for the duration of a test
-    /// closure, then restore the prior value. Avoids cross-test bleed
-    /// when serial_test ordering doesn't apply (within a single test,
-    /// multiple set/unset pairs).
-    ///
-    /// # Serial requirement
-    ///
-    /// Every test calling `with_env` MUST carry `#[serial(scope_env)]`.
-    /// The `unsafe` blocks below rely on `serial_test` to keep env
-    /// mutation single-threaded across the suite — without that pin, a
-    /// concurrent reader in another test can observe a half-mutated
-    /// process env (UB by Rust's `set_var` / `remove_var` contract).
-    /// The `scope_env` name groups every env-mutating test in this
-    /// module under one lock; sibling helpers in `rollback.rs` use
-    /// `rollback_env` so the two test suites don't contend.
-    fn with_env<F: FnOnce()>(key: &str, value: Option<&str>, f: F) {
-        let prior = std::env::var(key).ok();
-        // SAFETY: env mutation is single-threaded within a serial group.
-        unsafe {
-            match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
-            }
-        }
-        f();
-        // SAFETY: env mutation is single-threaded within a serial group.
-        unsafe {
-            match prior {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
+    use anodizer_core::MapEnvSource;
 
     #[test]
-    #[serial(scope_env)]
     fn scope_available_returns_true_when_env_set() {
-        with_env("SCOPE_TEST_TOKEN_SET", Some("xyz"), || {
-            assert!(scope_available("SCOPE_TEST_TOKEN_SET write"));
-            // No trailing scope text is fine — bare name also matches.
-            assert!(scope_available("SCOPE_TEST_TOKEN_SET"));
-        });
+        let env = MapEnvSource::new().with("SCOPE_TEST_TOKEN_SET", "xyz");
+        assert!(scope_available_with_env("SCOPE_TEST_TOKEN_SET write", &env));
+        // No trailing scope text is fine — bare name also matches.
+        assert!(scope_available_with_env("SCOPE_TEST_TOKEN_SET", &env));
     }
 
     #[test]
-    #[serial(scope_env)]
     fn scope_available_returns_false_when_env_unset() {
-        with_env("SCOPE_TEST_TOKEN_UNSET", None, || {
-            assert!(!scope_available("SCOPE_TEST_TOKEN_UNSET write"));
-        });
+        let env = MapEnvSource::new();
+        assert!(!scope_available_with_env(
+            "SCOPE_TEST_TOKEN_UNSET write",
+            &env
+        ));
     }
 
     #[test]
-    #[serial(scope_env)]
     fn scope_available_returns_false_when_env_empty() {
-        with_env("SCOPE_TEST_TOKEN_EMPTY", Some(""), || {
-            assert!(!scope_available("SCOPE_TEST_TOKEN_EMPTY write"));
-        });
+        let env = MapEnvSource::new().with("SCOPE_TEST_TOKEN_EMPTY", "");
+        assert!(!scope_available_with_env(
+            "SCOPE_TEST_TOKEN_EMPTY write",
+            &env
+        ));
     }
 
     #[test]
-    #[serial(scope_env)]
     fn scope_available_honors_anodizer_github_token_fallback() {
-        with_env("GITHUB_TOKEN", None, || {
-            with_env("ANODIZER_GITHUB_TOKEN", Some("yyy"), || {
-                assert!(scope_available("GITHUB_TOKEN contents:write"));
-            });
-        });
+        let env = MapEnvSource::new().with("ANODIZER_GITHUB_TOKEN", "yyy");
+        assert!(scope_available_with_env(
+            "GITHUB_TOKEN contents:write",
+            &env
+        ));
     }
 
     #[test]
-    #[serial(scope_env)]
     fn scope_available_anodizer_fallback_only_applies_to_github_token() {
-        with_env("OTHER_TOKEN", None, || {
-            with_env("ANODIZER_OTHER_TOKEN", Some("yyy"), || {
-                // The ANODIZER_ fallback is hard-coded to GITHUB_TOKEN;
-                // sibling vars do NOT get the same alias treatment.
-                assert!(!scope_available("OTHER_TOKEN write"));
-            });
-        });
+        // The ANODIZER_ fallback is hard-coded to GITHUB_TOKEN; sibling
+        // vars do NOT get the same alias treatment.
+        let env = MapEnvSource::new().with("ANODIZER_OTHER_TOKEN", "yyy");
+        assert!(!scope_available_with_env("OTHER_TOKEN write", &env));
     }
 
     // ---- warn_scope_unavailable_msg --------------------------------------

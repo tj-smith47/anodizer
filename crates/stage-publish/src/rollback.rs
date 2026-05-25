@@ -99,7 +99,7 @@ pub fn run(
         // If rollback_scope_needed() returns Some but the scope isn't
         // available, skip with the RollbackSkippedNoScope outcome.
         if let Some(label) = publisher.rollback_scope_needed()
-            && !crate::scope::scope_available(label)
+            && !crate::scope::scope_available_with_env(label, ctx.env_source())
         {
             skipped_no_scope += 1;
             report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;

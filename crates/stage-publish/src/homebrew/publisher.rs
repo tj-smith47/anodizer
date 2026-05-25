@@ -319,16 +319,17 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         let unique = dedup_homebrew_targets(&targets);
         // Resolve auth tokens at rollback time — never persisted in
         // evidence. `token_env_var` is just the *name* of the env
-        // var; the value lives only in the live process env.
+        // var; the value lives only in the injected env source.
+        let env = ctx.env_source();
         let prepared: Vec<RevertTarget> = unique
             .iter()
             .map(|t| {
                 let token = t
                     .token_env_var
                     .as_deref()
-                    .and_then(|n| std::env::var(n).ok())
-                    .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-                    .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+                    .and_then(|n| env.var(n))
+                    .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
+                    .or_else(|| env.var("GITHUB_TOKEN"));
                 RevertTarget {
                     target: t.target.clone(),
                     repo_url: t.repo_url.clone(),

@@ -1842,12 +1842,13 @@ impl anodizer_core::Publisher for KrewPublisher {
         // Resolve token at rollback time — never persisted in evidence.
         // Falls back to ANODIZER_GITHUB_TOKEN then GITHUB_TOKEN, same as
         // every git-revert publisher.
+        let env = ctx.env_source();
         let resolve_token = |t: &KrewPrTarget| -> Option<String> {
             t.token_env_var
                 .as_deref()
-                .and_then(|n| std::env::var(n).ok())
-                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-                .or_else(|| std::env::var("GITHUB_TOKEN").ok())
+                .and_then(|n| env.var(n))
+                .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
+                .or_else(|| env.var("GITHUB_TOKEN"))
         };
 
         // Fan out at PR granularity, not target granularity: a single

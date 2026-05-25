@@ -50,7 +50,7 @@ pub(crate) fn resolve_http_credentials(
         env_map
             .get(name)
             .cloned()
-            .or_else(|| std::env::var(name).ok())
+            .or_else(|| ctx.env_var(name))
             .filter(|s| !s.is_empty())
     };
 

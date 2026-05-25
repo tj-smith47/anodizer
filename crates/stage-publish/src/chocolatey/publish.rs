@@ -398,7 +398,7 @@ pub fn publish_to_chocolatey(
         .api_key
         .as_deref()
         .map(|k| ctx.render_template(k).unwrap_or_else(|_| k.to_string()))
-        .or_else(|| std::env::var("CHOCOLATEY_API_KEY").ok())
+        .or_else(|| ctx.env_var("CHOCOLATEY_API_KEY"))
         .unwrap_or_default();
 
     if api_key.is_empty() {

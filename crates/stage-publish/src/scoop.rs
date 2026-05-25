@@ -802,15 +802,16 @@ impl anodizer_core::Publisher for ScoopPublisher {
             return Ok(());
         }
         let unique = dedup_scoop_targets(&targets);
+        let env = ctx.env_source();
         let prepared: Vec<RevertTarget> = unique
             .iter()
             .map(|t| {
                 let token = t
                     .token_env_var
                     .as_deref()
-                    .and_then(|n| std::env::var(n).ok())
-                    .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
-                    .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+                    .and_then(|n| env.var(n))
+                    .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
+                    .or_else(|| env.var("GITHUB_TOKEN"));
                 RevertTarget {
                     target: t.target.clone(),
                     repo_url: t.repo_url.clone(),

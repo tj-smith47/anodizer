@@ -119,6 +119,11 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 
 /// Resolve an auth token from the context, then a publisher-specific env var,
 /// then `ANODIZER_GITHUB_TOKEN`, then the generic `GITHUB_TOKEN` env var.
+///
+/// Env reads route through the [`Context`]'s injected env source so unit
+/// tests can drive the fallback ladder via a
+/// [`MapEnvSource`](anodizer_core::MapEnvSource) without mutating the
+/// process env.
 pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
     // Filter empty strings: GitHub Actions sets env vars from non-existent
     // secrets to "", which would short-circuit the fallback chain and prevent
@@ -128,17 +133,9 @@ pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<Stri
         .token
         .clone()
         .and_then(non_empty)
-        .or_else(|| {
-            env_var
-                .and_then(|v| std::env::var(v).ok())
-                .and_then(non_empty)
-        })
-        .or_else(|| {
-            std::env::var("ANODIZER_GITHUB_TOKEN")
-                .ok()
-                .and_then(non_empty)
-        })
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok().and_then(non_empty))
+        .or_else(|| env_var.and_then(|v| ctx.env_var(v)).and_then(non_empty))
+        .or_else(|| ctx.env_var("ANODIZER_GITHUB_TOKEN").and_then(non_empty))
+        .or_else(|| ctx.env_var("GITHUB_TOKEN").and_then(non_empty))
 }
 
 // ---------------------------------------------------------------------------
