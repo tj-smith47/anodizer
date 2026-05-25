@@ -101,8 +101,8 @@ pub enum StageId {
     /// long-running non-determinism story (file mtimes,
     /// `.cargo_vcs_info.json` contents, tar member ordering); cargo
     /// has fixed most of these since 1.74 but the harness needs to
-    /// detect regressions in our own packaging stack and pin any
-    /// remaining sources.
+    /// detect regressions in the project's packaging stack and pin
+    /// any remaining sources.
     ///
     /// Known non-determinism the workaround set addresses:
     /// - **File mtimes inside the tar**: `SOURCE_DATE_EPOCH` is
