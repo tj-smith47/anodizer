@@ -354,8 +354,33 @@ pub struct PublishEvidence {
     /// `*Target` structs with `#[serde(skip)]` discipline; those
     /// convert into the [`PublishEvidenceExtra`] variant snapshots at
     /// the encode boundary, dropping the secret fields by definition.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_extra_compat")]
     pub extra: PublishEvidenceExtra,
+}
+
+/// Deserialize the `extra:` field with backwards-compatibility for
+/// reports written before the typed [`PublishEvidenceExtra`] enum
+/// landed. Those reports carried `extra: {}` (an empty object) where
+/// the typed enum's [`Empty`](PublishEvidenceExtra::Empty) variant
+/// serializes as `null`. With `#[serde(untagged)]` neither null nor
+/// the typed struct variants match `{}`, so a literal `{}` from an
+/// older report fails to deserialize. This shim coerces null and `{}`
+/// to `Empty`; any other shape goes through the normal untagged
+/// dispatch.
+fn deserialize_extra_compat<'de, D>(deserializer: D) -> Result<PublishEvidenceExtra, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(PublishEvidenceExtra::Empty);
+    }
+    if let Some(map) = value.as_object()
+        && map.is_empty()
+    {
+        return Ok(PublishEvidenceExtra::Empty);
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 impl PublishEvidence {
