@@ -433,6 +433,31 @@ impl Stage for ArchiveStage {
                     let archive_stem = ctx.render_template(name_tmpl).with_context(|| {
                         format!("render archive name for {crate_name}/{target}")
                     })?;
+                    // The rendered stem becomes the archive filename
+                    // (`{stem}.{format}` under `dist/`). An empty stem
+                    // produces a hidden file like `dist/.tar.gz` that
+                    // downstream stages (checksum, sign, release upload)
+                    // cannot resolve by canonical name. Bail with an
+                    // actionable hint instead of silently writing a
+                    // hidden artifact whose existence breaks the
+                    // duplicate-name detection a few lines below.
+                    if archive_stem.is_empty() {
+                        bail!(
+                            "archive: rendered archive name template '{}' \
+                             produced an empty stem for crate '{}' target \
+                             '{}'. An empty stem yields a hidden output path \
+                             (`dist/.<format>`) that the duplicate-name \
+                             detector and downstream stages cannot resolve. \
+                             Verify the template references variables that \
+                             are populated on this run (e.g. `{{{{ Tag }}}}` is \
+                             unset during `--snapshot` — use \
+                             `{{{{ Version }}}}` or the default \
+                             `archive.name_template` instead).",
+                            name_tmpl,
+                            crate_name,
+                            target
+                        );
+                    }
 
                     // Render wrap_in_directory (template-aware)
                     // WrapInDirectory::Bool(true)  -> use the archive stem as the wrap dir

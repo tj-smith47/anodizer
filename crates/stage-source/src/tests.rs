@@ -702,6 +702,42 @@ fn test_stage_skips_when_disabled() {
     assert_eq!(ctx.artifacts.all().len(), 0);
 }
 
+#[test]
+fn source_name_empty_bails_with_actionable_error() {
+    // A `source.name_template` that renders to an empty string would
+    // produce `dist/.tar.gz` (a hidden file) which downstream stages
+    // cannot resolve. The stage must bail with an actionable hint
+    // naming the format and a remediation step.
+    use anodizer_core::config::SourceConfig;
+
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.config.project_name = String::new();
+    ctx.config.source = Some(SourceConfig {
+        enabled: Some(true),
+        name_template: Some(String::new()),
+        ..Default::default()
+    });
+    ctx.config.sboms = vec![];
+
+    let stage = SourceStage;
+    let err = stage
+        .run(&mut ctx)
+        .expect_err("empty source archive name must bail");
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("source:"),
+        "error must carry the source: prefix, got: {chain}"
+    );
+    assert!(
+        chain.contains("empty"),
+        "error must describe the empty-name condition, got: {chain}"
+    );
+    assert!(
+        chain.contains("name_template") || chain.contains("project_name"),
+        "error must name the source fields to fix, got: {chain}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // ArtifactKind variants
 // -----------------------------------------------------------------------

@@ -313,12 +313,24 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
         target_commitish,
         discussion_category,
     } = *spec;
+    // `tag_name` is required by `POST /repos/{owner}/{repo}/releases` per
+    // <https://docs.github.com/en/rest/releases/releases#create-a-release>;
+    // upstream `resolve_release_tag` bails before we get here when the
+    // resolved tag is empty (see release_body.rs::resolve_release_tag).
+    // `name` is optional per the same REST docs (GitHub defaults to the
+    // tag when omitted) — sending an empty string is harmless: the GH UI
+    // renders the tag as the release header, and `resolved_name_template`
+    // defaults to `"{{ Tag }}"` so callers practically never pass empty.
     let mut json = serde_json::json!({
         "tag_name": tag,
         "name": name,
         "draft": draft,
         "prerelease": prerelease_flag,
     });
+    // `body` (description) is optional per the same Create-a-release REST
+    // docs; omit the key entirely when empty so the GitHub UI shows "No
+    // description provided" instead of a literal empty line above the
+    // asset list.
     if !body.is_empty() {
         let truncated_body = if body.len() > GITHUB_RELEASE_BODY_MAX_CHARS {
             // GoReleaser parity: `internal/client/client.go:21` —
@@ -409,21 +421,44 @@ pub(crate) fn build_publish_patch_body(
 /// If `release_tag_override` is `Some`, render it as a template and use the
 /// result.  Otherwise, render `tag_template`.  This implements the GoReleaser
 /// Pro `release.tag` override behaviour.
+///
+/// Bails when the rendered tag is empty: the GitHub / GitLab / Gitea Releases
+/// REST APIs all require a non-empty `tag_name`, and silently POSTing
+/// `tag_name: ""` returns a confusing 422 (`tag_name is too short`) that
+/// hides the real cause (template rendered to empty because a referenced
+/// variable was missing on the snapshot path).
 pub(crate) fn resolve_release_tag(
     ctx: &Context,
     tag_template: &str,
     release_tag_override: Option<&str>,
     crate_name: &str,
 ) -> Result<String> {
-    if let Some(override_tmpl) = release_tag_override {
-        ctx.render_template(override_tmpl).with_context(|| {
+    let (rendered, source) = if let Some(override_tmpl) = release_tag_override {
+        let rendered = ctx.render_template(override_tmpl).with_context(|| {
             format!(
                 "release: render release.tag override for crate '{}'",
                 crate_name
             )
-        })
+        })?;
+        (rendered, "release.tag")
     } else {
-        ctx.render_template(tag_template)
-            .with_context(|| format!("release: render tag_template for crate '{}'", crate_name))
+        let rendered = ctx
+            .render_template(tag_template)
+            .with_context(|| format!("release: render tag_template for crate '{}'", crate_name))?;
+        (rendered, "tag_template")
+    };
+    if rendered.is_empty() {
+        anyhow::bail!(
+            "release: {} for crate '{}' rendered to an empty tag. The GitHub / \
+             GitLab / Gitea Releases REST API requires a non-empty `tag_name`; \
+             posting an empty value returns a confusing 422 (`tag_name is too \
+             short`) that hides the real cause. Verify the template references \
+             a variable that is populated on this run (e.g. `{{{{ Tag }}}}` is \
+             unset during `--snapshot` without a `tag_template` fallback) or \
+             set an explicit `release.tag:` override.",
+            source,
+            crate_name
+        );
     }
+    Ok(rendered)
 }

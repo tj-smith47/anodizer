@@ -151,6 +151,38 @@ pub(crate) async fn gitea_create_release(
     let enc_owner = encode_segment(owner);
     let enc_repo = encode_segment(repo);
 
+    // Gitea's `POST /repos/{owner}/{repo}/releases` requires non-empty
+    // `tag_name`; `target_commitish` is required when the tag doesn't
+    // already exist on the server (Gitea will create it at the given SHA).
+    // Posting empty values surfaces as a 422 (`tag_name is required` /
+    // `target_commitish is required`) that hides the real cause: the
+    // tag template rendered empty or `ctx.git_info` was not populated.
+    if tag.is_empty() {
+        anyhow::bail!(
+            "gitea: release for {}/{} is missing required tag_name. Gitea \
+             POST /repos/{{owner}}/{{repo}}/releases rejects empty `tag_name`. \
+             Verify the release tag template renders to a non-empty value \
+             (e.g. `{{{{ Tag }}}}` is unset during `--snapshot`) or set an \
+             explicit `release.tag:` override.",
+            owner,
+            repo
+        );
+    }
+    if commit.is_empty() {
+        anyhow::bail!(
+            "gitea: release for {}/{} (tag '{}') is missing required \
+             target_commitish (commit SHA). Gitea creates the tag at this \
+             SHA when it doesn't already exist; empty values are rejected. \
+             This means the git stage did not populate `ctx.git_info.commit` \
+             — re-run `task release` from inside the git working tree so \
+             git porcelain can resolve HEAD, or supply the SHA via the \
+             upstream pipeline.",
+            owner,
+            repo,
+            tag
+        );
+    }
+
     // Try to find an existing release by listing all releases and matching tag.
     let existing = find_release_by_tag(client, api, &enc_owner, &enc_repo, tag, policy).await?;
 
@@ -674,6 +706,111 @@ mod tests {
         assert!(
             chain.contains("<redacted>"),
             "expected `<redacted>` marker in error chain: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gitea_release_tag_empty_bails_with_actionable_error() {
+        // Gitea's `POST /repos/{owner}/{repo}/releases` rejects empty
+        // `tag_name` with a vague 422; the helper must bail upfront
+        // (before listing existing releases) so users see the real
+        // cause. Bail message must name owner/repo and include an
+        // actionable hint about the snapshot/template state.
+        use std::time::Duration;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: "http://unused.invalid",
+            owner: "myorg",
+            repo: "myrepo",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "",
+            commit: "abc123",
+            name: "Release",
+            body: "body",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+        let err = gitea_create_release(&ctx, &spec)
+            .await
+            .expect_err("empty tag must bail before any HTTP call");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("gitea:"),
+            "error must carry the gitea: prefix, got: {chain}"
+        );
+        assert!(
+            chain.contains("tag_name"),
+            "error must name the rejected field, got: {chain}"
+        );
+        assert!(
+            chain.contains("myorg/myrepo"),
+            "error must name the owner/repo, got: {chain}"
+        );
+        assert!(
+            chain.contains("release.tag:") || chain.contains("snapshot"),
+            "error must include an actionable hint, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gitea_release_commit_empty_bails_with_actionable_error() {
+        // Gitea's create endpoint uses `target_commitish` to create the
+        // tag when it doesn't already exist; empty values surface as a
+        // 422. Bail upfront so users see that `ctx.git_info.commit` was
+        // not populated.
+        use std::time::Duration;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: "http://unused.invalid",
+            owner: "myorg",
+            repo: "myrepo",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "",
+            name: "Release",
+            body: "body",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+        let err = gitea_create_release(&ctx, &spec)
+            .await
+            .expect_err("empty commit must bail before any HTTP call");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("gitea:"),
+            "error must carry the gitea: prefix, got: {chain}"
+        );
+        assert!(
+            chain.contains("target_commitish"),
+            "error must name the rejected field, got: {chain}"
+        );
+        assert!(
+            chain.contains("git working tree") || chain.contains("git_info"),
+            "error must include an actionable hint, got: {chain}"
         );
     }
 }

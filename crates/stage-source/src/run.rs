@@ -69,6 +69,25 @@ impl SourceStage {
         } else {
             format!("{}-{}", project_name, version)
         };
+        // The rendered `name` becomes the source-archive filename stem
+        // (`{name}.{format}` written under `dist/`). An empty stem would
+        // produce a hidden file like `dist/.tar.gz`, which `git archive`
+        // happily writes but downstream stages (checksum, sign, release
+        // upload) cannot locate by canonical name. Bail with an actionable
+        // hint instead of silently writing a hidden artifact.
+        if name.is_empty() {
+            anyhow::bail!(
+                "source: rendered source archive name is empty. The configured \
+                 `source.name_template` rendered to '' (or both `project_name` \
+                 and Version were empty when the template fell back to the \
+                 `<project>-<version>` default). An empty name produces a \
+                 hidden output path (`dist/.{}`) that downstream stages \
+                 (checksum, sign, release) cannot resolve. Set \
+                 `source.name_template:` explicitly or verify `project_name` is \
+                 populated in the config.",
+                format,
+            );
+        }
 
         // Determine the archive prefix (directory name inside the archive).
         // GoReleaser defaults to empty (no prefix) when prefix_template is not configured.

@@ -38,6 +38,26 @@ pub(crate) fn generate_release_notes(
 ) -> Result<String> {
     use std::io::Write;
 
+    // `tag_name` is a required field on `POST /repos/{owner}/{repo}/releases/
+    // generate-notes` per the GitHub REST docs (Releases > Generate release
+    // notes content for a release). Submitting an empty string surfaces as
+    // a 422 (`tag_name is too short`) that hides the real cause: the
+    // template rendered empty because `ctx.template_vars["Tag"]` was unset
+    // on the snapshot / dry-run path.
+    if tag_name.is_empty() {
+        bail!(
+            "changelog: github-native generate-notes for {}/{} is missing \
+             required tag_name. GitHub POST /repos/{{owner}}/{{repo}}/releases/\
+             generate-notes rejects empty `tag_name`. This usually means the \
+             pipeline did not populate `Tag` in template vars (snapshot mode \
+             without a `--tag` override). Re-run with an explicit tag or \
+             configure `release.tag:` so the changelog stage can pin the \
+             commit range.",
+            owner,
+            repo
+        );
+    }
+
     let mut body = serde_json::json!({ "tag_name": tag_name });
     if let Some(prev) = previous_tag_name {
         body["previous_tag_name"] = serde_json::Value::String(prev.to_string());
@@ -81,6 +101,12 @@ pub(crate) fn generate_release_notes(
             )
         })?;
 
+    // Empty `body` is a documented success response: GitHub returns
+    // 200 with `{ "body": "", ... }` when no commits / PRs sit between
+    // `tag_name` and `previous_tag_name`. Treat the missing-key and
+    // empty-string cases identically (per the REST endpoint contract:
+    // "Generate release notes content for a release" returns an empty
+    // body when there is nothing to summarise).
     let notes_body = response
         .get("body")
         .and_then(|v| v.as_str())
@@ -141,5 +167,33 @@ mod tests {
         let body = build_request_body("service-a/v2.0.0", Some("service-a/v1.0.0"));
         assert_eq!(body["tag_name"], "service-a/v2.0.0");
         assert_eq!(body["previous_tag_name"], "service-a/v1.0.0");
+    }
+
+    #[test]
+    fn changelog_tag_name_empty_bails_with_actionable_error() {
+        // GitHub `POST /repos/{owner}/{repo}/releases/generate-notes`
+        // rejects empty `tag_name` with a 422 (`tag_name is too short`)
+        // that hides the real cause: the snapshot path leaves `Tag`
+        // unset in template vars. The helper must bail before spawning
+        // `gh` so the user sees an actionable error.
+        let err = generate_release_notes("myorg", "myrepo", "", None, None)
+            .expect_err("empty tag_name must bail before spawning gh");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("changelog:"),
+            "error must carry the changelog: prefix, got: {chain}"
+        );
+        assert!(
+            chain.contains("tag_name"),
+            "error must name the rejected field, got: {chain}"
+        );
+        assert!(
+            chain.contains("myorg/myrepo"),
+            "error must name the owner/repo, got: {chain}"
+        );
+        assert!(
+            chain.contains("snapshot") || chain.contains("release.tag:"),
+            "error must include an actionable hint, got: {chain}"
+        );
     }
 }

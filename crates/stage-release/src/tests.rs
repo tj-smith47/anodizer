@@ -810,6 +810,54 @@ fn test_resolve_release_tag_invalid_template_errors() {
     );
 }
 
+#[test]
+fn release_tag_empty_bails_with_actionable_error() {
+    // A `release.tag:` override that renders to an empty string must
+    // bail before the Releases REST POST so users see "tag_template
+    // rendered to an empty tag" instead of GitHub's confusing 422
+    // (`tag_name is too short`). Bail message must name the field
+    // (release.tag), the crate, and an actionable next step.
+    let ctx = TestContextBuilder::new().build();
+    let result = resolve_release_tag(&ctx, "ok", Some(""), "mycrate");
+    let err = result
+        .expect_err("empty release.tag override must bail")
+        .to_string();
+    assert!(
+        err.contains("release.tag"),
+        "error must name the source field, got: {err}"
+    );
+    assert!(
+        err.contains("mycrate"),
+        "error must name the crate context, got: {err}"
+    );
+    assert!(
+        err.contains("snapshot") || err.contains("release.tag:"),
+        "error must include an actionable hint, got: {err}"
+    );
+}
+
+#[test]
+fn release_tag_template_renders_empty_bails_with_actionable_error() {
+    // The fallback tag_template path must also bail when it renders to
+    // empty (e.g. `tag_template: ""` or a template referencing an
+    // unset variable that resolves to ""). Bail message must name
+    // `tag_template` (not `release.tag`) so the user knows which field
+    // to fix.
+    let ctx = TestContextBuilder::new().build();
+    let result = resolve_release_tag(&ctx, "", None, "mycrate");
+    let err = result
+        .expect_err("empty tag_template must bail")
+        .to_string();
+    assert!(
+        err.contains("tag_template"),
+        "error must name the source field, got: {err}"
+    );
+    assert!(
+        err.contains("mycrate"),
+        "error must name the crate context, got: {err}"
+    );
+}
+
 // ---- Error path tests ----
 
 #[test]

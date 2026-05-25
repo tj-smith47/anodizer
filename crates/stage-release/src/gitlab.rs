@@ -213,6 +213,25 @@ pub(crate) async fn gitlab_create_release(
         commit,
         release_mode,
     } = *spec;
+    // GitLab's `POST /projects/:id/releases` requires non-empty `tag_name`.
+    // The empty check is upfront (before the GET probe) because the probe
+    // URL also bakes the tag into the path; an empty `encoded_tag` would
+    // hit `/releases/` (the listing endpoint) and silently return 200, then
+    // fall through to a POST create with `tag_name: ""` which GitLab 400s
+    // (`tag_name can't be blank`). Bail with the real cause first.
+    if tag.is_empty() {
+        anyhow::bail!(
+            "gitlab: release for project '{}' is missing required tag_name. \
+             GitLab POST /projects/:id/releases rejects empty `tag_name` and \
+             an empty path segment in the GET probe URL would silently hit \
+             the listing endpoint, masking the bug. Verify the release tag \
+             template renders to a non-empty value (e.g. `{{{{ Tag }}}}` is \
+             unset during `--snapshot`) or set an explicit `release.tag:` \
+             override.",
+            project_id
+        );
+    }
+
     let api = api_url.trim_end_matches('/');
     let encoded = encode_project_id(project_id);
     let encoded_tag = encode_tag(tag);
@@ -293,7 +312,27 @@ pub(crate) async fn gitlab_create_release(
     };
 
     if create_branch {
-        // Release does not exist — create it.
+        // Release does not exist — create it. GitLab's create endpoint
+        // requires non-empty `ref` (the commit SHA / branch the tag points
+        // to). Empty `ref` produces a vague 400 (`ref is missing`) that
+        // hides the real cause: `ctx.git_info` was not populated by the
+        // git stage (e.g. running `release --snapshot` outside a git
+        // working tree). The empty-`tag_name` case is already guarded
+        // upfront above; only the commit check is branch-local because
+        // the existing-release PUT update path does not send `ref`.
+        if commit.is_empty() {
+            anyhow::bail!(
+                "gitlab: release for project '{}' (tag '{}') is missing required \
+                 ref (commit SHA). GitLab POST /projects/:id/releases rejects \
+                 empty `ref`. This means the git stage did not populate \
+                 `ctx.git_info.commit` — re-run `task release` from inside the \
+                 git working tree so git porcelain can resolve HEAD, or supply \
+                 the SHA via the upstream pipeline (anodize-action ships it via \
+                 `GITHUB_SHA`).",
+                project_id,
+                tag
+            );
+        }
         let create_url = format!("{}/projects/{}/releases", api, encoded);
         let payload = serde_json::json!({
             "name": name,
@@ -1046,6 +1085,110 @@ mod tests {
         assert!(
             chain.contains("<redacted>"),
             "expected `<redacted>` marker in error chain: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gitlab_release_tag_empty_bails_with_actionable_error() {
+        // GitLab's `POST /projects/:id/releases` rejects empty `tag_name`
+        // with a vague 400; the helper must bail upfront (before the GET
+        // probe URL is constructed) so users see the real cause. Bail
+        // message must name the project and include an actionable hint.
+        use std::time::Duration;
+        let client = reqwest::Client::builder().build().expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: "http://unused.invalid",
+            project_id: "myorg/myproj",
+            policy: &policy,
+        };
+        let spec = GitlabReleaseSpec {
+            tag: "",
+            name: "Release",
+            body: "body",
+            commit: "abc123",
+            release_mode: "replace",
+        };
+        let err = gitlab_create_release(&ctx, &spec)
+            .await
+            .expect_err("empty tag must bail before any HTTP call");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("gitlab:"),
+            "error must carry the gitlab: prefix, got: {chain}"
+        );
+        assert!(
+            chain.contains("tag_name"),
+            "error must name the rejected field, got: {chain}"
+        );
+        assert!(
+            chain.contains("myorg/myproj"),
+            "error must name the project, got: {chain}"
+        );
+        assert!(
+            chain.contains("release.tag:") || chain.contains("snapshot"),
+            "error must include an actionable hint, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gitlab_release_commit_empty_bails_with_actionable_error() {
+        // The create-branch path requires `ref` (commit SHA). Empty `ref`
+        // surfaces as a vague GitLab 400 (`ref is missing`); bail upfront
+        // so the user sees that `ctx.git_info.commit` was not populated.
+        // Use a hermetic responder that 404s the GET probe so the
+        // create-branch path is reached without hitting a real GitLab.
+        use std::time::Duration;
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let api_url = format!("http://{addr}");
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "myorg/myproj",
+            policy: &policy,
+        };
+        let spec = GitlabReleaseSpec {
+            tag: "v1.0.0",
+            name: "Release v1.0.0",
+            body: "body",
+            commit: "",
+            release_mode: "replace",
+        };
+        let err = gitlab_create_release(&ctx, &spec)
+            .await
+            .expect_err("empty commit must bail in create-branch path");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("gitlab:"),
+            "error must carry the gitlab: prefix, got: {chain}"
+        );
+        assert!(
+            chain.contains("ref"),
+            "error must name the rejected field, got: {chain}"
+        );
+        assert!(
+            chain.contains("commit") || chain.contains("git_info"),
+            "error must mention the missing-commit cause, got: {chain}"
+        );
+        assert!(
+            chain.contains("git working tree") || chain.contains("GITHUB_SHA"),
+            "error must include an actionable hint, got: {chain}"
         );
     }
 }

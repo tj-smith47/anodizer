@@ -477,6 +477,78 @@ crates:
 // ---------------------------------------------------------------------------
 
 #[test]
+fn archive_name_template_empty_bails_with_actionable_error() {
+    // A `name_template:` that renders to an empty string would produce
+    // `dist/.tar.gz` (a hidden file) which the duplicate-name detector
+    // and downstream stages cannot resolve. The stage must bail with
+    // an actionable hint that names the crate/target context.
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin_path = tmp.path().join("myapp");
+    fs::write(&bin_path, b"fake binary").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(String::new()),
+                formats: Some(vec!["tar.gz".to_string()]),
+                format_overrides: None,
+                files: None,
+                binaries: None,
+                wrap_in_directory: None,
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("binary".to_string(), "myapp".to_string());
+            m
+        },
+        size: None,
+    });
+
+    let stage = ArchiveStage;
+    let err = stage
+        .run(&mut ctx)
+        .expect_err("empty archive name template must bail");
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("archive:"),
+        "error must carry the archive: prefix, got: {chain}"
+    );
+    assert!(
+        chain.contains("empty stem"),
+        "error must describe the empty-stem condition, got: {chain}"
+    );
+    assert!(
+        chain.contains("myapp"),
+        "error must name the crate context, got: {chain}"
+    );
+    assert!(
+        chain.contains("name_template") || chain.contains("snapshot"),
+        "error must include an actionable hint, got: {chain}"
+    );
+}
+
+#[test]
 fn test_archive_stage_run() {
     use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
