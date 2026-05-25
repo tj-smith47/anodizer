@@ -155,14 +155,15 @@ pub fn publish_to_chocolatey(
         .unwrap_or("https://push.chocolatey.org/");
 
     // Idempotency with drift detection: Chocolatey package versions are
-    // immutable once submitted, so re-pushing returns 403. We treat a
-    // version-already-on-feed as a skip ONLY when the feed's recorded package
-    // hash matches our local nupkg hash. If they differ, our local nupkg has
-    // diverged from what the feed has — typically because the same git tag
-    // was re-released with different artifact bytes — and silently skipping
-    // would publish an install script that points at an archive whose sha
-    // no longer matches (Chocolatey's verifier then rejects the package).
-    // In that case we fail loudly and tell the user to bump the version.
+    // immutable once submitted, so re-pushing returns 403. A
+    // version-already-on-feed is treated as a skip ONLY when the feed's
+    // recorded package hash matches the local nupkg hash. If they differ,
+    // the local nupkg has diverged from what the feed has — typically
+    // because the same git tag was re-released with different artifact
+    // bytes — and silently skipping would publish an install script that
+    // points at an archive whose sha no longer matches (Chocolatey's
+    // verifier then rejects the package). Divergence fails loudly with a
+    // message instructing the caller to bump the version.
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for the feed-hash GET and the push PUT.
     let policy = ctx.retry_policy();
@@ -376,55 +377,13 @@ fn select_windows_artifacts<'a>(
     (artifact_32, artifact_64)
 }
 
-/// Resolves the download URL and sha256 for a single artifact. The URL
-/// honors the optional `url_template`; the sha256 is required and a
-/// missing value produces a hard error (an empty `$checksum` would ship
-/// a broken install script that Chocolatey moderators reject).
-fn resolve_artifact_url_and_hash(
-    ctx: &Context,
-    url_template: Option<&str>,
-    pkg_name: &str,
-    version: &str,
-    crate_name: &str,
-    a: &anodizer_core::artifact::Artifact,
-) -> Result<(String, String)> {
-    let target = a.target.as_deref().unwrap_or("");
-    let (_, raw_arch) = anodizer_core::target::map_target(target);
-    let resolved_url = if let Some(tmpl) = url_template {
-        util::render_url_template_with_ctx(ctx, tmpl, pkg_name, version, &raw_arch, "windows")
-    } else {
-        a.metadata
-            .get("url")
-            .cloned()
-            .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
-    };
-    let sha256 = a
-        .metadata
-        .get("sha256")
-        .cloned()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "chocolatey: artifact '{}' for crate '{}' is missing required \
-                     sha256 metadata. The generated chocolateyinstall.ps1 would \
-                     embed an empty `$checksum`, which Chocolatey moderators \
-                     reject (the install script can't verify the download). \
-                     This indicates the artifacts.json catalog dropped the \
-                     entry's sha256 before the publish stage. Re-run with \
-                     `task release` from a clean dist/ and verify \
-                     dist/artifacts.json carries metadata.sha256 for every \
-                     Windows artifact.",
-                a.name(),
-                crate_name,
-            )
-        })?;
-    Ok((resolved_url, sha256))
-}
-
 /// Combines the selected 32/64-bit artifacts into the `InstallMode`
 /// shape consumed by the install-script renderer. Errors when neither
 /// architecture has a usable Windows artifact (no install script could
-/// then be constructed).
+/// then be constructed). The inner `resolve` closure honors the optional
+/// `url_template` and enforces that every artifact carries a non-empty
+/// sha256 (an empty `$checksum` ships a broken install script that
+/// Chocolatey moderators reject).
 fn build_install_mode(
     ctx: &Context,
     choco_cfg: &anodizer_core::config::ChocolateyConfig,
@@ -435,8 +394,38 @@ fn build_install_mode(
     crate_name: &str,
 ) -> Result<InstallMode> {
     let url_template = choco_cfg.url_template.as_deref();
-    let resolve = |a: &anodizer_core::artifact::Artifact| {
-        resolve_artifact_url_and_hash(ctx, url_template, pkg_name, version, crate_name, a)
+    let resolve = |a: &anodizer_core::artifact::Artifact| -> Result<(String, String)> {
+        let target = a.target.as_deref().unwrap_or("");
+        let (_, raw_arch) = anodizer_core::target::map_target(target);
+        let resolved_url = if let Some(tmpl) = url_template {
+            util::render_url_template_with_ctx(ctx, tmpl, pkg_name, version, &raw_arch, "windows")
+        } else {
+            a.metadata
+                .get("url")
+                .cloned()
+                .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
+        };
+        let sha256 = a
+            .metadata
+            .get("sha256")
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "chocolatey: artifact '{}' for crate '{}' is missing required \
+                     sha256 metadata. The generated chocolateyinstall.ps1 would \
+                     embed an empty `$checksum`, which Chocolatey moderators \
+                     reject (the install script can't verify the download). \
+                     This indicates the artifacts.json catalog dropped the \
+                     entry's sha256 before the publish stage. Re-run with \
+                     `task release` from a clean dist/ and verify \
+                     dist/artifacts.json carries metadata.sha256 for every \
+                     Windows artifact.",
+                    a.name(),
+                    crate_name,
+                )
+            })?;
+        Ok((resolved_url, sha256))
     };
     match (artifact_32, artifact_64) {
         (Some(a32), Some(a64)) => {
@@ -779,12 +768,13 @@ fn handle_feed_state(
             );
         }
         FeedHashResult::PresentNoHash => {
-            // Feed reports the version exists but didn't expose a hash we
-            // could parse. Be conservative: don't silently skip without
-            // verification — this is the scenario that bit us before. Log
-            // the situation and let the push attempt proceed; Chocolatey
-            // will return 403 with a recognizable message if it truly is
-            // immutable, and that surfaces as a real error.
+            // Feed reports the version exists but didn't expose a parseable
+            // hash. Conservative path: don't silently skip without
+            // verification (silent skip on diverged bytes previously shipped
+            // an install script pointing at a stale sha). Log the situation
+            // and let the push attempt proceed; Chocolatey returns 403 with
+            // a recognizable message if the version is truly immutable, and
+            // that surfaces as a real error.
             log.warn(&format!(
                 "chocolatey: '{}-{}' exists on feed but hash was unavailable; \
                  attempting push so any conflict surfaces as a real error",
