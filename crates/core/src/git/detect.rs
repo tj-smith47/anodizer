@@ -255,9 +255,21 @@ mod tests {
         run(&["add", "."]);
         run(&["commit", "-m", "c1"]);
 
+        let capture = |args: &[&str]| -> String {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        let expected_head = capture(&["rev-parse", "HEAD"]);
+        let expected_root = capture(&["rev-list", "--max-parents=0", "HEAD"]);
+
         let info = detect_git_info_in(dir, "v1.0.0", false).unwrap();
-        assert_eq!(info.commit.len(), 40);
+        assert_eq!(info.commit, expected_head);
         assert_eq!(info.semver.major, 1);
-        assert!(info.first_commit.is_some());
+        assert_eq!(info.first_commit.as_deref(), Some(expected_root.as_str()));
     }
 }

@@ -516,19 +516,41 @@ mod tests {
     }
 
     #[test]
-    fn get_head_commit_in_returns_40_char_sha() {
+    fn get_head_commit_in_returns_tempdirs_head_sha() {
         let tmp = tempfile::tempdir().unwrap();
         init_repo_with_commits(tmp.path(), &["a"]);
+        let expected = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
         let sha = get_head_commit_in(tmp.path()).unwrap();
-        assert_eq!(sha.len(), 40);
+        assert_eq!(sha, expected);
     }
 
     #[test]
-    fn get_short_commit_in_returns_7_char_sha() {
+    fn get_short_commit_in_returns_tempdirs_short_sha() {
         let tmp = tempfile::tempdir().unwrap();
         init_repo_with_commits(tmp.path(), &["a"]);
+        let expected = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .current_dir(tmp.path())
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
         let short = get_short_commit_in(tmp.path()).unwrap();
-        assert!(short.len() >= 7);
+        assert_eq!(short, expected);
     }
 
     #[test]
@@ -554,8 +576,26 @@ mod tests {
     #[test]
     fn get_current_branch_in_returns_branch_name() {
         let tmp = tempfile::tempdir().unwrap();
-        init_repo_with_commits(tmp.path(), &["a"]);
-        let branch = get_current_branch_in(tmp.path()).unwrap();
-        assert!(!branch.is_empty());
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        run(&["-c", "init.defaultBranch=t1-test-branch", "init"]);
+        run(&["config", "user.email", "t@t.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.join("a"), "1").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-m", "c1"]);
+        let branch = get_current_branch_in(dir).unwrap();
+        assert_eq!(branch, "t1-test-branch");
     }
 }
