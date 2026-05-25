@@ -490,18 +490,579 @@ pub(crate) fn generate_manifests(
 }
 
 // ---------------------------------------------------------------------------
+// publish_to_winget helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve the publisher name, falling back to the GitHub repo owner when
+/// the config omits an explicit publisher. Errors when both are empty.
+fn resolve_winget_publisher_name<'a>(
+    winget_cfg: &'a anodizer_core::config::WingetConfig,
+    repo_owner: &'a str,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<&'a str> {
+    match winget_cfg.publisher.as_deref() {
+        Some(p) if !p.is_empty() => Ok(p),
+        _ => {
+            if repo_owner.is_empty() {
+                anyhow::bail!(
+                    "winget: publisher is required but not configured for '{}', \
+                     and repo owner is also empty. Set `publish.winget.publisher` in your config.",
+                    crate_name
+                );
+            }
+            log.warn(&format!(
+                "winget: publisher not explicitly set for '{}'; falling back to repo owner '{}'",
+                crate_name, repo_owner
+            ));
+            Ok(repo_owner)
+        }
+    }
+}
+
+/// Resolve the package description (with Pro-parity fallback to project
+/// `metadata.description`), template-render it, and normalize embedded tabs.
+fn resolve_winget_description(
+    ctx: &Context,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+) -> String {
+    let description_raw_cfg = winget_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+        .unwrap_or("");
+    let description_tmpl = ctx
+        .render_template(description_raw_cfg)
+        .unwrap_or_else(|_| description_raw_cfg.to_string());
+    description_tmpl.replace('\t', "  ")
+}
+
+/// Resolve the required short description with the layered winget →
+/// winget.description → metadata.description fallback. Never silently
+/// substitutes the crate name (a winget reviewer would reject that).
+fn resolve_winget_short_description(
+    ctx: &Context,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+    crate_name: &str,
+) -> Result<String> {
+    let short_desc_raw = winget_cfg
+        .short_description
+        .as_deref()
+        .or(winget_cfg.description.as_deref())
+        .or_else(|| ctx.config.meta_description())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "winget: short_description is required but not configured for \
+                 '{crate_name}'. Set `publish.winget.short_description`, or a \
+                 fallback via `publish.winget.description` or top-level \
+                 `metadata.description`."
+            )
+        })?;
+    Ok(short_desc_raw.replace('\t', "  "))
+}
+
+/// Resolve the required license with metadata fallback.
+fn resolve_winget_license<'a>(
+    ctx: &'a Context,
+    winget_cfg: &'a anodizer_core::config::WingetConfig,
+    crate_name: &str,
+) -> Result<&'a str> {
+    winget_cfg
+        .license
+        .as_deref()
+        .or_else(|| ctx.config.meta_license())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "winget: license is required but not configured for '{}'. \
+             Set `publish.winget.license` in your config.",
+                crate_name
+            )
+        })
+}
+
+/// Build the target-triple → binary-name map from windows Build-kind
+/// artifacts. Drives `NestedInstallerFiles` for each zip installer entry.
+fn collect_windows_binary_names_by_target(
+    ctx: &Context,
+    crate_name: &str,
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let win_binaries = ctx
+        .artifacts
+        .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Binary, crate_name);
+    for b in &win_binaries {
+        let target = b.target.as_deref().unwrap_or("");
+        if !target.to_ascii_lowercase().contains("windows") {
+            continue;
+        }
+        if let Some(bin_name) = b.metadata.get("binary") {
+            let entry = map.entry(target.to_string()).or_default();
+            if !entry.contains(bin_name) {
+                entry.push(bin_name.clone());
+            }
+        }
+    }
+    map
+}
+
+/// Map a raw architecture string to the WinGet vocabulary.
+fn map_winget_arch(raw_arch: &str) -> &str {
+    match raw_arch {
+        "amd64" => "x64",
+        "386" | "i686" => "x86",
+        "arm64" => "arm64",
+        other => other,
+    }
+}
+
+/// Resolve the installer download URL for an artifact: prefer the
+/// configured `url_template`, fall back to the artifact's `url` metadata,
+/// then the on-disk path string.
+fn resolve_installer_url(
+    ctx: &Context,
+    a: &anodizer_core::artifact::Artifact,
+    url_template: Option<&str>,
+    name: &str,
+    version: &str,
+    raw_arch: &str,
+) -> String {
+    if let Some(tmpl) = url_template {
+        util::render_url_template_with_ctx(ctx, tmpl, name, version, raw_arch, "windows")
+    } else {
+        a.metadata
+            .get("url")
+            .cloned()
+            .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
+    }
+}
+
+/// Filters that mirror GoReleaser's artifact selection for windows winget
+/// installers: windows-only, optional id allow-list, and amd64_variant
+/// selection.
+struct WingetArtifactFilters<'a> {
+    ids: Option<&'a [String]>,
+    amd64_variant: Option<&'a str>,
+}
+
+impl<'a> WingetArtifactFilters<'a> {
+    fn matches(&self, a: &anodizer_core::artifact::Artifact) -> bool {
+        let is_windows = a
+            .target
+            .as_deref()
+            .map(|t| t.to_ascii_lowercase().contains("windows"))
+            .unwrap_or(false)
+            || a.path
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains("windows");
+        if !is_windows {
+            return false;
+        }
+        if let Some(ids) = self.ids {
+            let matched = a
+                .metadata
+                .get("id")
+                .map(|id| ids.iter().any(|i| i == id))
+                .unwrap_or(false);
+            if !matched {
+                return false;
+            }
+        }
+        let target = a.target.as_deref().unwrap_or("");
+        let (_, arch) = anodizer_core::target::map_target(target);
+        if arch == "amd64"
+            && let Some(want) = self.amd64_variant
+            && a.metadata.get("amd64_variant").is_some_and(|v| v != want)
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// Build a single zip-archive [`WingetInstallerItem`] from a matching
+/// archive artifact. Errors when the archive has no sha256 (which would
+/// produce a manifest the winget validator rejects).
+fn build_archive_installer(
+    ctx: &Context,
+    a: &anodizer_core::artifact::Artifact,
+    url_template: Option<&str>,
+    name: &str,
+    version: &str,
+    binary_names_by_target: &std::collections::HashMap<String, Vec<String>>,
+) -> Result<WingetInstallerItem> {
+    let target = a.target.as_deref().unwrap_or("");
+    let (_, raw_arch) = anodizer_core::target::map_target(target);
+    let arch = map_winget_arch(raw_arch.as_str());
+    let resolved_url = resolve_installer_url(ctx, a, url_template, name, version, &raw_arch);
+    let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+    if sha256.is_empty() {
+        anyhow::bail!(
+            "winget: archive '{}' has no sha256 metadata; \
+             the manifest would publish with InstallerSha256: '' \
+             and be rejected by winget validation. \
+             Ensure the checksum stage runs before winget, or that \
+             the publish flow seeds sha256 onto downloaded assets.",
+            a.path.display()
+        );
+    }
+    let wrap_in_directory = a.metadata.get("wrap_in_directory").cloned();
+    let binaries = binary_names_by_target
+        .get(target)
+        .cloned()
+        .unwrap_or_default();
+    Ok(WingetInstallerItem {
+        architecture: arch.to_string(),
+        url: resolved_url,
+        sha256,
+        installer_type: "zip".to_string(),
+        binaries,
+        wrap_in_directory,
+        commands: Vec::new(),
+    })
+}
+
+/// Build a portable-binary [`WingetInstallerItem`] from a matching
+/// UploadableBinary artifact. Errors when sha256 metadata is missing.
+fn build_portable_installer(
+    ctx: &Context,
+    a: &anodizer_core::artifact::Artifact,
+    url_template: Option<&str>,
+    name: &str,
+    version: &str,
+) -> Result<WingetInstallerItem> {
+    let target = a.target.as_deref().unwrap_or("");
+    let (_, raw_arch) = anodizer_core::target::map_target(target);
+    let arch = map_winget_arch(raw_arch.as_str());
+    let resolved_url = resolve_installer_url(ctx, a, url_template, name, version, &raw_arch);
+    let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+    if sha256.is_empty() {
+        anyhow::bail!(
+            "winget: portable binary '{}' has no sha256 metadata; \
+             the manifest would publish with InstallerSha256: '' \
+             and be rejected by winget validation. \
+             Ensure the checksum stage runs before winget, or that \
+             the publish flow seeds sha256 onto downloaded assets.",
+            a.path.display()
+        );
+    }
+    let cmd = a
+        .metadata
+        .get("binary")
+        .cloned()
+        .unwrap_or_else(|| name.to_string());
+    Ok(WingetInstallerItem {
+        architecture: arch.to_string(),
+        url: resolved_url,
+        sha256,
+        installer_type: "portable".to_string(),
+        binaries: Vec::new(),
+        wrap_in_directory: None,
+        commands: vec![cmd],
+    })
+}
+
+/// Collect, filter, and validate all windows installers (zip archives +
+/// portable binaries) for a crate. Mirrors GoReleaser parity by rejecting
+/// mixed archive/portable formats and duplicate-architecture entries.
+fn collect_winget_installers(
+    ctx: &Context,
+    crate_name: &str,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+    name: &str,
+    version: &str,
+) -> Result<Vec<WingetInstallerItem>> {
+    let ids_filter = winget_cfg.ids.as_deref();
+    let url_template = winget_cfg.url_template.as_deref();
+    let amd64_variant = winget_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
+
+    let binary_names_by_target = collect_windows_binary_names_by_target(ctx, crate_name);
+
+    let archive_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
+    let binary_artifacts = ctx.artifacts.by_kind_and_crate(
+        anodizer_core::artifact::ArtifactKind::UploadableBinary,
+        crate_name,
+    );
+
+    let filters = WingetArtifactFilters {
+        ids: ids_filter,
+        amd64_variant,
+    };
+
+    let mut installers: Vec<WingetInstallerItem> = Vec::new();
+    let mut zip_count = 0u32;
+    let mut binary_count = 0u32;
+
+    for a in archive_artifacts.iter() {
+        if !filters.matches(a) {
+            continue;
+        }
+        let format = a.metadata.get("format").map(|f| f.as_str()).unwrap_or("");
+        if format != "zip" && !a.path.to_string_lossy().ends_with(".zip") {
+            continue;
+        }
+        zip_count += 1;
+        installers.push(build_archive_installer(
+            ctx,
+            a,
+            url_template,
+            name,
+            version,
+            &binary_names_by_target,
+        )?);
+    }
+
+    for a in binary_artifacts.iter() {
+        if !filters.matches(a) {
+            continue;
+        }
+        binary_count += 1;
+        installers.push(build_portable_installer(
+            ctx,
+            a,
+            url_template,
+            name,
+            version,
+        )?);
+    }
+
+    if binary_count > 0 && zip_count > 0 {
+        anyhow::bail!(
+            "winget: found archives with multiple formats (.exe and .zip) for '{}'; \
+             use either portable binaries or zip archives, not both",
+            crate_name
+        );
+    }
+
+    let mut arch_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for i in &installers {
+        *arch_counts.entry(&i.architecture).or_default() += 1;
+    }
+    for (arch, count) in &arch_counts {
+        if *count > 1 {
+            anyhow::bail!(
+                "winget: found multiple archives for the same platform ({arch}) for '{}'",
+                crate_name
+            );
+        }
+    }
+
+    if installers.is_empty() {
+        anyhow::bail!(
+            "winget: no Windows archive or binary artifact found for '{}'",
+            crate_name
+        );
+    }
+
+    Ok(installers)
+}
+
+/// Extract a YYYY-MM-DD release date from the template context's `Date`
+/// (RFC 3339), returning `None` when the field is missing or malformed.
+fn resolve_winget_release_date(ctx: &Context) -> Option<String> {
+    ctx.template_vars()
+        .get("Date")
+        .map(|d| d.chars().take(10).collect::<String>())
+        .filter(|s| s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-')
+}
+
+/// Template-rendered string fields that feed [`WingetManifestParams`].
+/// Each field mirrors the same-named winget config entry after running
+/// it through the template engine with the standard variable set plus
+/// `Changelog` (matching GoReleaser's `WithExtraFields`).
+struct RenderedWingetFields {
+    publisher: String,
+    publisher_url: Option<String>,
+    publisher_support_url: Option<String>,
+    privacy_url: Option<String>,
+    homepage: Option<String>,
+    author: Option<String>,
+    copyright: Option<String>,
+    copyright_url: Option<String>,
+    license: String,
+    license_url: Option<String>,
+    short_description: String,
+    release_notes_url: Option<String>,
+    installation_notes: Option<String>,
+    path: Option<String>,
+    package_name: Option<String>,
+    release_notes: Option<String>,
+}
+
+/// Template-render all 18 winget config string fields against the live
+/// context, injecting `Changelog` per render to match GoReleaser's
+/// `WithExtraFields` semantics.
+fn render_winget_fields(
+    ctx: &Context,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+    name: &str,
+    publisher_name: &str,
+    license: &str,
+    short_desc: &str,
+) -> RenderedWingetFields {
+    let release_notes_var = ctx
+        .template_vars()
+        .get("ReleaseNotes")
+        .cloned()
+        .unwrap_or_default();
+    let render = |s: Option<&str>| -> Option<String> {
+        s.map(|v| {
+            let mut vars = ctx.template_vars().clone();
+            vars.set("Changelog", &release_notes_var);
+            anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
+        })
+    };
+
+    RenderedWingetFields {
+        publisher: render(Some(publisher_name)).unwrap_or_else(|| publisher_name.to_string()),
+        publisher_url: render(winget_cfg.publisher_url.as_deref()),
+        publisher_support_url: render(winget_cfg.publisher_support_url.as_deref()),
+        privacy_url: render(winget_cfg.privacy_url.as_deref()),
+        homepage: render(
+            winget_cfg
+                .homepage
+                .as_deref()
+                .or_else(|| ctx.config.meta_homepage()),
+        ),
+        author: render(winget_cfg.author.as_deref()),
+        copyright: render(winget_cfg.copyright.as_deref()),
+        copyright_url: render(winget_cfg.copyright_url.as_deref()),
+        license: render(Some(license)).unwrap_or_else(|| license.to_string()),
+        license_url: render(winget_cfg.license_url.as_deref()),
+        short_description: render(Some(short_desc))
+            .unwrap_or_else(|| short_desc.to_string())
+            .replace('\t', "  "),
+        release_notes_url: render(winget_cfg.release_notes_url.as_deref()),
+        installation_notes: render(winget_cfg.installation_notes.as_deref()),
+        path: render(winget_cfg.path.as_deref()),
+        package_name: render(winget_cfg.package_name.as_deref()).or_else(|| Some(name.to_string())),
+        release_notes: render(winget_cfg.release_notes.as_deref()),
+    }
+}
+
+/// Compute the on-disk manifest directory inside the cloned winget repo
+/// and write the three manifest files. Returns the directory for logging.
+fn write_winget_manifests_to_disk(
+    repo_path: &std::path::Path,
+    package_id: &str,
+    version: &str,
+    path_rendered: Option<&str>,
+    ver_yaml: &str,
+    inst_yaml: &str,
+    locale_yaml: &str,
+) -> Result<std::path::PathBuf> {
+    let manifest_dir = if let Some(path) = path_rendered {
+        repo_path.join(path)
+    } else {
+        let first_char = package_id
+            .chars()
+            .next()
+            .unwrap_or('_')
+            .to_ascii_lowercase();
+        repo_path
+            .join("manifests")
+            .join(first_char.to_string())
+            .join(package_id.replace('.', "/"))
+            .join(version)
+    };
+    std::fs::create_dir_all(&manifest_dir)
+        .with_context(|| format!("winget: create manifest dir {}", manifest_dir.display()))?;
+
+    let ver_path = manifest_dir.join(format!("{}.yaml", package_id));
+    let inst_path = manifest_dir.join(format!("{}.installer.yaml", package_id));
+    let locale_path = manifest_dir.join(format!("{}.locale.en-US.yaml", package_id));
+
+    std::fs::write(&ver_path, ver_yaml)?;
+    std::fs::write(&inst_path, inst_yaml)?;
+    std::fs::write(&locale_path, locale_yaml)?;
+
+    Ok(manifest_dir)
+}
+
+/// Submit (or update) the PR against either a configured `pull_request`
+/// upstream or the canonical `microsoft/winget-pkgs` fallback. Returns
+/// the optional outcome that must be forwarded to
+/// `Context::record_publisher_outcome`.
+#[allow(clippy::too_many_arguments)]
+#[must_use = "the returned outcome must be forwarded to Context::record_publisher_outcome"]
+fn submit_winget_pr(
+    repo_path: &std::path::Path,
+    repo_for_pr: Option<&anodizer_core::config::RepositoryConfig>,
+    repo_owner: &str,
+    repo_name: &str,
+    branch_name: &str,
+    package_id: &str,
+    version: &str,
+    update_existing_pr: bool,
+    log: &StageLogger,
+) -> Option<anodizer_core::PublisherOutcome> {
+    let has_pr_config = repo_for_pr
+        .and_then(|r| r.pull_request.as_ref())
+        .and_then(|pr| pr.enabled)
+        .unwrap_or(false);
+
+    let title = format!("New version: {} version {}", package_id, version);
+    let body = format!(
+        "## Package\n- **Package**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
+        package_id, version
+    );
+
+    if has_pr_config {
+        util::maybe_submit_pr(
+            repo_path,
+            repo_for_pr,
+            &util::PrOrigin {
+                repo_owner,
+                repo_name,
+                branch_name,
+                update_existing_pr,
+            },
+            &title,
+            &body,
+            "winget",
+            log,
+        )
+    } else {
+        let upstream_slug = repo_for_pr
+            .and_then(|r| r.pull_request.as_ref())
+            .and_then(|pr| pr.base.as_ref())
+            .and_then(|base| {
+                let owner = base.owner.as_deref()?;
+                let name = base.name.as_deref()?;
+                Some(format!("{}/{}", owner, name))
+            })
+            .unwrap_or_else(|| "microsoft/winget-pkgs".to_string());
+
+        util::submit_pr_via_gh_with_opts(
+            repo_path,
+            &upstream_slug,
+            &format!("{}:{}", repo_owner, branch_name),
+            &title,
+            &body,
+            "winget",
+            log,
+            util::SubmitPrOpts { update_existing_pr },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // publish_to_winget
 // ---------------------------------------------------------------------------
 
 pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "winget")?;
 
+    // Clone the winget config upfront so subsequent helpers do not borrow
+    // from `ctx.config`; that frees the later `&mut ctx` call site at the
+    // end of the function (`ctx.record_publisher_outcome`).
     let winget_cfg = publish
         .winget
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?;
+        .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?
+        .clone();
 
-    // Check skip_upload before doing any work.
     if util::should_skip_upload(winget_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "winget: skipping upload for '{}' (skip_upload={})",
@@ -524,32 +1085,14 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         .render_template(name_raw)
         .unwrap_or_else(|_| name_raw.to_string());
     let name = name_rendered.as_str();
-    let publisher_name = match winget_cfg.publisher.as_deref() {
-        Some(p) if !p.is_empty() => p,
-        _ => {
-            if repo_owner.is_empty() {
-                anyhow::bail!(
-                    "winget: publisher is required but not configured for '{}', \
-                     and repo owner is also empty. Set `publish.winget.publisher` in your config.",
-                    crate_name
-                );
-            }
-            log.warn(&format!(
-                "winget: publisher not explicitly set for '{}'; falling back to repo owner '{}'",
-                crate_name, repo_owner
-            ));
-            repo_owner.as_str()
-        }
-    };
+    let publisher_name = resolve_winget_publisher_name(&winget_cfg, &repo_owner, crate_name, log)?;
 
-    // Auto-generate package_identifier if not provided: Publisher.Name
     let auto_pkg_id = format!("{}.{}", publisher_name.replace(' ', ""), name);
     let package_id = winget_cfg
         .package_identifier
         .as_deref()
         .unwrap_or(&auto_pkg_id);
 
-    // Validate PackageIdentifier format before proceeding.
     validate_package_identifier(package_id)?;
 
     if ctx.is_dry_run() {
@@ -561,340 +1104,39 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
     }
 
     let version = ctx.version();
-    // Replace tabs in descriptions with two spaces (WinGet YAML convention).
-    // GoReleaser Pro parity: fall back to project `metadata.*` when winget config unset.
-    let description_raw_cfg = winget_cfg
-        .description
-        .as_deref()
-        .or_else(|| ctx.config.meta_description())
-        .unwrap_or("");
-    let description_tmpl = ctx
-        .render_template(description_raw_cfg)
-        .unwrap_or_else(|_| description_raw_cfg.to_string());
-    let description = description_tmpl.replace('\t', "  ");
-    let description = description.as_str();
-    // short_description is required.
-    // Fall back to winget.description or meta.description (both semantically
-    // valid descriptions), but NEVER silently substitute the crate_name —
-    // that produces a meaningless winget manifest like "ShortDescription:
-    // mytool" that the Microsoft reviewers will reject.
-    let short_desc_raw = winget_cfg
-        .short_description
-        .as_deref()
-        .or(winget_cfg.description.as_deref())
-        .or_else(|| ctx.config.meta_description())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "winget: short_description is required but not configured for \
-                 '{crate_name}'. Set `publish.winget.short_description`, or a \
-                 fallback via `publish.winget.description` or top-level \
-                 `metadata.description`."
-            )
-        })?;
-    let short_desc = short_desc_raw.replace('\t', "  ");
-    let short_desc = short_desc.as_str();
-    let license = winget_cfg
-        .license
-        .as_deref()
-        .or_else(|| ctx.config.meta_license())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "winget: license is required but not configured for '{}'. \
-             Set `publish.winget.license` in your config.",
-                crate_name
-            )
-        })?;
+    let description = resolve_winget_description(ctx, &winget_cfg);
+    let short_desc = resolve_winget_short_description(ctx, &winget_cfg, crate_name)?;
+    let license = resolve_winget_license(ctx, &winget_cfg, crate_name)?;
 
-    // Find windows Archive artifacts for this crate with IDs + amd64_variant filtering.
-    let ids_filter = winget_cfg.ids.as_deref();
-    let url_template = winget_cfg.url_template.as_deref();
-    let amd64_variant = winget_cfg.amd64_variant.as_deref().or(Some("v1"));
-
-    let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
-
-    // Collect binary names from Binary build artifacts for this crate, keyed
-    // by target triple.  Used to populate NestedInstallerFiles in each archive.
-    let binary_names_by_target: std::collections::HashMap<String, Vec<String>> = {
-        let mut map: std::collections::HashMap<String, Vec<String>> =
-            std::collections::HashMap::new();
-        let win_binaries = ctx
-            .artifacts
-            .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Binary, crate_name);
-        for b in &win_binaries {
-            let target = b.target.as_deref().unwrap_or("");
-            if !target.to_ascii_lowercase().contains("windows") {
-                continue;
-            }
-            if let Some(bin_name) = b.metadata.get("binary") {
-                let entry = map.entry(target.to_string()).or_default();
-                if !entry.contains(bin_name) {
-                    entry.push(bin_name.clone());
-                }
-            }
-        }
-        map
-    };
-
-    // Collect both archive (.zip only) and portable binary artifacts.
-    // winget.go:187 filters ByFormats("zip") for archives,
-    // plus ByType(UploadableBinary) for portable binaries. Filter on
-    // `UploadableBinary` — not `Binary` — because `Binary` includes raw
-    // build outputs that get packaged into archives (not uploaded standalone).
-    let archive_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
-    let binary_artifacts = ctx.artifacts.by_kind_and_crate(
-        anodizer_core::artifact::ArtifactKind::UploadableBinary,
-        crate_name,
-    );
-
-    let is_windows = |a: &anodizer_core::artifact::Artifact| -> bool {
-        a.target
-            .as_deref()
-            .map(|t| t.to_ascii_lowercase().contains("windows"))
-            .unwrap_or(false)
-            || a.path
-                .to_string_lossy()
-                .to_ascii_lowercase()
-                .contains("windows")
-    };
-    let matches_ids = |a: &anodizer_core::artifact::Artifact| -> bool {
-        if let Some(ids) = ids_filter {
-            a.metadata
-                .get("id")
-                .map(|id| ids.iter().any(|i| i == id))
-                .unwrap_or(false)
-        } else {
-            true
-        }
-    };
-    let matches_amd64_variant = |a: &anodizer_core::artifact::Artifact| -> bool {
-        let target = a.target.as_deref().unwrap_or("");
-        let (_, arch) = anodizer_core::target::map_target(target);
-        if arch == "amd64"
-            && let Some(want) = amd64_variant
-        {
-            return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
-        }
-        true
-    };
-
-    let mut installers: Vec<WingetInstallerItem> = Vec::new();
-    let mut zip_count = 0u32;
-    let mut binary_count = 0u32;
-
-    // Archive artifacts: filter to .zip only (GoReleaser parity: winget.go:467)
-    for a in archive_artifacts.iter() {
-        if !is_windows(a) || !matches_ids(a) || !matches_amd64_variant(a) {
-            continue;
-        }
-        let format = a.metadata.get("format").map(|f| f.as_str()).unwrap_or("");
-        if format != "zip" && !a.path.to_string_lossy().ends_with(".zip") {
-            continue; // Reject non-zip archives (tar.gz, 7z, etc.)
-        }
-        zip_count += 1;
-
-        let target = a.target.as_deref().unwrap_or("");
-        let (_, raw_arch) = anodizer_core::target::map_target(target);
-        let arch = match raw_arch.as_str() {
-            "amd64" => "x64",
-            "386" | "i686" => "x86",
-            "arm64" => "arm64",
-            other => other,
-        };
-        let resolved_url = if let Some(tmpl) = url_template {
-            util::render_url_template_with_ctx(ctx, tmpl, name, &version, &raw_arch, "windows")
-        } else {
-            a.metadata
-                .get("url")
-                .cloned()
-                .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
-        };
-        let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
-        if sha256.is_empty() {
-            anyhow::bail!(
-                "winget: archive '{}' has no sha256 metadata; \
-                 the manifest would publish with InstallerSha256: '' \
-                 and be rejected by winget validation. \
-                 Ensure the checksum stage runs before winget, or that \
-                 the publish flow seeds sha256 onto downloaded assets.",
-                a.path.display()
-            );
-        }
-        let wrap_in_directory = a.metadata.get("wrap_in_directory").cloned();
-        let binaries = binary_names_by_target
-            .get(target)
-            .cloned()
-            .unwrap_or_default();
-        installers.push(WingetInstallerItem {
-            architecture: arch.to_string(),
-            url: resolved_url,
-            sha256,
-            installer_type: "zip".to_string(),
-            binaries,
-            wrap_in_directory,
-            commands: Vec::new(),
-        });
-    }
-
-    // Portable binary artifacts (GoReleaser parity: winget.go:475)
-    for a in binary_artifacts.iter() {
-        if !is_windows(a) || !matches_ids(a) || !matches_amd64_variant(a) {
-            continue;
-        }
-        binary_count += 1;
-
-        let target = a.target.as_deref().unwrap_or("");
-        let (_, raw_arch) = anodizer_core::target::map_target(target);
-        let arch = match raw_arch.as_str() {
-            "amd64" => "x64",
-            "386" | "i686" => "x86",
-            "arm64" => "arm64",
-            other => other,
-        };
-        let resolved_url = if let Some(tmpl) = url_template {
-            util::render_url_template_with_ctx(ctx, tmpl, name, &version, &raw_arch, "windows")
-        } else {
-            a.metadata
-                .get("url")
-                .cloned()
-                .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
-        };
-        let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
-        if sha256.is_empty() {
-            anyhow::bail!(
-                "winget: portable binary '{}' has no sha256 metadata; \
-                 the manifest would publish with InstallerSha256: '' \
-                 and be rejected by winget validation. \
-                 Ensure the checksum stage runs before winget, or that \
-                 the publish flow seeds sha256 onto downloaded assets.",
-                a.path.display()
-            );
-        }
-        let cmd = a
-            .metadata
-            .get("binary")
-            .cloned()
-            .unwrap_or_else(|| name.to_string());
-        installers.push(WingetInstallerItem {
-            architecture: arch.to_string(),
-            url: resolved_url,
-            sha256,
-            installer_type: "portable".to_string(),
-            binaries: Vec::new(),
-            wrap_in_directory: None,
-            commands: vec![cmd],
-        });
-    }
-
-    // Validation: mixed formats (GoReleaser parity: winget.go:488-489)
-    if binary_count > 0 && zip_count > 0 {
-        anyhow::bail!(
-            "winget: found archives with multiple formats (.exe and .zip) for '{}'; \
-             use either portable binaries or zip archives, not both",
-            crate_name
-        );
-    }
-
-    // Validation: duplicate architectures (GoReleaser parity: winget.go:492-493)
-    {
-        let mut arch_counts: std::collections::HashMap<&str, u32> =
-            std::collections::HashMap::new();
-        for i in &installers {
-            *arch_counts.entry(&i.architecture).or_default() += 1;
-        }
-        for (arch, count) in &arch_counts {
-            if *count > 1 {
-                anyhow::bail!(
-                    "winget: found multiple archives for the same platform ({arch}) for '{}'",
-                    crate_name
-                );
-            }
-        }
-    }
-
-    if installers.is_empty() {
-        anyhow::bail!(
-            "winget: no Windows archive or binary artifact found for '{}'",
-            crate_name
-        );
-    }
+    let installers = collect_winget_installers(ctx, crate_name, &winget_cfg, name, &version)?;
 
     let deps = winget_cfg.dependencies.as_deref().unwrap_or(&[]);
-
-    // Generate release date from current date if available in context.
-    // Winget spec requires YYYY-MM-DD (see winget.go: ctx.Date.Format(time.DateOnly)).
-    // Context stores Date as RFC 3339; slice the first 10 chars to get calendar date.
-    let release_date = ctx
-        .template_vars()
-        .get("Date")
-        .map(|d| d.chars().take(10).collect::<String>())
-        .filter(|s| s.len() == 10 && s.as_bytes()[4] == b'-' && s.as_bytes()[7] == b'-');
+    let release_date = resolve_winget_release_date(ctx);
     let release_date_ref = release_date.as_deref();
 
-    // Template-render all 18 fields (GoReleaser parity: winget.go:115-134).
-    // `Changelog` is injected per-render to match GoReleaser's WithExtraFields
-    // so users migrating configs using `{{ .Changelog }}` get the expected value.
-    let release_notes_var = ctx
-        .template_vars()
-        .get("ReleaseNotes")
-        .cloned()
-        .unwrap_or_default();
-    let render = |s: Option<&str>| -> Option<String> {
-        s.map(|v| {
-            let mut vars = ctx.template_vars().clone();
-            vars.set("Changelog", &release_notes_var);
-            anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
-        })
-    };
-    let publisher_rendered =
-        render(Some(publisher_name)).unwrap_or_else(|| publisher_name.to_string());
-    let publisher_url_rendered = render(winget_cfg.publisher_url.as_deref());
-    let publisher_support_rendered = render(winget_cfg.publisher_support_url.as_deref());
-    let privacy_url_rendered = render(winget_cfg.privacy_url.as_deref());
-    let homepage_rendered = render(
-        winget_cfg
-            .homepage
-            .as_deref()
-            .or_else(|| ctx.config.meta_homepage()),
-    );
-    let author_rendered = render(winget_cfg.author.as_deref());
-    let copyright_rendered = render(winget_cfg.copyright.as_deref());
-    let copyright_url_rendered = render(winget_cfg.copyright_url.as_deref());
-    let license_rendered = render(Some(license)).unwrap_or_else(|| license.to_string());
-    let license_url_rendered = render(winget_cfg.license_url.as_deref());
-    let short_desc_rendered = render(Some(short_desc))
-        .unwrap_or_else(|| short_desc.to_string())
-        .replace('\t', "  ");
-    let release_notes_url_rendered = render(winget_cfg.release_notes_url.as_deref());
-    let installation_notes_rendered = render(winget_cfg.installation_notes.as_deref());
-    let path_rendered = render(winget_cfg.path.as_deref());
-    // GoReleaser defaults PackageName to Name (winget.go:74: cmp.Or).
-    let package_name_rendered =
-        render(winget_cfg.package_name.as_deref()).or_else(|| Some(name.to_string()));
-    // ReleaseNotes: template-rendered (GoReleaser parity: winget.go:173-175).
-    // The `ReleaseNotes` template variable (populated from changelog) is already
-    // available in the template context, matching GoReleaser's `Changelog` field.
-    let release_notes_rendered = render(winget_cfg.release_notes.as_deref());
+    let rendered =
+        render_winget_fields(ctx, &winget_cfg, name, publisher_name, license, &short_desc);
 
     let (ver_yaml, inst_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
         package_id,
         name,
-        package_name: package_name_rendered.as_deref(),
+        package_name: rendered.package_name.as_deref(),
         version: &version,
-        description,
-        short_description: &short_desc_rendered,
-        license: &license_rendered,
-        license_url: license_url_rendered.as_deref(),
-        publisher: &publisher_rendered,
-        publisher_url: publisher_url_rendered.as_deref(),
-        publisher_support_url: publisher_support_rendered.as_deref(),
-        privacy_url: privacy_url_rendered.as_deref(),
-        author: author_rendered.as_deref(),
-        copyright: copyright_rendered.as_deref(),
-        copyright_url: copyright_url_rendered.as_deref(),
-        homepage: homepage_rendered.as_deref(),
-        release_notes: release_notes_rendered.as_deref(),
-        release_notes_url: release_notes_url_rendered.as_deref(),
-        installation_notes: installation_notes_rendered.as_deref(),
+        description: &description,
+        short_description: &rendered.short_description,
+        license: &rendered.license,
+        license_url: rendered.license_url.as_deref(),
+        publisher: &rendered.publisher,
+        publisher_url: rendered.publisher_url.as_deref(),
+        publisher_support_url: rendered.publisher_support_url.as_deref(),
+        privacy_url: rendered.privacy_url.as_deref(),
+        author: rendered.author.as_deref(),
+        copyright: rendered.copyright.as_deref(),
+        copyright_url: rendered.copyright_url.as_deref(),
+        homepage: rendered.homepage.as_deref(),
+        release_notes: rendered.release_notes.as_deref(),
+        release_notes_url: rendered.release_notes_url.as_deref(),
+        installation_notes: rendered.installation_notes.as_deref(),
         tags: winget_cfg.tags.as_deref(),
         dependencies: deps,
         installers,
@@ -920,47 +1162,27 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         log,
     )?;
 
-    // Build manifest path: use custom path (template-rendered) or auto-generate.
-    let manifest_dir = if let Some(ref path) = path_rendered {
-        repo_path.join(path)
-    } else {
-        let first_char = package_id
-            .chars()
-            .next()
-            .unwrap_or('_')
-            .to_ascii_lowercase();
-        repo_path
-            .join("manifests")
-            .join(first_char.to_string())
-            .join(package_id.replace('.', "/"))
-            .join(&version)
-    };
-    std::fs::create_dir_all(&manifest_dir)
-        .with_context(|| format!("winget: create manifest dir {}", manifest_dir.display()))?;
-
-    // Write 3-file manifests
-    let ver_path = manifest_dir.join(format!("{}.yaml", package_id));
-    let inst_path = manifest_dir.join(format!("{}.installer.yaml", package_id));
-    let locale_path = manifest_dir.join(format!("{}.locale.en-US.yaml", package_id));
-
-    std::fs::write(&ver_path, &ver_yaml)?;
-    std::fs::write(&inst_path, &inst_yaml)?;
-    std::fs::write(&locale_path, &locale_yaml)?;
+    let manifest_dir = write_winget_manifests_to_disk(
+        repo_path,
+        package_id,
+        &version,
+        rendered.path.as_deref(),
+        &ver_yaml,
+        &inst_yaml,
+        &locale_yaml,
+    )?;
 
     log.status(&format!(
         "wrote WinGet manifests to {}",
         manifest_dir.display()
     ));
 
-    // Commit message — GoReleaser adds PackageIdentifier to the template context
-    // (winget.go:291-293) in addition to the standard name/version.
     let commit_msg = render_winget_commit_msg(
         winget_cfg.commit_msg_template.as_deref(),
         package_id,
         &version,
     );
 
-    // Use repository.branch if set, otherwise auto-generate from package_id + version.
     let auto_branch = format!("{}-{}", package_id, version);
     let branch_name = util::resolve_branch(winget_cfg.repository.as_ref()).unwrap_or(&auto_branch);
     let commit_opts = util::resolve_commit_opts(ctx, winget_cfg.commit_author.as_ref());
@@ -987,16 +1209,6 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         }
     }
 
-    // Submit a PR.  When `repository.pull_request` is configured and enabled,
-    // use the unified PR helper (which respects `base`, `draft`, `body`).
-    // Otherwise fall back to the legacy hardcoded "microsoft/winget-pkgs" target.
-    let has_pr_config = winget_cfg
-        .repository
-        .as_ref()
-        .and_then(|r| r.pull_request.as_ref())
-        .and_then(|pr| pr.enabled)
-        .unwrap_or(false);
-
     let update_existing_pr = winget_cfg
         .update_existing_pr
         .as_ref()
@@ -1006,61 +1218,18 @@ pub fn publish_to_winget(ctx: &mut Context, crate_name: &str, log: &StageLogger)
         })
         .unwrap_or(false);
 
-    // Clone the repository config so the PR submission helpers no
-    // longer borrow from `ctx.config` (via `winget_cfg`). NLL then
-    // drops the immutable borrow, making the subsequent `&mut ctx`
-    // call legal.
-    let repo_for_pr = winget_cfg.repository.clone();
+    let pr_outcome = submit_winget_pr(
+        repo_path,
+        winget_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        branch_name,
+        package_id,
+        &version,
+        update_existing_pr,
+        log,
+    );
 
-    let pr_outcome = if has_pr_config {
-        util::maybe_submit_pr(
-            repo_path,
-            repo_for_pr.as_ref(),
-            &util::PrOrigin {
-                repo_owner: &repo_owner,
-                repo_name: &repo_name,
-                branch_name,
-                update_existing_pr,
-            },
-            &format!("New version: {} version {}", package_id, version),
-            &format!(
-                "## Package\n- **Package**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-                package_id, version
-            ),
-            "winget",
-            log,
-        )
-    } else {
-        // Legacy path: always submit a PR to microsoft/winget-pkgs.
-        let upstream_slug = repo_for_pr
-            .as_ref()
-            .and_then(|r| r.pull_request.as_ref())
-            .and_then(|pr| pr.base.as_ref())
-            .and_then(|base| {
-                let owner = base.owner.as_deref()?;
-                let name = base.name.as_deref()?;
-                Some(format!("{}/{}", owner, name))
-            })
-            .unwrap_or_else(|| "microsoft/winget-pkgs".to_string());
-
-        util::submit_pr_via_gh_with_opts(
-            repo_path,
-            &upstream_slug,
-            &format!("{}:{}", repo_owner, branch_name),
-            &format!("New version: {} version {}", package_id, version),
-            &format!(
-                "## Package\n- **Package**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
-                package_id, version
-            ),
-            "winget",
-            log,
-            util::SubmitPrOpts { update_existing_pr },
-        )
-    };
-
-    // Surface PR-already-exists skips to the dispatch summary table.
-    // Without this the row reads `succeeded` even though we did not
-    // create or update a PR — see `Context::record_publisher_outcome`.
     if let Some(outcome) = pr_outcome {
         ctx.record_publisher_outcome(outcome);
     }
