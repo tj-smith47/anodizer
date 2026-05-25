@@ -48,90 +48,119 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     let mut errors: Vec<String> = vec![];
     let mut warnings: Vec<String> = vec![];
 
-    // ------------------------------------------------------------------
-    // Semantic validation
-    // ------------------------------------------------------------------
+    let all_crate_names = flatten_crate_names(config);
 
-    // Flattened crate-name set across top-level crates + every workspace's
-    // crates. The release engine topo-sorts using this flattened set, so
-    // `depends_on` references can cross workspace boundaries at release time
-    // (e.g. a workspace crate depending on a crate in another workspace).
-    // The validator must mirror that resolution to avoid false positives.
-    let all_crate_names: HashSet<&str> = {
-        let mut s: HashSet<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
-        if let Some(ref workspaces) = config.workspaces {
-            for ws in workspaces {
-                for c in &ws.crates {
-                    s.insert(c.name.as_str());
-                }
+    check_workspaces(config, &all_crate_names, &mut errors);
+    check_top_level_crate_names(config, &mut errors);
+    check_top_level_depends_on(config, &all_crate_names, &mut errors);
+    check_cycles(config, &mut errors);
+    check_top_level_tag_templates(config, &mut errors);
+    check_copy_from(config, &mut errors);
+    check_target_triples(config, &mut warnings);
+    check_changelog(config, &mut warnings);
+    check_checksum_skip_conflicts(config, &mut warnings);
+    check_crate_paths(config, &mut errors);
+    check_sign_artifact_filters(config, &mut warnings);
+    check_checksum_algorithms(config, &mut warnings);
+    check_source_format(config, &mut errors);
+    check_sbom_configs(config, &mut errors);
+    check_blob_configs(config, &mut errors);
+
+    if check_env {
+        check_environment(config, &mut warnings);
+    }
+
+    report_results(log, &warnings, &errors)
+}
+
+/// Flatten the crate-name set across top-level crates and every workspace's
+/// crates. The release engine topo-sorts using this flattened set, so
+/// `depends_on` references can cross workspace boundaries at release time
+/// (e.g. a workspace crate depending on a crate in another workspace). The
+/// validator must mirror that resolution to avoid false positives.
+fn flatten_crate_names(config: &Config) -> HashSet<&str> {
+    let mut s: HashSet<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
+    if let Some(ref workspaces) = config.workspaces {
+        for ws in workspaces {
+            for c in &ws.crates {
+                s.insert(c.name.as_str());
             }
         }
-        s
+    }
+    s
+}
+
+/// Validate workspace names (non-empty, unique) plus per-workspace crate
+/// names, tag templates, and `depends_on` references (resolved against the
+/// flattened crate set so cross-workspace refs are accepted).
+fn check_workspaces(config: &Config, all_crate_names: &HashSet<&str>, errors: &mut Vec<String>) {
+    let Some(ref workspaces) = config.workspaces else {
+        return;
     };
 
-    // 0a. Workspace names must be unique and non-empty
-    if let Some(ref workspaces) = config.workspaces {
-        let mut seen_names: HashSet<&str> = HashSet::new();
-        for (i, ws) in workspaces.iter().enumerate() {
-            if ws.name.trim().is_empty() {
-                errors.push(format!("workspace at index {}: name must not be empty", i));
-            } else if !seen_names.insert(ws.name.as_str()) {
-                errors.push(format!("duplicate workspace name '{}'", ws.name));
+    let mut seen_names: HashSet<&str> = HashSet::new();
+    for (i, ws) in workspaces.iter().enumerate() {
+        if ws.name.trim().is_empty() {
+            errors.push(format!("workspace at index {}: name must not be empty", i));
+        } else if !seen_names.insert(ws.name.as_str()) {
+            errors.push(format!("duplicate workspace name '{}'", ws.name));
+        }
+    }
+
+    for ws in workspaces {
+        let mut ws_crate_names: HashSet<&str> = HashSet::new();
+        for (i, c) in ws.crates.iter().enumerate() {
+            if c.name.trim().is_empty() {
+                errors.push(format!(
+                    "workspace '{}': crate at index {}: name must not be empty",
+                    ws.name, i
+                ));
+            } else if !ws_crate_names.insert(c.name.as_str()) {
+                errors.push(format!(
+                    "workspace '{}': duplicate crate name '{}'",
+                    ws.name, c.name
+                ));
             }
         }
-
-        // Validate workspace crate names are non-empty and unique within each workspace
-        for ws in workspaces {
-            let mut ws_crate_names: HashSet<&str> = HashSet::new();
-            for (i, c) in ws.crates.iter().enumerate() {
-                if c.name.trim().is_empty() {
-                    errors.push(format!(
-                        "workspace '{}': crate at index {}: name must not be empty",
-                        ws.name, i
-                    ));
-                } else if !ws_crate_names.insert(c.name.as_str()) {
-                    errors.push(format!(
-                        "workspace '{}': duplicate crate name '{}'",
-                        ws.name, c.name
-                    ));
-                }
-            }
-            // Validate tag_template in workspace crates
-            for c in &ws.crates {
-                validate_tag_template(
-                    &c.tag_template,
-                    &format!("workspace '{}': crate '{}'", ws.name, c.name),
-                    &mut errors,
-                );
-            }
-            // Validate depends_on references — resolved against the flattened
-            // crate set (top-level + every workspace) to match how the release
-            // engine topo-sorts dependencies at runtime.
-            for c in &ws.crates {
-                if let Some(deps) = &c.depends_on {
-                    for dep in deps {
-                        if !all_crate_names.contains(dep.as_str()) {
-                            errors.push(format!(
-                                "workspace '{}': crate '{}': depends_on '{}' does not exist",
-                                ws.name, c.name, dep
-                            ));
-                        }
+        for c in &ws.crates {
+            validate_tag_template(
+                &c.tag_template,
+                &format!("workspace '{}': crate '{}'", ws.name, c.name),
+                errors,
+            );
+        }
+        for c in &ws.crates {
+            if let Some(deps) = &c.depends_on {
+                for dep in deps {
+                    if !all_crate_names.contains(dep.as_str()) {
+                        errors.push(format!(
+                            "workspace '{}': crate '{}': depends_on '{}' does not exist",
+                            ws.name, c.name, dep
+                        ));
                     }
                 }
             }
         }
     }
+}
 
-    // 0. Crate names must not be empty
+/// Top-level crate names must be non-empty.
+fn check_top_level_crate_names(config: &Config, errors: &mut Vec<String>) {
     for (i, c) in config.crates.iter().enumerate() {
         if c.name.trim().is_empty() {
             errors.push(format!("crate at index {}: name must not be empty", i));
         }
     }
+}
 
-    // 1. depends_on references exist — flat crate case also resolves across
-    // the workspace-aware flattened set so a top-level crate can depend on a
-    // crate that lives in a workspace.
+/// Top-level `depends_on` references must resolve against the flattened
+/// crate set so a top-level crate can depend on a crate that lives in a
+/// workspace.
+fn check_top_level_depends_on(
+    config: &Config,
+    all_crate_names: &HashSet<&str>,
+    errors: &mut Vec<String>,
+) {
     for c in &config.crates {
         if let Some(deps) = &c.depends_on {
             for dep in deps {
@@ -144,23 +173,30 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             }
         }
     }
+}
 
-    // 2. Cycle detection via DFS
+/// DFS-based cycle detection across top-level crates.
+fn check_cycles(config: &Config, errors: &mut Vec<String>) {
     if let Some(cycle) = find_cycle(&config.crates) {
         errors.push(format!("depends_on cycle detected: {}", cycle.join(" → ")));
     }
+}
 
-    // 3. tag_template must contain {{ .Version }} or {{ Version }} (Tera-native)
+/// Top-level `tag_template` must contain `{{ .Version }}` or `{{ Version }}`
+/// (Tera-native).
+fn check_top_level_tag_templates(config: &Config, errors: &mut Vec<String>) {
     for c in &config.crates {
-        validate_tag_template(&c.tag_template, &format!("crate '{}'", c.name), &mut errors);
+        validate_tag_template(&c.tag_template, &format!("crate '{}'", c.name), errors);
     }
+}
 
-    // 4. copy_from references a binary in the same crate's builds
+/// Each build's `copy_from` must reference a binary defined in the same
+/// crate's builds. The effective binary name falls back to the crate name
+/// when the per-build `binary` field is omitted (e.g. when defaults supply a
+/// template without `binary:`).
+fn check_copy_from(config: &Config, errors: &mut Vec<String>) {
     for c in &config.crates {
         if let Some(builds) = &c.builds {
-            // Resolve each build's effective binary name; falls back to the
-            // crate name when the per-build `binary` field is omitted (e.g.
-            // when defaults supplied a template without `binary:`).
             let effective: Vec<&str> = builds
                 .iter()
                 .map(|b| b.binary.as_deref().unwrap_or(c.name.as_str()))
@@ -179,57 +215,61 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             }
         }
     }
+}
 
-    // 5. Target triples are recognized
-    {
-        let known_prefixes = [
-            "x86_64",
-            "aarch64",
-            "i686",
-            "armv7",
-            "arm",
-            "riscv64gc",
-            "s390x",
-            "powerpc64le",
-        ];
-        let known_os = [
-            "linux", "darwin", "apple", "windows", "freebsd", "netbsd", "android",
-        ];
-        let mut check_triple = |triple: &str, context: &str| {
-            let parts: Vec<&str> = triple.split('-').collect();
-            let arch_ok = parts
-                .first()
-                .is_some_and(|a| known_prefixes.iter().any(|p| a.starts_with(p)));
-            let os_ok = known_os.iter().any(|os| triple.contains(os));
-            if !arch_ok || !os_ok {
-                warnings.push(format!(
-                    "{}: unrecognized target triple '{}'",
-                    context, triple
-                ));
-            }
-        };
-        if let Some(defaults) = &config.defaults
-            && let Some(targets) = &defaults.targets
-        {
-            for t in targets {
-                check_triple(t, "defaults.targets");
-            }
+/// Warn on unrecognized target triples in `defaults.targets` and per-build
+/// `targets`.
+fn check_target_triples(config: &Config, warnings: &mut Vec<String>) {
+    let known_prefixes = [
+        "x86_64",
+        "aarch64",
+        "i686",
+        "armv7",
+        "arm",
+        "riscv64gc",
+        "s390x",
+        "powerpc64le",
+    ];
+    let known_os = [
+        "linux", "darwin", "apple", "windows", "freebsd", "netbsd", "android",
+    ];
+    let mut check_triple = |triple: &str, context: &str| {
+        let parts: Vec<&str> = triple.split('-').collect();
+        let arch_ok = parts
+            .first()
+            .is_some_and(|a| known_prefixes.iter().any(|p| a.starts_with(p)));
+        let os_ok = known_os.iter().any(|os| triple.contains(os));
+        if !arch_ok || !os_ok {
+            warnings.push(format!(
+                "{}: unrecognized target triple '{}'",
+                context, triple
+            ));
         }
-        for c in &config.crates {
-            if let Some(builds) = &c.builds {
-                for b in builds {
-                    if let Some(targets) = &b.targets {
-                        let bin = b.binary.as_deref().unwrap_or(c.name.as_str());
-                        for t in targets {
-                            check_triple(t, &format!("crate '{}' build '{}'", c.name, bin));
-                        }
+    };
+    if let Some(defaults) = &config.defaults
+        && let Some(targets) = &defaults.targets
+    {
+        for t in targets {
+            check_triple(t, "defaults.targets");
+        }
+    }
+    for c in &config.crates {
+        if let Some(builds) = &c.builds {
+            for b in builds {
+                if let Some(targets) = &b.targets {
+                    let bin = b.binary.as_deref().unwrap_or(c.name.as_str());
+                    for t in targets {
+                        check_triple(t, &format!("crate '{}' build '{}'", c.name, bin));
                     }
                 }
             }
         }
     }
+}
 
-    // 6. Warn if changelog has skip:true with other fields configured
+/// Warn when changelog `skip:true` coexists with other configured fields,
+/// and when `use:` has an unrecognized value.
+fn check_changelog(config: &Config, warnings: &mut Vec<String>) {
     if let Some(cl) = &config.changelog
         && cl.skip == Some(anodizer_core::config::StringOrBool::Bool(true))
     {
@@ -247,7 +287,6 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
     }
 
-    // 6b. Validate changelog use_source value
     if let Some(cl) = &config.changelog
         && let Some(ref use_source) = cl.use_source
         && use_source != "git"
@@ -258,8 +297,11 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             use_source
         ));
     }
+}
 
-    // 7. Warn if checksum has skip:true with other fields configured (global defaults)
+/// Warn when checksum `skip:true` coexists with other configured fields
+/// (both `defaults.checksum` and per-crate `checksum`).
+fn check_checksum_skip_conflicts(config: &Config, warnings: &mut Vec<String>) {
     if let Some(defaults) = &config.defaults
         && let Some(cksum) = &defaults.checksum
         && cksum.skip.as_ref().is_some_and(|d| d.as_bool())
@@ -275,7 +317,6 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         }
     }
 
-    // 8. Warn if per-crate checksum has skip:true with other fields configured
     for c in &config.crates {
         if let Some(cksum) = &c.checksum
             && cksum.skip.as_ref().is_some_and(|d| d.as_bool())
@@ -292,8 +333,10 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             }
         }
     }
+}
 
-    // 9. Crate path directories exist
+/// Each non-empty crate `path` must point to an existing directory.
+fn check_crate_paths(config: &Config, errors: &mut Vec<String>) {
     for c in &config.crates {
         if !c.path.is_empty() {
             let p = std::path::Path::new(&c.path);
@@ -305,8 +348,10 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             }
         }
     }
+}
 
-    // 10. Validate sign artifact filter values
+/// Warn on unrecognized sign artifact filter values.
+fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<String>) {
     let valid_artifact_filters = [
         "none", "all", "checksum", "source", "archive", "binary", "package",
     ];
@@ -321,8 +366,11 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             ));
         }
     }
+}
 
-    // 11. Validate checksum algorithm values
+/// Warn on unrecognized checksum algorithm values in `defaults.checksum`
+/// and per-crate `checksum`.
+fn check_checksum_algorithms(config: &Config, warnings: &mut Vec<String>) {
     let valid_algorithms = [
         "sha1", "sha224", "sha256", "sha384", "sha512", "blake2b", "blake2s",
     ];
@@ -350,8 +398,10 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             ));
         }
     }
+}
 
-    // 12. Validate source.format
+/// `source.format` must be one of the supported archive formats.
+fn check_source_format(config: &Config, errors: &mut Vec<String>) {
     if let Some(ref source) = config.source
         && let Some(ref fmt) = source.format
     {
@@ -364,8 +414,10 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             ));
         }
     }
+}
 
-    // 13. Validate sbom configs
+/// SBOM `artifacts` values must be from the allow-list.
+fn check_sbom_configs(config: &Config, errors: &mut Vec<String>) {
     for (i, sbom) in config.sboms.iter().enumerate() {
         let idx_str = i.to_string();
         let label = sbom
@@ -392,8 +444,11 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             }
         }
     }
+}
 
-    // 14. Validate blob configs
+/// Per-crate blob entries require a recognized `provider` and a non-empty
+/// `bucket`.
+fn check_blob_configs(config: &Config, errors: &mut Vec<String>) {
     let valid_blob_providers = ["s3", "gs", "gcs", "azblob", "azure"];
     for c in &config.crates {
         if let Some(ref blobs) = c.blobs {
@@ -423,118 +478,127 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             }
         }
     }
+}
 
-    // ------------------------------------------------------------------
-    // Environment checks (warnings only)
-    // ------------------------------------------------------------------
+/// Environment / tool availability checks (warnings only). Probes
+/// cross-compilation tools, docker + buildx, the GitHub token, nfpm, and
+/// the signing binaries.
+fn check_environment(config: &Config, warnings: &mut Vec<String>) {
+    check_cross_tooling(config, warnings);
+    check_docker_tooling(config, warnings);
+    check_github_token(config, warnings);
+    check_nfpm_tool(config, warnings);
+    // Blob storage cloud credentials are validated at upload time by the
+    // SDK — object_store handles S3/GCS/Azure natively. Config correctness
+    // (provider, bucket) is already validated in check_blob_configs.
+    check_signing_tools(config, warnings);
+}
 
-    if check_env {
-        let needs_cross = config.crates.iter().any(|c| {
-            use anodizer_core::config::CrossStrategy;
-            matches!(
-                &c.cross,
-                Some(CrossStrategy::Zigbuild) | Some(CrossStrategy::Auto)
-            ) || config
-                .defaults
-                .as_ref()
-                .and_then(|d| d.cross.as_ref())
-                .is_some_and(|cs| matches!(cs, CrossStrategy::Zigbuild | CrossStrategy::Auto))
-        });
+fn check_cross_tooling(config: &Config, warnings: &mut Vec<String>) {
+    let needs_cross = config.crates.iter().any(|c| {
+        use anodizer_core::config::CrossStrategy;
+        matches!(
+            &c.cross,
+            Some(CrossStrategy::Zigbuild) | Some(CrossStrategy::Auto)
+        ) || config
+            .defaults
+            .as_ref()
+            .and_then(|d| d.cross.as_ref())
+            .is_some_and(|cs| matches!(cs, CrossStrategy::Zigbuild | CrossStrategy::Auto))
+    });
 
-        if needs_cross || config.crates.iter().any(|c| c.builds.is_some()) {
-            if !tool_available("cargo-zigbuild") {
-                warnings.push(
-                    "cargo-zigbuild is not installed (needed for cross-compilation via zigbuild)"
-                        .to_string(),
-                );
-            }
-            if !tool_available("cross") {
-                warnings.push(
-                    "cross is not installed (needed for cross-compilation via cross)".to_string(),
-                );
-            }
-        }
-
-        let needs_docker = config.crates.iter().any(|c| c.docker_v2.is_some());
-        if needs_docker {
-            if !tool_available("docker") {
-                warnings
-                    .push("docker is not installed but docker sections are configured".to_string());
-            } else {
-                // Check for docker buildx. The probe surfaces three states:
-                //   Ok(true)  → buildx subcommand exists.
-                //   Ok(false) → docker present but buildx subcommand missing.
-                //   Err(_)    → spawn failed (typically: docker disappeared
-                //               between the find_binary check above and now,
-                //               e.g. PATH race). Collapse Err to "buildx
-                //               unavailable" and trace-log the io::Error so
-                //               verbose runs can see the underlying cause.
-                let buildx_ok = match anodizer_core::docker_detect::buildx_available() {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::trace!(error = %e, "buildx probe failed");
-                        false
-                    }
-                };
-                if !buildx_ok {
-                    warnings.push(
-                        "docker buildx is not available but docker sections are configured"
-                            .to_string(),
-                    );
-                }
-            }
-        }
-
-        let needs_release = config.crates.iter().any(|c| c.release.is_some());
-        if needs_release
-            && std::env::var("ANODIZER_GITHUB_TOKEN").is_err()
-            && std::env::var("GITHUB_TOKEN").is_err()
-        {
+    if needs_cross || config.crates.iter().any(|c| c.builds.is_some()) {
+        if !tool_available("cargo-zigbuild") {
             warnings.push(
-                "no GitHub token found but release sections are configured; set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN"
+                "cargo-zigbuild is not installed (needed for cross-compilation via zigbuild)"
                     .to_string(),
             );
         }
-
-        let needs_nfpm = config.crates.iter().any(|c| c.nfpms.is_some());
-        if needs_nfpm && !tool_available("nfpm") {
-            warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
+        if !tool_available("cross") {
+            warnings.push(
+                "cross is not installed (needed for cross-compilation via cross)".to_string(),
+            );
         }
+    }
+}
 
-        // Blob storage: cloud credentials are validated at upload time by the SDK.
-        // No CLI tools needed — object_store handles S3/GCS/Azure natively.
-        // We still validate config correctness (provider, bucket) above.
-
-        // GPG/cosign availability
-        if !config.signs.is_empty() {
-            for sign_cfg in &config.signs {
-                let sign_cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg");
-                if !tool_available(sign_cmd) {
-                    warnings.push(format!(
-                        "'{}' is not installed but signs section is configured",
-                        sign_cmd
-                    ));
-                }
-            }
+fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) {
+    let needs_docker = config.crates.iter().any(|c| c.docker_v2.is_some());
+    if !needs_docker {
+        return;
+    }
+    if !tool_available("docker") {
+        warnings.push("docker is not installed but docker sections are configured".to_string());
+        return;
+    }
+    // The buildx probe surfaces three states:
+    //   Ok(true)  → buildx subcommand exists.
+    //   Ok(false) → docker present but buildx subcommand missing.
+    //   Err(_)    → spawn failed (typically: docker disappeared between
+    //               the find_binary check above and now, e.g. PATH race).
+    //               Collapse Err to "buildx unavailable" and trace-log the
+    //               io::Error so verbose runs can see the underlying cause.
+    let buildx_ok = match anodizer_core::docker_detect::buildx_available() {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::trace!(error = %e, "buildx probe failed");
+            false
         }
-        if let Some(docker_signs) = &config.docker_signs {
-            for ds in docker_signs {
-                let cmd = ds.cmd.as_deref().unwrap_or("cosign");
-                if !tool_available(cmd) {
-                    warnings.push(format!(
-                        "'{}' is not installed but docker_signs section is configured",
-                        cmd
-                    ));
-                }
+    };
+    if !buildx_ok {
+        warnings
+            .push("docker buildx is not available but docker sections are configured".to_string());
+    }
+}
+
+fn check_github_token(config: &Config, warnings: &mut Vec<String>) {
+    let needs_release = config.crates.iter().any(|c| c.release.is_some());
+    if needs_release
+        && std::env::var("ANODIZER_GITHUB_TOKEN").is_err()
+        && std::env::var("GITHUB_TOKEN").is_err()
+    {
+        warnings.push(
+            "no GitHub token found but release sections are configured; set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN"
+                .to_string(),
+        );
+    }
+}
+
+fn check_nfpm_tool(config: &Config, warnings: &mut Vec<String>) {
+    let needs_nfpm = config.crates.iter().any(|c| c.nfpms.is_some());
+    if needs_nfpm && !tool_available("nfpm") {
+        warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
+    }
+}
+
+fn check_signing_tools(config: &Config, warnings: &mut Vec<String>) {
+    if !config.signs.is_empty() {
+        for sign_cfg in &config.signs {
+            let sign_cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg");
+            if !tool_available(sign_cmd) {
+                warnings.push(format!(
+                    "'{}' is not installed but signs section is configured",
+                    sign_cmd
+                ));
             }
         }
     }
+    if let Some(docker_signs) = &config.docker_signs {
+        for ds in docker_signs {
+            let cmd = ds.cmd.as_deref().unwrap_or("cosign");
+            if !tool_available(cmd) {
+                warnings.push(format!(
+                    "'{}' is not installed but docker_signs section is configured",
+                    cmd
+                ));
+            }
+        }
+    }
+}
 
-    // ------------------------------------------------------------------
-    // Print results
-    // ------------------------------------------------------------------
-
-    for w in &warnings {
+/// Emit warnings, then either log success or emit all errors and bail.
+fn report_results(log: &StageLogger, warnings: &[String], errors: &[String]) -> Result<()> {
+    for w in warnings {
         log.warn(w);
     }
 
@@ -542,7 +606,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
         log.status("Config is valid.");
         Ok(())
     } else {
-        for e in &errors {
+        for e in errors {
             log.error(e);
         }
         bail!("config validation failed with {} error(s)", errors.len());
