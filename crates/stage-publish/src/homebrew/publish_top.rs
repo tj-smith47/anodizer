@@ -101,11 +101,20 @@ pub fn publish_top_level_homebrew_casks(ctx: &mut Context, log: &StageLogger) ->
                     &os,
                 )
             } else {
-                macos_artifact
-                    .metadata
-                    .get("url")
-                    .cloned()
-                    .unwrap_or_default()
+                macos_artifact.metadata.get("url").cloned().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "homebrew_casks: artifact for cask '{}' has no 'url' metadata \
+                             and no url.template configured to synthesize one. A cask with \
+                             an empty `url \"\"` line is rejected by `brew style` and fails \
+                             on `brew install` (no download endpoint). Either set \
+                             `homebrew_casks[].url.template` to render a URL from \
+                             `{{{{ .Tag }}}}` / `{{{{ .Os }}}}` / `{{{{ .Arch }}}}`, or \
+                             ensure the release stage seeds `metadata.url` onto the \
+                             macOS artifact for '{}'.",
+                        cask_name,
+                        cask_name
+                    )
+                })?
             }
         } else {
             macos_artifact.metadata.get("url").cloned().ok_or_else(|| {

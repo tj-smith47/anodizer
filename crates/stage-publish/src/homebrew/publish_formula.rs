@@ -258,6 +258,9 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
                 a.metadata.get("url")?.to_string()
             };
             let sha256 = a.metadata.get("sha256")?.to_string();
+            // `format` feeds the multi-archive disambiguator (prefers .tar.gz
+            // > tgz). Empty value just demotes this entry to lowest preference;
+            // never reaches the rendered formula.
             let format = a.metadata.get("format").cloned().unwrap_or_default();
             Some((target.to_string(), url, sha256, format))
         })
@@ -304,6 +307,10 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
             name: formula_name,
             version: &version,
             description: &description,
+            // FORMULA_TEMPLATE wraps `license` in `{% if license %}`, so empty
+            // string renders as no `license` stanza. Homebrew formulae accept
+            // omitting the license line (lint warns but does not error); the
+            // formula remains installable.
             license: license.as_deref().unwrap_or(""),
         },
         &archives,
@@ -334,6 +341,10 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     )?;
 
     // Determine formula directory (GoReleaser parity: `directory` field).
+    // Empty string means "tap repo root" — the `is_empty()` branch below
+    // uses `repo_path` directly without joining, so the empty default is the
+    // documented no-subdirectory mode (most Homebrew taps put formulae at
+    // the root); GoReleaser brew.go behaves the same way.
     let directory = hb_cfg.directory.clone().unwrap_or_default();
     let formula_dir = if directory.is_empty() {
         repo_path.to_path_buf()

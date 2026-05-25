@@ -268,6 +268,10 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
 
+    // Scoop manifest schema lists `license` under `["string", "object"]` but
+    // does NOT mark it required (see ScoopInstaller/Scoop schema.json — only
+    // `version`, `homepage`, `bin`/`shortcuts` are required). Empty string is
+    // a tolerated default; the bucket renders "no license" in the gallery UI.
     let license = scoop_cfg
         .license
         .clone()
@@ -327,7 +331,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
             }
             true
         })
-        .map(|a| {
+        .map(|a| -> Result<(ArchEntry, String)> {
             let target = a.target.as_deref().unwrap_or("");
             let (_, raw_arch) = anodizer_core::target::map_target(target);
 
@@ -356,11 +360,32 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
                     .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
             };
 
-            let hash = a.metadata.get("sha256").cloned().unwrap_or_default();
+            let hash = a
+                .metadata
+                .get("sha256")
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "scoop: artifact '{}' for crate '{}' is missing required sha256 \
+                         metadata. The generated bucket manifest would publish with \
+                         architecture.hash: '' and `scoop install` rejects manifests \
+                         whose hash field is empty (verify step fails before download \
+                         proceeds). This indicates the artifacts.json catalog dropped \
+                         the entry's sha256 before the publish stage. Re-run with \
+                         `task release` from a clean dist/ and verify dist/artifacts.json \
+                         carries metadata.sha256 for every Windows artifact.",
+                        a.name(),
+                        crate_name,
+                    )
+                })?;
             let wrap_in_directory = a.metadata.get("wrap_in_directory").cloned();
+            // `format` is consumed by the multi-archive disambiguator (preferred:
+            // .zip > .tar.gz > .tgz). Empty value just demotes this entry to the
+            // lowest preference tier — it does not ship anywhere downstream.
             let format = a.metadata.get("format").cloned().unwrap_or_default();
 
-            (
+            Ok((
                 ArchEntry {
                     scoop_arch: scoop_arch.to_string(),
                     url,
@@ -368,9 +393,9 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
                     wrap_in_directory,
                 },
                 format,
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     if raw_arch_entries.is_empty() {
         anyhow::bail!(
@@ -1141,6 +1166,51 @@ mod publisher_tests {
             .build();
         let p = ScoopPublisher::new();
         assert_publisher_visible_work_contract(&p, &mut ctx);
+    }
+
+    /// Building a scoop bucket manifest for a Windows artifact whose `sha256`
+    /// metadata is empty must bail with an actionable error. Defaulting to
+    /// `""` would emit a manifest with `architecture.hash: ""`, which
+    /// `scoop install` rejects (the verify step fails before the download
+    /// even begins). The bail message must name the publisher, the field,
+    /// and the offending artifact.
+    #[test]
+    fn scoop_sha256_empty_metadata_bails_with_actionable_error() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![scoop_crate("demo")])
+            .build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/demo-windows-amd64.zip"),
+            name: "demo-windows-amd64.zip".to_string(),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("url".to_string(), "https://example.com/x.zip".to_string());
+                // sha256 deliberately missing.
+                m
+            },
+            size: None,
+        });
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let err =
+            super::publish_to_scoop(&mut ctx, "demo", &log).expect_err("missing sha256 must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("scoop:") && msg.contains("sha256"),
+            "error must name publisher + field; got: {msg}"
+        );
+        assert!(
+            msg.contains("demo-windows-amd64.zip"),
+            "error must name the offending artifact; got: {msg}"
+        );
+        assert!(
+            msg.contains("dist/artifacts.json") || msg.contains("re-run"),
+            "error must include a next-step hint; got: {msg}"
+        );
     }
 }
 

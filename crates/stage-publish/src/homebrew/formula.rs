@@ -497,7 +497,12 @@ pub fn generate_formula_with_opts(
         .collect();
     ctx.insert("conflicts", &conflict_entries);
 
-    // Caveats
+    // Optional formula stanzas — each `unwrap_or("")` below pairs with either
+    // a `{% if foo %}` truthy-guard or a sibling `has_<foo>` boolean in
+    // FORMULA_TEMPLATE. Empty values render as no-stanza; Homebrew formulae
+    // accept omitting caveats, plist, service, post_install, download_strategy,
+    // custom_require, and custom_block — none are required by `brew style`.
+    // The `license` field at line ~293 is likewise guarded by `{% if license %}`.
     let has_caveats = opts.caveats.is_some();
     ctx.insert("has_caveats", &has_caveats);
     ctx.insert("caveats", opts.caveats.unwrap_or(""));

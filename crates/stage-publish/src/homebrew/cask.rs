@@ -477,6 +477,11 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     let has_platforms = !params.platforms.is_empty();
     ctx.insert("has_platforms", &has_platforms);
     ctx.insert("platforms", &params.platforms);
+    // Optional cask stanzas — every `unwrap_or("")` below pairs with either a
+    // `{% if foo %}` truthy-guard or a sibling `has_<foo>` boolean in
+    // CASK_TEMPLATE (see top of file). Empty values render as no-stanza in the
+    // Ruby output. Homebrew Cask DSL accepts cask blocks without homepage,
+    // desc, caveats, service, hooks, etc. — none are required by `brew style`.
     ctx.insert("homepage", &params.homepage.unwrap_or(""));
     ctx.insert("description", &params.description.unwrap_or(""));
     ctx.insert("app", &params.app.unwrap_or(""));
@@ -631,9 +636,11 @@ pub(super) fn generate_cask_from_context(
                 continue;
             };
             let url = url.replace(&version, "#{version}");
-            let sha256 = art.metadata.get("sha256").cloned().unwrap_or_default();
+            // sha256 is fetched again in the second collection pass below
+            // (the one that actually populates CaskArchEntry); both lookups
+            // are bail-on-missing there, so any artifact reaching this loop
+            // is already known to carry sha256 metadata. Discard locally.
             platform_artifacts.push((art, key, format!("{}|{}|{}", os, arch, url)));
-            let _ = sha256; // used below
         }
     }
 
@@ -687,7 +694,27 @@ pub(super) fn generate_cask_from_context(
                     continue;
                 };
                 let url = url.replace(&version, "#{version}");
-                let sha256 = art.metadata.get("sha256").cloned().unwrap_or_default();
+                let sha256 = art
+                    .metadata
+                    .get("sha256")
+                    .cloned()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "homebrew cask: artifact '{}' (os={}, arch={}) for crate '{}' \
+                             is missing required sha256 metadata. A multi-platform cask \
+                             block with an empty `sha256 \"\"` line fails `brew style` and \
+                             aborts `brew install` (Homebrew verifies the SHA before \
+                             extracting). This indicates the artifacts.json catalog dropped \
+                             the entry's sha256 before the publish stage. Re-run with \
+                             `task release` from a clean dist/ and verify dist/artifacts.json \
+                             carries metadata.sha256 for every macOS/Linux artifact.",
+                            art.name(),
+                            os_block,
+                            arch_block,
+                            crate_name,
+                        )
+                    })?;
                 os_map
                     .entry(os_block.to_string())
                     .or_default()
@@ -835,6 +862,9 @@ pub(super) fn generate_cask_from_context(
 
     // Pre-rendered Ruby kwargs continuation for the `url` line —
     // mirrors GR `internal/pipe/cask/templates/additional_url_params.rb`.
+    // When the cask config does not set `url:` (a `url_template` was used
+    // upstream instead), there are no kwargs to splice — empty string emits
+    // `url "..."` with no trailing kwargs, which is valid Cask DSL.
     let url_extras_top = cask_cfg
         .url
         .as_ref()

@@ -117,6 +117,12 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> Result<String> {
     );
     ctx.insert("license_url", &escape_xml(&license_url));
     ctx.insert("tags_str", &escape_xml(&tags_str));
+    // Each optional field below is wrapped in `{% if foo %}...{% endif %}` in
+    // NUSPEC_TEMPLATE; empty string is falsy in Tera so the matching tag is
+    // omitted from the rendered XML. nuspec.xsd marks the following elements
+    // as `minOccurs="0"`: <packageSourceUrl>, <owners>, <copyright>,
+    // <projectSourceUrl>, <docsUrl>, <bugTrackerUrl>, <summary>, <releaseNotes>.
+    // Reference: https://learn.microsoft.com/en-us/nuget/reference/nuspec
     ctx.insert(
         "package_source_url",
         &escape_xml(params.package_source_url.unwrap_or("")),

@@ -2599,3 +2599,119 @@ fn generate_cask_emits_custom_block() {
     let cask = super::cask::generate_cask(&params).unwrap();
     assert!(cask.contains("auto_updates true"));
 }
+
+/// Building a multi-platform homebrew cask for an artifact whose `sha256`
+/// metadata is empty must bail with an actionable error. A multi-platform
+/// cask block with `sha256 ""` fails `brew style` and aborts `brew
+/// install`. The bail message must name the publisher, the field, and the
+/// offending artifact context (os/arch/crate).
+#[test]
+fn homebrew_cask_sha256_empty_metadata_bails_with_actionable_error() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        cask: Some(HomebrewCaskConfig::default()),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    // Add two darwin artifacts: one with sha256 (intel) so the find-primary
+    // path succeeds, one without (arm) to exercise the multi-platform bail.
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-amd64.tar.gz",
+        "x86_64-apple-darwin",
+        "https://e.com/intel.tar.gz",
+        "intelsha",
+    ));
+    let mut arm = art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/arm.tar.gz",
+        "armsha",
+    );
+    arm.metadata.remove("sha256");
+    ctx.artifacts.add(arm);
+    let err = super::publish_cask(&mut ctx, "mytool", &quiet_log())
+        .expect_err("missing sha256 in cask must bail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("homebrew cask:") && msg.contains("sha256"),
+        "error must name publisher + field; got: {msg}"
+    );
+    assert!(
+        msg.contains("mytool-darwin-arm64.tar.gz") || msg.contains("mytool"),
+        "error must name the offending artifact / crate; got: {msg}"
+    );
+    assert!(
+        msg.contains("dist/artifacts.json") || msg.contains("re-run"),
+        "error must include a next-step hint; got: {msg}"
+    );
+}
+
+/// `publish_top_level_homebrew_casks`: when the macOS artifact has no `url`
+/// metadata AND the cask config specifies a `url:` block without
+/// `template`, the publisher must bail rather than silently emit an empty
+/// `url ""` line (which `brew style` rejects and which fails on `brew
+/// install` because there's no download endpoint).
+#[test]
+fn homebrew_top_level_cask_url_empty_metadata_bails_with_actionable_error() {
+    use anodizer_core::config::HomebrewCaskURL;
+    let config = Config {
+        homebrew_casks: Some(vec![HomebrewCaskConfig {
+            name: Some("mycask".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("homebrew-cask-tap".to_string()),
+                ..Default::default()
+            }),
+            // url block present but `template:` unset → forces the
+            // `unwrap_or_default()` path that used to silently emit `url ""`.
+            url: Some(HomebrewCaskURL {
+                template: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]),
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // macOS artifact with `id=primary` so the IDs filter matches it, but
+    // WITHOUT `url` metadata.
+    let mut metadata = HashMap::new();
+    metadata.insert("sha256".to_string(), "dmgsha".to_string());
+    metadata.insert("id".to_string(), "primary".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DiskImage,
+        path: std::path::PathBuf::from("/tmp/mycask.dmg"),
+        name: "mycask.dmg".to_string(),
+        target: Some("aarch64-apple-darwin".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata,
+        size: None,
+    });
+    let err = super::publish_top_level_homebrew_casks(&mut ctx, &quiet_log())
+        .expect_err("missing url metadata must bail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("homebrew_casks:") && msg.contains("url"),
+        "error must name publisher + field; got: {msg}"
+    );
+    assert!(
+        msg.contains("mycask"),
+        "error must name the offending cask; got: {msg}"
+    );
+    assert!(
+        msg.contains("url.template") || msg.contains("metadata.url") || msg.contains("re-run"),
+        "error must include an actionable next-step hint; got: {msg}"
+    );
+}

@@ -265,6 +265,7 @@ fn test_publish_to_chocolatey_rejects_arm64_only() {
                     ..Default::default()
                 }),
                 description: Some("A great tool".to_string()),
+                license: Some("MIT".to_string()),
                 api_key: Some("dummy".to_string()),
                 ..Default::default()
             }),
@@ -932,5 +933,137 @@ fn parse_xml_element_trims_whitespace() {
     assert_eq!(
         parse_xml_element(body, "PackageHash").as_deref(),
         Some("spaced-hash")
+    );
+}
+
+/// Building a chocolatey nuspec with neither `publish.chocolatey.license`
+/// nor top-level `metadata.license` must bail with an actionable error.
+/// Defaulting to `""` would produce `<licenseUrl>https://opensource.org/licenses/</licenseUrl>`,
+/// which Chocolatey gallery moderators reject (broken link). The bail
+/// message must name the publisher, the field, and the offending crate.
+#[test]
+fn chocolatey_license_empty_metadata_bails_with_actionable_error() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    let mut config = Config::default();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        publish: Some(PublishConfig {
+            chocolatey: Some(ChocolateyConfig {
+                repository: Some(anodizer_core::config::RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("mytool".to_string()),
+                    ..Default::default()
+                }),
+                description: Some("A great tool".to_string()),
+                api_key: Some("dummy".to_string()),
+                license: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: std::path::PathBuf::from("/tmp/mytool-windows-amd64.zip"),
+        name: "mytool-windows-amd64.zip".to_string(),
+        target: Some("x86_64-pc-windows-msvc".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("sha256".to_string(), "deadbeef".to_string());
+            m.insert("url".to_string(), "https://example.com/x.zip".to_string());
+            m
+        },
+        size: None,
+    });
+    let log = StageLogger::new("publish", Verbosity::Quiet);
+    let err = super::publish::publish_to_chocolatey(&mut ctx, "mytool", &log)
+        .expect_err("missing license must bail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("chocolatey:") && msg.contains("license"),
+        "error must name publisher + field; got: {msg}"
+    );
+    assert!(
+        msg.contains("mytool"),
+        "error must name the offending crate; got: {msg}"
+    );
+    assert!(
+        msg.contains("metadata.license") || msg.contains("publish.chocolatey.license"),
+        "error must include an actionable next-step hint pointing at config keys; got: {msg}"
+    );
+}
+
+/// Building a chocolatey install script for a Windows artifact whose
+/// `sha256` metadata is empty must bail with an actionable error.
+/// Defaulting to `""` would embed an empty `$checksum` in the generated
+/// `chocolateyinstall.ps1`, which Chocolatey moderators reject (the
+/// install script can't verify the download). The bail message must
+/// name the publisher, the field, and the offending artifact.
+#[test]
+fn chocolatey_sha256_empty_metadata_bails_with_actionable_error() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    let mut config = Config::default();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        publish: Some(PublishConfig {
+            chocolatey: Some(ChocolateyConfig {
+                repository: Some(anodizer_core::config::RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("mytool".to_string()),
+                    ..Default::default()
+                }),
+                description: Some("A great tool".to_string()),
+                license: Some("MIT".to_string()),
+                api_key: Some("dummy".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: std::path::PathBuf::from("/tmp/mytool-windows-amd64.zip"),
+        name: "mytool-windows-amd64.zip".to_string(),
+        target: Some("x86_64-pc-windows-msvc".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("url".to_string(), "https://example.com/x.zip".to_string());
+            // sha256 deliberately missing — the silent-default trap that
+            // would emit an empty `$checksum` in chocolateyinstall.ps1.
+            m
+        },
+        size: None,
+    });
+    let log = StageLogger::new("publish", Verbosity::Quiet);
+    let err = super::publish::publish_to_chocolatey(&mut ctx, "mytool", &log)
+        .expect_err("missing sha256 must bail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("chocolatey:") && msg.contains("sha256"),
+        "error must name publisher + field; got: {msg}"
+    );
+    assert!(
+        msg.contains("mytool-windows-amd64.zip"),
+        "error must name the offending artifact; got: {msg}"
+    );
+    assert!(
+        msg.contains("dist/artifacts.json") || msg.contains("re-run"),
+        "error must include a next-step hint; got: {msg}"
     );
 }

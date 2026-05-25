@@ -91,7 +91,17 @@ pub fn publish_to_chocolatey(
         .license
         .clone()
         .or_else(|| ctx.config.meta_license().map(str::to_string))
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "chocolatey: license is required but not configured for crate '{}'. \
+                 An empty <license> field produces a broken licenseUrl \
+                 (`https://opensource.org/licenses/`) which Chocolatey gallery \
+                 moderators reject. Set `publish.chocolatey.license` (SPDX \
+                 identifier, e.g. \"MIT\") or top-level `metadata.license`, or \
+                 set `publish.chocolatey.license_url` to a custom URL.",
+                crate_name,
+            )
+        })?;
     let authors = choco_cfg
         .authors
         .clone()
@@ -99,15 +109,19 @@ pub fn publish_to_chocolatey(
         .unwrap_or_else(|| crate_name.to_string());
     let project_url = choco_cfg.project_url.clone().unwrap_or_else(|| {
         if repo_owner.is_empty() || repo_name.is_empty() {
-            // F4: feed-push publishers commonly have no public GitHub repo
-            // and no `project_url:` set. Empty <projectUrl> is acceptable
-            // to the Chocolatey gallery (the field is optional in nuspec).
+            // <projectUrl> is optional per nuspec.xsd (`xs:element minOccurs="0"`);
+            // empty value is suppressed by the Tera `{% if project_url %}` guard
+            // in nuspec.rs so no broken tag ships.
             String::new()
         } else {
             format!("https://github.com/{}/{}", repo_owner, repo_name)
         }
     });
+    // <iconUrl> is optional per nuspec.xsd; nuspec.rs only emits the tag when
+    // the value is non-empty (gated on `icon_url` truthy in the Tera template).
     let icon_url = choco_cfg.icon_url.clone().unwrap_or_default();
+    // <tags> is optional per nuspec.xsd; when no tags are configured the
+    // generator falls back to the package name (nuspec.rs line ~93).
     let tags = choco_cfg.tags.clone().unwrap_or_default();
 
     // Find both 32-bit and 64-bit Windows artifacts (GoReleaser parity).
@@ -195,7 +209,7 @@ pub fn publish_to_chocolatey(
         }
     }
 
-    let resolve_artifact = |a: &anodizer_core::artifact::Artifact| -> (String, String) {
+    let resolve_artifact = |a: &anodizer_core::artifact::Artifact| -> Result<(String, String)> {
         let target = a.target.as_deref().unwrap_or("");
         let (_, raw_arch) = anodizer_core::target::map_target(target);
         let resolved_url = if let Some(tmpl) = url_template {
@@ -206,8 +220,27 @@ pub fn publish_to_chocolatey(
                 .cloned()
                 .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
         };
-        let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
-        (resolved_url, sha256)
+        let sha256 = a
+            .metadata
+            .get("sha256")
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "chocolatey: artifact '{}' for crate '{}' is missing required \
+                         sha256 metadata. The generated chocolateyinstall.ps1 would \
+                         embed an empty `$checksum`, which Chocolatey moderators \
+                         reject (the install script can't verify the download). \
+                         This indicates the artifacts.json catalog dropped the \
+                         entry's sha256 before the publish stage. Re-run with \
+                         `task release` from a clean dist/ and verify \
+                         dist/artifacts.json carries metadata.sha256 for every \
+                         Windows artifact.",
+                    a.name(),
+                    crate_name,
+                )
+            })?;
+        Ok((resolved_url, sha256))
     };
 
     enum InstallMode {
@@ -226,8 +259,8 @@ pub fn publish_to_chocolatey(
 
     let install_mode = match (artifact_32, artifact_64) {
         (Some(a32), Some(a64)) => {
-            let (url32, hash32) = resolve_artifact(a32);
-            let (url64, hash64) = resolve_artifact(a64);
+            let (url32, hash32) = resolve_artifact(a32)?;
+            let (url64, hash64) = resolve_artifact(a64)?;
             InstallMode::Dual {
                 url32,
                 hash32,
@@ -236,7 +269,7 @@ pub fn publish_to_chocolatey(
             }
         }
         (Some(a32), None) => {
-            let (url, hash) = resolve_artifact(a32);
+            let (url, hash) = resolve_artifact(a32)?;
             InstallMode::Single {
                 url,
                 hash,
@@ -244,7 +277,7 @@ pub fn publish_to_chocolatey(
             }
         }
         (None, Some(a64)) => {
-            let (url, hash) = resolve_artifact(a64);
+            let (url, hash) = resolve_artifact(a64)?;
             InstallMode::Single {
                 url,
                 hash,
@@ -278,6 +311,10 @@ pub fn publish_to_chocolatey(
     // (GoReleaser parity: chocolatey.go:218-227). `Changelog` is injected
     // as a per-render extra (matching GoReleaser WithExtraFields) so users
     // migrating GoReleaser configs that use `{{ .Changelog }}` work.
+    // Template-render extra: `Changelog` is a tera variable. When the changelog
+    // stage has not populated `ReleaseNotes` (e.g. first release with no prior
+    // tag), an empty string is the correct default — Tera renders `{{ Changelog }}`
+    // as `` and the user's template stays valid.
     let release_notes_var = ctx
         .template_vars()
         .get("ReleaseNotes")
@@ -394,6 +431,9 @@ pub fn publish_to_chocolatey(
     log.status(&format!("created nupkg: {}", nupkg_path.display()));
 
     // Template-render APIKey (GoReleaser parity: chocolatey.go:184)
+    // Empty default is checked immediately below — the empty branch logs a
+    // warn and returns Ok(false) (skip push) rather than letting an empty
+    // key reach the NuGet push API where it would surface as opaque 403.
     let api_key = choco_cfg
         .api_key
         .as_deref()
