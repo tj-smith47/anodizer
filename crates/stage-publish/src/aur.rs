@@ -368,29 +368,52 @@ pub(crate) fn aur_resolve_defaults(
 }
 
 // ---------------------------------------------------------------------------
-// publish_to_aur
+// publish_to_aur — per-section helpers
 // ---------------------------------------------------------------------------
 
-pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
-    let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "aur")?;
+/// Owned, post-default field set fed into `PkgbuildParams`. Built once
+/// by [`aur_resolve_fields`] from the active `aur:` config + project
+/// metadata fallbacks so the orchestrator stays linear.
+struct AurResolvedFields {
+    package_name: String,
+    version: String,
+    pkgrel: u32,
+    description: String,
+    license: String,
+    url: String,
+    maintainers: Vec<String>,
+    contributors: Vec<String>,
+    depends: Vec<String>,
+    optdepends: Vec<String>,
+    conflicts: Vec<String>,
+    provides: Vec<String>,
+    replaces: Vec<String>,
+    backup: Vec<String>,
+}
 
-    let aur_cfg = publish
-        .aur
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
-
-    // Check skip before doing any work.
+/// Evaluate the early-exit gates (`skip`, `skip_upload`, missing
+/// `git_url`, dry-run) for the AUR publisher.
+///
+/// Returns `Ok(Some(git_url))` when the caller should proceed with
+/// the publish; `Ok(None)` when an early-exit fired (the helper has
+/// already emitted any operator-facing log line). Errors propagate
+/// unchanged (e.g. the `skip` Tera render failure).
+fn aur_check_skip_and_resolve_git_url(
+    ctx: &Context,
+    aur_cfg: &anodizer_core::config::AurConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<Option<String>> {
     if let Some(ref d) = aur_cfg.skip {
         let off = d
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!("aur: skipped for '{}'", crate_name));
-            return Ok(false);
+            return Ok(None);
         }
     }
 
-    // Check skip_upload before doing any work.
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log) {
         log.status(&format!(
             "aur: skipping upload for '{}' (skip_upload={})",
@@ -401,22 +424,40 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                 .map(|v| v.as_str())
                 .unwrap_or("")
         ));
-        return Ok(false);
+        return Ok(None);
     }
 
     let git_url = aur_cfg
         .git_url
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("aur: no git_url config for '{}'", crate_name))?;
+        .ok_or_else(|| anyhow::anyhow!("aur: no git_url config for '{}'", crate_name))?
+        .clone();
 
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would push AUR PKGBUILD for '{}' to {}",
             crate_name, git_url
         ));
-        return Ok(false);
+        return Ok(None);
     }
 
+    Ok(Some(git_url))
+}
+
+/// Resolve all PKGBUILD field defaults (name, version, pkgrel, url,
+/// license, dependency arrays, etc.). `crate_cfg` is consulted for the
+/// `release.github` fallback when `aur.homepage` / `metadata.homepage`
+/// are both unset; the AUR-default `conflicts`/`provides`/`pkgrel`
+/// rules are applied via `aur_resolve_defaults` against the rendered
+/// package name (so `aur.name = "{{ .ProjectName }}-bin"` does not
+/// leak unrendered template syntax into the array fields).
+fn aur_resolve_fields(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    aur_cfg: &anodizer_core::config::AurConfig,
+    crate_name: &str,
+    log: &StageLogger,
+) -> Result<AurResolvedFields> {
     // AUR pkgver does not allow hyphens; replace with underscores.
     let version = ctx.version().replace('-', "_");
 
@@ -437,6 +478,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // swallow without breaking a currently-malformed user build.
     let package_name = util::render_or_warn(ctx, log, "aur.name", &raw_package_name);
     let resolved_defaults = aur_resolve_defaults(aur_cfg, &package_name, project_name_for_defaults);
+
     // GoReleaser Pro parity: fall back to project `metadata.*` when aur config unset.
     let description_raw = aur_cfg
         .description
@@ -444,6 +486,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .or_else(|| ctx.config.meta_description())
         .unwrap_or(crate_name);
     let description = util::render_or_warn(ctx, log, "aur.description", description_raw);
+
     // PKGBUILD `license=()` is documented as RECOMMENDED but not required
     // per the Arch wiki (https://wiki.archlinux.org/title/PKGBUILD#license);
     // makepkg builds without complaint when the array contains an empty
@@ -455,14 +498,15 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .clone()
         .or_else(|| ctx.config.meta_license().map(str::to_string))
         .unwrap_or_default();
+
     // PKGBUILD `url=` resolves through `homepage:` → crate metadata
     // homepage → the derived github release URL.
-    let url = aur_cfg
+    let url_override = aur_cfg
         .homepage
         .as_deref()
         .or_else(|| ctx.config.meta_homepage())
         .map(|s| s.to_string());
-    let url = if let Some(u) = url {
+    let url = if let Some(u) = url_override {
         u
     } else if let Some(gh) = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref()) {
         format!("https://github.com/{}/{}", gh.owner, gh.name)
@@ -486,7 +530,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let contributors = aur_cfg.contributors.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
-    // conflicts / provides come from the GR-aligned default resolver above
+    // conflicts / provides come from the GR-aligned default resolver
     // (cf. aur.go:58-63). The resolver was fed the *rendered* package name,
     // so `base_name` reflects post-template values when `project_name` is
     // empty.
@@ -495,6 +539,37 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let replaces = aur_cfg.replaces.clone().unwrap_or_default();
     let backup = aur_cfg.backup.clone().unwrap_or_default();
 
+    Ok(AurResolvedFields {
+        package_name,
+        version,
+        pkgrel: resolved_defaults.pkgrel,
+        description,
+        license,
+        url,
+        maintainers,
+        contributors,
+        depends,
+        optdepends,
+        conflicts,
+        provides,
+        replaces,
+        backup,
+    })
+}
+
+/// Build the `(arch, download_url, sha256)` source tuples for the
+/// PKGBUILD `source_<arch>=` / `sha256sums_<arch>=` arrays. Filters
+/// `ctx.artifacts` to Linux archives matching `aur.ids` + the GR-
+/// hardcoded `amd64_variant`/`arm_variant=7` rules, validates that at
+/// least one archive matched and that every match carries a non-empty
+/// sha256, then dedupes by PKGBUILD architecture (`x86_64`, `aarch64`,
+/// `i686`, `armv7h`) keeping the first match per arch.
+fn aur_build_sources(
+    ctx: &Context,
+    aur_cfg: &anodizer_core::config::AurConfig,
+    crate_name: &str,
+    version: &str,
+) -> Result<Vec<(String, String, String)>> {
     // Find Linux artifacts for the AUR package, applying IDs + amd64_variant filter.
     // GoReleaser hardcodes arm_variant to "7" for AUR (no config option).
     let ids_filter = aur_cfg.ids.as_deref();
@@ -508,10 +583,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         Some("7"),
     );
 
-    let url_template = aur_cfg.url_template.as_deref();
-
-    //
-    // — empty linux-archive set produces a PKGBUILD with placeholder URL and
+    // An empty linux-archive set produces a PKGBUILD with placeholder URL and
     // empty sha256 that users would have to hand-fix. Hard-fail with an
     // actionable error instead.
     if linux_artifacts.is_empty() {
@@ -550,81 +622,54 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             empty.arch,
         );
     }
-    let sources: Vec<(String, String, String)> = {
-        // Deduplicate by architecture — AUR -bin packages expect one source per
-        // architecture. When multiple artifacts share the same arch (e.g.
-        // multiple linux-amd64 archives), keep only the first match.
-        let mut seen_arches = std::collections::HashSet::new();
-        linux_artifacts
-            .iter()
-            .filter_map(|a| {
-                let pkgbuild_arch = match a.arch.as_str() {
-                    "arm64" | "aarch64" => "aarch64".to_string(),
-                    "386" | "i686" | "i386" | "x86" => "i686".to_string(),
-                    "armv7" | "arm" | "armhf" | "armv6" => "armv7h".to_string(),
-                    _ => "x86_64".to_string(),
-                };
-                if seen_arches.insert(pkgbuild_arch.clone()) {
-                    let download_url = if let Some(tmpl) = url_template {
-                        util::render_url_template_with_ctx(
-                            ctx,
-                            tmpl,
-                            crate_name,
-                            &version,
-                            &pkgbuild_arch,
-                            "linux",
-                        )
-                    } else {
-                        a.url.clone()
-                    };
-                    Some((pkgbuild_arch, download_url, a.sha256.clone()))
+
+    let url_template = aur_cfg.url_template.as_deref();
+    // Deduplicate by architecture — AUR -bin packages expect one source per
+    // architecture. When multiple artifacts share the same arch (e.g.
+    // multiple linux-amd64 archives), keep only the first match.
+    let mut seen_arches = std::collections::HashSet::new();
+    let sources: Vec<(String, String, String)> = linux_artifacts
+        .iter()
+        .filter_map(|a| {
+            let pkgbuild_arch = match a.arch.as_str() {
+                "arm64" | "aarch64" => "aarch64".to_string(),
+                "386" | "i686" | "i386" | "x86" => "i686".to_string(),
+                "armv7" | "arm" | "armhf" | "armv6" => "armv7h".to_string(),
+                _ => "x86_64".to_string(),
+            };
+            if seen_arches.insert(pkgbuild_arch.clone()) {
+                let download_url = if let Some(tmpl) = url_template {
+                    util::render_url_template_with_ctx(
+                        ctx,
+                        tmpl,
+                        crate_name,
+                        version,
+                        &pkgbuild_arch,
+                        "linux",
+                    )
                 } else {
-                    None
-                }
-            })
-            .collect()
-    };
+                    a.url.clone()
+                };
+                Some((pkgbuild_arch, download_url, a.sha256.clone()))
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    // pkgrel comes from the GR-aligned default resolver above (cf. aur.go:64-66).
-    let pkgrel = resolved_defaults.pkgrel;
+    Ok(sources)
+}
 
-    // Compute .install filename: strip trailing "-bin" from the package name.
-    let install_base = package_name.strip_suffix("-bin").unwrap_or(&package_name);
-    let install_filename = format!("{}.install", install_base);
-    let install_file_ref = if aur_cfg.install.is_some() {
-        Some(install_filename.as_str())
-    } else {
-        None
-    };
-
-    let pkgbuild_params = PkgbuildParams {
-        name: &package_name,
-        version: &version,
-        pkgrel,
-        description: &description,
-        url: &url,
-        license: &license,
-        maintainers: &maintainers,
-        contributors: &contributors,
-        depends: &depends,
-        optdepends: &optdepends,
-        conflicts: &conflicts,
-        provides: &provides,
-        replaces: &replaces,
-        backup: &backup,
-        sources: &sources,
-        binary_name: crate_name,
-        install_template: aur_cfg.package.as_deref(),
-        install_file: install_file_ref,
-    };
-    let pkgbuild = generate_pkgbuild(&pkgbuild_params)?;
-
-    // Clone AUR repo, write PKGBUILD, commit, push.
-    let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
-    let repo_path = tmp_dir.path();
-
-    // AUR uses SSH.  When private_key or git_ssh_command is set, use the
-    // SSH clone function with those credentials.
+/// Clone the AUR git repo into `repo_path`. When either `aur.private_key`
+/// or `aur.git_ssh_command` is set the SSH clone path is taken; otherwise
+/// falls back to a plain (no-auth-header) clone. AUR has no bearer-token
+/// flow so the auth-aware variant is never invoked with credentials.
+fn aur_clone_repo(
+    aur_cfg: &anodizer_core::config::AurConfig,
+    git_url: &str,
+    repo_path: &std::path::Path,
+    log: &StageLogger,
+) -> Result<()> {
     if aur_cfg.private_key.is_some() || aur_cfg.git_ssh_command.is_some() {
         util::clone_repo_ssh(
             git_url,
@@ -633,34 +678,53 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             repo_path,
             "aur",
             log,
-        )?;
+        )
     } else {
-        // Plain clone (no bearer-token auth for AUR).
-        util::clone_repo_with_auth(git_url, None, repo_path, "aur", log)?;
+        util::clone_repo_with_auth(git_url, None, repo_path, "aur", log)
     }
+}
 
-    // Determine output directory (optional subdirectory in the repo).
-    // GoReleaser templates the directory field (aur.go:103-108).
-    let output_dir = if let Some(ref dir) = aur_cfg.directory {
+/// Resolve the output directory inside the cloned repo, optionally
+/// creating a subdirectory rendered from `aur.directory`. Matches the
+/// GoReleaser template-then-mkdir behaviour at aur.go:103-108.
+fn aur_resolve_output_dir(
+    ctx: &Context,
+    aur_cfg: &anodizer_core::config::AurConfig,
+    repo_path: &std::path::Path,
+    log: &StageLogger,
+) -> Result<std::path::PathBuf> {
+    if let Some(ref dir) = aur_cfg.directory {
         let rendered_dir = util::render_or_warn(ctx, log, "aur.directory", dir);
         let d = repo_path.join(&rendered_dir);
         std::fs::create_dir_all(&d)
             .with_context(|| format!("aur: create directory {}", d.display()))?;
-        d
+        Ok(d)
     } else {
-        repo_path.to_path_buf()
-    };
+        Ok(repo_path.to_path_buf())
+    }
+}
 
+/// Write `PKGBUILD`, the optional `.install` file, and `.SRCINFO` into
+/// `output_dir`. `install_filename` is precomputed by the caller as
+/// `<package_name minus trailing -bin>.install`; the `.install` file
+/// is only emitted when `install_content` is `Some`. Status lines
+/// mirror the formerly-inline `log.status` calls.
+fn aur_write_package_files(
+    output_dir: &std::path::Path,
+    pkgbuild: &str,
+    srcinfo: &str,
+    install_filename: &str,
+    install_content: Option<&str>,
+    log: &StageLogger,
+) -> Result<()> {
     let pkgbuild_path = output_dir.join("PKGBUILD");
-    std::fs::write(&pkgbuild_path, &pkgbuild)
+    std::fs::write(&pkgbuild_path, pkgbuild)
         .with_context(|| format!("aur: write PKGBUILD {}", pkgbuild_path.display()))?;
-
     log.status(&format!("wrote AUR PKGBUILD: {}", pkgbuild_path.display()));
 
-    // Write .install file if configured (post-install hooks).
-    if let Some(ref install_content) = aur_cfg.install {
-        let install_path = output_dir.join(&install_filename);
-        std::fs::write(&install_path, install_content).with_context(|| {
+    if let Some(content) = install_content {
+        let install_path = output_dir.join(install_filename);
+        std::fs::write(&install_path, content).with_context(|| {
             format!("aur: write {} {}", install_filename, install_path.display())
         })?;
         log.status(&format!(
@@ -669,17 +733,31 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         ));
     }
 
-    // Generate .SRCINFO from a Tera template (no makepkg dependency).
-    let srcinfo = generate_srcinfo(&pkgbuild_params)?;
     let srcinfo_path = output_dir.join(".SRCINFO");
-    std::fs::write(&srcinfo_path, &srcinfo)
+    std::fs::write(&srcinfo_path, srcinfo)
         .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
     log.status(&format!("wrote AUR .SRCINFO: {}", srcinfo_path.display()));
 
+    Ok(())
+}
+
+/// Commit the staged files in `repo_path` and push to AUR `master`.
+/// Returns `true` when the push delivered a new commit, `false` when
+/// `commit_and_push_with_opts` reports `NoChanges` (nothing to ship,
+/// repo already up to date).
+fn aur_commit_and_push(
+    ctx: &Context,
+    aur_cfg: &anodizer_core::config::AurConfig,
+    repo_path: &std::path::Path,
+    package_name: &str,
+    version: &str,
+    git_url: &str,
+    log: &StageLogger,
+) -> Result<bool> {
     let commit_msg = crate::homebrew::render_commit_msg(
         aur_cfg.commit_msg_template.as_deref(),
-        &package_name,
-        &version,
+        package_name,
+        version,
         "package",
     );
     let commit_opts = util::resolve_commit_opts(ctx, aur_cfg.commit_author.as_ref());
@@ -711,8 +789,88 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             false
         }
     };
-
     Ok(pushed)
+}
+
+// ---------------------------------------------------------------------------
+// publish_to_aur
+// ---------------------------------------------------------------------------
+
+pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<bool> {
+    let (crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "aur")?;
+
+    let aur_cfg = publish
+        .aur
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
+
+    let git_url = match aur_check_skip_and_resolve_git_url(ctx, aur_cfg, crate_name, log)? {
+        Some(u) => u,
+        None => return Ok(false),
+    };
+
+    let fields = aur_resolve_fields(ctx, crate_cfg, aur_cfg, crate_name, log)?;
+    let sources = aur_build_sources(ctx, aur_cfg, crate_name, &fields.version)?;
+
+    // Compute .install filename: strip trailing "-bin" from the package name.
+    let install_base = fields
+        .package_name
+        .strip_suffix("-bin")
+        .unwrap_or(&fields.package_name);
+    let install_filename = format!("{}.install", install_base);
+    let install_file_ref = if aur_cfg.install.is_some() {
+        Some(install_filename.as_str())
+    } else {
+        None
+    };
+
+    let pkgbuild_params = PkgbuildParams {
+        name: &fields.package_name,
+        version: &fields.version,
+        pkgrel: fields.pkgrel,
+        description: &fields.description,
+        url: &fields.url,
+        license: &fields.license,
+        maintainers: &fields.maintainers,
+        contributors: &fields.contributors,
+        depends: &fields.depends,
+        optdepends: &fields.optdepends,
+        conflicts: &fields.conflicts,
+        provides: &fields.provides,
+        replaces: &fields.replaces,
+        backup: &fields.backup,
+        sources: &sources,
+        binary_name: crate_name,
+        install_template: aur_cfg.package.as_deref(),
+        install_file: install_file_ref,
+    };
+    let pkgbuild = generate_pkgbuild(&pkgbuild_params)?;
+    let srcinfo = generate_srcinfo(&pkgbuild_params)?;
+
+    // Clone AUR repo, write PKGBUILD, commit, push.
+    let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
+    let repo_path = tmp_dir.path();
+    aur_clone_repo(aur_cfg, &git_url, repo_path, log)?;
+
+    let output_dir = aur_resolve_output_dir(ctx, aur_cfg, repo_path, log)?;
+    aur_write_package_files(
+        &output_dir,
+        &pkgbuild,
+        &srcinfo,
+        &install_filename,
+        aur_cfg.install.as_deref(),
+        log,
+    )?;
+
+    aur_commit_and_push(
+        ctx,
+        aur_cfg,
+        repo_path,
+        &fields.package_name,
+        &fields.version,
+        &git_url,
+        log,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1495,6 +1653,7 @@ mod publisher_tests {
             *aur = AurConfig {
                 git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
                 license: Some("MIT".to_string()),
+                homepage: Some("https://example.com/mytool".to_string()),
                 ..Default::default()
             };
         }
