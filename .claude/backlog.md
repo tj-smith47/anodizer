@@ -1,6 +1,212 @@
 # Backlog
 
-Post-v0.4.0 work. None of these block the current release.
+**Execution contract for the next session:**
+
+- Use **subagent-driven development** on master directly (no worktrees).
+- Each task gets a **code review subagent** after the implementing
+  subagent returns — review the actual diff, not the report.
+- Complete **every task in this file, IN FULL, nothing skipped.**
+- **Do not add new entries to this file** during execution. Discoveries
+  that would have created a follow-up task get fixed in-flight instead.
+- **Do not add anything to `.claude/known-bugs.md`** during execution.
+- **No tautological tests.** Every test pins observable behavior that
+  would catch a real regression. `assert_eq!(CONST, CONST)`,
+  `assert!(true)`, structure-without-behavior round-trips — banned.
+- **No session-narrative comments** in source. The
+  `~/.claude/rules/critical.md` rule #9 list (Plan/Phase/Task/Step/…)
+  applies. Reviewers reject violators.
+- Bundle small + independent items into one implementer; split when
+  items are large or coupled. Spawn the full team roster at dispatch
+  time so review subagents are ready when implementers return.
+
+---
+
+## V1 — Winget v0.4.0 empty `InstallerSha256` upstream root cause
+
+The publish-only pipeline now backfills sha256 via the head
+`ChecksumStage` (see `crates/cli/src/pipeline.rs::build_publish_only_pipeline`),
+which closes the bug for future ship cycles. The remaining question is
+**why** the GHA shard-merge dropped per-artifact `sha256` metadata in
+the first place: each determinism shard uploads its own `dist/artifacts.json`,
+the release job `download-artifact`s them all with `merge-multiple: true`,
+and the merged `dist/artifacts.json` ends up missing sha256 entries for
+artifacts that came from earlier shards.
+
+**Investigate**:
+- Walk `crates/cli/src/commands/release/publish_only.rs` and trace where
+  `dist/artifacts.json` is loaded vs. where the determinism harness wrote
+  it. If `download-artifact merge-multiple` overwrites instead of merges,
+  the right fix is a `merge_artifacts_json` step in publish-only that
+  unions per-shard catalogs before loading. (`actions/download-artifact@v4`
+  with multiple `dist-<shard>` patterns will overwrite same-named files.)
+- Add an integration test that reconstructs the shard-merge layout (two
+  partial `artifacts.json` files merged) and asserts the union has both
+  shards' sha256 entries.
+
+The current `ChecksumStage`-at-head fix re-hashes from on-disk bytes,
+which is correct but redundant if the catalog had survived the merge.
+
+---
+
+## V2 — Silent-default-empty sweep across publishers + stages
+
+The v0.4.0 winget bug was a `unwrap_or_default()` on missing required
+metadata that serialised to `''` and shipped to a registry that
+rejected the manifest. The pattern is **silent default for a value the
+downstream contract requires to be non-empty.** Every other such site
+in the publish surface is a trap of the same shape.
+
+**Scope:**
+
+1. Grep every `unwrap_or_default()`, `unwrap_or_else(.. String::new)`,
+   `unwrap_or("")` site in `crates/stage-publish/**` and `crates/stage-*/**`
+   that flows into a downstream payload (manifest, formula, request
+   body, git commit, file write).
+2. For each site decide:
+   - **Reject** — replace with `bail!` carrying an actionable message
+     mirroring the winget pattern. Add a regression test named
+     `<publisher>_<field>_empty_metadata_bails_with_actionable_error`.
+   - **Accept** — leave silent default in place, add a one-line WHY
+     comment explaining the downstream tolerates empty.
+3. Cross-reference per-publisher schemas: winget, homebrew formula +
+   cask, chocolatey nuspec, scoop bucket, krew plugin, nix nixpkgs,
+   AUR PKGBUILD, cargo publish, snapcraft.yaml.
+4. Sweep beyond publishers: stage-release github body/name/tag/commitish,
+   stage-announce webhook payloads, stage-changelog body, stage-source
+   archive name, stage-archive checksum file names.
+
+Output: one commit per publisher group + the cross-publisher sweep
+crate. Bundle the regression tests with the bails.
+
+---
+
+## T1 — cwd+PATH-injectable git/gh APIs
+
+Two functions in `crates/core/src/git/github_api.rs` cannot be unit-tested
+without mutating process-wide state that races every other parallel test:
+
+1. `create_tag_via_github_api` reads `std::env::current_dir()` for the
+   remote-detection step.
+2. `gh_api_get` / `gh_api_get_paginated` / the third `gh`-spawning fn
+   in this file all do `Command::new("gh")` and inherit `PATH`.
+
+**Fix**: add injectable overloads.
+
+- `create_tag_via_github_api_in(cwd: &Path, ...)` (existing fn becomes
+  a thin wrapper passing `std::env::current_dir()?`).
+- `gh_api_get_with_binary(gh_binary: &Path, endpoint, token)` plus
+  paginated sibling.
+
+Then add tests covering the missing-repo and missing-gh-binary
+branches against a real tempdir / nonexistent path — no process-wide
+mutation, no `#[serial]` decoration needed.
+
+Apply the same pattern to every other `core::git::*` function that
+reads `current_dir()` or hardcodes a binary name — grep both in
+`crates/core/src/git/`.
+
+---
+
+## T2 — Injectable sleep / runtime-driven HTTPS responder for rate_limit
+
+`crates/stage-release/src/github/rate_limit.rs::check_github_rate_limit`'s
+sleep-until-reset and the past-reset 5 s floor cannot be unit-tested
+under `tokio::test(start_paused = true)`: tokio's auto-advance only
+fires when the runtime is fully idle, and the std::thread responder's
+real socket I/O keeps the runtime non-idle. The two virtual-time tests
+hang indefinitely.
+
+**Fix**: pick one of the two.
+
+A. Inject the sleep helper: change `check_github_rate_limit` to take
+   `&dyn AsyncSleep` (or a small `Sleep` callback) so tests pass a
+   controlled sleeper that records duration without sleeping.
+B. Add a tokio-driven HTTPS responder (sibling of the std::thread
+   `spawn_oneshot_https_responder`) so socket I/O runs on the same
+   runtime and `start_paused` auto-advance interleaves correctly.
+
+Either unblocks tests for both branches. Pick whichever is cheaper
+after reading the production fn — A is one trait + 5 lines; B reuses
+`hyper` + `rustls` machinery already in the deps.
+
+---
+
+## T3 — Reduce `unsafe` env mutation in tests
+
+191 `unsafe { std::env::set_var(...) }` / `remove_var(...)` sites across
+the test surface. Root cause: 30+ production sites read env vars
+directly (`GITHUB_TOKEN`, `ANODIZER_GITHUB_API_BASE`, `DOCKER_USERNAME`,
+`MCP_GITHUB_TOKEN`, `CI_JOB_TOKEN`, etc.) so tests must mutate the
+process env to exercise branches. Rust 2024 marked `set_var` /
+`remove_var` `unsafe` because they race with libc env reads.
+
+**Fix**: every production env read becomes a Context lookup.
+
+1. Add `Context::env_var(name: &str) -> Option<String>` that delegates
+   to a `Box<dyn EnvSource>` field. Default impl reads `std::env::var`;
+   tests inject a `HashMap`-backed source.
+2. Replace each production `std::env::var(...)` with `ctx.env_var(...)`.
+   This touches: gitlab.rs (CI_JOB_TOKEN, CI_SERVER_VERSION),
+   secondary_rate_limit.rs (ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS),
+   artifactory.rs (ARTIFACTORY_TOKEN/SECRET), branch.rs + rate_limit.rs
+   (ANODIZER_GITHUB_API_BASE), snapcraft/build_stage.rs (HOME),
+   scope.rs (multiple), http_upload.rs, mcp/auth.rs (3 vars),
+   dockerhub.rs (DOCKER_USERNAME + secret_env_var), homebrew/publisher.rs
+   (GITHUB_TOKEN family), scoop.rs (same), lib.rs.
+3. Convert tests in the same crates from `unsafe set_var` to
+   `TestContextBuilder.env("KEY", "value")`.
+
+Acceptance: zero `unsafe { std::env::set_var }` / `remove_var` in
+`crates/**/src/**/tests/` and in the inline `#[cfg(test)]` modules,
+except for the documented `env_mutex`-protected RAII pattern in
+`test_helpers/env.rs` (which itself is the only legitimate site).
+
+---
+
+## Coverage push: 82.6% → ≥90% line
+
+Top remaining low-coverage files by absolute uncovered-line count
+(from cobertura.xml after the C-wave):
+
+| Cov% | Uncov | File |
+|---|---|---|
+| 73.1% | 500 | `crates/stage-notarize/src/lib.rs` |
+| 70.8% | 488 | `crates/stage-publish/src/krew.rs` |
+| 67.2% | 458 | `crates/core/src/template/base_tera.rs` |
+| 68.1% | 430 | `crates/stage-publish/src/artifactory.rs` |
+| 57.0% | 401 | `crates/stage-build/src/run.rs` |
+| 56.5% | 367 | `crates/stage-release/src/run.rs` |
+| 79.0% | 365 | `crates/stage-publish/src/winget.rs` |
+| 24.5% | 359 | `crates/stage-publish/src/nix/publish.rs` |
+| 72.7% | 348 | `crates/stage-publish/src/cloudsmith.rs` |
+| 61.3% | 334 | `crates/stage-docker/src/run.rs` |
+| 80.0% | 330 | `crates/stage-publish/src/scoop.rs` |
+| 52.9% | 322 | `crates/stage-publish/src/homebrew/cask.rs` |
+| 63.7% | 308 | `crates/cli/src/commands/release/split.rs` |
+| 78.8% | 300 | `crates/stage-publish/src/cargo.rs` |
+| 68.7% | 273 | `crates/stage-publish/src/dockerhub.rs` |
+| 38.4% | 273 | `crates/stage-publish/src/chocolatey/publish.rs` |
+| 58.6% | 270 | `crates/stage-release/src/gitlab.rs` |
+| 66.1% | 269 | `crates/stage-sbom/src/lib.rs` |
+| 63.0% | 265 | `crates/stage-publish/src/util/pr.rs` |
+| 42.5% | 255 | `crates/stage-publish/src/homebrew/publish_formula.rs` |
+| 22.7% | 254 | `crates/stage-publish/src/homebrew/publish_top.rs` |
+
+**Approach for the next session:**
+
+- Dispatch one implementer subagent per crate (bundle small siblings).
+- Each subagent uses the existing harnesses:
+  `anodizer_core::test_helpers::{TestContextBuilder, env::env_mutex,
+  artifact_set::TestArtifactSet, responder, scripted_responder,
+  https_responder}` and the stage-release `test_support::build_test_octocrab`.
+- After every implementer returns, dispatch a code reviewer for the
+  same crate. Reviewer reads the diff and rejects any tautology,
+  session-narrative comment, or test that fails the "what regression
+  does this catch?" question.
+- Run `task coverage:check` after each batch settles (NOT between
+  subagents while they're still writing — shared `target/` contention).
+
+Target: workspace ≥ 90% line.
 
 ---
 
@@ -32,10 +238,12 @@ Post-v0.4.0 work. None of these block the current release.
 `stage-nfpm/src/run.rs` each hit **14 levels of nesting**; `stage-docker`
 and `stage-archive` hit 13.
 
-**`announce_body` (933 lines)** is the highest-leverage single extraction:
-chain of `if let Some(cfg) = announce.X` for ~15 providers, each block
-structurally identical. A `trait Announcer { fn send(...); }` with one
-`impl` per provider collapses this to a 20-line dispatch loop.
+**`announce_body` (933 lines)** is the highest-leverage single
+extraction: chain of `if let Some(cfg) = announce.X` for ~15 providers,
+each block structurally identical. A `trait Announcer { fn send(...); }`
+with one `impl` per provider collapses this to a 20-line dispatch loop.
+
+Decompose each, then push coverage on the smaller pieces.
 
 ---
 
@@ -47,7 +255,7 @@ logger-capture sink (`tracing-test` or custom `tracing::Subscriber` shim)
 that asserts on the emitted log line. Retire or repurpose
 `rollback_empty_warning_msg`.
 
-**Reference:** search `rollback_empty_warning_msg` across `crates/stage-publish/src/`.
+Reference: grep `rollback_empty_warning_msg` across `crates/stage-publish/src/`.
 
 ---
 
@@ -55,37 +263,37 @@ that asserts on the emitted log line. Retire or repurpose
 
 Replace `PublishEvidence.extra: serde_json::Value` with a typed enum
 (`PublishEvidenceExtra::Homebrew(...) | ::Krew(...) | ...`) so the type
-system prevents credential leakage structurally, instead of relying on
+system prevents credential leakage structurally instead of relying on
 per-publisher `#[serde(skip)]` discipline + negative tests.
 
-**Reference:** `crates/core/src/publish_evidence.rs` + every
+Reference: `crates/core/src/publish_evidence.rs` + every
 `_target_extra_carries_no_secret_material` test.
 
 ---
 
 ## D1 — Cargo `.crate` packaging determinism
 
-Byte-stable `cargo package` output for crates.io re-verification. `cargo
-package` leaks non-determinism via file mtimes, `.cargo_vcs_info.json`,
-and tar ordering. Currently accepted via slot-skip (skip when the version
-already exists on crates.io).
+Byte-stable `cargo package` output for crates.io re-verification.
+`cargo package` leaks non-determinism via file mtimes,
+`.cargo_vcs_info.json`, and tar ordering. Currently accepted via
+slot-skip (skip when the version already exists on crates.io).
 
 Harness extension: `--stages=cargo-package` fixture mode.
 
-**Reference:** `crates/stage-publish/src/cargo.rs`.
-**Research:** cargo issue `#10718`, `repro.rs`, `reproducible-builds.org`.
+Reference: `crates/stage-publish/src/cargo.rs`.
+Research: cargo issue `#10718`, `repro.rs`, `reproducible-builds.org`.
 
 ---
 
 ## D2 — Docker BuildKit reproducible builds
 
-Byte-stable Docker image digest (and manifest list for multi-arch) across
-rebuilds of the same commit. BuildKit `--rewrite-timestamp` + cosign
-attestation timestamp interplay is non-obvious.
+Byte-stable Docker image digest (and manifest list for multi-arch)
+across rebuilds of the same commit. BuildKit `--rewrite-timestamp` +
+cosign attestation timestamp interplay is non-obvious.
 
 Harness extension: `--stages=docker` fixture mode.
 
-**Reference:** `crates/stage-docker/`.
+Reference: `crates/stage-docker/`.
 
 ---
 
@@ -97,206 +305,6 @@ own reproducibility story and signature-interaction concerns.
 
 Harness extension: `--stages=installers` fixture mode covering all six.
 
-**Reference:** `crates/stage-srpm/`, `crates/stage-msi/`,
+Reference: `crates/stage-srpm/`, `crates/stage-msi/`,
 `crates/stage-nsis/`, `crates/stage-dmg/`, `crates/stage-pkg/`,
 `crates/stage-nfpm/`.
-
----
-
-## V1 — Winget v0.4.0 empty `InstallerSha256` root cause
-
-The v0.4.0 winget manifest published with `InstallerSha256: ''` for both
-arm64 and x64, tripping the winget validation pipeline
-(PR microsoft/winget-pkgs#379056, label `Manifest-Validation-Error`).
-
-The immediate fix landed in `crates/stage-publish/src/winget.rs`
-(grep `winget: archive '` and `winget: portable binary '`) — winget
-now bails with an actionable error when an archive or portable binary
-artifact arrives without `sha256` metadata, so the broken manifest
-cannot ship again. The bail is a precondition, not a circumvention:
-the stage now refuses to construct a manifest that winget validation
-would reject.
-
-The deeper root cause is **why** the artifact `sha256` metadata was
-empty when winget ran. Two candidates:
-
-1. The v0.4.0 Release run executed a publish-only flow over assets
-   downloaded fresh from the GitHub release, and the publish-only path
-   does not re-seed `sha256` metadata for downloaded archive artifacts
-   (only `refresh_combined_checksums` runs, which rewrites the
-   combined `checksums.txt` but does not appear to update individual
-   artifact metadata).
-2. The checksum stage was skipped or ran after winget for that flow.
-
-Investigation steps:
-- Inspect the v0.4.0 Release workflow log to see the stage order and
-  whether stage-checksum ran before stage-publish/winget.
-- Audit `refresh_combined_checksums` in `stage-checksum/src/run.rs`:
-  does it write `sha256` back to each artifact's metadata in addition
-  to rewriting the combined sums file?
-- If publish-only is the offender, extend the seed step to populate
-  per-artifact `sha256` metadata from the downloaded asset bytes.
-
-This work blocks the next winget submission for any release that
-re-runs publish-only against existing GitHub assets.
-
----
-
-## T2 — Virtual-time-friendly rate_limit sleep
-
-`crates/stage-release/src/github/rate_limit.rs::check_github_rate_limit`'s
-sleep-until-reset and the past-reset 5 s floor cannot be unit-tested
-under `tokio::test(start_paused = true)` because the production
-function performs real HTTPS I/O via reqwest. Tokio's auto-advance
-only fires when the runtime is fully idle (no pending I/O), so the
-runtime waits indefinitely for the responder while the virtual timer
-never ticks.
-
-**Fix candidates:**
-
-1. Inject the sleep helper: change `check_github_rate_limit` to take
-   `&dyn AsyncSleep` (or a `Sleep` callback) so tests pass a controlled
-   sleeper that records duration without actually sleeping.
-2. Add an in-runtime tokio-driven responder helper (alongside the
-   std::thread `spawn_oneshot_https_responder`) so all socket I/O runs
-   on the same runtime and `start_paused` auto-advance interleaves
-   correctly.
-
-Either unblocks pinning the two uncovered branches. Track here so the
-next coverage pass doesn't re-add the flaky virtual-time tests.
-
----
-
-## T1 — cwd+PATH-injectable git/gh APIs for testability
-
-Two functions in `crates/core/src/git/github_api.rs` cannot be unit-tested
-without process-wide env mutation that races every other parallel test:
-
-1. `create_tag_via_github_api` reads `std::env::current_dir()`
-   internally for the remote-detection step. The "errs outside a git
-   repo" branch is uncoverable without `set_current_dir`, which races
-   every other test that subprocess-spawns `git`.
-2. `gh_api_get` / `gh_api_get_paginated` / the third `gh`-spawning fn
-   in this file all do `Command::new("gh")` and inherit `PATH`. The
-   "gh missing from PATH" branch is uncoverable without mutating
-   global `PATH`, which races every other test that spawns `git`,
-   `rustc`, etc. (Both failure modes were observed once
-   in this session — 3 git tests and 8 core tests went red intermittently
-   until the PATH/CWD-mutating tests were removed.)
-
-**Fix**: add injectable overloads:
-
-- `create_tag_via_github_api_in(cwd: &Path, ...)` (current fn becomes
-  a thin wrapper passing `std::env::current_dir()?`).
-- `gh_api_get_with_binary(gh_binary: &Path, endpoint, token)` plus
-  paginated sibling. Existing wrappers default to `Path::new("gh")`.
-
-Tests then point at a real tempdir cwd / a non-existent binary path
-without ever touching process-wide state. Apply the same pattern to any
-other `core::git::*` function that reads `current_dir()` or hardcodes a
-binary name — grep for `current_dir()` and `Command::new(` in
-`crates/core/src/git/`.
-
----
-
-## V2 — Silent-default-empty sweep (BLOCKER for next release)
-
-The v0.4.0 winget bug was a `unwrap_or_default()` on missing required
-metadata that serialised to `''` and shipped to a downstream registry
-that then rejected the manifest. The pattern is **silent default for a
-value the downstream contract requires to be non-empty.** That pattern
-likely repeats across other publishers and stages — each one is a
-trap waiting for the next release to spring it.
-
-**Scope of audit (do this before pushing the next release):**
-
-1. **Grep every `unwrap_or_default()`, `unwrap_or_else(.. String::new)`,
-   `unwrap_or("")` site in `crates/stage-publish/**` and `crates/stage-*/**`**
-   that flows into a downstream payload (manifest, formula, request body,
-   git commit, file write). For each, ask:
-   - "If the source metadata is genuinely missing, would the downstream
-     accept the empty value or reject it?"
-   - If reject — replace with `bail!` carrying an actionable message
-     (operator + remediation pointer), mirroring the winget fix.
-   - If accept — leave alone, add a one-line WHY comment explaining
-     the silent default is correct.
-
-2. **Per-publisher checklist of required-non-empty fields** the
-   downstream registry validates. Sources of truth:
-   - winget: schema at `aka.ms/winget-manifest.installer.1.12.0.schema.json`
-   - homebrew: `brew audit --strict` rules
-   - chocolatey: nuspec validation (`InstallerSha256` equivalent: `checksum`)
-   - scoop: bucket validation
-   - krew: krew plugin schema
-   - nix: nixpkgs review checklist
-   - aur: PKGBUILD lint
-   - cargo: cargo publish API rejects empty `description`, `license`
-   - snapcraft: `snapcraft.yaml` validation
-   - winget product_code, locale fields, sha256 (already fixed)
-
-3. **Other surfaces beyond publishers** to sweep:
-   - `stage-release/src/github` — `body`, `name`, `tag_name`, `target_commitish`
-     emitted with empty defaults?
-   - `stage-announce/*` — empty webhook payloads silently posted?
-   - `stage-changelog/*` — empty changelog body?
-   - `stage-source/*` — empty archive name?
-   - `stage-archive/*` — empty checksums?
-
-4. **Output**: a fix-list (or note "verified non-trap" per site). Bundle
-   the fixes into one commit with regression tests per bail, matching
-   the winget pattern (`*_without_X_metadata_bails_with_actionable_error`).
-
-**Why this is a release-blocker**: every silent default is a future
-support ticket from a user whose release shipped a broken artifact.
-Each one is also a winget-style multi-week feedback loop (publisher
-accepts → external service validates async → operator notified later).
-Fail-loud at the source is the cheapest fix point.
-
----
-
-## C1 — Coverage gaps left by the 2026-05-24 fixture session
-
-The "test fixtures" session built env_mutex, build_test_octocrab,
-classify_pr_transport, and the ANODIZER_GITHUB_API_BASE override, then
-used them to bring 8 low-coverage files up to the 60-85% range. These
-gaps were identified during the same pass but were either out of scope
-for fixture work or required production refactors that the session
-intentionally avoided.
-
-### `crates/stage-release/src/github/mod.rs`
-
-- `run_github_backend` (~900 LOC orchestrator): testing requires a full
-  Context + tokio::Runtime + multi-response responder fixture plus a
-  fake filesystem for `std::fs::read(&path)`. Worth its own focused
-  session; piecemeal stubbing risks tautology.
-- Inner `find_draft_by_name` async closure: defined inside
-  `run_github_backend`, not extractable without a production-code edit.
-  Promote to a `pub(crate)` free fn first, then test.
-- Upload-loop bespoke 422 / secondary-rate-limit / primary-rate-limit
-  retry chain (lines 720-988): tightly coupled to
-  `octocrab::Octocrab::repos().releases().upload_asset()` which has no
-  public response-injection surface. Needs either a refactor extracting
-  an `UploadAttemptOutcome` classifier (pure) or a full HTTP-fixture
-  harness with a TLS-capable responder.
-
-### `crates/stage-release/src/github/rate_limit.rs`
-
-Four branches uncovered because they hardcode `https://api.github.com/rate_limit`:
-non-2xx status (line 46), malformed JSON (line 51), `remaining > threshold`
-early-return (line 64), sleep-until-reset (lines 68-129). The current
-raw-TCP responder can't intercept HTTPS paths. Options:
-- Add a rustls-backed test responder (self-signed cert + reqwest's
-  `danger_accept_invalid_certs`), OR
-- Extend the `ANODIZER_GITHUB_API_BASE` pattern to this module so the
-  responder works over plain HTTP, OR
-- Extract the rate-limit decision logic to a pure classifier and unit
-  test that.
-
-### Other low-coverage files (not touched this session)
-
-These weren't part of fixture scope but remain low-coverage:
-- `crates/stage-srpm/src/lib.rs` (~58% line)
-- Various stage `run.rs` files in the 30-60% range
-
-Each likely has its own production-shape constraints. Audit individually
-before assuming the fixture toolkit applies.

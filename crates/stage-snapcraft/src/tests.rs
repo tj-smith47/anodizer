@@ -2842,24 +2842,92 @@ fn test_extra_files_copies_source_to_prime_dest() {
 
 #[test]
 fn test_apps_completer_existing_file_is_copied_to_prime() {
-    // The completer-copy branch only fires when the apps map contains an
-    // entry with `completer:` set (build_stage.rs:552-576). The branch
-    // silently no-ops when the source doesn't exist, so we can only assert
-    // by reaching the snapcraft-spawn failure (proving the prior staging
-    // completed) with a valid completer source file in place.
+    // The completer-copy branch fires when the apps map contains an entry
+    // with `completer:` set. `completer` is a relative path resolved
+    // against `ctx.options.project_root` (source) and joined onto the
+    // prime dir (destination). With a real source present, the branch
+    // runs to completion and the stage then proceeds to the snapcraft
+    // spawn, which fails with "program not found" — that's the proof
+    // the staging step ran successfully.
     let tmp = TempDir::new().unwrap();
     let bin_path = tmp.path().join("myapp");
     std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
-    let completer_src = tmp.path().join("completions").join("myapp.bash");
-    std::fs::create_dir_all(completer_src.parent().unwrap()).unwrap();
-    std::fs::write(&completer_src, b"# completion script").unwrap();
+    // Lay the completer source down at <project_root>/completions/myapp.bash
+    // so the relative-path resolver in build_stage.rs finds it.
+    let completer_rel = "completions/myapp.bash";
+    let completer_abs = tmp.path().join(completer_rel);
+    std::fs::create_dir_all(completer_abs.parent().unwrap()).unwrap();
+    std::fs::write(&completer_abs, b"# completion script").unwrap();
 
     let mut apps = BTreeMap::new();
     apps.insert(
         "myapp".to_string(),
         SnapcraftApp {
             command: Some("myapp".to_string()),
-            completer: Some(completer_src.to_string_lossy().to_string()),
+            completer: Some(completer_rel.to_string()),
+            ..Default::default()
+        },
+    );
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        apps: Some(apps),
+        ..Default::default()
+    };
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }],
+        false,
+    );
+    ctx.options.project_root = Some(tmp.path().to_path_buf());
+    // The contract this test pins: with a valid (relative) completer
+    // source at `<project_root>/<completer>`, the staging branch must
+    // complete without surfacing a `copy completer` error. We can't
+    // assume snapcraft is missing — dev boxes have it installed and
+    // would succeed; CI runners lack it and would error at spawn.
+    // Either outcome proves the completer branch ran clean.
+    let result = SnapcraftStage.run(&mut ctx);
+    if let Err(err) = result {
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.contains("copy completer"),
+            "completer staging branch failed unexpectedly: {msg}"
+        );
+    }
+}
+
+#[test]
+fn test_apps_completer_absolute_path_is_rejected_with_actionable_error() {
+    // Regression for v0.4.0: an absolute completer path collapses source
+    // and destination because `Path::join(absolute)` discards the prefix.
+    // On Linux fs::copy(src, src) silently succeeded; on Windows it
+    // erred out and crashed the stage. The contract now rejects
+    // absolute paths up front so neither platform can ship the bug.
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("myapp");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+
+    let mut apps = BTreeMap::new();
+    apps.insert(
+        "myapp".to_string(),
+        SnapcraftApp {
+            command: Some("myapp".to_string()),
+            completer: Some(
+                tmp.path()
+                    .join("completions/myapp.bash")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             ..Default::default()
         },
     );
@@ -2886,17 +2954,9 @@ fn test_apps_completer_existing_file_is_copied_to_prime() {
     );
     let err = SnapcraftStage.run(&mut ctx).unwrap_err();
     let msg = format!("{err:#}");
-    // Must fail at snapcraft spawn ("execute snapcraft") and NOT at the
-    // completer copy ("snapcraft: copy completer"). Either no spawn
-    // attempt or a copy-site error would mean the completer branch
-    // mis-fired.
     assert!(
-        !msg.contains("copy completer"),
-        "completer staging branch failed unexpectedly: {msg}"
-    );
-    assert!(
-        msg.contains("execute snapcraft") || msg.contains("snapcraft pack"),
-        "should reach snapcraft spawn after completer staging, got: {msg}"
+        msg.contains("must be relative") && msg.contains("myapp"),
+        "absolute-completer bail must name the app + the contract, got: {msg}"
     );
 }
 

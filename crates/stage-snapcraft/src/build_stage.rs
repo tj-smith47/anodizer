@@ -545,12 +545,38 @@ impl Stage for SnapcraftStage {
                         }
                     }
 
-                    // copy completer files
-                    // referenced by app configs into the prime directory.
+                    // Copy completer scripts referenced by app configs into
+                    // the prime directory. The `completer:` value is a single
+                    // path string used twice: as the source path (resolved
+                    // against `project_root` — mirroring `gio.CopyWithMode`
+                    // in GoReleaser's `internal/pipe/snapcraft/snapcraft.go`,
+                    // which resolves against cwd) AND as the destination
+                    // path inside the snap's prime dir. An absolute value
+                    // collapses the two because `Path::join(absolute)`
+                    // discards the prefix on every platform —
+                    // `fs::copy(src, src)` silently succeeds on Linux but
+                    // errors on Windows, which is how the bug shipped to
+                    // v0.4.0. Reject absolute paths at the contract
+                    // boundary instead of papering over the collapse.
                     if let Some(ref apps_map) = snap_cfg.apps {
-                        for app_cfg in apps_map.values() {
+                        for (app_name, app_cfg) in apps_map.iter() {
                             if let Some(ref completer_path) = app_cfg.completer {
-                                let src = PathBuf::from(completer_path);
+                                if std::path::Path::new(completer_path).is_absolute() {
+                                    anyhow::bail!(
+                                        "snapcraft: app '{}' completer path '{}' must be \
+                                         relative to the project root (the same path is also \
+                                         used as the destination inside the snap's prime dir; \
+                                         absolute paths collapse source and destination)",
+                                        app_name,
+                                        completer_path,
+                                    );
+                                }
+                                let src = ctx
+                                    .options
+                                    .project_root
+                                    .as_deref()
+                                    .unwrap_or(std::path::Path::new("."))
+                                    .join(completer_path);
                                 let dest = prime_dir.join(completer_path);
                                 if let Some(parent) = dest.parent() {
                                     fs::create_dir_all(parent).with_context(|| {
@@ -560,7 +586,7 @@ impl Stage for SnapcraftStage {
                                         )
                                     })?;
                                 }
-                                if src.exists() && src != dest {
+                                if src.exists() {
                                     fs::copy(&src, &dest).with_context(|| {
                                         format!(
                                             "snapcraft: copy completer {} to {}",

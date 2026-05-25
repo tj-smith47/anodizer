@@ -949,6 +949,7 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_changelog::ChangelogStage;
+    use anodizer_stage_checksum::ChecksumStage;
     use anodizer_stage_publish::PublishStage;
     use anodizer_stage_release::ReleaseStage;
     use anodizer_stage_sign::SignStage;
@@ -957,6 +958,15 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     let mut p = Pipeline::new();
     p.add(Box::new(ChangelogStage));
     p.add(Box::new(SignStage));
+    // ChecksumStage runs AFTER SignStage so the production-signed bytes
+    // are what get hashed (matching the build pipeline's order). It runs
+    // BEFORE PublishStage so every publisher sees per-artifact `sha256`
+    // metadata even when the preserved-dist artifact catalog dropped it
+    // during GHA shard-merge — v0.4.0 winget shipped with
+    // `InstallerSha256: ''` because nothing in this pipeline backfilled
+    // sha256 onto the merged catalog. The recompute is byte-deterministic
+    // (same bytes → same hash) so it is idempotent across re-runs.
+    p.add(Box::new(ChecksumStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(BlobStage));
@@ -1837,6 +1847,39 @@ crates:
         assert!(
             changelog_idx < release_idx,
             "changelog (idx {changelog_idx}) must precede release (idx {release_idx}); got {names:?}"
+        );
+    }
+
+    /// v0.4.0 winget shipped with `InstallerSha256: ''` because the
+    /// publish-only pipeline did not re-checksum the preserved-dist
+    /// artifact catalog after GHA shard-merge dropped the per-artifact
+    /// `sha256` metadata from each shard's `artifacts.json`. ChecksumStage
+    /// at this position backfills sha256 onto every artifact so every
+    /// downstream publisher (winget, chocolatey, scoop, krew, …) sees
+    /// the metadata its manifest validation requires.
+    #[test]
+    fn publish_only_pipeline_runs_checksum_before_publish_after_sign() {
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        let checksum_idx = names
+            .iter()
+            .position(|n| *n == "checksum")
+            .expect("publish-only pipeline must include checksum stage");
+        let sign_idx = names
+            .iter()
+            .position(|n| *n == "sign")
+            .expect("publish-only pipeline must include sign stage");
+        let publish_idx = names
+            .iter()
+            .position(|n| *n == "publish")
+            .expect("publish-only pipeline must include publish stage");
+        assert!(
+            sign_idx < checksum_idx,
+            "checksum (idx {checksum_idx}) must follow sign (idx {sign_idx}) so production-signed bytes get hashed; got {names:?}"
+        );
+        assert!(
+            checksum_idx < publish_idx,
+            "checksum (idx {checksum_idx}) must precede publish (idx {publish_idx}) so publishers see sha256 metadata; got {names:?}"
         );
     }
 
