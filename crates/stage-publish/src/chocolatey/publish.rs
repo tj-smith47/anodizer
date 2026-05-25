@@ -1545,7 +1545,7 @@ mod tests {
     #[test]
     fn handle_feed_state_hash_match_short_circuits_to_skip() {
         use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
-        // Compute the SHA256 base64 of our local blob, then feed that
+        // Compute the SHA256 base64 of the local blob, then feed that
         // same hash back via the OData response — should match.
         let (_d, pkg) = tmp_blob(b"matching-bytes");
         let local_hash = compute_nupkg_hash(&pkg, "SHA256").unwrap();
@@ -1750,11 +1750,10 @@ mod tests {
 
     // -----------------------------------------------------------------
     // publish_to_chocolatey orchestrator: skip-API-key branch + dry-run
-    // capture. (handle_feed_state is exercised above directly because
+    // capture. handle_feed_state is exercised directly above because
     // driving the full orchestrator into the feed-state ladder would
-    // require also responding to the push PUT — out of scope per the
-    // Bundle 4 ceiling, which keeps the orchestrator tests at the
-    // pre-push boundary.)
+    // also require responding to the push PUT — kept out of scope to
+    // bound the in-process responder surface.
     // -----------------------------------------------------------------
 
     #[test]
