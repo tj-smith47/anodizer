@@ -226,6 +226,9 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         return run_rollback_only(&mut ctx);
     }
 
+    // Set explicitly to "true"/"false" so `{% if IsPrepare %}` evaluates
+    // correctly in either branch (a missing var would short-circuit the
+    // truthy arm even when prepare mode is requested).
     ctx.template_vars_mut()
         .set("IsPrepare", if opts.prepare { "true" } else { "false" });
 
@@ -877,7 +880,7 @@ fn run_publisher_preflight(
         report.clean_count()
     ));
     // `--preflight` is a check-only mode: signal early-exit to the caller.
-    Ok(opts.preflight)
+    if opts.preflight { Ok(true) } else { Ok(false) }
 }
 
 /// End-of-pipeline gate: bail when any *required* publisher finished in a
