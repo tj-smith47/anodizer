@@ -168,6 +168,261 @@ fn pin_workdir_mtimes(dir: &Path, epoch_secs: i64) -> Result<()> {
     Ok(())
 }
 
+/// Reject duplicate makeself config IDs (per-id `default` collapses unkeyed
+/// entries onto one slot — same shape as nfpm/snapcraft validation).
+fn validate_unique_ids(configs: &[anodizer_core::config::MakeselfConfig]) -> Result<()> {
+    let mut seen_ids = std::collections::HashSet::new();
+    for cfg in configs {
+        let id = cfg.id.as_deref().unwrap_or("default");
+        if !seen_ids.insert(id.to_string()) {
+            anyhow::bail!("makeself: duplicate id '{}'", id);
+        }
+    }
+    Ok(())
+}
+
+/// Filter and clone the binary-like artifacts that match a makeself config's
+/// id-filter + goos/goarch selectors. The result is owned so the surrounding
+/// loop can drop its borrow on `ctx.artifacts` before re-borrowing `ctx` for
+/// template rendering.
+fn collect_matching_binaries(
+    ctx: &Context,
+    cfg: &anodizer_core::config::MakeselfConfig,
+    goos_filter: &[String],
+) -> Vec<Artifact> {
+    ctx.artifacts
+        .all()
+        .iter()
+        .filter(|a| {
+            matches!(
+                a.kind,
+                ArtifactKind::Binary
+                    | ArtifactKind::UniversalBinary
+                    | ArtifactKind::Header
+                    | ArtifactKind::CArchive
+                    | ArtifactKind::CShared
+            )
+        })
+        .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
+        .filter(|a| {
+            if let Some(ref target) = a.target {
+                let (os, _) = anodizer_core::target::map_target(target);
+                goos_filter.iter().any(|g| g == &os)
+            } else {
+                false
+            }
+        })
+        .filter(|a| {
+            if let Some(ref goarch) = cfg.goarch {
+                if let Some(ref target) = a.target {
+                    let (_, arch) = anodizer_core::target::map_target(target);
+                    goarch.iter().any(|g| g == &arch)
+                } else {
+                    false
+                }
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// Seed Os / Arch / Target plus the per-target variant template vars (Arm,
+/// Arm64, Amd64, Mips, I386) so the default name_template renders correctly.
+/// Mirrors stage-build's per-target var seeding.
+fn set_per_target_template_vars(ctx: &mut Context, target: Option<&str>, os: &str, arch: &str) {
+    ctx.template_vars_mut().set("Os", os);
+    ctx.template_vars_mut().set("Arch", arch);
+    ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+
+    let first_component = target.and_then(|t| t.split('-').next()).unwrap_or("");
+    ctx.template_vars_mut().set("Arm", "");
+    ctx.template_vars_mut().set("Arm64", "");
+    ctx.template_vars_mut().set("Amd64", "");
+    ctx.template_vars_mut().set("Mips", "");
+    ctx.template_vars_mut().set("I386", "");
+    match first_component {
+        "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
+        "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
+        "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
+        "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
+        "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
+        c if c.starts_with("mips") => {
+            ctx.template_vars_mut().set("Mips", c);
+        }
+        _ => {}
+    }
+}
+
+/// Render the makeself output filename for a single (target, platform) combo.
+///
+/// Honors `cfg.filename` as a Tera template when set; falls back to a
+/// project/version/os/arch composite that includes the per-arch variant
+/// suffix so multi-target ARM / MIPS / x86 builds for the same project
+/// don't collide on disk.
+fn resolve_makeself_filename(
+    ctx: &Context,
+    name_template: &str,
+    project_name: &str,
+    version: &str,
+    os: &str,
+    arch: &str,
+) -> Result<String> {
+    if !name_template.is_empty() {
+        let rendered = ctx.render_template(name_template)?;
+        return Ok(if rendered.ends_with(".run") {
+            rendered
+        } else {
+            format!("{}.run", rendered)
+        });
+    }
+    let arm = ctx.template_vars().get("Arm").cloned().unwrap_or_default();
+    let mips = ctx.template_vars().get("Mips").cloned().unwrap_or_default();
+    let amd64 = ctx
+        .template_vars()
+        .get("Amd64")
+        .cloned()
+        .unwrap_or_default();
+    let mut suffix = String::new();
+    if !arm.is_empty() {
+        suffix.push('v');
+        suffix.push_str(&arm);
+    }
+    if !mips.is_empty() {
+        suffix.push('_');
+        suffix.push_str(&mips);
+    }
+    if !amd64.is_empty() && amd64 != "v1" {
+        suffix.push_str(&amd64);
+    }
+    Ok(format!(
+        "{}_{}_{}_{}{}.run",
+        project_name, version, os, arch, suffix
+    ))
+}
+
+/// Execute a fully-prepared makeself job: stage files into the work_dir,
+/// pin mtimes for SDE determinism, invoke `makeself`, move the output into
+/// place, and produce the registered `Artifact`.
+///
+/// Thread-safe: borrows only the owned data on `MakeselfJob`; never touches
+/// `Context`. Returns the artifact for serial registration by the caller.
+fn execute_makeself_job(
+    job: &MakeselfJob,
+    verbosity: anodizer_core::log::Verbosity,
+) -> Result<Artifact> {
+    let thread_log = anodizer_core::log::StageLogger::new("makeself", verbosity);
+
+    fs::create_dir_all(&job.work_dir)
+        .with_context(|| format!("makeself: create dir {}", job.work_dir.display()))?;
+
+    for (src, name) in &job.binaries {
+        let dst = job.work_dir.join(name);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, &dst).with_context(|| {
+            format!(
+                "makeself: copy binary {} -> {}",
+                src.display(),
+                dst.display()
+            )
+        })?;
+    }
+
+    for (src, dest_rel) in &job.extra_files {
+        let dst = job.work_dir.join(dest_rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(src, &dst).with_context(|| {
+            format!("makeself: copy file {} -> {}", src.display(), dst.display())
+        })?;
+    }
+
+    fs::copy(&job.script_src, job.work_dir.join(&job.script_basename))
+        .with_context(|| format!("makeself: copy script {}", job.script_src.display()))?;
+
+    fs::write(job.work_dir.join("package.lsm"), &job.lsm_text)
+        .with_context(|| format!("makeself: write LSM file in {}", job.work_dir.display()))?;
+
+    // Pin every file's mtime to SOURCE_DATE_EPOCH so tar embeds the same
+    // per-file timestamps across runs. Without this, fs::copy stamps the
+    // destination with the current wallclock and the resulting tar.gz
+    // payload differs between consecutive runs.
+    if let Some(epoch) = anodizer_core::sde::source_date_epoch().map(|dt| dt.timestamp()) {
+        pin_workdir_mtimes(&job.work_dir, epoch)?;
+    }
+
+    let packaging_date = resolve_packaging_date();
+    let args = make_args(
+        &job.rendered_name,
+        &job.filename,
+        job.rendered_compression.as_deref(),
+        &format!("./{}", job.script_basename),
+        &job.extra_args,
+        packaging_date.as_deref(),
+    );
+
+    thread_log.status(&format!("creating makeself package: {}", job.filename));
+
+    let output = Command::new("makeself")
+        .args(&args)
+        .current_dir(&job.work_dir)
+        .output()
+        .with_context(|| {
+            format!(
+                "makeself: failed to spawn 'makeself {}' in {}",
+                args.join(" "),
+                job.work_dir.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "makeself command failed for '{}' (id={}): {}{}",
+            job.filename,
+            job.id,
+            stdout,
+            stderr
+        );
+    }
+
+    let built_path = job.work_dir.join(&job.filename);
+    fs::rename(&built_path, &job.output_path)
+        .or_else(|_| {
+            fs::copy(&built_path, &job.output_path)?;
+            fs::remove_file(&built_path)
+        })
+        .with_context(|| {
+            format!(
+                "makeself: move {} -> {}",
+                built_path.display(),
+                job.output_path.display()
+            )
+        })?;
+
+    let mut metadata = HashMap::new();
+    metadata.insert("id".to_string(), job.id.clone());
+    metadata.insert("format".to_string(), "makeself".to_string());
+    if let Some(replaces) = &job.primary_replaces {
+        metadata.insert("replaces".to_string(), replaces.clone());
+    }
+
+    Ok(Artifact {
+        kind: ArtifactKind::Makeself,
+        name: job.filename.clone(),
+        path: job.output_path.clone(),
+        target: job.primary_target.clone(),
+        crate_name: job.primary_crate_name.clone(),
+        metadata,
+        size: None,
+    })
+}
+
 /// Group artifacts by platform string (e.g. "linux_amd64").
 ///
 /// `BTreeMap` (not `HashMap`) so iteration order is deterministic across
@@ -240,14 +495,7 @@ impl Stage for MakeselfStage {
         let dry_run = ctx.options.dry_run;
         let parallelism = ctx.options.parallelism.max(1);
 
-        // Validate IDs are unique
-        let mut seen_ids = std::collections::HashSet::new();
-        for cfg in &configs {
-            let id = cfg.id.as_deref().unwrap_or("default");
-            if !seen_ids.insert(id.to_string()) {
-                anyhow::bail!("makeself: duplicate id '{}'", id);
-            }
-        }
+        validate_unique_ids(&configs)?;
 
         let version = ctx
             .template_vars()
@@ -301,46 +549,7 @@ impl Stage for MakeselfStage {
                 .clone()
                 .unwrap_or_else(|| vec!["linux".to_string(), "darwin".to_string()]);
 
-            // Collect matching binary artifacts (cloned to release borrow on ctx)
-            let all_binaries: Vec<Artifact> = ctx
-                .artifacts
-                .all()
-                .iter()
-                .filter(|a| {
-                    matches!(
-                        a.kind,
-                        ArtifactKind::Binary
-                            | ArtifactKind::UniversalBinary
-                            | ArtifactKind::Header
-                            | ArtifactKind::CArchive
-                            | ArtifactKind::CShared
-                    )
-                })
-                .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
-                .filter(|a| {
-                    // Filter by goos
-                    if let Some(ref target) = a.target {
-                        let (os, _) = anodizer_core::target::map_target(target);
-                        goos_filter.iter().any(|g| g == &os)
-                    } else {
-                        false
-                    }
-                })
-                .filter(|a| {
-                    // Filter by goarch if configured
-                    if let Some(ref goarch) = cfg.goarch {
-                        if let Some(ref target) = a.target {
-                            let (_, arch) = anodizer_core::target::map_target(target);
-                            goarch.iter().any(|g| g == &arch)
-                        } else {
-                            false
-                        }
-                    } else {
-                        true
-                    }
-                })
-                .cloned()
-                .collect();
+            let all_binaries = collect_matching_binaries(ctx, cfg, &goos_filter);
 
             if all_binaries.is_empty() {
                 anyhow::bail!(
@@ -360,37 +569,7 @@ impl Stage for MakeselfStage {
                     .map(anodizer_core::target::map_target)
                     .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
 
-                // Render templates
-                ctx.template_vars_mut().set("Os", &os);
-                ctx.template_vars_mut().set("Arch", &arch);
-                ctx.template_vars_mut()
-                    .set("Target", primary.target.as_deref().unwrap_or(""));
-
-                // Per-target variant vars (mirror stage-build/src/lib.rs 1530-1537)
-                // so the default name_template can render v7/v8/v1/mips suffixes.
-                let first_component = primary
-                    .target
-                    .as_deref()
-                    .and_then(|t| t.split('-').next())
-                    .unwrap_or("");
-                // Clear previous values so each target starts clean.
-                ctx.template_vars_mut().set("Arm", "");
-                ctx.template_vars_mut().set("Arm64", "");
-                ctx.template_vars_mut().set("Amd64", "");
-                ctx.template_vars_mut().set("Mips", "");
-                ctx.template_vars_mut().set("I386", "");
-                match first_component {
-                    "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
-                    "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
-                    "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
-                    "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
-                    "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
-                    c if c.starts_with("mips") => {
-                        // Set Mips variant (mips, mipsel, mips64, mips64el)
-                        ctx.template_vars_mut().set("Mips", c);
-                    }
-                    _ => {}
-                }
+                set_per_target_template_vars(ctx, primary.target.as_deref(), &os, &arch);
 
                 let rendered_name = if cfg.name.is_some() {
                     ctx.render_template(name)?
@@ -398,41 +577,14 @@ impl Stage for MakeselfStage {
                     project_name.clone()
                 };
 
-                let filename = if !name_template.is_empty() {
-                    let rendered = ctx.render_template(name_template)?;
-                    if rendered.ends_with(".run") {
-                        rendered
-                    } else {
-                        format!("{}.run", rendered)
-                    }
-                } else {
-                    // Include the per-arch variant suffix so multi-target ARM /
-                    // MIPS / x86 builds for the same project don't collide on
-                    // disk. Mirrors the suffix logic in the archive default
-                    // template (`stage-archive/src/lib.rs`).
-                    let arm = ctx.template_vars().get("Arm").cloned().unwrap_or_default();
-                    let mips = ctx.template_vars().get("Mips").cloned().unwrap_or_default();
-                    let amd64 = ctx
-                        .template_vars()
-                        .get("Amd64")
-                        .cloned()
-                        .unwrap_or_default();
-                    let mut suffix = String::new();
-                    if !arm.is_empty() {
-                        // ARM v6/v7 → `_arm` already; append the variant.
-                        suffix.push('v');
-                        suffix.push_str(&arm);
-                    }
-                    if !mips.is_empty() {
-                        suffix.push('_');
-                        suffix.push_str(&mips);
-                    }
-                    if !amd64.is_empty() && amd64 != "v1" {
-                        // Only append non-default amd64 variants (v2/v3/v4).
-                        suffix.push_str(&amd64);
-                    }
-                    format!("{}_{}_{}_{}{}.run", project_name, version, os, arch, suffix)
-                };
+                let filename = resolve_makeself_filename(
+                    ctx,
+                    name_template,
+                    &project_name,
+                    &version,
+                    &os,
+                    &arch,
+                )?;
 
                 let rendered_description = cfg
                     .description
@@ -577,121 +729,13 @@ impl Stage for MakeselfStage {
         // Workers return the fully-populated `Artifact` for serial
         // registration in ctx.artifacts below.
         // ----------------------------------------------------------------
-        let run_job = |job: &MakeselfJob| -> Result<Artifact> {
-            let thread_log = anodizer_core::log::StageLogger::new("makeself", log.verbosity());
-
-            fs::create_dir_all(&job.work_dir)
-                .with_context(|| format!("makeself: create dir {}", job.work_dir.display()))?;
-
-            for (src, name) in &job.binaries {
-                let dst = job.work_dir.join(name);
-                if let Some(parent) = dst.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::copy(src, &dst).with_context(|| {
-                    format!(
-                        "makeself: copy binary {} -> {}",
-                        src.display(),
-                        dst.display()
-                    )
-                })?;
-            }
-
-            for (src, dest_rel) in &job.extra_files {
-                let dst = job.work_dir.join(dest_rel);
-                if let Some(parent) = dst.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::copy(src, &dst).with_context(|| {
-                    format!("makeself: copy file {} -> {}", src.display(), dst.display())
-                })?;
-            }
-
-            fs::copy(&job.script_src, job.work_dir.join(&job.script_basename))
-                .with_context(|| format!("makeself: copy script {}", job.script_src.display()))?;
-
-            fs::write(job.work_dir.join("package.lsm"), &job.lsm_text).with_context(|| {
-                format!("makeself: write LSM file in {}", job.work_dir.display())
-            })?;
-
-            // Pin every file's mtime to SOURCE_DATE_EPOCH so tar embeds the
-            // same per-file timestamps across runs. Without this, fs::copy
-            // stamps the destination with the current wallclock and the
-            // resulting tar.gz payload differs between consecutive runs.
-            if let Some(epoch) = anodizer_core::sde::source_date_epoch().map(|dt| dt.timestamp()) {
-                pin_workdir_mtimes(&job.work_dir, epoch)?;
-            }
-
-            let packaging_date = resolve_packaging_date();
-            let args = make_args(
-                &job.rendered_name,
-                &job.filename,
-                job.rendered_compression.as_deref(),
-                &format!("./{}", job.script_basename),
-                &job.extra_args,
-                packaging_date.as_deref(),
-            );
-
-            thread_log.status(&format!("creating makeself package: {}", job.filename));
-
-            let output = Command::new("makeself")
-                .args(&args)
-                .current_dir(&job.work_dir)
-                .output()
-                .with_context(|| {
-                    format!(
-                        "makeself: failed to spawn 'makeself {}' in {}",
-                        args.join(" "),
-                        job.work_dir.display()
-                    )
-                })?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                anyhow::bail!(
-                    "makeself command failed for '{}' (id={}): {}{}",
-                    job.filename,
-                    job.id,
-                    stdout,
-                    stderr
-                );
-            }
-
-            let built_path = job.work_dir.join(&job.filename);
-            fs::rename(&built_path, &job.output_path)
-                .or_else(|_| {
-                    fs::copy(&built_path, &job.output_path)?;
-                    fs::remove_file(&built_path)
-                })
-                .with_context(|| {
-                    format!(
-                        "makeself: move {} -> {}",
-                        built_path.display(),
-                        job.output_path.display()
-                    )
-                })?;
-
-            let mut metadata = HashMap::new();
-            metadata.insert("id".to_string(), job.id.clone());
-            metadata.insert("format".to_string(), "makeself".to_string());
-            if let Some(replaces) = &job.primary_replaces {
-                metadata.insert("replaces".to_string(), replaces.clone());
-            }
-
-            Ok(Artifact {
-                kind: ArtifactKind::Makeself,
-                name: job.filename.clone(),
-                path: job.output_path.clone(),
-                target: job.primary_target.clone(),
-                crate_name: job.primary_crate_name.clone(),
-                metadata,
-                size: None,
-            })
-        };
-
-        let built_artifacts =
-            anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, "makeself", run_job)?;
+        let verbosity = log.verbosity();
+        let built_artifacts = anodizer_core::parallel::run_parallel_chunks(
+            &jobs,
+            parallelism,
+            "makeself",
+            |job: &MakeselfJob| execute_makeself_job(job, verbosity),
+        )?;
 
         // ----------------------------------------------------------------
         // Serial: register artifacts in ctx. ArtifactRegistry takes &mut self.

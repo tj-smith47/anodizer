@@ -744,6 +744,279 @@ async fn upload_via_project_uploads(
 }
 
 // ---------------------------------------------------------------------------
+// Backend orchestration
+// ---------------------------------------------------------------------------
+
+/// Runtime / context infrastructure for [`run_gitlab_backend`].
+///
+/// Bundles the four "ambient" handles every backend call needs (matches the
+/// shape of `github::BackendEnv`) so the function signature stays under
+/// clippy's 7-argument threshold.
+pub(crate) struct GitlabBackendEnv<'a> {
+    pub rt: &'a tokio::runtime::Runtime,
+    pub ctx: &'a anodizer_core::context::Context,
+    pub log: &'a anodizer_core::log::StageLogger,
+    pub token: &'a Option<String>,
+}
+
+/// Per-release inputs the orchestrator forwards from `ReleaseStage::run` to
+/// [`run_gitlab_backend`]. Bundled so the function signature stays under
+/// clippy's 7-argument threshold without an attribute suppression.
+#[derive(Clone, Copy)]
+pub(crate) struct GitlabBackendSpec<'a> {
+    pub tag: &'a str,
+    pub release_name: &'a str,
+    pub release_body: &'a str,
+    pub release_mode: &'a str,
+    pub skip_upload: bool,
+    pub replace_existing_draft: bool,
+    pub use_existing_draft: bool,
+    pub replace_existing_artifacts: bool,
+}
+
+/// Run the GitLab release backend for one crate.
+///
+/// Returns `(release_html_url, download_base, owner, repo_name)` on success,
+/// or `Ok(None)` when the crate has no `release.gitlab` (or fallback
+/// `release.github`) configuration — callers should `continue` the outer
+/// loop after this helper logs the "no gitlab config" warning.
+pub(crate) fn run_gitlab_backend(
+    env: &GitlabBackendEnv<'_>,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    spec: &GitlabBackendSpec<'_>,
+    artifact_entries: &[(std::path::PathBuf, Option<String>)],
+) -> Result<Option<(String, String, String, String)>> {
+    use std::sync::Arc;
+
+    let GitlabBackendEnv {
+        rt,
+        ctx,
+        log,
+        token,
+    } = env;
+    let ctx = *ctx;
+    let log = *log;
+    let token = *token;
+
+    let repo_cfg = match crate::resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
+        Some(r) => r,
+        None => {
+            log.warn(&format!(
+                "no gitlab config for crate '{}', skipping",
+                crate_cfg.name
+            ));
+            return Ok(None);
+        }
+    };
+
+    let token_str = match token {
+        Some(t) => t.clone(),
+        None => {
+            bail!("release: no GitLab token available (set GITLAB_TOKEN, or pass --token)");
+        }
+    };
+
+    let gitlab_urls = ctx.config.gitlab_urls.clone().unwrap_or_default();
+    let api_url = gitlab_urls
+        .api
+        .unwrap_or_else(|| "https://gitlab.com/api/v4".to_string());
+    let download_url = gitlab_urls
+        .download
+        .unwrap_or_else(|| "https://gitlab.com".to_string());
+    let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
+    // Match GoReleaser's `checkUseJobToken`: only send JOB-TOKEN when
+    // CI_JOB_TOKEN is set, the flag is on, and the token equals CI_JOB_TOKEN.
+    // Otherwise fall back to PRIVATE-TOKEN.
+    let use_job_token = resolve_use_job_token_with_env(
+        gitlab_urls.use_job_token.unwrap_or(false),
+        &token_str,
+        ctx.env_source(),
+    );
+    let use_pkg_registry = gitlab_urls.use_package_registry.unwrap_or(false) || use_job_token;
+
+    let project_id = gitlab_project_id(&repo_cfg.owner, &repo_cfg.name);
+    let commit_sha = ctx
+        .git_info
+        .as_ref()
+        .map(|g| g.commit.clone())
+        .unwrap_or_default();
+
+    let project_name_for_pkg = ctx.config.project_name.clone();
+    let version_for_pkg = ctx
+        .git_info
+        .as_ref()
+        .map(|g| {
+            // Strip leading 'v' for package version (e.g. "v1.2.3" -> "1.2.3").
+            g.tag.strip_prefix('v').unwrap_or(&g.tag).to_string()
+        })
+        .unwrap_or_else(|| "0.0.0".to_string());
+
+    // GitLab does not support draft releases — warn if draft options are set.
+    if spec.replace_existing_draft {
+        log.warn(
+            "replace_existing_draft has no effect on GitLab (draft releases are not supported)",
+        );
+    }
+    if spec.use_existing_draft {
+        log.warn("use_existing_draft has no effect on GitLab (draft releases are not supported)");
+    }
+
+    // Per-publisher retry policy. 5xx / 429 / network errors retry with
+    // exponential backoff through `retry_http_async` inside every gitlab_*
+    // function. Default: 10 attempts × 10s base × 5m cap (matches GoReleaser
+    // `pkg/config.Retry` defaults).
+    let policy = ctx.retry_policy();
+    let tag = spec.tag;
+    let release_name = spec.release_name;
+    let release_body = spec.release_body;
+    let release_mode = spec.release_mode;
+    let skip_upload = spec.skip_upload;
+    let replace_existing_artifacts = spec.replace_existing_artifacts;
+
+    let url = rt.block_on(async {
+        let client = build_gitlab_client(&token_str, skip_tls, use_job_token)?;
+
+        let gitlab_ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: &project_id,
+            policy: &policy,
+        };
+
+        // Create or update the release.
+        gitlab_create_release(
+            &gitlab_ctx,
+            &GitlabReleaseSpec {
+                tag,
+                name: release_name,
+                body: release_body,
+                commit: &commit_sha,
+                release_mode,
+            },
+        )
+        .await?;
+
+        log.status(&format!(
+            "created GitLab Release '{}' (tag={}) on {}",
+            release_name, tag, project_id
+        ));
+
+        // Upload artifacts with bounded parallelism (matching GitHub path).
+        if skip_upload {
+            log.status("skip_upload is set, skipping artifact uploads");
+        } else {
+            let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
+            let semaphore = Arc::new(tokio::sync::Semaphore::new(upload_parallelism));
+
+            // Prepare the list of uploadable entries (error on missing files).
+            let mut missing_files = Vec::new();
+            let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
+                .iter()
+                .filter_map(|(path, custom_name)| {
+                    if !path.exists() {
+                        missing_files.push(path.display().to_string());
+                        return None;
+                    }
+                    let file_name = if let Some(name) = custom_name {
+                        name.clone()
+                    } else {
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "artifact".to_string())
+                    };
+                    Some((path.clone(), file_name))
+                })
+                .collect();
+
+            if !missing_files.is_empty() {
+                anyhow::bail!(
+                    "the following artifact files are missing:\n  {}",
+                    missing_files.join("\n  ")
+                );
+            }
+
+            let client = Arc::new(client);
+            let mut join_set = tokio::task::JoinSet::new();
+
+            for (path, file_name) in prepared_entries {
+                let sem = semaphore.clone();
+                let client = client.clone();
+                let api_url = api_url.clone();
+                let project_id = project_id.clone();
+                let tag_owned = tag.to_string();
+                let project_name_for_pkg = project_name_for_pkg.clone();
+                let version_for_pkg = version_for_pkg.clone();
+                let download_url = download_url.clone();
+                let policy_inner = policy;
+
+                join_set.spawn(async move {
+                    let _permit = sem
+                        .acquire()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+
+                    let op_name = format!("gitlab: upload '{}'", file_name);
+                    let ctx = GitlabCtx {
+                        client: &client,
+                        api_url: &api_url,
+                        project_id: &project_id,
+                        policy: &policy_inner,
+                    };
+                    let asset = GitlabAssetSpec {
+                        file_path: &path,
+                        file_name: &file_name,
+                    };
+                    let pkg_spec = GitlabPackageRegistrySpec {
+                        project_name: &project_name_for_pkg,
+                        version: &version_for_pkg,
+                    };
+                    let pkg = use_pkg_registry.then_some(&pkg_spec);
+                    crate::retry_upload(&op_name, || {
+                        gitlab_upload_asset(
+                            &ctx,
+                            &tag_owned,
+                            &asset,
+                            pkg,
+                            &download_url,
+                            replace_existing_artifacts,
+                        )
+                    })
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "release: upload artifact '{}' to GitLab release '{}'",
+                            file_name, tag_owned
+                        )
+                    })?;
+
+                    Ok::<String, anyhow::Error>(file_name)
+                });
+            }
+
+            while let Some(result) = join_set.join_next().await {
+                let file_name = result
+                    .context("gitlab: upload task panicked")?
+                    .context("gitlab: upload task failed")?;
+                log.verbose(&format!("uploaded artifact: {}", file_name));
+            }
+        }
+
+        // GitLab does not support draft releases — publish is a no-op.
+
+        let html_url = gitlab_release_url(&download_url, &repo_cfg.owner, &repo_cfg.name, tag);
+        Ok::<String, anyhow::Error>(html_url)
+    })?;
+
+    Ok(Some((
+        url,
+        download_url,
+        repo_cfg.owner.clone(),
+        repo_cfg.name.clone(),
+    )))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
