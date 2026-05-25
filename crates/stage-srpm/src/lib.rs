@@ -94,7 +94,13 @@ impl Stage for SrpmStage {
 
         let spec_contents = if spec_file.is_empty() {
             // Generate a minimal spec file
-            generate_default_spec(package_name, &version, &srpm_cfg, &source_archive.name)
+            generate_default_spec(
+                package_name,
+                &version,
+                &srpm_cfg,
+                &source_archive.name,
+                ctx.env_source(),
+            )
         } else {
             // Read the user-provided spec template and render it
             let template = fs::read_to_string(spec_file)
@@ -334,6 +340,7 @@ fn generate_default_spec(
     version: &str,
     cfg: &SrpmConfig,
     source_name: &str,
+    env: &dyn anodizer_core::env_source::EnvSource,
 ) -> String {
     let summary = cfg.summary.as_deref().unwrap_or(package_name);
     let license = cfg.license.as_deref().unwrap_or("MIT");
@@ -499,7 +506,7 @@ Source0:        {source_name}
         // SDE-aware: honor SOURCE_DATE_EPOCH so the spec's %changelog
         // header is byte-stable across reproducible-build runs. Wall-
         // clock fallback when SDE is unset matches the legacy behavior.
-        date = anodizer_core::sde::resolve_now().format("%a %b %d %Y"),
+        date = anodizer_core::sde::resolve_now_with_env(env).format("%a %b %d %Y"),
     )
 }
 
@@ -587,7 +594,13 @@ mod tests {
             description: Some("Test description".to_string()),
             ..Default::default()
         };
-        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp-1.0.0.tar.gz",
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
         assert!(spec.contains("Name:           myapp"));
         assert!(spec.contains("Version:        1.0.0"));
         assert!(spec.contains("Summary:        A test package"));
@@ -606,24 +619,15 @@ mod tests {
     /// archive that bundles it.
     #[test]
     fn test_generate_default_spec_honors_sde_for_changelog_date() {
-        // Serialize env mutation; cargo test runs tests in parallel
-        // within a single binary, and SOURCE_DATE_EPOCH is read by other
-        // code paths (e.g. populate_time_vars in core).
-        let _g = anodizer_core::test_helpers::env::env_mutex()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: single-threaded section, guarded by the mutex above.
-        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
-
         let cfg = SrpmConfig::default();
-        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        let env =
+            anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
+        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz", &env);
         // 1715000000 → 2024-05-06 Mon (UTC).
         assert!(
             spec.contains("* Mon May 06 2024"),
             "spec %changelog must use SDE-derived date; got:\n{spec}"
         );
-
-        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
     }
 
     #[test]
@@ -639,7 +643,13 @@ mod tests {
             bins: Some(vec!["myapp-cli".to_string()]),
             ..Default::default()
         };
-        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp-1.0.0.tar.gz",
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
         // Version field carries prerelease (~) and metadata (+) suffixes.
         assert!(
             spec.contains("Version:        1.0.0~rc1+g1234abc"),
@@ -695,7 +705,13 @@ mod tests {
             ]),
             ..Default::default()
         };
-        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp-1.0.0.tar.gz",
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
 
         // epoch — upgrade-ordering tag.
         assert!(
@@ -737,7 +753,13 @@ mod tests {
             compression: Some("lz4".to_string()),
             ..Default::default()
         };
-        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        let spec = generate_default_spec(
+            "myapp",
+            "1.0.0",
+            &cfg,
+            "myapp-1.0.0.tar.gz",
+            &anodizer_core::env_source::MapEnvSource::new(),
+        );
         assert!(spec.contains("%define _source_payload      w9.lz4io"));
         assert!(spec.contains("%define _source_compressor   lz4"));
     }

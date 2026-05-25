@@ -118,15 +118,25 @@ fn make_args(
     args
 }
 
-/// Format a packaging date string for makeself's `--packaging-date` flag.
-/// Resolves from `SOURCE_DATE_EPOCH`; returns `None` when SDE is unset so
-/// normal production runs keep makeself's default `LC_ALL=C date` behaviour.
-fn resolve_packaging_date() -> Option<String> {
+/// Format a packaging date string for makeself's `--packaging-date` flag,
+/// reading `SOURCE_DATE_EPOCH` from the injected env source.
+///
+/// Returns `None` when SDE is unset so normal production runs keep
+/// makeself's default `LC_ALL=C date` behaviour. The injectable form
+/// keeps tests off process-env mutation.
+fn resolve_packaging_date_with_env<E: anodizer_core::env_source::EnvSource + ?Sized>(
+    env: &E,
+) -> Option<String> {
     // Format mirrors `LC_ALL=C date -u` output (which is what makeself's
     // default `DATE=`LC_ALL=C date`` produces in the harness's UTC=Etc/UTC
     // env), keeping the embedded `Date of packaging:` line readable.
-    anodizer_core::sde::source_date_epoch()
+    anodizer_core::sde::source_date_epoch_with_env(env)
         .map(|dt| dt.format("%a %b %e %H:%M:%S UTC %Y").to_string())
+}
+
+/// Process-env convenience wrapper over [`resolve_packaging_date_with_env`].
+fn resolve_packaging_date() -> Option<String> {
+    resolve_packaging_date_with_env(&anodizer_core::env_source::ProcessEnvSource)
 }
 
 /// Recursively pin every regular file's mtime in `dir` to `epoch_secs`.
@@ -823,23 +833,19 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(env)]
     fn test_resolve_packaging_date_honors_sde() {
-        // SAFETY: serialized via the env_source_date_epoch group used by
-        // anodizer-core's `sde::tests`.
-        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
-        let date = resolve_packaging_date().expect("packaging date under SDE");
+        let env =
+            anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
+        let date = resolve_packaging_date_with_env(&env).expect("packaging date under SDE");
         // 1715000000 = 2024-05-06 16:53:20 UTC; format mirrors `LC_ALL=C date -u`.
         assert!(date.contains("2024"), "date string: {date}");
         assert!(date.contains("UTC"), "date string: {date}");
-        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
     }
 
     #[test]
-    #[serial_test::serial(env)]
     fn test_resolve_packaging_date_none_without_sde() {
-        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
-        assert!(resolve_packaging_date().is_none());
+        let env = anodizer_core::env_source::MapEnvSource::new();
+        assert!(resolve_packaging_date_with_env(&env).is_none());
     }
 
     #[test]
@@ -1181,18 +1187,15 @@ crates:
     }
 
     #[test]
-    #[serial_test::serial(env)]
     fn test_resolve_packaging_date_format_matches_lc_all_c_date() {
         // The format string is `%a %b %e %H:%M:%S UTC %Y` — assert the
         // structure of a known epoch matches that exactly.
-        // SAFETY: serialized via the `env` serial group used by
-        // anodizer-core's sde::tests.
-        unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1577836800") };
-        let date = resolve_packaging_date().expect("epoch set");
+        let env =
+            anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1577836800");
+        let date = resolve_packaging_date_with_env(&env).expect("epoch set");
         // 1577836800 = 2020-01-01 00:00:00 UTC
         assert!(date.contains("2020"), "{date}");
         assert!(date.contains("Jan"), "{date}");
         assert!(date.contains("UTC"), "{date}");
-        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
     }
 }

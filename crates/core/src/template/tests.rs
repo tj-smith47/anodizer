@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use tera::Value;
 
 use super::base_tera::translate_go_time_format;
-use super::render::{extract_artifact_ext, render};
+use super::render::{extract_artifact_ext, render, render_with_env};
 use super::vars::TemplateVars;
+use crate::env_source::MapEnvSource;
 
 fn test_vars() -> TemplateVars {
     let mut vars = TemplateVars::new();
@@ -420,35 +421,33 @@ fn test_env_or_default_reads_from_template_env_map() {
 
 #[test]
 fn test_env_or_default_template_env_takes_priority_over_process_env() {
-    // If a var exists in both the template Env map and the process env,
+    // If a var exists in both the template Env map and the host env,
     // the template Env map wins.
     let mut vars = test_vars();
-    // SAFETY: Test-only; no other threads read this env var.
-    unsafe { std::env::set_var("ANODIZER_TEST_PRIORITY", "from-process") };
+    let host = MapEnvSource::new().with("ANODIZER_TEST_PRIORITY", "from-process");
     vars.set_env("ANODIZER_TEST_PRIORITY", "from-template");
-    let result = render(
+    let result = render_with_env(
         "{{ envOrDefault(name=\"ANODIZER_TEST_PRIORITY\", default=\"fallback\") }}",
         &vars,
+        &host,
     )
     .unwrap();
     assert_eq!(result, "from-template");
-    unsafe { std::env::remove_var("ANODIZER_TEST_PRIORITY") };
 }
 
 #[test]
 fn test_env_or_default_falls_back_to_process_env() {
-    // If a var is NOT in the template Env map but IS in the process env,
-    // fall back to the process env.
+    // If a var is NOT in the template Env map but IS in the host env,
+    // fall back to the host env.
     let vars = test_vars();
-    // SAFETY: Test-only; no other threads read this env var.
-    unsafe { std::env::set_var("ANODIZER_TEST_ENV_OR_DEFAULT", "from-process-env") };
-    let result = render(
+    let host = MapEnvSource::new().with("ANODIZER_TEST_ENV_OR_DEFAULT", "from-process-env");
+    let result = render_with_env(
         "{{ envOrDefault(name=\"ANODIZER_TEST_ENV_OR_DEFAULT\", default=\"fallback\") }}",
         &vars,
+        &host,
     )
     .unwrap();
     assert_eq!(result, "from-process-env");
-    unsafe { std::env::remove_var("ANODIZER_TEST_ENV_OR_DEFAULT") };
 }
 
 #[test]
@@ -508,18 +507,17 @@ fn test_is_env_set_template_env_empty_returns_false() {
 
 #[test]
 fn test_is_env_set_falls_back_to_process_env() {
-    // If a var is NOT in the template Env map but IS in the process env,
-    // fall back to the process env.
+    // If a var is NOT in the template Env map but IS in the host env,
+    // fall back to the host env.
     let vars = test_vars();
-    // SAFETY: Test-only; no other threads read this env var.
-    unsafe { std::env::set_var("ANODIZER_TEST_IS_SET", "yes") };
-    let result = render(
+    let host = MapEnvSource::new().with("ANODIZER_TEST_IS_SET", "yes");
+    let result = render_with_env(
         "{% if isEnvSet(name=\"ANODIZER_TEST_IS_SET\") %}SET{% else %}UNSET{% endif %}",
         &vars,
+        &host,
     )
     .unwrap();
     assert_eq!(result, "SET");
-    unsafe { std::env::remove_var("ANODIZER_TEST_IS_SET") };
 }
 
 #[test]
@@ -1940,33 +1938,28 @@ fn test_time_chrono_format_still_works() {
 /// templates like `{{ time(format="2006-01-02") }}` flowing into artifact
 /// names must produce byte-stable output across reruns.
 #[test]
-#[serial_test::serial(env)]
 fn test_time_function_honors_source_date_epoch() {
     let vars = test_vars();
     // 1715000000 → 2024-05-06 (UTC).
-    // SAFETY: serialized via the env_source_date_epoch group.
-    unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
-    let result = render("{{ time(format=\"%Y-%m-%d\") }}", &vars).unwrap();
+    let host = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
+    let result = render_with_env("{{ time(format=\"%Y-%m-%d\") }}", &vars, &host).unwrap();
     assert_eq!(
         result, "2024-05-06",
         "time() must honor SOURCE_DATE_EPOCH; got: {result}"
     );
-    unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
 }
 
 #[test]
-#[serial_test::serial(env)]
 fn test_now_format_filter_honors_source_date_epoch() {
     let mut vars = test_vars();
     vars.set("Now", "ignored");
-    // SAFETY: serialized via the env_source_date_epoch group.
-    unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1715000000") };
-    let result = render("{{ Now | now_format(format=\"%Y-%m-%d\") }}", &vars).unwrap();
+    let host = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000");
+    let result =
+        render_with_env("{{ Now | now_format(format=\"%Y-%m-%d\") }}", &vars, &host).unwrap();
     assert_eq!(
         result, "2024-05-06",
         "now_format must honor SOURCE_DATE_EPOCH; got: {result}"
     );
-    unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
 }
 
 // --- now_format filter tests ---

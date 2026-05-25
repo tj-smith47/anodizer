@@ -31,6 +31,20 @@ use std::collections::HashMap;
 pub trait EnvSource: Send + Sync {
     /// Look up `name` and return its value, or `None` if unset.
     fn var(&self, name: &str) -> Option<String>;
+
+    /// Snapshot every `(name, value)` pair this source can enumerate.
+    ///
+    /// Callers that need to scan the whole env (e.g. the determinism
+    /// harness's Windows inherit-everything pass, which drops a
+    /// credential deny-list out of the host env) use this instead of
+    /// `std::env::vars()` so a test can inject a closed map of fixture
+    /// entries. The default implementation returns an empty `Vec` so
+    /// any source that only supports point lookups (a stub, a small
+    /// fixture) stays usable for `var(...)`-only call sites without
+    /// extra boilerplate.
+    fn vars(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 /// Production implementation that reads `std::env::var`.
@@ -40,6 +54,10 @@ pub struct ProcessEnvSource;
 impl EnvSource for ProcessEnvSource {
     fn var(&self, name: &str) -> Option<String> {
         std::env::var(name).ok()
+    }
+
+    fn vars(&self) -> Vec<(String, String)> {
+        std::env::vars().collect()
     }
 }
 
@@ -86,6 +104,13 @@ where
 impl EnvSource for MapEnvSource {
     fn var(&self, name: &str) -> Option<String> {
         self.inner.get(name).cloned()
+    }
+
+    fn vars(&self) -> Vec<(String, String)> {
+        self.inner
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 

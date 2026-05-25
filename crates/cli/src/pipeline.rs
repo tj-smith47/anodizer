@@ -1047,7 +1047,6 @@ pub fn build_merge_pipeline() -> Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
     use std::fs;
     use tempfile::TempDir;
 
@@ -1591,9 +1590,16 @@ path = "shared.yaml"
     // -----------------------------------------------------------------------
 
     #[test]
-    #[serial]
     fn test_header_keys_not_expanded_only_values() {
-        unsafe { std::env::set_var("ANODIZER_HDR_VAL", "expanded_val") };
+        // Drive `expand_with` against a closed lookup map so the test never
+        // touches process env. The production header pipeline calls
+        // `expand_env_vars` (which routes through `std::env::var`); the
+        // contract this test pins is the value-vs-key expansion shape,
+        // not the lookup backend.
+        let lookup = |name: &str| match name {
+            "ANODIZER_HDR_VAL" => Some("expanded_val".to_string()),
+            _ => None,
+        };
 
         let mut headers = std::collections::HashMap::new();
         headers.insert(
@@ -1601,10 +1607,6 @@ path = "shared.yaml"
             "${ANODIZER_HDR_VAL}".to_string(),
         );
 
-        // We can't call fetch_url_as_yaml without a real server, but we can verify
-        // the expand_env_vars behavior that the code relies on: header keys are NOT
-        // passed through expand_env_vars (only values are).
-        // Verify: expanding the key would change it, but we don't expand keys.
         let key = "$KEY_LITERAL";
         let value = "${ANODIZER_HDR_VAL}";
         assert_eq!(
@@ -1612,19 +1614,17 @@ path = "shared.yaml"
             "header key must be preserved literally"
         );
         assert_eq!(
-            expand_env_vars(value),
+            anodizer_core::env_expand::expand_with(value, lookup),
             "expanded_val",
             "header value must be expanded"
         );
         // Verify that expanding the key WOULD destroy it (returns empty since
-        // KEY_LITERAL is not set as an env var), proving we must NOT expand keys.
+        // KEY_LITERAL is not set in the lookup), proving we must NOT expand keys.
         assert_eq!(
-            expand_env_vars(key),
+            anodizer_core::env_expand::expand_with(key, lookup),
             "",
             "expanding a key with valid var name destroys it — proves keys must not be expanded"
         );
-
-        unsafe { std::env::remove_var("ANODIZER_HDR_VAL") };
     }
 
     // -----------------------------------------------------------------------
